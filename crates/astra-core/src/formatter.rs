@@ -188,6 +188,10 @@ impl<'a> Formatter<'a> {
                 self.write_visibility(item);
                 self.write_foreign_module(declaration, indent);
             }
+            ItemKind::ScriptBlock(declaration) => {
+                self.write_visibility(item);
+                self.write_script_block(declaration, indent);
+            }
         }
     }
 
@@ -220,6 +224,54 @@ impl<'a> Formatter<'a> {
         self.write_return_and_errors(&function.return_type, &function.error_set);
         self.output.push(' ');
         self.write_block(&function.body, indent);
+    }
+
+    fn write_script_block(&mut self, block: &ScriptBlock, indent: usize) {
+        // Temporary canonical writer for the JS-001 worktree. The interop
+        // implementation owns final diagnostics and raw-body trivia handling.
+        self.output.push_str("{@script:");
+        self.output.push_str(&block.language);
+        self.output.push_str(" as ");
+        self.output.push_str(&block.name);
+        self.output.push_str(";\n");
+
+        self.ensure_indent(indent + 1);
+        self.output.push_str("@mode(");
+        self.output.push_str(&block.mode);
+        self.output.push_str(")\n");
+
+        self.ensure_indent(indent + 1);
+        self.output.push_str("@exports {\n");
+        for export in &block.exports {
+            self.ensure_indent(indent + 2);
+            self.output.push_str("fn ");
+            self.output.push_str(&export.name);
+            self.output.push('(');
+            for (index, parameter) in export.parameters.iter().enumerate() {
+                if index > 0 {
+                    self.output.push_str(", ");
+                }
+                self.output.push_str(&parameter.name);
+                self.output.push_str(": ");
+                self.write_type(&parameter.ty);
+            }
+            self.output.push(')');
+            self.write_return_and_errors(&export.return_type, &export.error_set);
+            self.output.push('\n');
+        }
+        self.ensure_indent(indent + 1);
+        self.output.push_str("}\n\n");
+
+        self.ensure_indent(indent + 1);
+        self.output.push_str("@impl\n");
+        self.output.push_str(&block.raw_source);
+        if !block.raw_source.ends_with('\n') {
+            self.output.push('\n');
+        }
+        self.ensure_indent(indent);
+        self.output.push_str("@end\n");
+        self.ensure_indent(indent);
+        self.output.push('}');
     }
 
     fn write_foreign_module(&mut self, module: &ForeignModuleDecl, indent: usize) {

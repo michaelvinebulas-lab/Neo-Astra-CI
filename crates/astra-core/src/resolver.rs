@@ -332,6 +332,7 @@ impl<'a> DeclRef<'a> {
                 AstItemKind::Constant(declaration) => &declaration.name,
                 AstItemKind::TypeAlias(declaration) => &declaration.name,
                 AstItemKind::ForeignModule(declaration) => &declaration.name,
+                AstItemKind::ScriptBlock(declaration) => &declaration.name,
                 AstItemKind::Import(_) | AstItemKind::Export(_) | AstItemKind::ScopedItems(_) => "",
             },
             Self::DefaultFunction(function) => &function.name,
@@ -373,6 +374,9 @@ impl<'a> DeclRef<'a> {
                 AstItemKind::TypeAlias(declaration) => Declaration::TypeAlias(declaration.clone()),
                 AstItemKind::ForeignModule(declaration) => {
                     Declaration::ForeignModule(declaration.clone())
+                }
+                AstItemKind::ScriptBlock(declaration) => {
+                    Declaration::ScriptBlock(declaration.clone())
                 }
                 AstItemKind::Import(_) | AstItemKind::Export(_) | AstItemKind::ScopedItems(_) => {
                     unreachable!("only declarations are collected as DeclRef")
@@ -528,6 +532,9 @@ impl<'m, 's, 'r> ModulePass<'m, 's, 'r> {
                 self.symbols.types.insert(name.clone(), symbol);
             }
             ItemKind::ForeignModule => {
+                self.symbols.namespaces.insert(name.clone(), symbol);
+            }
+            ItemKind::ScriptBlock => {
                 self.symbols.namespaces.insert(name.clone(), symbol);
             }
         }
@@ -1424,6 +1431,19 @@ impl<'m, 's, 'r> ModulePass<'m, 's, 'r> {
                     }
                 }
             }
+            Declaration::ScriptBlock(script) => {
+                for export in &script.exports {
+                    for parameter in &export.parameters {
+                        self.check_type_leak(owner, &parameter.ty, &BTreeSet::new());
+                    }
+                    if let Some(return_type) = &export.return_type {
+                        self.check_type_leak(owner, return_type, &BTreeSet::new());
+                    }
+                    for error in &export.error_set {
+                        self.check_type_path_leak(owner, error, &BTreeSet::new());
+                    }
+                }
+            }
         }
     }
 
@@ -1502,6 +1522,7 @@ fn symbol_kind(kind: ItemKind) -> SymbolKind {
         ItemKind::Constant => SymbolKind::Constant,
         ItemKind::TypeAlias => SymbolKind::TypeAlias,
         ItemKind::ForeignModule => SymbolKind::ForeignModule,
+        ItemKind::ScriptBlock => SymbolKind::ForeignModule,
     }
 }
 

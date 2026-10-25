@@ -518,6 +518,32 @@ impl<'a> Checker<'a> {
                         },
                     );
                 }
+                hir::Declaration::ScriptBlock(declaration) => {
+                    // TODO(INTEROP-001): replace this temporary compile guard
+                    // with full script validation and target checks.
+                    let mut members = BTreeMap::new();
+                    for export in &declaration.exports {
+                        let signature = self.function_signature_parts(
+                            export.name.clone(),
+                            &[],
+                            &export.parameters,
+                            export.return_type.as_ref(),
+                            &export.error_set,
+                            export.span,
+                        );
+                        members.insert(
+                            export.name.clone(),
+                            ValueDef::new(Type::Function(signature)),
+                        );
+                    }
+                    self.namespaces.insert(
+                        declaration.name.clone(),
+                        NamespaceDef {
+                            members,
+                            open: false,
+                        },
+                    );
+                }
             }
         }
     }
@@ -974,6 +1000,12 @@ impl<'a> Checker<'a> {
                     self.check_capability_attributes(&item.attributes, current_mode);
                 }
                 ast::ItemKind::Import(_) | ast::ItemKind::Export(_) => {
+                    self.check_capability_attributes(&item.attributes, current_mode);
+                }
+                ast::ItemKind::ScriptBlock(_) => {
+                    // TODO(INTEROP-001): validate @mode/@exports once the parser
+                    // produces script blocks. This arm is a temporary compile
+                    // guard for the JS-001 worktree.
                     self.check_capability_attributes(&item.attributes, current_mode);
                 }
             }

@@ -153,6 +153,9 @@ fn runtime_module(id: &str, checked: CheckResult) -> Result<RuntimeModule, NovaE
             hir::Declaration::ForeignModule(declaration) => {
                 foreign_modules.insert(declaration.name.clone());
             }
+            hir::Declaration::ScriptBlock(_) => {
+                // TODO(INTEROP-001): link script blocks after the interop slice.
+            }
             hir::Declaration::TypeAlias(_) => {}
         }
     }
