@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use astra_capabilities::{Mode, ModeInference, infer_module_mode_named, infer_project};
+use astra_codegen_c::{CModule, IntegerPolicy as CIntegerPolicy};
 use astra_core::checker::{CheckOptions, TypeAnnotation, check_resolved};
 use astra_core::diagnostic::Diagnostic;
 use astra_core::formatter::format_source;
@@ -124,10 +125,16 @@ impl CompileResponse {
         self
     }
 
+    /// Attaches a backend artifact to a successful response.
+    #[must_use]
+    pub fn with_artifact(mut self, artifact: Value) -> Self {
+        self.artifacts.push(artifact);
+        self
+    }
+
     /// Creates a failed response.
     #[must_use]
-    pub fn failure(diagnostics: Vec<Diagnostic>) -> Self {
-        Self {
+    pub fn failure(diagnostics: Vec<Diagnostic>) -> Self {        Self {
             api_version: API_VERSION.to_owned(),
             program: None,
             ir: None,
@@ -167,6 +174,13 @@ impl FormatResponse {
             diagnostics,
         }
     }
+}
+
+/// Derives a stem name from a source path for output file naming
+/// (e.g. `"src/app/main.ns"` → `"main"`).
+fn module_stem(path: &str) -> &str {
+    let base = path.rsplit(&['/', '\\'][..]).next().unwrap_or(path);
+    base.strip_suffix(".ns").unwrap_or(base)
 }
 
 /// Boundary implemented by the Rust core.
@@ -424,7 +438,7 @@ impl FrontendCompiler {
     /// Checks and attaches typed IR for one backend target.
     #[must_use]
     pub fn compile(&self, request: &CompileRequest) -> CompileResponse {
-        if !matches!(request.target.as_str(), "js" | "ts") {
+        if !matches!(request.target.as_str(), "js" | "ts" | "c") {
             return CompileResponse::failure(vec![
                 Diagnostic::error(
                     "NS8001",
@@ -433,7 +447,7 @@ impl FrontendCompiler {
                         request.target
                     ),
                 )
-                .with_hint("Use target 'js' or 'ts'."),
+                .with_hint("Use target 'js', 'ts', or 'c'."),
             ])
             .with_metadata(json!({ "target": request.target }));
         }
@@ -480,15 +494,57 @@ impl FrontendCompiler {
                                 let mut response = CompileResponse::success(Program { name })
                                     .with_metadata(metadata);
                                 if typed {
-                                    response = response.with_ir(ModuleIr {
+                                    let ir = ModuleIr {
                                         key: request.source.path.clone(),
                                         path: request.source.path.clone(),
-                                        ast: module,
-                                        hir: checked.module,
-                                        annotations: checked.annotations,
-                                        manual_memory_scopes: checked.manual_memory_scopes,
+                                        ast: module.clone(),
+                                        hir: checked.module.clone(),
+                                        annotations: checked.annotations.clone(),
+                                        manual_memory_scopes: checked.manual_memory_scopes.clone(),
                                         integer_policy: request.integer_policy,
-                                    });
+                                    };
+                                    // C backend: run the emitter and attach the
+                                    // generated source as artifacts.
+                                    if request.target == "c" {
+                                        let c_module = CModule {
+                                            name: checked.module.name.clone(),
+                                            ast: module,
+                                            hir: checked.module,
+                                            annotations: checked.annotations,
+                                            manual_memory_scopes: checked.manual_memory_scopes,
+                                            integer_policy: match request.integer_policy {
+                                                IntegerPolicy::Wrapping => CIntegerPolicy::Wrapping,
+                                                IntegerPolicy::SafeChecked => CIntegerPolicy::SafeChecked,
+                                                IntegerPolicy::Arbitrary => CIntegerPolicy::Arbitrary,
+                                            },
+                                        };
+                                        match astra_codegen_c::generate(&c_module) {
+                                            Ok(generated) => {
+                                                response = response
+                                                    .with_ir(ir)
+                                                    .with_artifact(json!({
+                                                        "type": "c-source",
+                                                        "filename": format!("{}.c", module_stem(&request.source.path)),
+                                                        "content": generated.source,
+                                                    }))
+                                                    .with_artifact(json!({
+                                                        "type": "c-host-shim",
+                                                        "filename": "astra_host.c",
+                                                        "content": generated.host_shim,
+                                                    }));
+                                            }
+                                            Err(backend_error) => {
+                                                return CompileResponse::failure(vec![
+                                                    Diagnostic::error(
+                                                        backend_error.code.clone(),
+                                                        backend_error.message.clone(),
+                                                    ),
+                                                ]);
+                                            }
+                                        }
+                                    } else {
+                                        response = response.with_ir(ir);
+                                    }
                                 }
                                 response
                             }

@@ -188,6 +188,9 @@ impl<'a> Formatter<'a> {
                 self.write_visibility(item);
                 self.write_foreign_module(declaration, indent);
             }
+            ItemKind::ScriptBlock(script) => {
+                self.write_script_block(script, indent);
+            }
         }
     }
 
@@ -258,6 +261,38 @@ impl<'a> Formatter<'a> {
         self.write_comments_before(module.span.end, indent + 1);
         self.write_indent(indent);
         self.output.push('}');
+    }
+
+    fn write_script_block(&mut self, script: &ScriptBlock, indent: usize) {
+        let base_pad = "    ".repeat(indent);
+        let inner_pad = "    ".repeat(indent + 1);
+        let exports_pad = "    ".repeat(indent + 2);
+
+        self.output.push_str(&format!("{{@script:{} as {};\n", script.language, script.name));
+        self.output.push_str(&format!("{inner_pad}@mode({})\n", script.mode));
+        self.output.push_str(&format!("{inner_pad}@exports {{\n"));
+        for export in &script.exports {
+            self.output.push_str(&format!("{exports_pad}fn {}(", export.name));
+            for (index, parameter) in export.parameters.iter().enumerate() {
+                if index > 0 {
+                    self.output.push_str(", ");
+                }
+                self.output.push_str(&parameter.name);
+                self.output.push_str(": ");
+                self.write_type(&parameter.ty);
+            }
+            self.output.push(')');
+            self.write_return_and_errors(&export.return_type, &export.error_set);
+            self.output.push('\n');
+        }
+        self.output.push_str(&format!("{inner_pad}}}\n\n"));
+        self.output.push_str(&format!("{inner_pad}@impl\n"));
+        self.output.push_str(&script.raw_source);
+        if !script.raw_source.ends_with('\n') {
+            self.output.push('\n');
+        }
+        self.output.push_str(&format!("{base_pad}@end\n"));
+        self.output.push_str(&format!("{base_pad}}}"));
     }
 
     fn write_struct(&mut self, declaration: &StructDecl, indent: usize) {

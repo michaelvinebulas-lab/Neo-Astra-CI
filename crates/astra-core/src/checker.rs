@@ -38,6 +38,8 @@ const MODE_WIDENING: &str = "NS5002";
 const CAPABILITY_REQUIREMENT: &str = "NS5003";
 const MEMORY_REQUIREMENT: &str = "NS5004";
 const INVALID_CAPABILITY_ANNOTATION: &str = "NS5005";
+const UNSUPPORTED_SCRIPT_TARGET: &str = "NS7002";
+const INVALID_SCRIPT_SIGNATURE: &str = "NS7005";
 
 /// Type-checker options.
 #[derive(Debug, Clone, Default)]
@@ -45,6 +47,8 @@ pub struct CheckOptions {
     /// The resolved capability mode selected by the CLI, environment, or
     /// manifest. Source annotations are validated against this mode.
     pub mode: Mode,
+    /// Active target (e.g. "js", "ts", "native", "wasm").
+    pub target: Option<String>,
     /// Type surfaces for modules that this module imports from.
     ///
     /// When populated, `register_imports` uses the surfaces to resolve real
@@ -59,8 +63,16 @@ impl CheckOptions {
     pub fn new(mode: Mode) -> Self {
         Self {
             mode,
+            target: None,
             module_surfaces: BTreeMap::new(),
         }
+    }
+
+    /// Sets the active compilation target.
+    #[must_use]
+    pub fn with_target(mut self, target: impl Into<String>) -> Self {
+        self.target = Some(target.into());
+        self
     }
 
     /// Creates options with a pre-populated module surface map.
@@ -68,6 +80,7 @@ impl CheckOptions {
     pub fn with_surfaces(mode: Mode, module_surfaces: BTreeMap<String, ModuleTypeSurface>) -> Self {
         Self {
             mode,
+            target: None,
             module_surfaces,
         }
     }
@@ -75,7 +88,9 @@ impl CheckOptions {
 
 impl PartialEq for CheckOptions {
     fn eq(&self, other: &Self) -> bool {
-        self.mode == other.mode && self.module_surfaces == other.module_surfaces
+        self.mode == other.mode
+            && self.target == other.target
+            && self.module_surfaces == other.module_surfaces
     }
 }
 
@@ -325,6 +340,7 @@ struct Checker<'a> {
     imported_types: BTreeSet<String>,
     values: BTreeMap<String, ValueDef>,
     namespaces: BTreeMap<String, NamespaceDef>,
+    script_modes: BTreeMap<String, Mode>,
     scopes: Vec<BTreeMap<String, Local>>,
     current_function: Option<FunctionContext>,
     loop_depth: usize,
@@ -347,6 +363,7 @@ impl<'a> Checker<'a> {
             imported_types: BTreeSet::new(),
             values: BTreeMap::new(),
             namespaces: BTreeMap::new(),
+            script_modes: BTreeMap::new(),
             scopes: Vec::new(),
             current_function: None,
             loop_depth: 0,
@@ -507,6 +524,30 @@ impl<'a> Checker<'a> {
                         );
                         members.insert(
                             function.name.clone(),
+                            ValueDef::new(Type::Function(signature)),
+                        );
+                    }
+                    self.namespaces.insert(
+                        declaration.name.clone(),
+                        NamespaceDef {
+                            members,
+                            open: false,
+                        },
+                    );
+                }
+                hir::Declaration::ScriptBlock(declaration) => {
+                    let mut members = BTreeMap::new();
+                    for export in &declaration.exports {
+                        let signature = self.function_signature_parts(
+                            export.name.clone(),
+                            &[],
+                            &export.parameters,
+                            export.return_type.as_ref(),
+                            &export.error_set,
+                            export.span,
+                        );
+                        members.insert(
+                            export.name.clone(),
                             ValueDef::new(Type::Function(signature)),
                         );
                     }
@@ -976,6 +1017,60 @@ impl<'a> Checker<'a> {
                 ast::ItemKind::Import(_) | ast::ItemKind::Export(_) => {
                     self.check_capability_attributes(&item.attributes, current_mode);
                 }
+                ast::ItemKind::ScriptBlock(script) => {
+                    self.check_capability_attributes(&item.attributes, current_mode);
+
+                    // Validate target compatibility (NS7002)
+                    if let Some(target) = self.options.target.as_deref() {
+                        let supported = match target {
+                            "js" | "ts" => matches!(script.language.as_str(), "js" | "ts"),
+                            "native" | "c" | "llvm" => matches!(script.language.as_str(), "c" | "cpp"),
+                            _ => false,
+                        };
+                        if !supported {
+                            self.error(
+                                UNSUPPORTED_SCRIPT_TARGET,
+                                format!(
+                                    "Script language '{}' is not supported by the active target '{target}'.",
+                                    script.language
+                                ),
+                                script.span,
+                                &format!("Target '{target}' does not support '{}' script blocks.", script.language),
+                            );
+                        }
+                    }
+
+                    // Register declared mode for caller verification
+                    if let Some(mode) = Mode::parse(&script.mode) {
+                        self.script_modes.insert(script.name.clone(), mode);
+                    }
+
+                    // Validate boundary safety of export signatures (NS7005)
+                    for export in &script.exports {
+                        for param in &export.parameters {
+                            let ty = self.resolve_type(&param.ty, &BTreeMap::new());
+                            if !self.is_boundary_safe(&ty) {
+                                self.error(
+                                    INVALID_SCRIPT_SIGNATURE,
+                                    format!("Type '{ty}' is not boundary-safe for script exports."),
+                                    param.span,
+                                    "Use boundary-safe primitive types, bool, str, bytes, Option, slices, or structs.",
+                                );
+                            }
+                        }
+                        if let Some(ret) = &export.return_type {
+                            let ty = self.resolve_type(ret, &BTreeMap::new());
+                            if !self.is_boundary_safe(&ty) {
+                                self.error(
+                                    INVALID_SCRIPT_SIGNATURE,
+                                    format!("Type '{ty}' is not boundary-safe for script exports."),
+                                    ret.span,
+                                    "Use boundary-safe primitive types, bool, str, bytes, Option, slices, or structs.",
+                                );
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1105,6 +1200,41 @@ impl<'a> Checker<'a> {
                 }
                 current_mode
             }
+        }
+    }
+
+    fn is_boundary_safe(&mut self, ty: &Type) -> bool {
+        match ty {
+            Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Isize
+            | Type::F32
+            | Type::F64
+            | Type::Bool
+            | Type::Str
+            | Type::Bytes
+            | Type::Unit => true,
+            Type::Option(inner) => self.is_boundary_safe(inner),
+            Type::Array(inner) | Type::Slice(inner) | Type::FixedArray(inner, _) => {
+                self.is_boundary_safe(inner)
+            }
+            Type::Named(name, args) => {
+                if let Some(def) = self.resolve_struct(name) {
+                    def.fields.iter().all(|f| self.is_boundary_safe(&f.ty))
+                } else {
+                    args.iter().all(|arg| self.is_boundary_safe(arg))
+                }
+            }
+            Type::Result(ok, err) => self.is_boundary_safe(ok) && self.is_boundary_safe(err),
+            Type::Generic(_) | Type::Function(_) | Type::Tuple(_) | Type::Map(_, _) | Type::Never => false,
+            Type::Error | Type::Unknown => true,
         }
     }
 
@@ -2203,6 +2333,23 @@ impl<'a> Checker<'a> {
                 return self.enum_member(name, &enum_def, member, span, expected);
             }
             if let Some(namespace) = self.namespaces.get(name).cloned() {
+                if let Some(&script_mode) = self.script_modes.get(name) {
+                    if !self.mode.allows(script_mode) {
+                        self.error(
+                            MODE_REQUIREMENT,
+                            format!(
+                                "Script block '{name}' requires '{}' mode, but the active mode is '{}'.",
+                                script_mode.as_str(),
+                                self.mode.as_str()
+                            ),
+                            span,
+                            &format!(
+                                "Move the call into a {}-mode function or raise the mode.",
+                                script_mode.as_str()
+                            ),
+                        );
+                    }
+                }
                 if let Some(value) = namespace.members.get(member) {
                     return ExprInfo::value(value.ty.clone());
                 }

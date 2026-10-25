@@ -21,6 +21,10 @@ const INVALID_PATTERN: &str = "NS2004";
 const INVALID_ITEM: &str = "NS2005";
 const BOUNDARY: &str = "NS2006";
 const CONFLICTING_VISIBILITY: &str = "NS3002";
+const UNKNOWN_SCRIPT_LANGUAGE: &str = "NS7001";
+const INVALID_SCRIPT_EXPORTS: &str = "NS7003";
+const MALFORMED_SCRIPT_BLOCK: &str = "NS7004";
+const INVALID_SCRIPT_SIGNATURE: &str = "NS7005";
 
 /// Parses one source unit.
 pub fn parse(source: &str) -> ParseResult<Module> {
@@ -93,6 +97,17 @@ impl Parser {
 
     fn parse_item_with_attributes(&mut self, attributes: Vec<Attribute>) -> Option<Item> {
         let start = self.peek().span.start;
+
+        if self.at_punct(Punctuation::LBrace) && self.looks_like_script_block() {
+            let script = self.parse_script_block();
+            return Some(Item {
+                attributes,
+                visibility: Visibility::Normal,
+                exported: false,
+                kind: ItemKind::ScriptBlock(script.clone()),
+                span: script.span,
+            });
+        }
 
         if self.at_punct(Punctuation::LBrace) && self.looks_like_scope_annotation() {
             let scoped = self.parse_scoped_items();
@@ -815,6 +830,230 @@ impl Parser {
             return_type,
             error_set,
             span: self.span_from(start),
+        }
+    }
+
+    fn parse_script_block(&mut self) -> ScriptBlock {
+        let block_start = self
+            .expect_punct(Punctuation::LBrace, "'{'")
+            .map_or(0, |t| t.span.start);
+        self.expect_punct(Punctuation::At, "'@'");
+        let _ = self.expect_identifier(); // "script"
+        self.expect_punct(Punctuation::Colon, "':'");
+
+        let lang_token = if self.at(TokenKind::Identifier) {
+            Some(self.bump())
+        } else {
+            self.error_current(
+                EXPECTED,
+                "Expected script language.",
+                "Specify a language such as js, ts, c, cpp, or python.",
+            );
+            None
+        };
+        let language = lang_token.as_ref().map(|t| t.text.clone()).unwrap_or_default();
+        let lang_span = lang_token.as_ref().map(|t| t.span).unwrap_or_else(|| self.span_from(block_start));
+        match language.as_str() {
+            "js" | "ts" | "c" | "cpp" | "python" => {}
+            "java" => {
+                self.error(
+                    UNKNOWN_SCRIPT_LANGUAGE,
+                    "Script language 'java' is reserved but unsupported until a JVM backend exists.",
+                    lang_span,
+                    "Supported languages in V1: js, ts, c, cpp, python.",
+                );
+            }
+            _ => {
+                self.error(
+                    UNKNOWN_SCRIPT_LANGUAGE,
+                    format!("Unknown or unsupported script language '{language}'."),
+                    lang_span,
+                    "Supported languages in V1: js, ts, c, cpp, python.",
+                );
+            }
+        }
+
+        if self.at_keyword(Keyword::As) {
+            self.bump();
+        } else if self.peek().text == "as" {
+            self.bump();
+        } else {
+            self.error_current(
+                EXPECTED,
+                "Expected 'as'.",
+                "Specify the script namespace using 'as <name>;'.",
+            );
+        }
+
+        let name = self.expect_identifier().unwrap_or_default();
+        self.expect_punct(Punctuation::Semicolon, "';'");
+        let header_span = Span::new(block_start, self.last_end());
+
+        let mut mode = String::new();
+        let mut exports = Vec::new();
+        let mut has_exports = false;
+
+        self.skip_separators();
+        while !self.at_eof() && !self.at_punct(Punctuation::RBrace) {
+            if self.at_punct(Punctuation::At) {
+                if self.peek_at(1).is_some_and(|t| t.text == "impl") {
+                    break;
+                }
+                if self.peek_at(1).is_some_and(|t| t.text == "mode") {
+                    self.bump(); // @
+                    self.bump(); // mode
+                    self.expect_punct(Punctuation::LParen, "'('");
+                    mode = self.expect_identifier().unwrap_or_default();
+                    self.expect_punct(Punctuation::RParen, "')'");
+                    self.skip_separators();
+                    continue;
+                }
+                if self.peek_at(1).is_some_and(|t| t.text == "exports") {
+                    self.bump(); // @
+                    self.bump(); // exports
+                    has_exports = true;
+                    self.expect_punct(Punctuation::LBrace, "'{'");
+                    self.skip_separators();
+                    let mut seen_exports = std::collections::BTreeSet::new();
+                    while !self.at_punct(Punctuation::RBrace) && !self.at_eof() {
+                        let before = self.index;
+                        if self.at_keyword(Keyword::Fn) {
+                            let fn_token = self.bump();
+                            let fn_name = self.expect_identifier().unwrap_or_default();
+                            if self.at_punct(Punctuation::Lt) {
+                                self.error_current(
+                                    INVALID_SCRIPT_SIGNATURE,
+                                    "Script exports cannot be generic.",
+                                    "Remove generic type parameters from the export signature.",
+                                );
+                                while !self.at_punct(Punctuation::Gt) && !self.at_eof() {
+                                    self.bump();
+                                }
+                                if self.at_punct(Punctuation::Gt) {
+                                    self.bump();
+                                }
+                            }
+                            let parameters = self.parse_parameters();
+                            let (return_type, error_set) = self.parse_return_and_errors();
+                            let exp_span = Span::new(fn_token.span.start, self.last_end());
+                            if !seen_exports.insert(fn_name.clone()) {
+                                self.error(
+                                    INVALID_SCRIPT_EXPORTS,
+                                    format!("Duplicate export '{fn_name}' in script block."),
+                                    exp_span,
+                                    "Remove the duplicate export signature.",
+                                );
+                            }
+                            exports.push(ScriptExport {
+                                name: fn_name,
+                                parameters,
+                                return_type,
+                                error_set,
+                                span: exp_span,
+                            });
+                        } else {
+                            self.error_current(
+                                EXPECTED,
+                                "Expected 'fn' export signature in script @exports block.",
+                                "Use 'fn <name>(<params>) -> <type>'.",
+                            );
+                        }
+                        self.finish_boundary(true);
+                        if self.index == before {
+                            self.bump();
+                        }
+                    }
+                    self.expect_punct(Punctuation::RBrace, "'}'");
+                    self.skip_separators();
+                    continue;
+                }
+            }
+            let tok = self.bump();
+            self.error(
+                MALFORMED_SCRIPT_BLOCK,
+                format!("Unexpected token in script header: '{}'.", tok.text),
+                tok.span,
+                "Script header must declare @mode(...) and @exports { ... } before @impl.",
+            );
+        }
+
+        if mode.is_empty() {
+            self.error(
+                MALFORMED_SCRIPT_BLOCK,
+                "Malformed script block: missing @mode(...) declaration.",
+                header_span,
+                "Declare the minimum mode required by the foreign script, e.g. @mode(core).",
+            );
+            mode = "core".to_string();
+        }
+
+        if !has_exports {
+            self.error(
+                INVALID_SCRIPT_EXPORTS,
+                "Missing @exports declaration in script block.",
+                header_span,
+                "Declare at least one exported function signature in @exports { ... }.",
+            );
+        } else if exports.is_empty() {
+            self.error(
+                INVALID_SCRIPT_EXPORTS,
+                "Script block @exports declaration must contain at least one export signature.",
+                header_span,
+                "Add at least one function signature, e.g. fn add(a: i32, b: i32) -> i32.",
+            );
+        }
+
+        if self.at_punct(Punctuation::At) && self.peek_at(1).is_some_and(|t| t.text == "impl") {
+            self.bump();
+            self.bump();
+        } else {
+            self.error_current(
+                MALFORMED_SCRIPT_BLOCK,
+                "Malformed script block: missing '@impl' marker.",
+                "Mark the start of foreign implementation with '@impl'.",
+            );
+        }
+
+        let (raw_source, body_span) = if self.at(TokenKind::RawSource) {
+            let tok = self.bump();
+            (tok.text, tok.span)
+        } else {
+            (String::new(), Span::new(self.last_end(), self.last_end()))
+        };
+
+        if self.at_punct(Punctuation::At) && self.peek_at(1).is_some_and(|t| t.text == "end") {
+            self.bump();
+            self.bump();
+        } else {
+            self.error_current(
+                MALFORMED_SCRIPT_BLOCK,
+                "Malformed script block: missing '@end' sentinel.",
+                "End foreign raw source with an '@end' line.",
+            );
+        }
+
+        self.skip_separators();
+        if self.at_punct(Punctuation::RBrace) {
+            self.bump();
+        } else {
+            self.error_current(
+                MALFORMED_SCRIPT_BLOCK,
+                "Malformed script block: missing closing '}'.",
+                "Close the script block with '}'.",
+            );
+        }
+
+        let total_span = Span::new(block_start, self.last_end());
+
+        ScriptBlock {
+            language,
+            name,
+            mode,
+            exports,
+            raw_source,
+            span: total_span,
+            header_span,
+            body_span,
         }
     }
 
@@ -2144,6 +2383,19 @@ impl Parser {
         }
     }
 
+    fn looks_like_script_block(&self) -> bool {
+        self.at_punct(Punctuation::LBrace)
+            && self
+                .peek_at(1)
+                .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::At))
+            && self
+                .peek_at(2)
+                .is_some_and(|token| token.text == "script")
+            && self
+                .peek_at(3)
+                .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Colon))
+    }
+
     fn looks_like_scope_annotation(&self) -> bool {
         self.at_punct(Punctuation::LBrace)
             && self
@@ -2151,7 +2403,7 @@ impl Parser {
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::At))
             && self
                 .peek_at(2)
-                .is_some_and(|token| token.kind == TokenKind::Identifier)
+                .is_some_and(|token| token.kind == TokenKind::Identifier && token.text != "script")
             && self
                 .peek_at(3)
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Colon))

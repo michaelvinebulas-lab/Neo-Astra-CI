@@ -879,6 +879,7 @@ fn position(source: &str, span: Option<Span>) -> (Option<usize>, Option<usize>) 
 pub(crate) fn error_span(error: &NovaError) -> Option<Span> {
     match error {
         NovaError::ManualMemoryUnsupported { span } => Some(*span),
+        NovaError::ForeignScriptUnsupported { span, .. } => Some(*span),
         NovaError::Unsupported { span, .. } => *span,
         NovaError::Panic(panic) => panic.span,
         NovaError::Abort(abort) => abort.span,

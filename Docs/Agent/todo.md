@@ -721,17 +721,17 @@ export surface.
 
 **Implementation**
 
-- [ ] Add lexer/parser raw-source capture, AST/HIR nodes, and `NS7001`–`NS7006`
+- [x] Add lexer/parser raw-source capture, AST/HIR nodes, and `NS7001`–`NS7006`
       diagnostics.
-- [ ] Preserve `@script` bodies byte-for-byte in `astra fmt` and LSP formatting.
-- [ ] Register script namespaces and validate `@mode`, `@exports`, boundary types,
+- [x] Preserve `@script` bodies byte-for-byte in `astra fmt` and LSP formatting.
+- [x] Register script namespaces and validate `@mode`, `@exports`, boundary types,
       calls, target compatibility, and manifest mappings (`NS7007`).
 - [ ] Implement the JavaScript/TypeScript backend slice: real ESM modules, export
       validation, source maps, and end-to-end tests.
 - [ ] Implement the C/C++ native slice: one translation unit per block, symbol
       isolation, wrappers, link failures, and boundary tests.
-- [ ] Make Nova reject foreign script calls with `NV0008` before execution.
-- [ ] Add conformance and security tests for unsupported target/language pairs,
+- [x] Make Nova reject foreign script calls with `NV0008` before execution.
+- [x] Add conformance and security tests for unsupported target/language pairs,
       malformed terminators, opaque bodies, and mode propagation.
 - [ ] Defer Python, Wasm script embedding, Java, and Nova host adapters to
       post-V1 design work.

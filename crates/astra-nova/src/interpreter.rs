@@ -132,6 +132,7 @@ fn runtime_module(id: &str, checked: CheckResult) -> Result<RuntimeModule, NovaE
     let mut structs = BTreeMap::new();
     let mut enums = BTreeMap::new();
     let mut foreign_modules = BTreeSet::new();
+    let mut scripts = BTreeMap::new();
 
     for item in &checked.module.items {
         match &item.declaration {
@@ -152,6 +153,9 @@ fn runtime_module(id: &str, checked: CheckResult) -> Result<RuntimeModule, NovaE
             }
             hir::Declaration::ForeignModule(declaration) => {
                 foreign_modules.insert(declaration.name.clone());
+            }
+            hir::Declaration::ScriptBlock(script) => {
+                scripts.insert(script.name.clone(), (script.language.clone(), script.span));
             }
             hir::Declaration::TypeAlias(_) => {}
         }
@@ -219,6 +223,16 @@ fn runtime_module(id: &str, checked: CheckResult) -> Result<RuntimeModule, NovaE
             .borrow_mut()
             .values
             .insert(name.clone(), Value::ForeignModule(name.clone()));
+    }
+    for (name, (language, span)) in scripts {
+        globals.borrow_mut().values.insert(
+            name.clone(),
+            Value::ScriptBlock {
+                name,
+                language,
+                span,
+            },
+        );
     }
 
     Ok(RuntimeModule {
@@ -817,6 +831,20 @@ impl Interpreter {
                 ),
                 span: Some(span),
             })),
+            Value::ScriptBlock { name, language, span: script_span } => {
+                Err(Fault::Error(NovaError::ForeignScriptUnsupported {
+                    name,
+                    language,
+                    span: script_span,
+                }))
+            }
+            Value::ScriptFunction { script_name, language, span: script_span, .. } => {
+                Err(Fault::Error(NovaError::ForeignScriptUnsupported {
+                    name: script_name,
+                    language,
+                    span: script_span,
+                }))
+            }
             Value::Imported { module, name } => {
                 if !self.modules.contains_key(&module) {
                     return Err(Fault::Error(NovaError::Unsupported {
@@ -1343,6 +1371,12 @@ impl Interpreter {
             Value::ForeignModule(module) => Ok(Value::Imported {
                 module: module.clone(),
                 name: member.to_owned(),
+            }),
+            Value::ScriptBlock { name, language, span } => Ok(Value::ScriptFunction {
+                script_name: name.clone(),
+                function_name: member.to_owned(),
+                language: language.clone(),
+                span: *span,
             }),
             Value::Imported { module, .. } => Ok(Value::Imported {
                 module: module.clone(),

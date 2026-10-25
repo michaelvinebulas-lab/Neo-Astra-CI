@@ -192,6 +192,17 @@ pub enum Value {
     Constructor(Constructor),
     Task(Rc<RefCell<Task>>),
     ForeignModule(String),
+    ScriptBlock {
+        name: String,
+        language: String,
+        span: astra_core::span::Span,
+    },
+    ScriptFunction {
+        script_name: String,
+        function_name: String,
+        language: String,
+        span: astra_core::span::Span,
+    },
     /// A local project module namespace used by `import * as`.
     ModuleNamespace(String),
     /// An exported enum namespace used by imported enum access.
@@ -443,6 +454,20 @@ impl Value {
                 output.push_str(name);
                 output.push('>');
             }
+            Self::ScriptBlock { name, language, .. } => {
+                output.push_str("<script ");
+                output.push_str(name);
+                output.push(':');
+                output.push_str(language);
+                output.push('>');
+            }
+            Self::ScriptFunction { script_name, function_name, .. } => {
+                output.push_str("<script function ");
+                output.push_str(script_name);
+                output.push('.');
+                output.push_str(function_name);
+                output.push_str("()>");
+            }
             Self::ModuleNamespace(name) => {
                 output.push_str("<module ");
                 output.push_str(name);
@@ -584,6 +609,14 @@ pub fn values_equal(left: &Value, right: &Value) -> bool {
         (Value::Constructor(left), Value::Constructor(right)) => left == right,
         (Value::Task(left), Value::Task(right)) => Rc::ptr_eq(left, right),
         (Value::ForeignModule(left), Value::ForeignModule(right)) => left == right,
+        (
+            Value::ScriptBlock { name: l_name, language: l_lang, .. },
+            Value::ScriptBlock { name: r_name, language: r_lang, .. },
+        ) => l_name == r_name && l_lang == r_lang,
+        (
+            Value::ScriptFunction { script_name: l_s, function_name: l_f, .. },
+            Value::ScriptFunction { script_name: r_s, function_name: r_f, .. },
+        ) => l_s == r_s && l_f == r_f,
         (Value::ModuleNamespace(left), Value::ModuleNamespace(right)) => left == right,
         (
             Value::EnumNamespace {

@@ -7,6 +7,7 @@ publish = false
 
 [dependencies]
 astra-capabilities.workspace = true
+astra-codegen-c.workspace = true
 astra-core.workspace = true
 serde.workspace = true
 serde_json.workspace = true

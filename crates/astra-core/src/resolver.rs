@@ -30,6 +30,7 @@ const PRIVATE_LEAK: &str = "NS3010";
 const DUPLICATE_DECLARATION: &str = "NS3011";
 const UNRESOLVED_MODULE: &str = "NS3012";
 const MODULE_CYCLE: &str = "NS3013";
+const SCRIPT_NAMESPACE_COLLISION: &str = "NS7006";
 
 /// Result of a resolver operation.
 pub type ResolveResult<T> = Result<T, Vec<Diagnostic>>;
@@ -279,6 +280,7 @@ impl<'a> ResolutionState<'a> {
             declaration_bindings: BTreeMap::new(),
             import_bindings: BTreeMap::new(),
             default_function_names: BTreeSet::new(),
+            script_declarations: BTreeSet::new(),
             pending_stars: Vec::new(),
         };
 
@@ -332,6 +334,7 @@ impl<'a> DeclRef<'a> {
                 AstItemKind::Constant(declaration) => &declaration.name,
                 AstItemKind::TypeAlias(declaration) => &declaration.name,
                 AstItemKind::ForeignModule(declaration) => &declaration.name,
+                AstItemKind::ScriptBlock(declaration) => &declaration.name,
                 AstItemKind::Import(_) | AstItemKind::Export(_) | AstItemKind::ScopedItems(_) => "",
             },
             Self::DefaultFunction(function) => &function.name,
@@ -373,6 +376,9 @@ impl<'a> DeclRef<'a> {
                 AstItemKind::TypeAlias(declaration) => Declaration::TypeAlias(declaration.clone()),
                 AstItemKind::ForeignModule(declaration) => {
                     Declaration::ForeignModule(declaration.clone())
+                }
+                AstItemKind::ScriptBlock(declaration) => {
+                    Declaration::ScriptBlock(declaration.clone())
                 }
                 AstItemKind::Import(_) | AstItemKind::Export(_) | AstItemKind::ScopedItems(_) => {
                     unreachable!("only declarations are collected as DeclRef")
@@ -439,6 +445,7 @@ struct ModulePass<'m, 's, 'r> {
     declaration_bindings: BTreeMap<String, Span>,
     import_bindings: BTreeMap<String, Span>,
     default_function_names: BTreeSet<String>,
+    script_declarations: BTreeSet<String>,
     pending_stars: Vec<PendingStar>,
 }
 
@@ -489,9 +496,17 @@ impl<'m, 's, 'r> ModulePass<'m, 's, 'r> {
         }
 
         let span = declaration.span();
+        let kind = declaration.declaration().kind();
+        let is_script = kind == ItemKind::ScriptBlock;
         if let Some(previous) = self.declaration_bindings.get(&name) {
+            let collision_with_script = is_script || self.script_declarations.contains(&name);
+            let code = if collision_with_script {
+                SCRIPT_NAMESPACE_COLLISION
+            } else {
+                DUPLICATE_DECLARATION
+            };
             self.error(
-                DUPLICATE_DECLARATION,
+                code,
                 format!("Duplicate declaration '{name}'."),
                 span,
                 &format!(
@@ -502,9 +517,12 @@ impl<'m, 's, 'r> ModulePass<'m, 's, 'r> {
             return;
         }
 
+        if is_script {
+            self.script_declarations.insert(name.clone());
+        }
+
         self.declaration_bindings.insert(name.clone(), span);
 
-        let kind = declaration.declaration().kind();
         let visibility = declaration.visibility();
         let exported = declaration.exported() || visibility == Visibility::Public;
         let symbol = Symbol {
@@ -527,7 +545,7 @@ impl<'m, 's, 'r> ModulePass<'m, 's, 'r> {
             ItemKind::TypeAlias => {
                 self.symbols.types.insert(name.clone(), symbol);
             }
-            ItemKind::ForeignModule => {
+            ItemKind::ForeignModule | ItemKind::ScriptBlock => {
                 self.symbols.namespaces.insert(name.clone(), symbol);
             }
         }
@@ -1424,6 +1442,19 @@ impl<'m, 's, 'r> ModulePass<'m, 's, 'r> {
                     }
                 }
             }
+            Declaration::ScriptBlock(script) => {
+                for export in &script.exports {
+                    for parameter in &export.parameters {
+                        self.check_type_leak(owner, &parameter.ty, &BTreeSet::new());
+                    }
+                    if let Some(return_type) = &export.return_type {
+                        self.check_type_leak(owner, return_type, &BTreeSet::new());
+                    }
+                    for error in &export.error_set {
+                        self.check_type_path_leak(owner, error, &BTreeSet::new());
+                    }
+                }
+            }
         }
     }
 
@@ -1502,6 +1533,7 @@ fn symbol_kind(kind: ItemKind) -> SymbolKind {
         ItemKind::Constant => SymbolKind::Constant,
         ItemKind::TypeAlias => SymbolKind::TypeAlias,
         ItemKind::ForeignModule => SymbolKind::ForeignModule,
+        ItemKind::ScriptBlock => SymbolKind::ScriptBlock,
     }
 }
 

@@ -8,14 +8,44 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 | Field | Value |
 |---|---|
-| Last updated | 2026-10-25 |
+| Last updated | 2026-10-26 |
 | Current phase | Phase 5 - Types, Nova, and NoPM |
-| Current task | `JS-001` in progress; first single-module JavaScript ESM slice complete |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the first JavaScript ESM backend/`astra build` slice implemented; project imports, recoverable JS error effects, tasks, source maps, TypeScript, and conformance coverage remain; inline `@script` interop is designed but not implemented |
+| Current task | `INTEROP-001` Slices A+B done; JS/TS backend slice and C/C++ backend slice remain |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the first JavaScript ESM backend/`astra build` slice implemented; `@script` inline interop is implemented through the frontend (lexer, parser, AST, HIR, formatter, resolver, checker NS7001–NS7006, Nova NV0008) with full conformance tests; JS/TS ESM backend slice, C/C++ native slice, and post-V1 work remain |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None |
-| Next action | Extend `JS-001` with project-wide typed modules/import emission, error effects, tasks, and source maps; then `TS-001` |
+| Next action | `INTEROP-001` Slice C (JS/TS ESM backend) after `JS-001` is extended; or continue `JS-001` |
+
+---
+
+### 2026-10-26 — INTEROP-001 Slices A+B complete
+
+**What changed**
+
+- **Lexer bug fix** (`lexer.rs`): Replaced the `in_script_header: bool` flag with a
+  `script_header_depth: u32` brace-depth counter. The previous flag was cleared by the
+  `}` closing `@exports { … }`, so `@impl` was never recognised as the raw-source
+  trigger. The depth counter starts at 1 when `{@script:` is entered, increments for
+  inner `{`, and decrements for inner `}`; only reaching 0 exits header mode. All
+  existing tests continued to pass.
+
+- **Conformance tests added**:
+  - `stress_parser.rs`: 13 new `@script` tests covering JS, C, multiple exports,
+    braces in raw body, error-effect exports, `NS7001` (unknown language), `NS7003`
+    (missing/empty `@exports`), and `NS7004` (missing `@end` / missing `@mode`).
+  - `stress_formatter.rs`: 5 new tests — canonical layout assertions, verbatim
+    raw-body preservation, idempotence (single block, multiple exports, mixed with
+    functions).
+  - `stress_checker.rs`: 11 new tests — no-target pass, `NS7002` target/language
+    mismatch (js→native, c→js), `NS7005` non-boundary-safe export type (fn-value
+    parameter), `NS7006` namespace collision, and namespace call through checker.
+
+- **`todo.md` updated**: Five of eight INTEROP-001 implementation items are now `[x]`.
+  Remaining open items: JS/TS ESM backend slice, C/C++ native slice, deferred post-V1
+  work (Python, Wasm, Nova host adapter).
+
+**Test evidence**: `cargo test --workspace` — all suites pass (0 failures).
 
 ---
 

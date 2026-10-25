@@ -87,6 +87,12 @@ pub enum NovaError {
     Abort(Abort),
     /// An invariant in the interpreter itself was violated.
     Internal(String),
+    /// A foreign script block was encountered or invoked, which requires a production backend target.
+    ForeignScriptUnsupported {
+        name: String,
+        language: String,
+        span: Span,
+    },
 }
 
 impl NovaError {
@@ -105,6 +111,7 @@ impl NovaError {
             Self::Panic(_) => "NV0005",
             Self::Abort(_) => "NV0006",
             Self::Internal(_) => "NV0007",
+            Self::ForeignScriptUnsupported { .. } => "NV0008",
         }
     }
 }
@@ -148,6 +155,10 @@ impl fmt::Display for NovaError {
             }
             Self::Abort(abort) => write!(formatter, "abort: {}", abort.message),
             Self::Internal(message) => write!(formatter, "Nova internal error: {message}"),
+            Self::ForeignScriptUnsupported { name, language, .. } => write!(
+                formatter,
+                "foreign script '{name}' ({language}) requires a production target; Nova does not execute foreign scripts."
+            ),
         }
     }
 }

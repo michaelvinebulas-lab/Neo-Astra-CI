@@ -334,7 +334,7 @@ pub fn check_module_graph(modules: &[ProjectModule], options: CheckOptions) -> G
         // Build check options augmented with whatever surfaces are known so far.
         let module_options = CheckOptions {
             module_surfaces: surfaces.clone(),
-            ..options
+            ..options.clone()
         };
 
         // Type-check the module.
