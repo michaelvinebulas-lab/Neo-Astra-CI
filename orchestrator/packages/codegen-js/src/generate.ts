@@ -6,6 +6,7 @@
 
 import {
   type AstModule,
+  type AstType,
   type Block,
   type EnumDecl,
   type Expr,
@@ -112,6 +113,8 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const HELPER_ORDER = [
   "panic",
   "abort",
+  "failure",
+  "fail",
   "renderFloat",
   "render",
   "renderDebug",
@@ -161,11 +164,13 @@ const HELPER_ORDER = [
   "checked_u32",
   "checked_i64",
   "checked_u64",
+  "checkedInteger",
 ] as const;
 
 type HelperName = (typeof HELPER_ORDER)[number];
 
 const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = {
+  fail: ["failure"],
   render: ["renderFloat"],
   print: ["write", "render"],
   println: ["write", "render"],
@@ -191,6 +196,7 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   checked_u32: ["panic"],
   checked_i64: ["panic"],
   checked_u64: ["panic"],
+  checkedInteger: ["ok", "err", "panic"],
   unwrapResult: ["panic"],
   resultError: ["panic"],
   unwrapOption: ["panic"],
@@ -205,6 +211,16 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   abort: [
     "function $abort(message) {",
     '  throw new Error("abort: " + message);',
+    "}",
+  ],
+  failure: [
+    "function $failure(error) {",
+    "  return { $failure: true, error };",
+    "}",
+  ],
+  fail: [
+    "function $fail(error) {",
+    "  throw $failure(error);",
     "}",
   ],
   renderFloat: [
@@ -571,6 +587,38 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  return value;",
     "}",
   ],
+  checkedInteger: [
+    "function $checkedInteger(tag, operation, left, right) {",
+    "  const bounds = {",
+    "    i8: [-128, 127],",
+    "    i16: [-32768, 32767],",
+    "    i32: [-2147483648, 2147483647],",
+    "    i64: [-9223372036854775808n, 9223372036854775807n],",
+    "    u8: [0, 255],",
+    "    u16: [0, 65535],",
+    "    u32: [0, 4294967295],",
+    "    u64: [0n, 18446744073709551615n],",
+    "  };",
+    "  const [min, max] = bounds[tag];",
+    "  let value;",
+    "  if (operation === \"div\") {",
+    "    if (right === 0 || right === 0n) $panic(\"division by zero\");",
+    '    value = typeof left === "bigint" ? left / right : Math.trunc(left / right);',
+    '  } else if (operation === "add") {',
+    "    value = left + right;",
+    '  } else if (operation === "sub") {',
+    "    value = left - right;",
+    '  } else if (operation === "mul") {',
+    "    value = left * right;",
+    "  } else {",
+    '    $panic("unsupported checked integer operation");',
+    "  }",
+    "  if (value < min || value > max) {",
+    '    return $err({ $type: "OverflowError", 0: "integer overflow in \'checked_" + operation + "\'" });',
+    "  }",
+    "  return $ok(value);",
+    "}",
+  ],
 };
 
 const INTEGER_TAGS = new Set(["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"]);
@@ -586,6 +634,7 @@ class JavaScriptGenerator {
   private readonly reported = new Set<string>();
   private tempIndex = 0;
   private defaultExpression: Expr | undefined;
+  private currentSuccessWrap = false;
 
   constructor(ir: ModuleIr) {
     this.ir = ir;
@@ -690,11 +739,35 @@ class JavaScriptGenerator {
     readonly name: string;
     readonly parameters: readonly { readonly name: string }[];
     readonly body: Block;
+    readonly return_type?: AstType | null;
+    readonly error_set?: readonly TypePath[];
   }): string {
     const name = jsName(declaration.name);
     const parameters = declaration.parameters.map((parameter) => jsName(parameter.name));
+    const fallible = (declaration.error_set?.length ?? 0) > 0;
+    const wrapsSuccess = fallible && !isResultReturnType(declaration.return_type);
+    const previousWrap = this.currentSuccessWrap;
+    this.currentSuccessWrap = wrapsSuccess;
     const body = this.emitBlock(declaration.body, "statement");
-    return `function ${name}(${parameters.join(", ")}) ${body}`;
+    this.currentSuccessWrap = previousWrap;
+    const signature = `function ${name}(${parameters.join(", ")})`;
+    if (!fallible) {
+      return `${signature} ${body}`;
+    }
+
+    // A recoverable failure unwinds the current function like `?` does in the
+    // language. Convert it to a value at the function boundary so callers can
+    // match the error or propagate it again.
+    const caught = this.temporary("caught");
+    return [
+      `${signature} {`,
+      `  try ${body}`,
+      `  catch (${caught}) {`,
+      `    if (${caught} && ${caught}.$failure) return ${caught};`,
+      `    throw ${caught};`,
+      "  }",
+      "}",
+    ].join("\n");
   }
 
   private emitStruct(declaration: StructDecl): string {
@@ -919,7 +992,13 @@ class JavaScriptGenerator {
       }
       case "Return": {
         const data = structPayload<{ value: Expr | null }>(kind, "Return");
-        return data.value === null ? "return;" : `return ${this.emitExpr(data.value)};`;
+        const value =
+          data.value === null ? "undefined" : this.emitExpr(data.value);
+        if (this.currentSuccessWrap) {
+          this.useHelper("ok");
+          return `return $ok(${value});`;
+        }
+        return data.value === null ? "return;" : `return ${value};`;
       }
       case "Break":
         return "break;";
@@ -1031,12 +1110,20 @@ class JavaScriptGenerator {
         return this.emitExpr(
           structPayload<{ target: Expr }>(kind, "TypeArguments").target,
         );
-      case "Propagate":
-        this.unsupported(
-          expression.span,
-          "Error propagation ('?') is not implemented by the JavaScript backend yet.",
-        );
-        return "undefined";
+      case "Propagate": {
+        const inner = payloadOf(kind) as Expr;
+        const value = this.emitExpr(inner);
+        const temporary = this.temporary("propagate");
+        this.useHelper("failure");
+        return [
+          "(() => {",
+          `  const ${temporary} = ${value};`,
+          `  if (${temporary} && ${temporary}.$failure) throw ${temporary};`,
+          `  if (${temporary} && ${temporary}.$result === true && !${temporary}.ok) throw $failure(${temporary}.error);`,
+          `  return ${temporary} && ${temporary}.$result === true ? ${temporary}.value : ${temporary};`,
+          "})()",
+        ].join("\n");
+      }
       case "Array": {
         const values = payloadOf(kind) as readonly Expr[];
         return `[${values.map((value) => this.emitExpr(value)).join(", ")}]`;
@@ -1093,12 +1180,18 @@ class JavaScriptGenerator {
           "Tasks and spawn blocks are not implemented by the JavaScript backend yet.",
         );
         return "undefined";
-      case "Fail":
-        this.unsupported(
-          expression.span,
-          "Fallible error construction is not implemented by the JavaScript backend yet.",
+      case "Fail": {
+        const data = structPayload<{ error: TypePath; arguments: unknown }>(
+          kind,
+          "Fail",
         );
-        return "undefined";
+        this.useHelper("fail");
+        return `$fail(${this.emitFailureValue(
+          data.error,
+          data.arguments,
+          expression.span,
+        )})`;
+      }
       case "Panic": {
         const message = structPayload<{ message: Expr }>(kind, "Panic").message;
         this.useHelper("panic");
@@ -1152,6 +1245,53 @@ class JavaScriptGenerator {
         this.unsupported(span, "Unknown literal kind.");
         return "undefined";
     }
+  }
+
+  private emitFailureValue(path: TypePath, argumentsValue: unknown, span: Span): string {
+    const name = path.segments[path.segments.length - 1] ?? "";
+    const values =
+      variantOf(argumentsValue) === "Tuple"
+        ? ((payloadOf(argumentsValue) as readonly Expr[]).map((value) =>
+            this.emitExpr(value),
+          ))
+        : ((payloadOf(argumentsValue) as readonly {
+            readonly name: string;
+            readonly value: Expr;
+          }[]).map((field) => this.emitExpr(field.value)));
+
+    const item = this.hir.items.find((candidate) => candidate.name === name);
+    if (item === undefined) {
+      // Built-in nominal errors such as ParseIntError and TaskError use the
+      // same tagged shape that the collection/string helpers produce.
+      const fields = values.map((value, index) => `${index}: ${value}`);
+      return `{ $type: ${JSON.stringify(name)}${fields.length > 0 ? `, ${fields.join(", ")}` : ""} }`;
+    }
+
+    if (item.kind === "Enum") {
+      const declaration = structPayload<EnumDecl>(item.declaration, "Enum");
+      const variant = declaration.variants[0]?.name;
+      if (variant === undefined) {
+        this.unsupported(span, `Failure enum '${name}' has no constructible variant.`);
+        return "undefined";
+      }
+      const constructed = `${jsName(name)}.${objectKey(variant)}`;
+      return values.length === 0 ? constructed : `${constructed}(${values.join(", ")})`;
+    }
+
+    if (variantOf(argumentsValue) === "Struct") {
+      const fields = payloadOf(argumentsValue) as readonly {
+        readonly name: string;
+        readonly value: Expr;
+      }[];
+      const initializers = fields
+        .map(
+          (field) => `    ${objectKey(field.name)}: ${this.emitExpr(field.value)},`,
+        )
+        .join("\n");
+      return `${jsName(name)}({\n${initializers}\n})`;
+    }
+
+    return `${jsName(name)}(${values.join(", ")})`;
   }
 
   private emitIdentifier(name: string, _span: Span): string {
@@ -1530,11 +1670,8 @@ class JavaScriptGenerator {
       return "undefined";
     }
     if (kind === "checked") {
-      this.unsupported(
-        span,
-        "Checked integer methods are not implemented by the JavaScript backend yet.",
-      );
-      return "undefined";
+      this.useHelper("checkedInteger");
+      return `$checkedInteger(${JSON.stringify(tag.toLowerCase())}, ${JSON.stringify(operation)}, ${receiver}, ${argument})`;
     }
     const operator =
       operation === "add" ? "Add" : operation === "sub" ? "Subtract" : operation === "mul" ? "Multiply" : "Divide";
@@ -1660,7 +1797,11 @@ class JavaScriptGenerator {
     }
 
     const temporary = this.temporary("match");
-    const lines = [`const ${temporary} = ${this.emitExpr(value)};`];
+    this.useHelper("err");
+    const lines = [
+      `let ${temporary} = ${this.emitExpr(value)};`,
+      `if (${temporary} && ${temporary}.$failure) ${temporary} = $err(${temporary}.error);`,
+    ];
     let hasCatchAll = false;
 
     for (const arm of arms) {
@@ -2037,6 +2178,17 @@ function spanKey(span: Span): string {
 
 function isSequence(tag: string): boolean {
   return tag === "Array" || tag === "FixedArray" || tag === "Slice" || tag === "Bytes";
+}
+
+function isResultReturnType(type: AstType | null | undefined): boolean {
+  if (type === null || type === undefined) {
+    return false;
+  }
+  if (variantOf(type.kind) !== "Path") {
+    return false;
+  }
+  const path = payloadOf(type.kind) as TypePath;
+  return path.segments[path.segments.length - 1] === "Result";
 }
 
 function stripUnderscores(value: string): string {

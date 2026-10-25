@@ -10,12 +10,12 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-25 |
 | Current phase | Phase 5 - Types, Nova, and NoPM |
-| Current task | `JS-001` in progress; first single-module JavaScript ESM slice complete |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the first JavaScript ESM backend/`astra build` slice implemented; project imports, recoverable JS error effects, tasks, source maps, TypeScript, and conformance coverage remain; inline `@script` interop is designed but not implemented |
+| Current task | `JS-001` in progress; single-module JavaScript ESM backend with recoverable errors and checked integer methods |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented; project imports, tasks, source maps, the `arbitrary` integer policy, full UTF-8 byte operations, TypeScript, and conformance coverage remain; inline `@script` interop is designed and implementation is in progress |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None |
-| Next action | Extend `JS-001` with project-wide typed modules/import emission, error effects, tasks, and source maps; then `TS-001` |
+| Next action | Extend `JS-001` with project-wide typed modules/import emission, tasks, source maps, the `arbitrary` policy, and UTF-8 byte operations; then `TS-001` |
 
 ---
 
@@ -839,9 +839,20 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 - Representation: `Option` and `Result` are tagged objects; maps use a structural-key helper so key equality and insertion order match the language contract. Generated code has no framework dependency, no hidden global state, and no source re-parsing.
 - CLI: `astra build [dir] [--target name] [--compiler path] [--json]` selects a target (`--target`, `ASTRA_TARGET`, `build.defaultTarget`), reads `nova.entry`, chooses target/build mode and `math.integers`, calls `compile`, emits one ESM module under `outDir`, and writes `{"type":"module"}` when absent.
 - Diagnostics: backend failures use `NS8001` and `NS8003` with source locations; project imports, error propagation, tasks, arbitrary integers, and manual memory fail before emission.
-- Tests: 9 new end-to-end codegen/build tests compile real `.ns` sources, execute generated ESM, check struct/enum/option/map/tuple/defer/float rendering, named/default exports, verify wrapping and checked overflow behavior, reject unsupported constructs, and run `astra build` output through Node.
-- Verification: 459 Rust tests, 40 TypeScript unit tests, 27 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Tests: 11 new end-to-end codegen/build tests compile real `.ns` sources, execute generated ESM, check struct/enum/option/map/tuple/defer/float/byte-string rendering, named/default exports, verify wrapping and checked overflow behavior, reject unsupported constructs, and run `astra build` output through Node.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 29 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
 - Current boundary: `astra build` emits one module and rejects project imports with `NS8001`; recoverable error effects, `?`, `fail`, spawn/tasks/channels, source maps, `.d.ts`, checked integer methods, `arbitrary`, and full UTF-8 byte slicing remain.
+
+### 2026-10-25 - JS-001 recoverable errors and checked integer methods
+
+- Command: `npm run ci`
+- Result: pass
+- Error effects: fallible functions now return `Ok(...)` for normal completion and a tagged `{ $failure: true, error }` sentinel for `!Error(...)` or a propagated `?`. A function-boundary `try`/`catch` converts a failure signal into the sentinel, `?` unwraps `Ok`, and `match` normalizes a failure sentinel to `Err` before pattern lowering.
+- Failure construction: `!Error(...)` lowers through the existing struct/enum constructors; built-in nominal errors such as `ParseIntError` use the same tagged shape as the collection/string helpers.
+- Checked integers: `checked_add`, `checked_sub`, `checked_mul`, and `checked_div` lower to a tree-shaken `$checkedInteger` helper that returns `Result` and `OverflowError` on overflow. Division by zero remains a panic, matching Nova.
+- Tests: added execution tests for `!Error(...)`, `?` through a call chain, matching a failure sentinel, `to_int()` failure, and checked integer overflow/success. `orchestrator/tests/codegen-js.test.mjs` now has 12 codegen/build tests.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 30 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Current boundary: project imports/re-exports, spawn/tasks/channels, source maps, `.d.ts`, the `arbitrary` integer policy, and full UTF-8 byte-slice/index operations remain.
 
 ---
 
@@ -853,9 +864,9 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 - Task: JS-001 in progress; first single-module JavaScript ESM slice complete
 - Status: Ready
 - Files changed: `crates/astra-core/src/ast.rs`, `crates/astra-core/src/hir.rs`, `crates/astra-core/src/types.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/codegen-js/src/{index,ir,generate}.ts`, `orchestrator/packages/codegen-js/package.json`, `orchestrator/packages/compiler-client/src/index.ts`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/cli/package.json`, `orchestrator/packages/cli/tsconfig.json`, `orchestrator/tests/codegen-js.test.mjs`, `scripts/test-boundary.mjs`, `package-lock.json`, `README.md`, `Docs/Agent/todo.md`, `Docs/Agent/runbook.md`, `Docs/Design/V1/04-targets-and-backends.md`, `Docs/Design/V1/06-tooling-and-workflow.md`, `Docs/Design/V1/README.md`, `Docs/Agent/state-log.md`
-- Verification: `npm run ci` green (459 Rust, 40 TypeScript unit, 27 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
+- Verification: `npm run ci` green (459 Rust, 40 TypeScript unit, 30 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
 - Blockers: none
-- Next action: extend JS-001 with project-wide typed modules and import/re-export emission, then recoverable error effects, tasks, source maps, checked integer methods, and full UTF-8 byte strings; then TS-001
+- Next action: extend JS-001 with project-wide typed modules and import/re-export emission, then tasks, source maps, the `arbitrary` integer policy, and full UTF-8 byte strings; then TS-001
 ```
 
 

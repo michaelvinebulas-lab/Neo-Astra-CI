@@ -50,7 +50,8 @@ I/O, content-addressed store, path/Git/npm/Cargo/PyPI/NuGet/OCI adapters,
 `nopm lock`/`tree`/`install`/`search`/`audit`/`why`/`update`, and an optional
 registry gateway with signing and federation. The first JavaScript ESM backend
 slice emits readable, framework-free modules for the supported language subset,
-and `astra build` writes runnable ESM for a single entry module. Project imports,
-recoverable error effects, tasks, source maps, and TypeScript generation remain
-staged. Inline `@script` foreign-language blocks are designed in
+and `astra build` writes runnable ESM for a single entry module. The backend
+supports recoverable failures, `?` propagation, and checked integer methods.
+Project imports, tasks, source maps, the `arbitrary` integer policy, and
+TypeScript generation remain staged. Inline `@script` foreign-language blocks are designed in
 `Docs/Design/V1/10-inline-script-interop.md`; they are not implemented yet.

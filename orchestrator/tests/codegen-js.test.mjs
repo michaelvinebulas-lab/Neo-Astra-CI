@@ -195,6 +195,38 @@ test("javascript backend implements wrapping and checked integer policies", () =
   assert.match(checkedResult.stderr, /integer overflow/);
 });
 
+test("javascript backend implements checked integer methods", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let value: i32 = 2147483647",
+      "    match value.checked_add(1) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    let other: i32 = 7",
+      "    match other.checked_mul(6) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    let quotient: i32 = 9",
+      "    match quotient.checked_div(2) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$checkedInteger\(tag, operation, left, right\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "overflow\n42\n4\nRETURN=0");
+});
+
 test("javascript backend preserves float values and rendering", () => {
   const generated = generate(
     [
@@ -321,23 +353,47 @@ test("javascript backend rejects manual memory explicitly", () => {
   );
 });
 
-test("javascript backend rejects error propagation explicitly", () => {
+test("javascript backend executes recoverable failures and propagation", () => {
   const generated = generate(
     [
-      "fn parse() -> i32 ! ParseIntError {",
-      '    return "1".to_int()!',
+      "struct ParseError(str)",
+      "",
+      "fn reject() -> i32 ! ParseError {",
+      '    return !ParseError("negative")',
       "}",
-      "pub fn main() -> i32 ! ParseIntError { return parse()! }",
+      "",
+      "fn checked(value: i32) -> i32 ! ParseError {",
+      "    return match value < 0 {",
+      "        true => reject()!,",
+      "        false => value,",
+      "    }",
+      "}",
+      "",
+      "pub fn main() -> i32 {",
+      "    match checked(-1) {",
+      '        Ok(value) => println(value)',
+      '        Err(error) => println("caught")',
+      "    }",
+      "    match checked(2) {",
+      "        Ok(value) => println(value)",
+      '        Err(_) => println("unexpected")',
+      "    }",
+      '    match "not a number".to_int() {',
+      "        Ok(value) => println(value)",
+      '        Err(error) => println("parse error")',
+      "    }",
+      "    return 0",
+      "}",
       "",
     ].join("\n"),
   );
-  assert.ok(
-    generated.diagnostics.some(
-      (diagnostic) =>
-        diagnostic.code === "NS8001" &&
-        diagnostic.message.includes("Error propagation"),
-    ),
-  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$failure\(error\)/);
+  assert.match(generated.code, /function \$fail\(error\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "caught\n2\nparse error\nRETURN=0");
 });
 
 test("astra build writes runnable ESM and a module package marker", () => {

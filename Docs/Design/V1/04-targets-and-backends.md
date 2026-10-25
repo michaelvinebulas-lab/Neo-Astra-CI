@@ -396,7 +396,10 @@ TypeScript backend never parses `.ns` source.
 - Arrays, structural maps, tuples, structs, enums, `Option`, `Result`, `match`,
   struct/enum/tuple patterns, and `Some`/`None`/`Ok`/`Err` patterns.
 - `print`, `println`, `dbg`, `assert`, bounds-checked indexing, collection
-  methods, string length/to-int, and option/result methods.
+  methods, string length/to-int, option/result methods, and checked integer
+  methods.
+- Recoverable failures: `!Error(...)`, `?` propagation across calls, function
+  boundary conversion to failure values, and matching a failure as `Err`.
 - Named/default/`pub` exports; type-only exports are erased.
 - Source-located diagnostics for unsupported constructs.
 
@@ -404,10 +407,9 @@ TypeScript backend never parses `.ns` source.
 
 - Project imports, namespace imports, and re-exports are rejected with `NS8001`.
   Multi-module emission waits for a project-wide typed-module request.
-- Recoverable error effects, `fail`, and `?` are rejected with `NS8001`.
 - Tasks, channels, and `spawn` are rejected with `NS8001`.
-- Source maps, `.d.ts`, checked integer methods, and the `arbitrary` integer
-  policy are not implemented.
+- Source maps, `.d.ts`, the `arbitrary` integer policy, and full UTF-8
+  byte-slice/index operations are not implemented.
 - `Option` and `Result` use tagged objects. Maps use a structural-key helper, not
   a JavaScript `Map`, so structural key equality and insertion order match the
   language contract.
