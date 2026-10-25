@@ -107,6 +107,7 @@ export type AstItemKind =
   | { readonly Constant: ConstantDecl }
   | { readonly TypeAlias: TypeAliasDecl }
   | { readonly ForeignModule: ForeignModuleDecl }
+  | { readonly ScriptBlock: ScriptBlockDecl }
   | { readonly ScopedItems: ScopedItems };
 
 export interface ImportDecl {
@@ -235,6 +236,27 @@ export interface TypeAliasDecl {
 export interface ForeignModuleDecl {
   readonly name: string;
   readonly functions: readonly ForeignFunction[];
+  readonly span: Span;
+}
+
+/** A declaration-level `@script` block retained by HIR. */
+export interface ScriptBlockDecl {
+  readonly language: string;
+  readonly name: string;
+  readonly mode: string;
+  readonly exports: readonly ScriptExport[];
+  readonly raw_source: string;
+  readonly span: Span;
+  readonly header_span: Span;
+  readonly body_span: Span;
+}
+
+/** One function signature declared in a script block's `@exports`. */
+export interface ScriptExport {
+  readonly name: string;
+  readonly parameters: readonly Parameter[];
+  readonly return_type: AstType | null;
+  readonly error_set: readonly TypePath[];
   readonly span: Span;
 }
 
@@ -474,7 +496,14 @@ export interface HirModule {
 
 export interface HirItem {
   readonly name: string;
-  readonly kind: "Function" | "Struct" | "Enum" | "Constant" | "TypeAlias" | "ForeignModule";
+  readonly kind:
+    | "Function"
+    | "Struct"
+    | "Enum"
+    | "Constant"
+    | "TypeAlias"
+    | "ForeignModule"
+    | "ScriptBlock";
   readonly ty: SemanticType | null;
   readonly span: Span;
   readonly visibility: Visibility;
@@ -488,7 +517,8 @@ export type Declaration =
   | { readonly Enum: EnumDecl }
   | { readonly Constant: ConstantDecl }
   | { readonly TypeAlias: TypeAliasDecl }
-  | { readonly ForeignModule: ForeignModuleDecl };
+  | { readonly ForeignModule: ForeignModuleDecl }
+  | { readonly ScriptBlock: ScriptBlockDecl };
 
 export interface SymbolTable {
   readonly values: Readonly<Record<string, Symbol>>;

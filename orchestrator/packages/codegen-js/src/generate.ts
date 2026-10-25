@@ -17,6 +17,8 @@ import {
   type MatchArm,
   type ModuleIr,
   type Pattern,
+  type ScriptBlockDecl,
+  type ScriptExport,
   type SemanticType,
   type Span,
   type Stmt,
@@ -45,11 +47,20 @@ export interface CodegenRequest {
   readonly moduleSpecifiers?: Readonly<Record<string, string>>;
 }
 
+/** An additional ESM file emitted for a script block. */
+export interface CodegenArtifact {
+  /** Path relative to the project output directory. */
+  readonly path: string;
+  readonly code: string;
+  readonly sourceMap?: string;
+}
+
 /** Output produced by `generateJavaScript`. */
 export interface CodegenResult {
   readonly code: string;
   readonly diagnostics: readonly CodegenDiagnostic[];
   readonly sourceMap?: string;
+  readonly artifacts?: readonly CodegenArtifact[];
 }
 
 /** The requested typed module is malformed. */
@@ -688,6 +699,9 @@ class JavaScriptGenerator {
   private readonly helpers = new Set<HelperName>();
   private readonly diagnostics: CodegenDiagnostic[] = [];
   private readonly reported = new Set<string>();
+  private readonly scriptImports: string[] = [];
+  private readonly scriptDeclarations = new Map<string, string>();
+  private readonly scriptArtifacts: CodegenArtifact[] = [];
   private tempIndex = 0;
   private defaultExpression: Expr | undefined;
   private currentSuccessWrap = false;
@@ -740,6 +754,14 @@ class JavaScriptGenerator {
       );
     }
 
+    for (const item of this.hir.items) {
+      if (variantOf(item.declaration) === "ScriptBlock") {
+        this.prepareScriptBlock(
+          structPayload<ScriptBlockDecl>(item.declaration, "ScriptBlock"),
+        );
+      }
+    }
+
     const bodyParts: { readonly text: string; readonly span: Span }[] = [];
     for (const item of this.hir.items) {
       const generated = this.emitItem(item);
@@ -780,6 +802,9 @@ class JavaScriptGenerator {
       code,
       diagnostics: this.diagnostics,
       ...(sourceMap === undefined ? {} : { sourceMap }),
+      ...(this.scriptArtifacts.length === 0
+        ? {}
+        : { artifacts: this.scriptArtifacts }),
     };
   }
 
@@ -802,6 +827,8 @@ class JavaScriptGenerator {
           `Foreign module '${item.name}' requires a target adapter that the JavaScript backend does not have yet.`,
         );
         return "";
+      case "ScriptBlock":
+        return this.scriptDeclarations.get(item.name) ?? "";
       default:
         this.unsupported(item.span, "Unknown resolved declaration kind.");
         return "";
@@ -926,8 +953,111 @@ class JavaScriptGenerator {
     return `const ${jsName(declaration.name)} = ${this.emitExpr(declaration.value)};`;
   }
 
+  private prepareScriptBlock(block: ScriptBlockDecl): void {
+    if (block.language !== "js") {
+      this.diagnostic(
+        "NS7008",
+        `Script language '${block.language}' cannot be emitted by the JavaScript backend yet. Use @script:js or a matching target backend.`,
+        block.header_span,
+      );
+      return;
+    }
+    if (block.raw_source.trim().length === 0) {
+      this.diagnostic(
+        "NS7008",
+        `Script block '${block.name}' has no implementation source.`,
+        block.body_span,
+      );
+      return;
+    }
+
+    for (const exported of block.exports) {
+      if (!hasEsmExport(block.raw_source, exported.name)) {
+        this.diagnostic(
+          "NS7008",
+          `Script block '${block.name}' does not export declared function '${exported.name}'.`,
+          exported.span,
+        );
+      }
+    }
+
+    const artifactPath = scriptArtifactPath(this.ir.path, block.name);
+    const artifactFile = artifactPath.split("/").pop() ?? artifactPath;
+    const alias = `$script_${block.name}`;
+    this.scriptImports.push(
+      `import * as ${alias} from ${JSON.stringify(`./${artifactFile}`)};`,
+    );
+
+    const members = block.exports
+      .map((exported) =>
+        indent(
+          `${objectKey(exported.name)}: ${this.emitScriptExport(alias, exported)},`,
+        ),
+      )
+      .join("\n");
+    this.scriptDeclarations.set(
+      block.name,
+      [`const ${jsName(block.name)} = {`, members, "};"]
+        .filter((line) => line.length > 0)
+        .join("\n"),
+    );
+
+    const code = scriptModuleCode(this.ir.path, block);
+    const sourceMap =
+      this.sourceText === undefined
+        ? undefined
+        : createScriptSourceMap(
+            code,
+            this.ir.path,
+            this.sourceText,
+            block.body_span,
+          );
+    this.scriptArtifacts.push({
+      path: artifactPath,
+      code,
+      ...(sourceMap === undefined ? {} : { sourceMap }),
+    });
+  }
+
+  private emitScriptExport(alias: string, exported: ScriptExport): string {
+    const parameters = exported.parameters.map((_, index) => `arg${index}`);
+    const argumentsText = exported.parameters
+      .map((parameter, index) =>
+        astBoundaryToJavaScript(`arg${index}`, parameter.ty),
+      )
+      .join(", ");
+    const invocation = `${alias}${memberAccess(exported.name)}(${argumentsText})`;
+    const returnType = exported.return_type ?? undefined;
+    const fallible =
+      exported.error_set.length > 0 && !isResultReturnType(returnType);
+    if (isOptionType(returnType) || exported.parameters.some((parameter) => isOptionType(parameter.ty))) {
+      this.useHelper("none");
+      this.useHelper("some");
+    }
+
+    if (!fallible) {
+      return `(${parameters.join(", ")}) => ${astBoundaryFromJavaScript(
+        invocation,
+        returnType,
+      )}`;
+    }
+
+    this.useHelper("ok");
+    this.useHelper("err");
+    const errorType = scriptErrorTypeName(exported.error_set[0]);
+    return [
+      `(${parameters.join(", ")}) => {`,
+      "  try {",
+      `    return $ok(${astBoundaryFromJavaScript(invocation, returnType)});`,
+      "  } catch (error) {",
+      `    return $err({ $type: ${JSON.stringify(errorType)}, 0: String(error && error.message !== undefined ? error.message : error) });`,
+      "  }",
+      "}",
+    ].join("\n");
+  }
+
   private emitImports(): string {
-    const lines: string[] = [];
+    const lines: string[] = [...this.scriptImports];
     for (const imported of this.hir.imports) {
       const specifier = this.moduleSpecifier(imported.module, imported.span);
       if (specifier === undefined) {
@@ -2391,6 +2521,106 @@ function spanKey(span: Span): string {
 
 function isSequence(tag: string): boolean {
   return tag === "Array" || tag === "FixedArray" || tag === "Slice" || tag === "Bytes";
+}
+
+function scriptArtifactPath(modulePath: string, name: string): string {
+  return `${modulePath.replace(/\.ns$/i, "")}.${name}.js`;
+}
+
+function scriptModuleCode(modulePath: string, block: ScriptBlockDecl): string {
+  const header = [
+    `// Generated by Neo Astra from ${modulePath} script '${block.name}'.`,
+    "// Target: JavaScript ESM.",
+  ].join("\n");
+  const body = block.raw_source.endsWith("\n")
+    ? block.raw_source
+    : `${block.raw_source}\n`;
+  return `${header}\n${body}`;
+}
+
+function hasEsmExport(source: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`\\bexport\\s+(?:async\\s+)?function\\s+${escaped}\\b`),
+    new RegExp(`\\bexport\\s+(?:const|let|var)\\s+${escaped}\\b`),
+    new RegExp(`\\bexport\\s*\\{[^}]*\\b${escaped}\\b[^}]*\\}`),
+  ];
+  return patterns.some((pattern) => pattern.test(source));
+}
+
+function astPath(type: AstType): TypePath | undefined {
+  if (variantOf(type.kind) !== "Path") {
+    return undefined;
+  }
+  return payloadOf(type.kind) as TypePath;
+}
+
+function isOptionType(type: AstType | undefined): boolean {
+  if (type === undefined) {
+    return false;
+  }
+  const path = astPath(type);
+  return path?.segments[path.segments.length - 1] === "Option";
+}
+
+function astBoundaryToJavaScript(expression: string, type: AstType): string {
+  if (isOptionType(type)) {
+    return `(${expression}.$option ? ${expression}.value : null)`;
+  }
+  return expression;
+}
+
+function astBoundaryFromJavaScript(
+  expression: string,
+  type: AstType | undefined,
+): string {
+  if (isOptionType(type)) {
+    return `((value) => value === null || value === undefined ? $none : $some(value))(${expression})`;
+  }
+  return expression;
+}
+
+function scriptErrorTypeName(path: TypePath | undefined): string {
+  return path?.segments[path.segments.length - 1] ?? "ScriptError";
+}
+
+function createScriptSourceMap(
+  code: string,
+  sourcePath: string,
+  sourceText: string,
+  bodySpan: Span,
+): string {
+  const headerLines = 2;
+  const bodyStartLine = lineAt(sourceText, bodySpan.start);
+  const sourceLineCount = sourceText.split("\n").length;
+  const generatedLines = code.split("\n");
+  let previousSourceLine = 0;
+  let previousSourceColumn = 0;
+  const mappings = generatedLines.map((_, generatedLine) => {
+    if (generatedLine < headerLines) {
+      return "";
+    }
+    const sourceLine = bodyStartLine + (generatedLine - headerLines);
+    if (sourceLine >= sourceLineCount) {
+      return "";
+    }
+    const segment =
+      encodeVlq(0) +
+      encodeVlq(0) +
+      encodeVlq(sourceLine - previousSourceLine) +
+      encodeVlq(0 - previousSourceColumn);
+    previousSourceLine = sourceLine;
+    previousSourceColumn = 0;
+    return segment;
+  });
+
+  return JSON.stringify({
+    version: 3,
+    sources: [sourcePath],
+    sourcesContent: [sourceText],
+    names: [],
+    mappings: mappings.join(";"),
+  });
 }
 
 function createSourceMap(

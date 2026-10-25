@@ -1337,6 +1337,45 @@ function runBuild(args: readonly string[], cwd: string): number {
             "utf8",
           );
         }
+        for (const artifact of entry.generated.artifacts ?? []) {
+          const artifactPath = resolve(outDir, artifact.path);
+          const artifactRelative = relative(outDir, artifactPath);
+          if (
+            artifactRelative === ".." ||
+            artifactRelative.startsWith(`..${sep}`) ||
+            isAbsolute(artifactRelative)
+          ) {
+            throw new CliError(
+              "NS8001",
+              `Script artifact '${artifact.path}' escapes the output directory.`,
+              displayPath(entry.moduleSource.absolutePath, cwd),
+            );
+          }
+          mkdirSync(dirname(artifactPath), { recursive: true });
+          const artifactMapName = `${basename(artifactPath)}.map`;
+          const artifactCode =
+            artifact.sourceMap === undefined
+              ? artifact.code
+              : `${artifact.code}//# sourceMappingURL=${artifactMapName}\n`;
+          writeFileSync(artifactPath, artifactCode, "utf8");
+          if (artifact.sourceMap !== undefined) {
+            const map = JSON.parse(artifact.sourceMap) as Record<string, unknown>;
+            map["file"] = basename(artifactPath);
+            map["sources"] = [
+              relative(
+                dirname(artifactPath),
+                entry.moduleSource.absolutePath,
+              )
+                .split(sep)
+                .join("/"),
+            ];
+            writeFileSync(
+              `${artifactPath}.map`,
+              `${JSON.stringify(map)}\n`,
+              "utf8",
+            );
+          }
+        }
       }
       const packagePath = join(outDir, "package.json");
       if (!existsSync(packagePath)) {
