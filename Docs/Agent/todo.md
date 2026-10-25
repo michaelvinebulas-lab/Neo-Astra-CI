@@ -23,13 +23,12 @@ Only one item may be `[~]` at a time.
 `FMT-004`, `TYPE-001`-`TYPE-004`, `MODE-001`, `ERR-001`, `NOVA-001`-`NOVA-003`,
 and `NOPM-001`-`NOPM-004` are complete. Nova now loads, checks, and links local
 project modules through one interpreter, and cross-module diagnostics and panic
-stacks carry canonical module paths. `JS-001` is in progress: the first
-single-module JavaScript ESM slice consumes typed AST/HIR from the compiler
-boundary and `astra build` writes linked, runnable ESM. Channels and a scheduler,
-the `arbitrary` integer policy, `.d.ts`, and TypeScript remain. The `INTEROP-001` inline-script design
-is complete in `Docs/Design/V1/10-inline-script-interop.md`; implementation is
-parked for the FFI/backend phase. Open questions remain documented as proposals
-in `Docs/spec-v0.1.md` §17.
+stacks carry canonical module paths. `JS-001` is in progress: the JavaScript ESM
+backend consumes typed AST/HIR, emits linked multi-module projects, and emits
+inline `@script:js` blocks as real ESM modules. Channels and a scheduler, the
+the TypeScript backend remains. The `INTEROP-001` frontend and JavaScript backend
+slice are implemented; the C/C++ native slice is in progress. Open questions
+remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
 ---
 
@@ -618,9 +617,10 @@ constant, and panic state.
 
 ## JS-001 - JavaScript ESM backend
 
-**Status:** In progress. The JavaScript backend now emits linked multi-module
-projects and supports recoverable error effects, checked integer methods, eager
-spawn/tasks, and line-level source maps.
+**Status:** In progress. The JavaScript backend emits linked multi-module
+projects, inline `@script:js` ESM modules, recoverable error effects, checked and
+arbitrary integer policies, eager spawn/tasks, line-level source maps, and
+TypeScript declaration artifacts.
 
 **Goal**
 
@@ -644,6 +644,9 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
       manifest policy, including `i64`/`u64` through `BigInt`.
 - [x] Tree-shake backend helpers: only helpers used by the module are emitted.
 - [x] Emit named, default, and `pub` exports; erase type-only exports.
+- [x] Emit `@script:js` blocks as separate ESM artifacts, import their namespace,
+      validate declared exports, convert `Option` boundaries, map declared error
+      effects, and write script source maps.
 - [x] Preserve source-name recognizability, escape JavaScript keywords, and use
       deterministic helper/temporary names.
 - [x] Implement `astra build` target selection (`--target`, `ASTRA_TARGET`, then
@@ -664,8 +667,9 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - [ ] Implement channels and a structured-concurrency scheduler.
 - [x] Emit line-level source maps with `sourcesContent` and a
       `sourceMappingURL` comment.
-- [ ] Emit optional `.d.ts` artifacts.
-- [ ] Implement the `arbitrary` integer policy.
+- [x] Emit `.d.ts` artifacts for modules and inline script modules.
+- [x] Implement the `arbitrary` integer policy with `BigInt` arithmetic,
+      arbitrary `usize`/`isize`, length values, and explicit wrapping methods.
 - [ ] Implement full UTF-8 byte-slice and byte-index string operations.
 - [ ] Add conformance cases shared with `TS-001`.
 
@@ -676,6 +680,9 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
   specifiers.
 - External/non-project imports remain compile-time errors; V1 does not yet link
   package-provided modules.
+- Inline `@script:js` blocks are project source. `@script:ts` is rejected by the
+  JavaScript backend until the TypeScript target or a pinned transpiler exists;
+  C/C++ scripts require the native backend.
 - `Option` is a tagged object, not JavaScript `null`; `Result` is a tagged object.
 - Maps use a small structural-key helper rather than JavaScript `Map`, preserving
   Neo Astra structural key equality and insertion order.
@@ -712,10 +719,11 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - `orchestrator/tests/codegen-js.test.mjs` compiles real `.ns` sources, executes
   generated ESM, covers integer policies, recoverable failures, `?` propagation,
   checked integer methods, eager spawn/join, task panic scope failure, source
-  maps, linked multi-module projects with re-exports, rejects unsupported
-  constructs, and builds a project end to end.
-- Verification: 460 Rust tests, 40 TypeScript unit tests, 34 native/Wasm/boundary
-  tests (including 16 codegen/build tests), formatting, clippy with warnings denied,
+  maps, linked multi-module projects with re-exports, inline `@script:js` modules
+  with boundary conversions and error mapping, missing script exports, `.d.ts`
+  artifacts, rejects unsupported constructs, and builds a project end to end.
+- Verification: 485 Rust tests, 40 TypeScript unit tests, 39 native/Wasm/boundary
+  tests (including 21 codegen/build tests), formatting, clippy with warnings denied,
   and `npm run ci` pass.
 
 **Depends on**
@@ -726,7 +734,9 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 
 ## INTEROP-001 - Inline `@script` foreign-language blocks
 
-**Status:** Design complete; implementation not started.
+**Status:** Frontend (Slices A+B) and the JavaScript backend slice (C) are
+complete. The C/C++ native slice, TypeScript-target script emission, and deferred
+runtime work remain.
 
 **Why**
 
@@ -756,8 +766,11 @@ export surface.
 - [x] Preserve `@script` bodies byte-for-byte in `astra fmt` and LSP formatting.
 - [x] Register script namespaces and validate `@mode`, `@exports`, boundary types,
       calls, target compatibility, and manifest mappings (`NS7007`).
-- [ ] Implement the JavaScript/TypeScript backend slice: real ESM modules, export
-      validation, source maps, and end-to-end tests.
+- [x] Implement the JavaScript backend slice: real ESM modules, export
+      validation, source maps, boundary conversion, error mapping, and
+      end-to-end tests.
+- [ ] Extend script emission to the TypeScript target after `TS-001`, or bundle a
+      pinned transpiler for `@script:ts`.
 - [ ] Implement the C/C++ native slice: one translation unit per block, symbol
       isolation, wrappers, link failures, and boundary tests.
 - [x] Make Nova reject foreign script calls with `NV0008` before execution.
@@ -768,8 +781,8 @@ export surface.
 
 **Depends on**
 
-- `JS-001` and `TS-001` for the first end-to-end slice. Interop starts after both
-  JavaScript and TypeScript backends exist.
+- `JS-001` for the JavaScript slice (done). `TS-001` is still required for
+  TypeScript-target script emission.
 - Native C backend work for the second slice.
 - NoPM is not required; inline scripts are project source, not packages.
 
@@ -800,7 +813,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `NOPM-004` Later ecosystem adapters
 - [~] `JS-001` JavaScript ESM backend
 - [ ] `TS-001` TypeScript backend
-- [ ] `INTEROP-001` Inline `@script` foreign-language blocks
+- [~] `INTEROP-001` Inline `@script` foreign-language blocks
 - [ ] `PLAY-001` Browser playground
 - [ ] `C-001` C backend
 - [ ] `GC-001` Native GC

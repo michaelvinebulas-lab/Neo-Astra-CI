@@ -1337,6 +1337,13 @@ function runBuild(args: readonly string[], cwd: string): number {
             "utf8",
           );
         }
+        if (entry.generated.declarations !== undefined) {
+          writeFileSync(
+            entry.outputPath.replace(/\.js$/i, ".d.ts"),
+            entry.generated.declarations,
+            "utf8",
+          );
+        }
         for (const artifact of entry.generated.artifacts ?? []) {
           const artifactPath = resolve(outDir, artifact.path);
           const artifactRelative = relative(outDir, artifactPath);
@@ -1372,6 +1379,13 @@ function runBuild(args: readonly string[], cwd: string): number {
             writeFileSync(
               `${artifactPath}.map`,
               `${JSON.stringify(map)}\n`,
+              "utf8",
+            );
+          }
+          if (artifact.declarations !== undefined) {
+            writeFileSync(
+              artifactPath.replace(/\.js$/i, ".d.ts"),
+              artifact.declarations,
               "utf8",
             );
           }

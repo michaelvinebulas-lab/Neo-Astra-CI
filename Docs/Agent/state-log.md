@@ -10,12 +10,12 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-26 |
 | Current phase | Phase 5 - Types, Nova, and NoPM |
-| Current task | `INTEROP-001` Slices A+B done; `JS-001` multi-module backend done; JS/TS interop backend and C/C++ backend next |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented with linked multi-module output, recoverable errors, checked integer methods, eager tasks, and source maps; `@script` inline interop is implemented through the frontend (lexer, parser, AST, HIR, formatter, resolver, checker NS7001-NS7006, Nova NV0008) with full conformance tests; JS/TS ESM interop backend, C/C++ native slice, channels/scheduler, `arbitrary`, `.d.ts`, full UTF-8 byte operations, TypeScript, and post-V1 work remain |
+| Current task | `INTEROP-001` Slices A+B and the JavaScript backend slice are done; TypeScript-target script emission and the C/C++ native slice remain |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented with linked multi-module output, recoverable errors, checked integer methods, eager tasks, source maps, and inline `@script:js` ESM artifacts; `@script` inline interop is implemented through the frontend (lexer, parser, AST, HIR, formatter, resolver, checker NS7001-NS7006, Nova NV0008) with full conformance tests; TypeScript-target script emission, C/C++ native slice, channels/scheduler, full UTF-8 byte operations, TypeScript, and post-V1 work remain |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
-| Next action | Implement `INTEROP-001` Slice C (JS/TS ESM backend) and continue `JS-001` channels/scheduler, `arbitrary`, UTF-8 byte operations, and `.d.ts` |
-| Next action | `INTEROP-001` Slice C (JS/TS ESM backend) after `JS-001` is extended; or continue `JS-001` |
+| Next action | Continue `JS-001` channels/scheduler and UTF-8 byte operations; then `TS-001` and TypeScript-target script emission |
+
 
 ---
 
@@ -949,6 +949,35 @@ Nova CLI, NoPM, and real backends are not implemented yet.
   the `arbitrary` integer policy, `.d.ts`, and full UTF-8 byte-slice/index
   operations remain.
 
+### 2026-10-26 - INTEROP-001 JavaScript backend slice
+
+- Command: `npm run ci`
+- Result: pass
+- Merged the `INTEROP-001` frontend snapshot (lexer/parser/AST/HIR, checker,
+  resolver, formatter, capabilities, Nova rejection) with the `JS-001` backend
+  work. Temporary script-block guards were replaced by the real frontend.
+- Codegen: `@script:js` blocks emit a separate `*.js` ESM artifact under the
+  output tree. The parent imports the namespace, wraps each declared export,
+  validates `export` names with `NS7008`, converts `Option<T>` to/from
+  `T | null`, and maps declared error effects to `Err` through try/catch.
+- CLI: writes script artifacts and their source maps beside the parent module,
+  rewrites map sources, and rejects output paths that escape `outDir`.
+- Tests: inline script execution (ints, strings, `Option` arguments and returns),
+  missing export diagnostics, exception-to-`Err` mapping, and rejection of
+  `@script:ts` on the JavaScript target.
+- Also implemented the `arbitrary` integer policy with `BigInt` arithmetic for
+  all integer types, `usize`/`isize`, length values, index coercion, and explicit
+  wrapping methods.
+- Added `.d.ts` artifacts for generated modules and inline script modules,
+  covering functions, constants, structs, enums, type aliases, re-exports,
+  `Option`, `Result`, tuples, maps, and integer-policy-aware types.
+- Verification: 485 Rust tests, 40 TypeScript unit tests, 39 native/Wasm/boundary
+  tests (21 codegen/build), `cargo fmt --check`, clippy with warnings denied, and
+  `npm run ci` pass.
+- Current boundary: TypeScript-target script emission waits for `TS-001` or a
+  pinned transpiler; C/C++ scripts wait for the native backend. Channels and a
+  scheduler and full UTF-8 byte operations remain.
+
 ---
 
 ## Handoff
@@ -956,12 +985,12 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 ```markdown
 ### Handoff
 - Phase: 5 - Types, Nova, and NoPM / Phase 7 backend start
-- Task: JS-001 in progress; first single-module JavaScript ESM slice complete
-- Status: Ready
-- Files changed: `crates/astra-core/src/ast.rs`, `crates/astra-core/src/hir.rs`, `crates/astra-core/src/types.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/codegen-js/src/{index,ir,generate}.ts`, `orchestrator/packages/codegen-js/package.json`, `orchestrator/packages/compiler-client/src/index.ts`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/cli/package.json`, `orchestrator/packages/cli/tsconfig.json`, `orchestrator/tests/codegen-js.test.mjs`, `scripts/test-boundary.mjs`, `package-lock.json`, `README.md`, `Docs/Agent/todo.md`, `Docs/Agent/runbook.md`, `Docs/Design/V1/04-targets-and-backends.md`, `Docs/Design/V1/06-tooling-and-workflow.md`, `Docs/Design/V1/README.md`, `Docs/Agent/state-log.md`
-- Verification: `npm run ci` green (460 Rust, 40 TypeScript unit, 34 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
+- Task: JS-001 multi-module backend and INTEROP-001 JavaScript slice complete
+- Status: Ready; user is implementing the C backend and INTEROP-001 C/C++ slice
+- Files changed: `crates/astra-compiler-api/src/lib.rs`, `crates/astra-core/src/type_surface.rs`, `orchestrator/packages/codegen-js/src/{ir,generate}.ts`, `orchestrator/packages/compiler-client/src/index.ts`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/tests/codegen-js.test.mjs`, plus merged INTEROP frontend files and documentation
+- Verification: `npm run ci` green (485 Rust, 40 TypeScript unit, 39 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
 - Blockers: none
-- Next action: add channels/scheduler support, the `arbitrary` integer policy, UTF-8 byte operations, and `.d.ts`; then TS-001 and the JS/TS `INTEROP-001` slice
+- Next action: channels/scheduler and UTF-8 byte operations; then TS-001 and TypeScript-target script emission; coordinate merging `js-interop` with the C backend work
 ```
 
 

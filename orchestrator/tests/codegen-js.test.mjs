@@ -195,6 +195,40 @@ test("javascript backend implements wrapping and checked integer policies", () =
   assert.match(checkedResult.stderr, /integer overflow/);
 });
 
+test("javascript backend implements the arbitrary integer policy", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let a: i32 = 2147483647",
+      "    let b: i32 = 1",
+      "    let sum: i32 = a + b",
+      "    println(sum)",
+      "    println(sum * sum)",
+      "    println(a.wrapping_add(b))",
+      "    let mut index: usize = 0",
+      "    let values: [i32] = [10, 20, 30]",
+      "    println(values[index])",
+      "    let length: usize = values.len()",
+      "    println(length)",
+      '    match "42".to_int() {',
+      "        Ok(value) => println(value)",
+      '        Err(error) => println("parse error")',
+      "    }",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { integerPolicy: "arbitrary" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "2147483648\n4611686018427387904\n-2147483648\n10\n3\n42\nRETURN=0",
+  );
+});
+
 test("javascript backend implements checked integer methods", () => {
   const generated = generate(
     [
@@ -545,6 +579,12 @@ test("astra build emits a linked multi-module project with re-exports", () => {
     assert.match(barrelCode, /export \{ add as plus \} from "\.\/lib\.js";/);
     assert.match(barrelCode, /export \* from "\.\/lib\.js";/);
     assert.match(barrelCode, /export \* as math from "\.\/lib\.js";/);
+    const mainDeclarations = readFileSync(
+      join(project, "dist", "web", "src", "main.d.ts"),
+      "utf8",
+    );
+    assert.match(mainDeclarations, /declare function main\(\): number;/);
+    assert.match(mainDeclarations, /export \{ main \};/);
 
     writeFileSync(
       join(project, "dist", "web", "runner.mjs"),
@@ -641,6 +681,18 @@ test("astra build emits an inline JavaScript script module and calls it", () => 
     assert.ok(existsSync(`${scriptPath}.map`));
     const scriptMap = JSON.parse(readFileSync(`${scriptPath}.map`, "utf8"));
     assert.match(scriptMap.sourcesContent[0], /export function add\(a, b\)/);
+    const scriptDeclarations = readFileSync(
+      join(project, "dist", "web", "src", "main.math.d.ts"),
+      "utf8",
+    );
+    assert.match(
+      scriptDeclarations,
+      /export declare function add\(a: number, b: number\): number;/,
+    );
+    assert.match(
+      scriptDeclarations,
+      /export declare function maybe\(flag: boolean\): \(number \| null\);/,
+    );
 
     const runnerPath = join(project, "dist", "web", "runner.mjs");
     writeFileSync(

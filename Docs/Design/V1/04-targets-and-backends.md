@@ -58,8 +58,8 @@ Inline `@script` blocks are target-bound. The full contract is in
 
 | Script language | `js` / `typescript` | C native | Wasm | Status |
 |---|---|---|---|---|
-| `js` | Yes | No | No | First slice |
-| `ts` | Yes, with a pinned transpiler | No | No | Planned |
+| `js` | Yes | No | No | Implemented |
+| `ts` | Yes, with a pinned transpiler | No | No | Planned (`TS-001`) |
 | `c` | No | Yes, C17 + `clang` | Deferred | Second slice |
 | `cpp` | No | Yes, behind a C ABI shim | Deferred | Second slice |
 | `python` | No | Deferred, embedded CPython | No | Post-V1 |
@@ -392,9 +392,10 @@ TypeScript backend never parses `.ns` source.
 
 - Functions, constants, locals, `if`, `while`, `for`, blocks, `defer`, calls,
   assignments, and supported operators.
-- Fixed-width integer wrapping and `safe-checked` helpers, including `BigInt`
-  for `i64`/`u64`; tagged float values preserve `f64`/`f32` rendering, and `f32`
-  operations use `Math.fround`.
+- Fixed-width integer wrapping, `safe-checked` helpers, and the `arbitrary`
+  policy with `BigInt` for every integer type, including `usize`/`isize`;
+  `BigInt` is also used for `i64`/`u64` under the fixed policies. Tagged float
+  values preserve `f64`/`f32` rendering, and `f32` operations use `Math.fround`.
 - Arrays, structural maps, tuples, structs, enums, `Option`, `Result`, `match`,
   struct/enum/tuple patterns, and `Some`/`None`/`Ok`/`Err` patterns.
 - `print`, `println`, `dbg`, `assert`, bounds-checked indexing, collection
@@ -406,8 +407,12 @@ TypeScript backend never parses `.ns` source.
   unjoined task panics at function-scope exit.
 - Linked multi-module output: named, default, and namespace imports; named,
   namespace, default, and star re-exports; relative specifier rewriting.
+- Inline `@script:js` blocks emitted as separate ESM modules with validated
+  exports, `Option` boundary conversion, declared error mapping, and source maps.
+  `@script:ts` waits for `TS-001` or a pinned transpiler.
 - Line-level source maps with embedded `sourcesContent` and a
   `sourceMappingURL` comment from `astra build`.
+- `.d.ts` declarations for generated modules and inline script modules.
 - Named/default/`pub` exports; type-only exports are erased.
 - Source-located diagnostics for unsupported constructs.
 
@@ -417,8 +422,7 @@ TypeScript backend never parses `.ns` source.
   package-provided modules.
 - Channels and a structured-concurrency scheduler are not implemented. Spawned
   tasks run eagerly and deterministically in the current function scope.
-- `.d.ts`, the `arbitrary` integer policy, and full UTF-8 byte-slice/index
-  operations are not implemented.
+- Full UTF-8 byte-slice/index operations are not implemented.
 - `Option` and `Result` use tagged objects. Maps use a structural-key helper, not
   a JavaScript `Map`, so structural key equality and insertion order match the
   language contract.
