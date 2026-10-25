@@ -360,3 +360,121 @@ fn graph_checker_catches_error_in_leaf() {
     assert!(!result.is_ok());
     assert!(result.all_diagnostics().iter().any(|d| d.code == "NS4001"));
 }
+
+// ─── @script block — checker conformance ─────────────────────────────────────
+
+fn ok_target(source: &str, target: &str) {
+    check_source(
+        source,
+        CheckOptions::new(Mode::Core).with_target(target),
+    )
+    .unwrap_or_else(|e| panic!("check failed (target={target}): {e:?}\nsource:\n{source}"));
+}
+
+fn err_target(source: &str, target: &str, code: &str) {
+    let e = check_source(
+        source,
+        CheckOptions::new(Mode::Core).with_target(target),
+    )
+    .expect_err(&format!("should have failed (target={target}):\n{source}"));
+    assert!(
+        e.iter().any(|d| d.code == code),
+        "expected {code} in {e:?}\nsource:\n{source}"
+    );
+}
+
+const JS_SCRIPT: &str = r#"{@script:js as math;
+    @mode(core)
+    @exports {
+        fn add(a: i32, b: i32) -> i32
+    }
+
+    @impl
+    export function add(a, b) { return a + b }
+@end
+}"#;
+
+const C_SCRIPT: &str = r#"{@script:c as native_math;
+    @mode(system)
+    @exports {
+        fn mul(a: i32, b: i32) -> i32
+    }
+
+    @impl
+    int mul(int a, int b) { return a * b; }
+@end
+}"#;
+
+#[test]
+fn script_block_checks_without_target() {
+    // Without a target, NS7002 is not emitted — it can't be validated.
+    ok(JS_SCRIPT);
+}
+
+#[test]
+fn js_script_passes_on_js_target() {
+    ok_target(JS_SCRIPT, "js");
+}
+
+#[test]
+fn js_script_passes_on_ts_target() {
+    ok_target(JS_SCRIPT, "ts");
+}
+
+#[test]
+fn js_script_rejected_on_native_target_ns7002() {
+    err_target(JS_SCRIPT, "native", "NS7002");
+}
+
+#[test]
+fn c_script_passes_on_native_target() {
+    check_source(
+        C_SCRIPT,
+        CheckOptions::new(Mode::System).with_target("native"),
+    )
+    .unwrap_or_else(|e| panic!("check failed: {e:?}"));
+}
+
+#[test]
+fn c_script_rejected_on_js_target_ns7002() {
+    let e = check_source(
+        C_SCRIPT,
+        CheckOptions::new(Mode::System).with_target("js"),
+    )
+    .expect_err("should have failed with NS7002");
+    assert!(e.iter().any(|d| d.code == "NS7002"), "got: {e:?}");
+}
+
+#[test]
+fn script_namespace_exposed_to_caller() {
+    // A function calling math.add must check without error when types match.
+    let src = format!(
+        "{JS_SCRIPT}\nfn use_math() -> i32 {{ return math.add(1, 2) }}\n"
+    );
+    ok(&src);
+}
+
+#[test]
+fn script_namespace_collision_is_ns7006() {
+    // Two @script blocks with the same namespace name → NS7006.
+    let src = format!("{JS_SCRIPT}\n{JS_SCRIPT}\n");
+    err(&src, "NS7006");
+}
+
+#[test]
+fn script_export_non_boundary_safe_type_is_ns7005() {
+    // A generic export is not allowed (NS7005).
+    // We simulate a non-boundary-safe type with a closure / fn type.
+    let src = r#"{@script:js as bad;
+    @mode(core)
+    @exports {
+        fn apply(f: fn(i32) -> i32, x: i32) -> i32
+    }
+
+    @impl
+    export function apply(f, x) { return f(x) }
+@end
+}"#;
+    err(src, "NS7005");
+}
+

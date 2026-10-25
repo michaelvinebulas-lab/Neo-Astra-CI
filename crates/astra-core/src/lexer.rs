@@ -134,6 +134,7 @@ pub enum TokenKind {
     Float,
     String,
     ByteString,
+    RawSource,
     Keyword(Keyword),
     Punct(Punctuation),
     Newline,
@@ -188,6 +189,12 @@ struct Lexer<'a> {
     tokens: Vec<Token>,
     comments: Vec<Comment>,
     diagnostics: Vec<Diagnostic>,
+    /// Brace depth inside a `{@script:…}` header.
+    /// 0 = not in a script header. Set to 1 when `{@script:` is entered;
+    /// incremented for each inner `{`, decremented for each `}`. When it
+    /// reaches 0 again the outer script brace has been closed.
+    script_header_depth: u32,
+    script_start: usize,
 }
 
 impl<'a> Lexer<'a> {
@@ -198,6 +205,8 @@ impl<'a> Lexer<'a> {
             tokens: Vec::new(),
             comments: Vec::new(),
             diagnostics: Vec::new(),
+            script_header_depth: 0,
+            script_start: 0,
         }
     }
 
@@ -633,7 +642,93 @@ impl<'a> Lexer<'a> {
             TokenKind::Identifier
         };
 
+        let is_impl_in_script = self.script_header_depth > 0
+            && text == "impl"
+            && self
+                .tokens
+                .last()
+                .is_some_and(|t| t.kind == TokenKind::Punct(Punctuation::At));
+
         self.push(kind, start);
+
+        if is_impl_in_script {
+            self.script_header_depth = 0;
+            self.capture_raw_script_source();
+        }
+    }
+
+    fn capture_raw_script_source(&mut self) {
+        while let Some(ch) = self.peek() {
+            if ch == ' ' || ch == '\t' || ch == '\r' {
+                self.bump();
+            } else if ch == '\n' {
+                self.bump();
+                break;
+            } else {
+                break;
+            }
+        }
+
+        let raw_start = self.offset;
+        let mut found_end = false;
+        let mut end_line_start = self.offset;
+
+        while self.offset < self.source.len() {
+            let line_start = self.offset;
+            let remaining = &self.source[line_start..];
+            let trimmed = remaining.trim_start_matches(|c| c == ' ' || c == '\t');
+            if trimmed.starts_with("@end") {
+                let after = &trimmed[4..];
+                let trimmed_after = after.trim_start_matches(|c| c == ' ' || c == '\t');
+                if trimmed_after.starts_with("\r\n")
+                    || trimmed_after.starts_with('\n')
+                    || trimmed_after.starts_with('}')
+                    || trimmed_after.is_empty()
+                {
+                    found_end = true;
+                    end_line_start = line_start;
+                    break;
+                }
+            }
+
+            while let Some(ch) = self.peek() {
+                self.bump();
+                if ch == '\n' {
+                    break;
+                }
+            }
+        }
+
+        if !found_end {
+            self.diagnostic(
+                "NS7004",
+                "Malformed script block: missing '@end'.",
+                "Add an '@end' sentinel line before the closing '}'.",
+                self.script_start,
+                self.offset,
+            );
+            end_line_start = self.offset;
+        }
+
+        let raw_slice = &self.source[raw_start..end_line_start];
+        let normalized = raw_slice.replace("\r\n", "\n");
+
+        self.tokens.push(Token {
+            kind: TokenKind::RawSource,
+            text: normalized,
+            span: Span::new(raw_start, end_line_start),
+        });
+
+        if found_end {
+            self.offset = end_line_start;
+            while let Some(ch) = self.peek() {
+                if ch == ' ' || ch == '\t' {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
     }
 
     fn operator_or_error(&mut self, start: usize) {
@@ -745,9 +840,31 @@ impl<'a> Lexer<'a> {
             ')' => one(self, Punctuation::RParen),
             '[' => one(self, Punctuation::LBracket),
             ']' => one(self, Punctuation::RBracket),
-            '{' => one(self, Punctuation::LBrace),
-            '}' => one(self, Punctuation::RBrace),
-            '@' => one(self, Punctuation::At),
+            '{' => {
+                if self.script_header_depth > 0 {
+                    self.script_header_depth += 1;
+                }
+                one(self, Punctuation::LBrace);
+            }
+            '}' => {
+                if self.script_header_depth > 0 {
+                    self.script_header_depth -= 1;
+                }
+                one(self, Punctuation::RBrace);
+            }
+            '@' => {
+                if self.starts_with("script:") {
+                    // Depth 1: the outer {@script:...} brace has already been
+                    // consumed as a '{' before the '@', so we start at depth 1.
+                    self.script_header_depth = 1;
+                    self.script_start = self
+                        .tokens
+                        .last()
+                        .filter(|t| t.kind == TokenKind::Punct(Punctuation::LBrace))
+                        .map_or(start, |t| t.span.start);
+                }
+                one(self, Punctuation::At);
+            }
             _ => {
                 self.diagnostic(
                     "NS1005",

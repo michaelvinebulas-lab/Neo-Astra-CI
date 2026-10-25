@@ -228,3 +228,79 @@ pub fn main() {
     let second = fmt(&first);
     assert_eq!(first, second);
 }
+
+// ─── @script block formatting ─────────────────────────────────────────────────
+
+/// The formatter must emit the canonical layout:
+///
+/// ```
+/// {@script:<lang> as <name>;
+///     @mode(<mode>)
+///     @exports {
+///         fn <name>(<params>) -> <ret>
+///     }
+///
+///     @impl
+///     <raw body — byte for byte>
+/// @end
+/// }
+/// ```
+#[test]
+fn script_block_formats_to_canonical_layout() {
+    let src = r#"{@script:js as math;
+    @mode(core)
+    @exports {
+        fn add(a: i32, b: i32) -> i32
+    }
+
+    @impl
+    export function add(a, b) { return a + b }
+@end
+}
+"#;
+    let out = fmt(src);
+    assert!(out.contains("{@script:js as math;"), "header missing: {out}");
+    assert!(out.contains("@mode(core)"), "@mode missing: {out}");
+    assert!(out.contains("@exports {"), "@exports missing: {out}");
+    assert!(out.contains("fn add(a: i32, b: i32) -> i32"), "export sig missing: {out}");
+    assert!(out.contains("@impl"), "@impl missing: {out}");
+    assert!(
+        out.contains("export function add(a, b) { return a + b }"),
+        "raw body missing: {out}"
+    );
+    assert!(out.contains("@end"), "@end missing: {out}");
+}
+
+#[test]
+fn script_block_raw_body_preserved_verbatim() {
+    // The body has JS object literals, multi-line code, and unusual indentation.
+    // None of that should be touched.
+    let raw_body = "    export function make() {\n        return JSON.stringify({ x: 1, y: { z: 2 } })\n    }";
+    let src = format!(
+        "{{@script:js as obj;\n    @mode(core)\n    @exports {{\n        fn make() -> str\n    }}\n\n    @impl\n{raw_body}\n@end\n}}\n"
+    );
+    let out = fmt(&src);
+    assert!(
+        out.contains("return JSON.stringify({ x: 1, y: { z: 2 } })"),
+        "raw body mutated: {out}"
+    );
+}
+
+#[test]
+fn script_block_formatter_is_idempotent() {
+    let src = "{@script:js as math;\n    @mode(core)\n    @exports {\n        fn add(a: i32, b: i32) -> i32\n    }\n\n    @impl\n    export function add(a, b) { return a + b }\n@end\n}\n";
+    idempotent(src);
+}
+
+#[test]
+fn script_block_multiple_exports_formatter_idempotent() {
+    let src = "{@script:js as utils;\n    @mode(core)\n    @exports {\n        fn add(a: i32, b: i32) -> i32\n        fn sub(a: i32, b: i32) -> i32\n    }\n\n    @impl\n    export function add(a, b) { return a + b }\n    export function sub(a, b) { return a - b }\n@end\n}\n";
+    idempotent(src);
+}
+
+#[test]
+fn script_block_mixed_with_functions_is_idempotent() {
+    let src = "fn before(x: i32) -> i32 {\n    return x\n}\n\n{@script:js as ext;\n    @mode(core)\n    @exports {\n        fn double(x: i32) -> i32\n    }\n\n    @impl\n    export function double(x) { return x * 2 }\n@end\n}\n\nfn after() {}\n";
+    idempotent(src);
+}
+

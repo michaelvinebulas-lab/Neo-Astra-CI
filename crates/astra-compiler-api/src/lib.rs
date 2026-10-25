@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use astra_capabilities::{Mode, ModeInference, infer_module_mode_named, infer_project};
+use astra_codegen_c::{CModule, IntegerPolicy as CIntegerPolicy};
 use astra_core::checker::{CheckOptions, TypeAnnotation, check_resolved};
 use astra_core::diagnostic::Diagnostic;
 use astra_core::formatter::format_source;
@@ -424,7 +424,7 @@ impl FrontendCompiler {
     /// Checks and attaches typed IR for one backend target.
     #[must_use]
     pub fn compile(&self, request: &CompileRequest) -> CompileResponse {
-        if !matches!(request.target.as_str(), "js" | "ts") {
+        if !matches!(request.target.as_str(), "js" | "ts" | "c") {
             return CompileResponse::failure(vec![
                 Diagnostic::error(
                     "NS8001",
@@ -433,7 +433,7 @@ impl FrontendCompiler {
                         request.target
                     ),
                 )
-                .with_hint("Use target 'js' or 'ts'."),
+                .with_hint("Use target 'js', 'ts', or 'c'."),
             ])
             .with_metadata(json!({ "target": request.target }));
         }

@@ -21,6 +21,7 @@ astra-core = { path = "crates/astra-core" }
 astra-capabilities = { path = "crates/astra-capabilities" }
 astra-nova = { path = "crates/astra-nova" }
 astra-compiler-api = { path = "crates/astra-compiler-api" }
+astra-codegen-c = { path = "crates/astra-codegen-c" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"

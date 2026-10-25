@@ -241,3 +241,199 @@ fn parser_handles_1000_fn_declarations() {
         .collect();
     ok(&source);
 }
+
+// ─── @script blocks ───────────────────────────────────────────────────────────
+
+#[test]
+fn script_block_js_parses() {
+    ok(r#"
+{@script:js as math;
+    @mode(core)
+    @exports {
+        fn add(a: i32, b: i32) -> i32
+    }
+
+    @impl
+    export function add(a, b) { return a + b }
+@end
+}
+"#);
+}
+
+#[test]
+fn script_block_c_parses() {
+    ok(r#"
+{@script:c as native_math;
+    @mode(system)
+    @exports {
+        fn multiply(a: i32, b: i32) -> i32
+    }
+
+    @impl
+    int multiply(int a, int b) { return a * b; }
+@end
+}
+"#);
+}
+
+#[test]
+fn script_block_multiple_exports_parse() {
+    ok(r#"
+{@script:js as utils;
+    @mode(core)
+    @exports {
+        fn add(a: i32, b: i32) -> i32
+        fn sub(a: i32, b: i32) -> i32
+        fn neg(x: i32) -> i32
+    }
+
+    @impl
+    export function add(a, b) { return a + b }
+    export function sub(a, b) { return a - b }
+    export function neg(x) { return -x }
+@end
+}
+"#);
+}
+
+#[test]
+fn script_block_braces_in_raw_body_do_not_confuse_parser() {
+    // The raw body contains JS object literals with braces; only @end terminates.
+    ok(r#"
+{@script:js as obj_factory;
+    @mode(core)
+    @exports {
+        fn make() -> str
+    }
+
+    @impl
+    export function make() {
+        return JSON.stringify({ x: 1, y: { z: 2 } })
+    }
+@end
+}
+"#);
+}
+
+#[test]
+fn script_block_with_error_effect_export_parses() {
+    ok(r#"
+struct ParseError(str)
+{@script:js as parser;
+    @mode(core)
+    @exports {
+        fn parse(input: str) -> i32 ! ParseError
+    }
+
+    @impl
+    export function parse(input) { return parseInt(input, 10) }
+@end
+}
+"#);
+}
+
+#[test]
+fn script_block_after_fn_declaration_parses() {
+    ok(r#"
+fn host_fn(x: i32) -> i32 { return x }
+
+{@script:js as ext;
+    @mode(core)
+    @exports {
+        fn double(x: i32) -> i32
+    }
+
+    @impl
+    export function double(x) { return x * 2 }
+@end
+}
+"#);
+}
+
+#[test]
+fn unknown_script_language_is_ns7001() {
+    err(
+        r#"
+{@script:brainfuck as bf;
+    @mode(core)
+    @exports {
+        fn run(n: i32) -> i32
+    }
+
+    @impl
+    +-+-
+@end
+}
+"#,
+        "NS7001",
+    );
+}
+
+#[test]
+fn missing_at_end_is_ns7004() {
+    err(
+        r#"
+{@script:js as broken;
+    @mode(core)
+    @exports {
+        fn f() -> i32
+    }
+
+    @impl
+    export function f() { return 1 }
+}
+"#,
+        "NS7004",
+    );
+}
+
+#[test]
+fn missing_mode_is_ns7004() {
+    err(
+        r#"
+{@script:js as nomode;
+    @exports {
+        fn f() -> i32
+    }
+
+    @impl
+    export function f() { return 1 }
+@end
+}
+"#,
+        "NS7004",
+    );
+}
+
+#[test]
+fn missing_exports_block_is_ns7003() {
+    err(
+        r#"
+{@script:js as noexports;
+    @mode(core)
+
+    @impl
+    export function f() { return 1 }
+@end
+}
+"#,
+        "NS7003",
+    );
+}
+
+#[test]
+fn empty_exports_block_is_ns7003() {
+    err(
+        r#"
+{@script:js as emptyexports;
+    @mode(core)
+    @exports {}
+
+    @impl
+    export function f() { return 1 }
+@end
+}
+"#,
+        "NS7003",
+    );
+}
