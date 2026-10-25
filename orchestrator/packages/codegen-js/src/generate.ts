@@ -936,6 +936,15 @@ class JavaScriptGenerator {
         }
       }
     }
+    if (this.hir.exports.default !== null) {
+      const target = this.hir.exports.default.target;
+      if (variantOf(target) === "Local") {
+        const local = payloadOf(target);
+        if (typeof local === "string" && !localExportNames.has(local)) {
+          localExportNames.set(local, "default");
+        }
+      }
+    }
     const localExported = (name: string): boolean => localExportNames.has(name);
 
     for (const item of this.ast.items) {

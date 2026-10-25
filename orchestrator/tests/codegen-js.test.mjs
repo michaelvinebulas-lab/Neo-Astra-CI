@@ -373,6 +373,13 @@ test("javascript backend emits named and default exports", () => {
   assert.deepEqual(generated.diagnostics, []);
   assert.match(generated.code, /export \{ add as plus \};/);
   assert.match(generated.code, /export default add;/);
+  assert.match(
+    generated.declarations,
+    /declare function add\(a: number, b: number\): number;/,
+  );
+  assert.match(generated.declarations, /export \{ add as plus \};/);
+  assert.match(generated.declarations, /export \{ add as default \};/);
+  assert.match(generated.declarations, /declare function main\(\): number;/);
 
   const result = runGeneratedWith(generated.code, [
     'process.stdout.write(String(module.plus(2, 3)) + "," + String(module.default(4, 5)) + "," + String(module.main()));',
