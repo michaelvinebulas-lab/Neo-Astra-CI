@@ -192,8 +192,9 @@ with `module: "esm"`. It selects `--target`, then `ASTRA_TARGET`, then
 `build.defaultTarget`; it applies target/build mode and `math.integers`, emits
 the module under `outDir`, and adds `"type": "module"` when absent. The backend
 also supports recoverable failures, `?` propagation, checked integer methods,
-eager spawn/tasks, and line-level source maps. Multi-target builds,
-lockfile-aware builds, project module graphs, and native/Wasm toolchains remain.
+eager spawn/tasks, line-level source maps, and linked local module graphs with
+rewritten relative imports. Multi-target builds, lockfile-aware builds, external
+package module linking, and native/Wasm toolchains remain.
 
 ---
 

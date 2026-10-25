@@ -13,7 +13,8 @@ use astra_core::formatter::format_source;
 use astra_core::ir::Program;
 use astra_core::parser::parse;
 use astra_core::resolver::resolve_module;
-use astra_core::type_surface::{ProjectModule, check_module_graph};
+use astra_core::resolver::{ModuleGraph, collect_module_specifiers};
+use astra_core::type_surface::{ProjectModule, check_module_graph_with_imports};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -191,6 +192,9 @@ pub struct ProjectCheckRequest {
     /// Explicit project mode. When omitted, the project graph is inferred.
     #[serde(default)]
     pub mode: Option<Mode>,
+    /// Integer policy carried into each module's typed IR.
+    #[serde(default)]
+    pub integer_policy: IntegerPolicy,
 }
 
 /// One source unit in a project check.
@@ -213,6 +217,9 @@ pub struct ModuleCheckResult {
     pub path: String,
     pub diagnostics: Vec<Diagnostic>,
     pub ok: bool,
+    /// Typed module payload for successful project checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ir: Option<ModuleIr>,
 }
 
 /// Response for the `check_project` command.
@@ -241,6 +248,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
 
     // Parse all source units up front so we can fail fast on lex/parse errors.
     let mut project_modules: Vec<ProjectModule> = Vec::new();
+    let mut ast_map: BTreeMap<String, astra_core::ast::Module> = BTreeMap::new();
     let mut path_map: BTreeMap<String, String> = BTreeMap::new();
     let mut early_failures: Vec<ModuleCheckResult> = Vec::new();
 
@@ -248,6 +256,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
         path_map.insert(unit.key.clone(), unit.path.clone());
         match parse(&unit.text) {
             Ok(module) => {
+                ast_map.insert(unit.key.clone(), module.clone());
                 project_modules.push(ProjectModule {
                     key: unit.key.clone(),
                     source: module,
@@ -259,6 +268,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
                     path: unit.path.clone(),
                     diagnostics,
                     ok: false,
+                    ir: None,
                 });
             }
         }
@@ -330,6 +340,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
                         .map(|inference| inference.diagnostics.clone())
                         .unwrap_or_default(),
                     ok: inference.is_none_or(ModeInference::is_ok),
+                    ir: None,
                 }
             })
             .collect();
@@ -351,13 +362,52 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
         };
     }
 
-    let graph = check_module_graph(&project_modules, CheckOptions::new(selected_mode));
+    // Build the canonical module graph. Keys are project-relative paths, so
+    // resolve relative specifiers against the importer before checking. A
+    // specifier that already matches a source key is treated as an identity
+    // import for compatibility with the original multi-source API.
+    let mut module_graph = ModuleGraph::default();
+    for module in &project_modules {
+        module_graph.insert_module(module.key.clone(), module.source.clone());
+    }
+    for module in &project_modules {
+        for specifier in collect_module_specifiers(&module.source) {
+            let target = resolve_project_target(&module.key, &specifier.specifier, &module_graph);
+            module_graph.insert_import(module.key.clone(), specifier.specifier, target);
+        }
+    }
+
+    let ordered_keys = dependency_order(&project_modules, &module_graph);
+    let ordered_modules: Vec<ProjectModule> = ordered_keys
+        .iter()
+        .filter_map(|key| {
+            project_modules
+                .iter()
+                .find(|module| module.key == *key)
+                .cloned()
+        })
+        .collect();
+    let graph = check_module_graph_with_imports(
+        &ordered_modules,
+        &module_graph,
+        CheckOptions::new(selected_mode),
+    );
 
     let ok = graph.is_ok();
 
-    // Collect per-module results in request order.
+    // Collect per-module results in request order and attach typed IR to every
+    // successful module.
     let mut module_results: BTreeMap<String, ModuleCheckResult> = BTreeMap::new();
-    for (key, _result) in &graph.modules {
+    for (key, result) in &graph.modules {
+        let ir = ast_map.get(key).map(|ast| ModuleIr {
+            key: key.clone(),
+            path: path_map.get(key).cloned().unwrap_or_else(|| key.clone()),
+            ast: ast.clone(),
+            hir: result.module.clone(),
+            annotations: result.annotations.clone(),
+            manual_memory_scopes: result.manual_memory_scopes.clone(),
+            integer_policy: request.integer_policy,
+        });
         module_results.insert(
             key.clone(),
             ModuleCheckResult {
@@ -365,6 +415,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
                 path: path_map.get(key).cloned().unwrap_or_else(|| key.clone()),
                 diagnostics: Vec::new(),
                 ok: true,
+                ir,
             },
         );
     }
@@ -376,6 +427,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
                 path: path_map.get(key).cloned().unwrap_or_else(|| key.clone()),
                 diagnostics: diagnostics.clone(),
                 ok: false,
+                ir: None,
             },
         );
     }
@@ -673,6 +725,83 @@ fn parse_project_check_request(params: Option<Value>) -> Result<ProjectCheckRequ
     Ok(request)
 }
 
+/// Resolves one import specifier to a canonical project-relative module path.
+fn resolve_project_target(importer: &str, specifier: &str, graph: &ModuleGraph) -> String {
+    if graph.modules.contains_key(specifier) {
+        return specifier.to_owned();
+    }
+
+    if let Some(target) = resolve_relative_target(importer, specifier) {
+        return target;
+    }
+
+    // A dotted path such as `app.util` maps to `app/util.ns` when no source key
+    // matched it exactly.
+    if !specifier.contains('/') && specifier.contains('.') && !specifier.ends_with(".ns") {
+        return format!("{}.ns", specifier.replace('.', "/"));
+    }
+
+    specifier.to_owned()
+}
+
+fn resolve_relative_target(importer: &str, specifier: &str) -> Option<String> {
+    if !specifier.starts_with("./") && !specifier.starts_with("../") {
+        return None;
+    }
+
+    let mut parts: Vec<&str> = importer.split('/').collect();
+    parts.pop();
+    for component in specifier.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+
+    let mut target = parts.join("/");
+    if target.is_empty() {
+        return None;
+    }
+    if !target.ends_with(".ns") {
+        target.push_str(".ns");
+    }
+    Some(target)
+}
+
+/// Orders modules so every dependency appears before its importers.
+fn dependency_order(modules: &[ProjectModule], graph: &ModuleGraph) -> Vec<String> {
+    fn visit(
+        key: &str,
+        graph: &ModuleGraph,
+        order: &mut Vec<String>,
+        visiting: &mut std::collections::BTreeSet<String>,
+        visited: &mut std::collections::BTreeSet<String>,
+    ) {
+        if visited.contains(key) || !visiting.insert(key.to_owned()) {
+            return;
+        }
+        for ((importer, _specifier), target) in &graph.imports {
+            if importer == key {
+                visit(target, graph, order, visiting, visited);
+            }
+        }
+        visiting.remove(key);
+        visited.insert(key.to_owned());
+        order.push(key.to_owned());
+    }
+
+    let mut order = Vec::new();
+    let mut visiting = std::collections::BTreeSet::new();
+    let mut visited = std::collections::BTreeSet::new();
+    for module in modules {
+        visit(&module.key, graph, &mut order, &mut visiting, &mut visited);
+    }
+    order
+}
+
 fn serialize_response(response: JsonRpcResponse) -> String {
     serde_json::to_string(&response).unwrap_or_else(|_| {
         r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error."}}"#
@@ -918,6 +1047,21 @@ mod tests {
         assert!(output.contains(r#""apiVersion":"1.0""#));
         assert!(output.contains(r#""key":"lib""#));
         assert!(output.contains(r#""key":"main""#));
+    }
+
+    #[test]
+    fn check_project_resolves_relative_imports_and_returns_ir() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":2,"method":"check_project","params":{"apiVersion":"1.0","sources":[{"key":"src/main.ns","path":"src/main.ns","text":"import { add } from \"./lib\"\npub fn main() -> i32 { return add(1, 2) }\n"},{"key":"src/lib.ns","path":"src/lib.ns","text":"pub fn add(a: i32, b: i32) -> i32 { return a + b }\n"}],"target":"js","mode":"core","integerPolicy":"safe-checked"}}"#,
+        );
+        assert!(output.contains(r#""ok":true"#), "{output}");
+        assert!(output.contains(r#""key":"src/lib.ns""#), "{output}");
+        assert!(output.contains(r#""key":"src/main.ns""#), "{output}");
+        assert!(output.contains(r#""ir":{"#), "{output}");
+        assert!(
+            output.contains(r#""integerPolicy":"safe-checked""#),
+            "{output}"
+        );
     }
 
     #[test]

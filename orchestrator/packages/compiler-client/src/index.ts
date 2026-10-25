@@ -594,6 +594,7 @@ export interface ProjectCheckRequest {
   readonly sources: readonly ProjectSourceUnit[];
   readonly target?: string;
   readonly mode?: Mode;
+  readonly integerPolicy?: IntegerPolicy;
 }
 
 /** Per-module result returned by `check_project`. */
@@ -602,6 +603,8 @@ export interface ModuleCheckResult {
   readonly path: string;
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly ok: boolean;
+  /** Typed module payload for a successful project check. */
+  readonly ir?: ModuleIr;
 }
 
 /** Response returned by `CompilerClient.checkProject`. */
@@ -631,6 +634,7 @@ function parseModuleCheckResult(value: unknown): ModuleCheckResult {
   }
   const { key, path, ok } = value;
   const diagnosticsRaw = value["diagnostics"];
+  const irRaw = value["ir"];
   if (
     typeof key !== "string" ||
     typeof path !== "string" ||
@@ -644,6 +648,7 @@ function parseModuleCheckResult(value: unknown): ModuleCheckResult {
     path,
     ok,
     diagnostics: diagnosticsRaw.map(parseDiagnostic),
+    ...(irRaw === undefined ? {} : { ir: parseModuleIr(irRaw) }),
   };
 }
 
@@ -704,6 +709,9 @@ CompilerClient.prototype.checkProject = function (
       sources: request.sources,
       target: request.target ?? "js",
       ...(request.mode === undefined ? {} : { mode: request.mode }),
+      ...(request.integerPolicy === undefined
+        ? {}
+        : { integerPolicy: request.integerPolicy }),
     },
   });
 

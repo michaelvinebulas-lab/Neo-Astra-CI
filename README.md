@@ -52,7 +52,8 @@ registry gateway with signing and federation. The first JavaScript ESM backend
 slice emits readable, framework-free modules for the supported language subset,
 and `astra build` writes runnable ESM for a single entry module. The backend
 supports recoverable failures, `?` propagation, checked integer methods, eager
-spawn/tasks with `join`/`cancel`, and line-level source maps. Project imports,
-channels and a scheduler, the `arbitrary` integer policy, `.d.ts` artifacts, and
-TypeScript generation remain staged. Inline `@script` foreign-language blocks are designed in
+spawn/tasks with `join`/`cancel`, line-level source maps, and linked local
+multi-module projects with imports and re-exports. Channels and a scheduler, the
+`arbitrary` integer policy, `.d.ts` artifacts, and TypeScript generation remain
+staged. Inline `@script` foreign-language blocks are designed in
 `Docs/Design/V1/10-inline-script-interop.md`; they are not implemented yet.
