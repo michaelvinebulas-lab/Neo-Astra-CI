@@ -1024,7 +1024,9 @@ impl<'a> Checker<'a> {
                     if let Some(target) = self.options.target.as_deref() {
                         let supported = match target {
                             "js" | "ts" => matches!(script.language.as_str(), "js" | "ts"),
-                            "native" | "c" | "llvm" => matches!(script.language.as_str(), "c" | "cpp"),
+                            "native" | "c" | "llvm" => {
+                                matches!(script.language.as_str(), "c" | "cpp")
+                            }
                             _ => false,
                         };
                         if !supported {
@@ -1035,7 +1037,7 @@ impl<'a> Checker<'a> {
                                     script.language
                                 ),
                                 script.span,
-                                &format!("Target '{target}' does not support '{}' script blocks.", script.language),
+                                format!("Target '{target}' does not support '{}' script blocks.", script.language),
                             );
                         }
                     }
@@ -1233,7 +1235,11 @@ impl<'a> Checker<'a> {
                 }
             }
             Type::Result(ok, err) => self.is_boundary_safe(ok) && self.is_boundary_safe(err),
-            Type::Generic(_) | Type::Function(_) | Type::Tuple(_) | Type::Map(_, _) | Type::Never => false,
+            Type::Generic(_)
+            | Type::Function(_)
+            | Type::Tuple(_)
+            | Type::Map(_, _)
+            | Type::Never => false,
             Type::Error | Type::Unknown => true,
         }
     }
@@ -2333,22 +2339,22 @@ impl<'a> Checker<'a> {
                 return self.enum_member(name, &enum_def, member, span, expected);
             }
             if let Some(namespace) = self.namespaces.get(name).cloned() {
-                if let Some(&script_mode) = self.script_modes.get(name) {
-                    if !self.mode.allows(script_mode) {
-                        self.error(
-                            MODE_REQUIREMENT,
-                            format!(
-                                "Script block '{name}' requires '{}' mode, but the active mode is '{}'.",
-                                script_mode.as_str(),
-                                self.mode.as_str()
-                            ),
-                            span,
-                            &format!(
-                                "Move the call into a {}-mode function or raise the mode.",
-                                script_mode.as_str()
-                            ),
-                        );
-                    }
+                if let Some(&script_mode) = self.script_modes.get(name)
+                    && !self.mode.allows(script_mode)
+                {
+                    self.error(
+                        MODE_REQUIREMENT,
+                        format!(
+                            "Script block '{name}' requires '{}' mode, but the active mode is '{}'.",
+                            script_mode.as_str(),
+                            self.mode.as_str()
+                        ),
+                        span,
+                        format!(
+                            "Move the call into a {}-mode function or raise the mode.",
+                            script_mode.as_str()
+                        ),
+                    );
                 }
                 if let Some(value) = namespace.members.get(member) {
                     return ExprInfo::value(value.ty.clone());

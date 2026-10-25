@@ -191,7 +191,9 @@ impl SymbolKind {
             Self::Function | Self::Constant | Self::ImportedValue => ExportKind::Value,
             Self::Struct | Self::Enum => ExportKind::ValueAndType,
             Self::TypeAlias | Self::ImportedType => ExportKind::Type,
-            Self::ForeignModule | Self::ImportedNamespace | Self::ScriptBlock => ExportKind::Namespace,
+            Self::ForeignModule | Self::ImportedNamespace | Self::ScriptBlock => {
+                ExportKind::Namespace
+            }
         }
     }
 }

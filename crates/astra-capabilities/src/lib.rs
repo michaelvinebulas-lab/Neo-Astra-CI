@@ -645,16 +645,16 @@ impl Analyzer {
                     self.other_reasons.extend(usage.reasons);
                 }
                 ast::ItemKind::ScriptBlock(script) => {
-                    if let Some(mode) = Mode::parse(&script.mode) {
-                        if mode != Mode::Core {
-                            usage.require(
-                                mode,
-                                ModeReasonKind::ForeignModule,
-                                script.span,
-                                format!("foreign script '{}'", script.name),
-                                Some("ffi".to_owned()),
-                            );
-                        }
+                    if let Some(mode) = Mode::parse(&script.mode)
+                        && mode != Mode::Core
+                    {
+                        usage.require(
+                            mode,
+                            ModeReasonKind::ForeignModule,
+                            script.span,
+                            format!("foreign script '{}'", script.name),
+                            Some("ffi".to_owned()),
+                        );
                     }
                     self.other_mode = join_or_keep(self.other_mode, usage.mode);
                     self.other_reasons.extend(usage.reasons);

@@ -6,6 +6,9 @@
 //! generated `typedef` exactly once in dependency order (inner types before
 //! the types that embed them).
 
+// The C backend slice is still under active development.
+#![allow(clippy::collapsible_if)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use astra_core::ast::{self, EnumDecl, StructDecl, StructFields, TypeKind};
@@ -155,7 +158,12 @@ pub fn to_type(ast_type: &ast::Type) -> Type {
         } => Type::Function(astra_core::types::FunctionType {
             type_parameters: Vec::new(),
             parameters: parameters.iter().map(to_type).collect(),
-            return_type: Box::new(return_type.as_ref().map(|t| to_type(t)).unwrap_or(Type::Unit)),
+            return_type: Box::new(
+                return_type
+                    .as_ref()
+                    .map(|t| to_type(t))
+                    .unwrap_or(Type::Unit),
+            ),
             errors: error_set.iter().map(path_to_type).collect(),
         }),
         TypeKind::Unit => Type::Unit,
@@ -174,9 +182,10 @@ pub fn path_to_type(path: &ast::TypePath) -> Type {
         "Option" if path.arguments.len() == 1 => {
             Type::Option(Box::new(to_type(&path.arguments[0])))
         }
-        "Result" if path.arguments.len() == 2 => {
-            Type::Result(Box::new(to_type(&path.arguments[0])), Box::new(to_type(&path.arguments[1])))
-        }
+        "Result" if path.arguments.len() == 2 => Type::Result(
+            Box::new(to_type(&path.arguments[0])),
+            Box::new(to_type(&path.arguments[1])),
+        ),
         _ => Type::Named(
             path.segments.join("."),
             path.arguments.iter().map(to_type).collect(),
@@ -341,8 +350,7 @@ impl TyCtxt {
             Type::Bytes => {
                 self.rejects.push(Reject {
                     code: "NS8014",
-                    message: "bytes literals are not supported by the C backend first slice"
-                        .into(),
+                    message: "bytes literals are not supported by the C backend first slice".into(),
                 });
                 "NS_Str".into()
             }
@@ -358,18 +366,20 @@ impl TyCtxt {
             Type::Option(inner) => {
                 let value = self.c_type(inner);
                 let name = format!("NS_Option_{}", self.ident(inner));
-                self.ensure(&name, format!(
-                    "typedef struct {{ bool some; {value} value; }} {name};"
-                ));
+                self.ensure(
+                    &name,
+                    format!("typedef struct {{ bool some; {value} value; }} {name};"),
+                );
                 name
             }
             Type::Result(ok, err) => {
                 let value = self.c_type(ok);
                 let error = self.c_type(err);
                 let name = format!("NS_Result_{}_{}", self.ident(ok), self.ident(err));
-                self.ensure(&name, format!(
-                    "typedef struct {{ bool ok; {value} value; {error} error; }} {name};"
-                ));
+                self.ensure(
+                    &name,
+                    format!("typedef struct {{ bool ok; {value} value; {error} error; }} {name};"),
+                );
                 name
             }
             Type::Array(_) | Type::Slice(_) => "NS_Array".into(),
@@ -485,7 +495,10 @@ impl TyCtxt {
                             let field_c = self.c_type(field_type);
                             inner.push_str(&format!("{field_c} _{index}; "));
                         }
-                        members.push_str(&format!("struct {{ {inner}}} {name}; ", name = variant.name));
+                        members.push_str(&format!(
+                            "struct {{ {inner}}} {name}; ",
+                            name = variant.name
+                        ));
                     }
                 }
                 self.ensure(
