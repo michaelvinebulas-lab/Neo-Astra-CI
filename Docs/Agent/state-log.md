@@ -13,7 +13,7 @@ This is the agent's persistent memory. Update it at the end of every substantial
 | Current task | `JS-001` in progress; first single-module JavaScript ESM slice complete |
 | Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the first JavaScript ESM backend/`astra build` slice implemented; project imports, recoverable JS error effects, tasks, source maps, TypeScript, and conformance coverage remain; inline `@script` interop is designed but not implemented |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
-| Git repository | No |
+| Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None |
 | Next action | Extend `JS-001` with project-wide typed modules/import emission, error effects, tasks, and source maps; then `TS-001` |
 
@@ -333,7 +333,18 @@ Verification: `npm run ci` passed with 9/9 TypeScript tests, 13/13 boundary/CLI 
 
 ## Active
 
-### 2026-10-24 — TYPE-003 project type surfaces (complete; boundary gap logged)
+### 2026-10-25 - Concurrent INTEROP-001 and C backend work (user)
+
+- The user is actively implementing inline `@script` interop and the C backend.
+- `ast::ItemKind::ScriptBlock` and `ScriptBlock` were added while `JS-001` was
+  finishing. The checker, formatter, and resolver matches do not yet handle the
+  new variant, so the workspace does not compile at this snapshot.
+- `JS-001` work is committed in `2ce78ad`. Do not overwrite the active
+  interop/C-backend files.
+- Last green JS-001 verification before this concurrent change: 459 Rust tests,
+  40 TypeScript unit tests, and 27 native/Wasm/boundary tests.
+
+### 2026-10-24 - TYPE-003 project type surfaces (complete; boundary gap logged)
 
 - Command: `cargo test --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm run ci`
 - Result: pass
