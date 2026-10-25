@@ -1,7 +1,16 @@
 #!/usr/bin/env node
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { TextDecoder } from "node:util";
 import { pathToFileURL } from "node:url";
 import { generateJavaScript } from "@neo-astra/codegen-js";
@@ -1083,6 +1092,7 @@ function runBuild(args: readonly string[], cwd: string): number {
     const generated = generateJavaScript({
       moduleName: entryKey,
       ir: result.ir,
+      sourceText: source,
     });
     const generatedDiagnostics = generated.diagnostics.map((diagnostic) =>
       codegenDiagnostic(sourceFile, source, diagnostic),
@@ -1115,7 +1125,20 @@ function runBuild(args: readonly string[], cwd: string): number {
 
     try {
       mkdirSync(dirname(outputPath), { recursive: true });
-      writeFileSync(outputPath, generated.code, "utf8");
+      const mapName = `${basename(outputPath)}.map`;
+      const generatedCode =
+        generated.sourceMap === undefined
+          ? generated.code
+          : `${generated.code}//# sourceMappingURL=${mapName}\n`;
+      writeFileSync(outputPath, generatedCode, "utf8");
+      if (generated.sourceMap !== undefined) {
+        const map = JSON.parse(generated.sourceMap) as Record<string, unknown>;
+        map["file"] = basename(outputPath);
+        map["sources"] = [
+          relative(dirname(outputPath), entryPath).split(sep).join("/"),
+        ];
+        writeFileSync(`${outputPath}.map`, `${JSON.stringify(map)}\n`, "utf8");
+      }
       const packagePath = join(outDir, "package.json");
       if (!existsSync(packagePath)) {
         writeFileSync(packagePath, '{ "type": "module" }\n', "utf8");

@@ -477,19 +477,16 @@ test("astra build writes runnable ESM and a module package marker", () => {
       ),
       "utf8",
     );
-    writeFileSync(
-      join(project, "src", "main.ns"),
-      [
-        "module demo.main",
-        "",
-        "pub fn main() -> i32 {",
-        '    println("hello from build")',
-        "    return 0",
-        "}",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
+    const mainSource = [
+      "module demo.main",
+      "",
+      "pub fn main() -> i32 {",
+      '    println("hello from build")',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n");
+    writeFileSync(join(project, "src", "main.ns"), mainSource, "utf8");
 
     const result = spawnSync(
       process.execPath,
@@ -505,6 +502,18 @@ test("astra build writes runnable ESM and a module package marker", () => {
       readFileSync(join(project, "dist", "web", "package.json"), "utf8"),
       '{ "type": "module" }\n',
     );
+
+    const mapPath = `${outputPath}.map`;
+    assert.ok(existsSync(mapPath));
+    assert.match(
+      readFileSync(outputPath, "utf8"),
+      /\/\/# sourceMappingURL=main\.js\.map/,
+    );
+    const sourceMap = JSON.parse(readFileSync(mapPath, "utf8"));
+    assert.equal(sourceMap.version, 3);
+    assert.equal(sourceMap.file, "main.js");
+    assert.deepEqual(sourceMap.sourcesContent, [mainSource]);
+    assert.ok(sourceMap.mappings.length > 0);
 
     writeFileSync(
       join(project, "dist", "web", "runner.mjs"),

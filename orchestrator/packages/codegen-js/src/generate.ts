@@ -39,6 +39,7 @@ export interface CodegenDiagnostic {
 export interface CodegenRequest {
   readonly moduleName: string;
   readonly ir: unknown;
+  readonly sourceText?: string;
 }
 
 /** Output produced by `generateJavaScript`. */
@@ -678,6 +679,7 @@ class JavaScriptGenerator {
   private readonly ir: ModuleIr;
   private readonly ast: AstModule;
   private readonly hir: HirModule;
+  private readonly sourceText: string | undefined;
   private readonly annotations = new Map<string, SemanticType>();
   private readonly helpers = new Set<HelperName>();
   private readonly diagnostics: CodegenDiagnostic[] = [];
@@ -686,8 +688,9 @@ class JavaScriptGenerator {
   private defaultExpression: Expr | undefined;
   private currentSuccessWrap = false;
 
-  constructor(ir: ModuleIr) {
+  constructor(ir: ModuleIr, sourceText?: string) {
     this.ir = ir;
+    this.sourceText = sourceText;
     if (!isRecord(ir.ast) || !isRecord(ir.hir)) {
       throw new CodegenRequestError("Typed module AST and HIR must be objects.");
     }
@@ -728,18 +731,19 @@ class JavaScriptGenerator {
       );
     }
 
-    const body: string[] = [];
+    const bodyParts: { readonly text: string; readonly span: Span }[] = [];
     for (const item of this.hir.items) {
       const generated = this.emitItem(item);
       if (generated.length > 0) {
-        body.push(generated);
+        bodyParts.push({ text: generated, span: item.span });
       }
     }
 
     const exports = this.emitExports();
     if (exports.length > 0) {
-      body.push(exports);
+      bodyParts.push({ text: exports, span: this.hir.items[0]?.span ?? { start: 0, end: 0 } });
     }
+    const body = bodyParts.map((part) => part.text);
 
     const helperText = this.emitHelpers();
     const sections: string[] = [
@@ -753,10 +757,16 @@ class JavaScriptGenerator {
       sections.push("", body.join("\n\n"));
     }
     sections.push("");
+    const code = sections.join("\n");
+    const sourceMap =
+      this.sourceText === undefined
+        ? undefined
+        : createSourceMap(code, this.ir.path, this.sourceText, bodyParts);
 
     return {
-      code: sections.join("\n"),
+      code,
       diagnostics: this.diagnostics,
+      ...(sourceMap === undefined ? {} : { sourceMap }),
     };
   }
 
@@ -2229,7 +2239,7 @@ class JavaScriptGenerator {
 /** Generates readable JavaScript ESM for one typed module. */
 export function generateJavaScript(request: CodegenRequest): CodegenResult {
   const ir = parseModuleIr(request.ir);
-  return new JavaScriptGenerator(ir).generate();
+  return new JavaScriptGenerator(ir, request.sourceText).generate();
 }
 
 function parseModuleIr(value: unknown): ModuleIr {
@@ -2259,6 +2269,82 @@ function spanKey(span: Span): string {
 
 function isSequence(tag: string): boolean {
   return tag === "Array" || tag === "FixedArray" || tag === "Slice" || tag === "Bytes";
+}
+
+function createSourceMap(
+  code: string,
+  sourcePath: string,
+  sourceText: string,
+  anchors: readonly { readonly text: string; readonly span: Span }[],
+): string {
+  const mappedLines = new Map<number, number>();
+  let searchFrom = 0;
+  for (const anchor of anchors) {
+    const index = code.indexOf(anchor.text, searchFrom);
+    if (index < 0) {
+      continue;
+    }
+    searchFrom = index + anchor.text.length;
+    const generatedLine = lineAt(code, index);
+    if (!mappedLines.has(generatedLine)) {
+      mappedLines.set(generatedLine, lineAt(sourceText, anchor.span.start));
+    }
+  }
+
+  const lines = code.split("\n");
+  let previousSource = 0;
+  let previousSourceLine = 0;
+  let previousSourceColumn = 0;
+  const mappings = lines.map((_, generatedLine) => {
+    const sourceLine = mappedLines.get(generatedLine);
+    if (sourceLine === undefined) {
+      return "";
+    }
+    const segment =
+      encodeVlq(0) +
+      encodeVlq(0 - previousSource) +
+      encodeVlq(sourceLine - previousSourceLine) +
+      encodeVlq(0 - previousSourceColumn);
+    previousSource = 0;
+    previousSourceLine = sourceLine;
+    previousSourceColumn = 0;
+    return segment;
+  });
+
+  return JSON.stringify({
+    version: 3,
+    sources: [sourcePath],
+    sourcesContent: [sourceText],
+    names: [],
+    mappings: mappings.join(";"),
+  });
+}
+
+function lineAt(text: string, offset: number): number {
+  let line = 0;
+  for (let index = 0; index < offset && index < text.length; index += 1) {
+    if (text[index] === "\n") {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+const BASE64_VLQ =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function encodeVlq(value: number): string {
+  let remaining = value < 0 ? ((-value) << 1) | 1 : value << 1;
+  let output = "";
+  do {
+    let digit = remaining & 31;
+    remaining >>>= 5;
+    if (remaining > 0) {
+      digit |= 32;
+    }
+    output += BASE64_VLQ[digit] ?? "";
+  } while (remaining > 0);
+  return output;
 }
 
 function containsVariant(value: unknown, variant: string): boolean {

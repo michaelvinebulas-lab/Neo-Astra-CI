@@ -10,12 +10,12 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-25 |
 | Current phase | Phase 5 - Types, Nova, and NoPM |
-| Current task | `JS-001` in progress; single-module JavaScript ESM backend with recoverable errors, checked integer methods, and eager spawn/tasks |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented; project imports, channels and a scheduler, source maps, the `arbitrary` integer policy, full UTF-8 byte operations, TypeScript, and conformance coverage remain; inline `@script` interop is designed and implementation is in progress |
+| Current task | `JS-001` in progress; single-module JavaScript ESM backend with recoverable errors, checked integer methods, eager spawn/tasks, and source maps |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented; project imports, channels and a scheduler, the `arbitrary` integer policy, `.d.ts`, full UTF-8 byte operations, TypeScript, and conformance coverage remain; inline `@script` interop is designed and implementation is in progress |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None |
-| Next action | Extend `JS-001` with project-wide typed modules/import emission, channels/scheduler, source maps, the `arbitrary` policy, and UTF-8 byte operations; then `TS-001` |
+| Next action | Extend `JS-001` with project-wide typed modules/import emission, channels/scheduler, the `arbitrary` policy, UTF-8 byte operations, and `.d.ts`; then `TS-001` |
 
 ---
 
@@ -874,6 +874,24 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 - Current boundary: project imports/re-exports, channels and a real scheduler,
   source maps, `.d.ts`, the `arbitrary` integer policy, and full UTF-8
   byte-slice/index operations remain.
+
+### 2026-10-26 - JS-001 line-level source maps
+
+- Command: `npm run ci`
+- Result: pass
+- Source maps: `generateJavaScript` accepts optional source text and emits a
+  version-3 map with the module path, embedded `sourcesContent`, and VLQ mappings
+  anchored at each emitted top-level declaration.
+- Build output: `astra build` writes `<module>.js.map`, rewrites `sources` to be
+  relative to the output directory, and appends a `sourceMappingURL` comment to
+  the generated module.
+- Tests: the end-to-end build test now checks the `.map` file, source content,
+  `file` field, non-empty mappings, and the sourceMappingURL comment.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 33 native/Wasm/boundary
+  tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Current boundary: project imports/re-exports, channels and a real scheduler,
+  the `arbitrary` integer policy, `.d.ts`, and full UTF-8 byte-slice/index
+  operations remain.
 
 ---
 

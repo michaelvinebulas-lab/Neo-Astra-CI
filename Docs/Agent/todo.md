@@ -26,7 +26,7 @@ project modules through one interpreter, and cross-module diagnostics and panic
 stacks carry canonical module paths. `JS-001` is in progress: the first
 single-module JavaScript ESM slice consumes typed AST/HIR from the compiler
 boundary and `astra build` writes runnable ESM. Project imports, channels and a
-scheduler, source maps, the `arbitrary` integer policy, and TypeScript remain. The `INTEROP-001` inline-script design
+scheduler, the `arbitrary` integer policy, `.d.ts`, and TypeScript remain. The `INTEROP-001` inline-script design
 is complete in `Docs/Design/V1/10-inline-script-interop.md`; implementation is
 parked for the FFI/backend phase. Open questions remain documented as proposals
 in `Docs/spec-v0.1.md` §17.
@@ -619,7 +619,8 @@ constant, and panic state.
 ## JS-001 - JavaScript ESM backend
 
 **Status:** In progress. The first single-module slice is implemented, including
-recoverable error effects, checked integer methods, and eager spawn/tasks.
+recoverable error effects, checked integer methods, eager spawn/tasks, and
+line-level source maps.
 
 **Goal**
 
@@ -661,7 +662,9 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - [x] Implement `spawn` and eager `Task` join/cancel, including unjoined task
       panics at function-scope exit.
 - [ ] Implement channels and a structured-concurrency scheduler.
-- [ ] Implement source maps and optional `.d.ts` artifacts.
+- [x] Emit line-level source maps with `sourcesContent` and a
+      `sourceMappingURL` comment.
+- [ ] Emit optional `.d.ts` artifacts.
 - [ ] Implement the `arbitrary` integer policy.
 - [ ] Implement full UTF-8 byte-slice and byte-index string operations.
 - [ ] Add conformance cases shared with `TS-001`.
@@ -689,6 +692,9 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
   outcome or re-raises a task panic; `cancel` marks the task cancelled. A
   function containing spawn owns a task scope, and an unjoined task panic is
   raised when that function exits. Channels and a real scheduler remain.
+- `astra build` writes a line-level `.js.map` with `sourcesContent`, rewrites the
+  source path for the output directory, and appends a `sourceMappingURL`
+  comment.
 
 **Evidence**
 
@@ -699,8 +705,8 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - `orchestrator/packages/cli/src/index.ts` implements `astra build`.
 - `orchestrator/tests/codegen-js.test.mjs` compiles real `.ns` sources, executes
   generated ESM, covers integer policies, recoverable failures, `?` propagation,
-  checked integer methods, eager spawn/join, task panic scope failure, rejects
-  unsupported constructs, and builds a project end to end.
+  checked integer methods, eager spawn/join, task panic scope failure, source
+  maps, rejects unsupported constructs, and builds a project end to end.
 - Verification: 459 Rust tests, 40 TypeScript unit tests, 33 native/Wasm/boundary
   tests (including 15 codegen/build tests), formatting, clippy with warnings denied,
   and `npm run ci` pass.
