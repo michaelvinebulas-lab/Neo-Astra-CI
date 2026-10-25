@@ -1,0 +1,865 @@
+# State Log
+
+This is the agent's persistent memory. Update it at the end of every substantial task. Do not rewrite history; append what changed and keep the snapshot current.
+
+---
+
+## Current snapshot
+
+| Field | Value |
+|---|---|
+| Last updated | 2026-10-25 |
+| Current phase | Phase 5 - Types, Nova, and NoPM |
+| Current task | `JS-001` in progress; first single-module JavaScript ESM slice complete |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the first JavaScript ESM backend/`astra build` slice implemented; project imports, recoverable JS error effects, tasks, source maps, TypeScript, and conformance coverage remain; inline `@script` interop is designed but not implemented |
+| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
+| Git repository | No |
+| Blockers | None |
+| Next action | Extend `JS-001` with project-wide typed modules/import emission, error effects, tasks, and source maps; then `TS-001` |
+
+---
+
+## Completed
+
+### 2026-10-23 — Architecture decisions
+
+- Reviewed the original Neo Astra concept.
+- Normalized naming to **Neo Astra**, `.ns`, and `astra`.
+- Confirmed D1–D21 in `docs/architecture.md`.
+- Defined the hybrid compiler split:
+  - TypeScript orchestrator
+  - Rust core engine
+  - Modular web and low-level backends
+- Defined modes, semantic policies, memory policy, error model, concurrency, FFI, packages, manifest rules, and strictness.
+- Added the proposed repository layout.
+
+### 2026-10-23 — Agent operating system
+
+Created `Docs/Agent/`:
+
+- `agent.md`
+- `system-prompt.md`
+- `edge-case-protocol.md`
+- `project-context-glossary.md`
+- `definition-of-done.md`
+- `runbook.md`
+- `io-schemas.md`
+- `state-log.md`
+- `todo.md`
+
+Purpose: give future agents a stable role, boundaries, workflow, schemas, and completion gate.
+
+### 2026-10-23 — V1 design package
+
+Created `Docs/Design/V1/`:
+
+- `README.md`
+- `01-language-design.md`
+- `02-compiler-design.md`
+- `03-runtime-and-memory.md`
+- `04-targets-and-backends.md`
+- `05-manifest-and-packages.md`
+- `06-tooling-and-workflow.md`
+- `07-quality-security-and-delivery.md`
+
+Scope: V1 as the first stable release, not the v0.1 implementation slice. The design covers the language contract, compiler split, runtime and memory, target backends, manifest/packages/FFI, tooling, and quality/security/delivery gates.
+
+The V1 design is a proposal. It does not reopen D1–D24 and does not claim implementation.
+
+### 2026-10-23 — v0.1 specification
+
+Created `Docs/spec-v0.1.md`:
+
+- Normative source, lexical, grammar, type, integer, string, error, memory, concurrency, mode, FFI, manifest, diagnostics, and conformance rules.
+- Semantics matrix for JS/TS, native, and Wasm.
+- Decision traceability table for D1–D24.
+- Provisional choices and open questions for V1 freeze review.
+- Grammar examples and complete end-to-end examples.
+
+`SPEC-001` through `SPEC-012` are complete. The specification is a draft, not a claim that every target or runtime feature is implemented.
+
+### 2026-10-23 — Keyword aliases (D22)
+
+Added exact lexical aliases to the language contract:
+
+- `fn` / `function`
+- `let` / `var`
+- `const` / `constant`
+- `type` / `typedef`
+- `struct` / `record`
+- `mut` / `mutable`
+- `pub` / `public`
+
+Aliases are spelling options only. The canonical formatter normalizes them to the short form. `var` does not imply mutability; `let mut` or `var mut` is required. `record` is an alias for `struct`, not a separate type kind.
+
+Updated `Docs/spec-v0.1.md`, `Docs/architecture.md`, the glossary, and the agent phase notes. `SPEC-013` is complete.
+
+### 2026-10-24 — Declaration visibility and imports/exports (D23)
+
+Added the optional declaration and module boundary system:
+
+- Normal declarations are module-local by default and explicitly exportable.
+- `pub`/`public` and `export` mark declarations as exported.
+- `private` declarations cannot be exported, imported, or re-exported.
+- Existing `import path` and `import path as alias` remain valid.
+- JS/TS-style named, default, namespace, side-effect, re-export, and default-export forms are accepted.
+- `export { ... }` can promote normal declarations, rename exports, and re-export from other modules.
+- `export *`, `export * as namespace`, `export * as default`, and `export default` are defined.
+- Type-only exports and imports are erased in JS/TS output; default exports must be values.
+- Private declarations may not leak through public signatures, public aliases, or public fields.
+- Visibility is compile-time only and never bypasses modes, capabilities, FFI allowlists, or package security.
+
+Updated `Docs/spec-v0.1.md`, `Docs/architecture.md`, `Docs/Design/V1/01-language-design.md`, and the agent operating docs. `SPEC-014` is complete.
+
+### 2026-10-24 — TypeScript orchestrator scaffold (SCAF-001)
+
+Created a root npm workspace and the TypeScript orchestrator packages:
+
+- `@neo-astra/cli` with `check`, `build`, `fmt`, `ast`, and `explain` entrypoints.
+- `@neo-astra/manifest` with exactly-one-manifest discovery and JSON/TOML parsing.
+- `@neo-astra/lsp` boundary stub.
+- `@neo-astra/plugins` package-source and backend adapter contracts.
+- `@neo-astra/codegen-js` and `@neo-astra/codegen-ts` backend stubs.
+- Root build, test, and `astra` scripts; `tsconfig` project references.
+- Manifest and CLI smoke tests.
+
+Verification: `npm run build` passed; `npm test` passed 4/4; `astra --help` and `astra --version` ran successfully. `SCAF-001` is complete.
+
+### 2026-10-24 — Rust core scaffold (SCAF-002)
+
+Created the Rust workspace and shared compiler boundaries:
+
+- `astra-core` with span, diagnostic, AST, HIR, IR, type, lexer, parser, and resolver modules.
+- `astra-capabilities` with the mode vocabulary and source requirement shape.
+- `astra-compiler-api` with protocol version, request/response types, and the compiler trait.
+- `astra-codegen-c`, `astra-codegen-wasm`, and `astra-codegen-llvm` stubs.
+- Workspace `Cargo.toml`, lockfile, and crate documentation.
+- Unit tests for spans, diagnostics, modes, and protocol responses.
+
+Verification: `cargo test --workspace` passed 6/6; `cargo fmt --all --check` passed; `cargo clippy --workspace --all-targets -- -D warnings` passed. `SCAF-002` is complete.
+
+### 2026-10-24 — Bootstrap command (TOOL-001)
+
+Added `scripts/bootstrap.mjs` and npm entrypoints:
+
+- `npm run bootstrap` installs JavaScript and Rust dependencies.
+- `npm run bootstrap:check` reports missing tools without installing.
+- `npm run bootstrap:verify` installs, then builds, tests, fmt-checks, and runs clippy on both workspaces.
+- Windows selects the GNU Rust toolchain when the MSVC linker is unavailable.
+- Clang/LLVM is best-effort because its installer may require elevation.
+
+### 2026-10-24 — Compiler API boundary (SCAF-003)
+
+Implemented the versioned compiler boundary:
+
+- JSON-RPC 2.0 request/response envelope with `apiVersion` `1.0`.
+- `initialize`, `check`, `compile`, and `shutdown` commands; unsupported frontend commands return structured errors.
+- Native `astra-compiler` binary reading stdin and writing stdout.
+- `astra-wasm` cdylib with raw linear-memory `astra_alloc`, `astra_free`, `astra_compile`, and `astra_protocol_version` exports.
+- Native and Wasm smoke tests in the orchestrator test suite.
+
+Verification: `cargo test --workspace` passed 9/9; `npm run test:boundary` passed 2/2; formatting and clippy passed. `SCAF-003` is complete.
+
+### 2026-10-24 — Build and CI automation (SCAF-004)
+
+Added the local and CI verification path:
+
+- `npm run ci` runs the TypeScript build/tests, native/Wasm boundary tests, Rust formatting, clippy, and Rust tests.
+- `scripts/ci.mjs` orchestrates the checks cross-platform.
+- `.github/workflows/ci.yml` runs on Ubuntu, Windows, and macOS with Node 24 and stable Rust.
+- CI installs `rustfmt`, `clippy`, and `wasm32-unknown-unknown`.
+
+Verification: `npm run ci` passed, including 4/4 TypeScript tests, 2/2 boundary tests, and 9/9 Rust tests. Phase 3 is complete.
+
+### 2026-10-24 — Lexer and spans (LEX-001)
+
+Implemented the first compiler frontend stage:
+
+- UTF-8 byte spans, leading BOM handling, whitespace, and newline tokens.
+- Exactly `//` comments; `/*`, `#`, and `--` produce `NS1001` and recover.
+- Unicode identifiers with canonical keyword and alias mapping.
+- Integer, float, string, and byte-string literals.
+- Escape validation, byte-range checks, and unterminated-literal diagnostics.
+- Longest-match operators, including `+%`, `-%`, `*%`, `/%`, `->`, and `=>`.
+- Lexical diagnostics `NS1001`–`NS1005`.
+- Compiler API `check` now reports lexical diagnostics before the parser stub.
+
+Verification: 15/15 `astra-core` tests passed; `cargo test --workspace`, formatting, clippy, and the boundary smoke tests pass.
+
+### 2026-10-24 — Syntax legend
+
+Added `Docs/syntax-legend.md`:
+
+- Source and comment rules.
+- Identifiers, keywords, and aliases.
+- Literals and escapes.
+- Every operator and punctuation form, with special-role notes and precedence.
+- Modules, imports, exports, and visibility.
+- Declarations, types, statements, patterns, errors, memory, modes, concurrency, and FFI.
+- Lookalike mistakes and an annotated example.
+
+Added the legend to the root README, the specification's quick-reference links, and the agent read order. Documentation-only; link and UTF-8 checks pass.
+
+### 2026-10-24 — Semicolon separator policy (D24)
+
+Recorded D24:
+
+- Newlines remain the normal statement and item boundaries.
+- `;` is an optional soft separator for related statements/items on one line.
+- Two constructs on one line must be separated by `;`.
+- A trailing `;` is allowed but unnecessary.
+- The `;` after a scope annotation is required.
+- There is no automatic semicolon insertion.
+- The formatter preserves explicit same-line `;` groups.
+
+Updated the specification grammar, architecture, V1 language design, formatter rules, syntax legend, and decision traceability.
+
+### 2026-10-24 — Parser and AST (PAR-001)
+
+Implemented the recursive-descent parser and full AST:
+
+- Module declarations, attributes, imports, exports, and visibility.
+- Functions, structs, enums, constants, type aliases, and foreign modules.
+- Composite types, function types, generics, and error sets.
+- Statements, expressions, patterns, match arms, and failure construction.
+- Scoped item/statement blocks and optional same-line `;` separators.
+- Structured parser diagnostics `NS2001`–`NS2007` with recovery.
+- Compiler API `check` now reports lexer and parser diagnostics before the resolver stub.
+
+Verification: 29/29 `astra-core` tests passed; workspace tests, formatting, clippy, and boundary smoke tests pass.
+
+### 2026-10-24 — Canonical AST formatter (FMT-001)
+
+Implemented the core formatter:
+
+- Deterministic, idempotent AST-based output.
+- Canonical aliases, visibility, spacing, and 4-space indentation.
+- Same-line `;` group preservation and required scope-header semicolons.
+- Imports, exports, declarations, types, patterns, nested blocks, and match arms.
+- JSON-RPC `format` method shared by native and Wasm boundaries.
+- Comment preservation remains pending as `FMT-002`.
+
+Verification: 36/36 `astra-core` tests passed; workspace tests, formatting, clippy, and boundary smoke tests pass.
+
+### 2026-10-24 — Comment preservation (FMT-002)
+
+Implemented comment trivia end to end:
+
+- `LexResult` collects valid `//` comments with byte spans and trimmed text.
+- `parse_with_comments` exposes comments without changing the AST contract.
+- Formatter preserves leading, trailing, standalone, empty-body, module, field, variant, match-arm, and EOF comments exactly once.
+- Comments inside inline expressions move to the nearest preserved syntax boundary.
+- Canonical formatter idempotence holds with comments.
+- Native JSON-RPC `format` preserves comments.
+
+Verification: 47/47 `astra-core` tests passed; workspace tests, formatting, clippy, and boundary smoke tests pass.
+
+### 2026-10-24 — Nova development runtime and NoPM (D25)
+
+Recorded the environment layer:
+
+- **Nova** is a development runtime that interprets typed `.ns` source directly. It reuses the Rust lexer, parser, resolver, and type checker; there is no second parser.
+- Nova starts as a typed-HIR tree-walking interpreter with `nova run`, `nova repl`, `nova watch`, `nova test`, and `nova eval`.
+- Production remains compiled through `astra build`. Nova may become a deployment runtime later, but it does not change the zero-VM production promise.
+- **NoPM** is the universal package manager. It resolves path, Git, npm, and Cargo packages first, with later PyPI, NuGet, and OCI adapters.
+- `core.lock.json` remains the single lockfile and records universal package IDs, integrity hashes, target variants, capabilities, lifecycle-script policy, and registry origin.
+- The universal registry gateway at `registry.neovastra.dev` can host `nova:` packages and proxy upstream ecosystems. Local development does not require it.
+- `core.json` / `core.toml` remains the only manifest, extended with `[nova]`, `[registry]`, and expanded `[packageSources]`.
+
+Created `Docs/Design/V1/08-nova-and-nopm.md`; updated architecture, V1 design index, runtime, manifest/packages, tooling, agent docs, and the task queue. Nova and NoPM land after the type checker and before code generation.
+
+### 2026-10-24 — Manifest formatting (FMT-004)
+
+Implemented canonical manifest formatting:
+
+- `@neo-astra/manifest` now exposes `parseManifestSource`, `formatManifestSource`, and `manifestFileForPath`.
+- JSON manifests are emitted with canonical key order, two-space indentation, and a trailing newline; `packageSources` follows adapter order and dynamic maps are sorted.
+- TOML manifests are formatted with Taplo; `#` comments are preserved and output is idempotent.
+- `astra fmt` formats a project's root `core.json` / `core.toml` alongside its `.ns` files, or a manifest passed directly.
+- `--check` and `--json` include manifest results.
+- A syntax-invalid or duplicate-key manifest prevents all writes, including `.ns` files.
+- BOM-prefixed manifests are normalized.
+- The compiler client is created lazily, so manifest-only formatting does not require the native compiler binary.
+
+Verification: `npm run ci` passed with 9/9 TypeScript tests, 12/12 boundary/CLI formatter tests, 47/47 `astra-core` tests, and 56 Rust tests total; Rust formatting and clippy passed.
+
+### 2026-10-24 — Resolver (TYPE-001)
+
+Implemented name, module, and export resolution in `astra-core`:
+
+- `ModuleResolver` supports standalone source checks and strict resolution over a keyed module graph.
+- Local value, type, and namespace symbol tables include declarations from top-level scoped blocks and `export default fn`.
+- All project-path and JS/TS-style import forms resolve into bindings; named, default, namespace, re-export, star, and namespace-export forms are validated.
+- Export surfaces retain value/type kinds, local/import/namespace/expression targets, and unresolved star sources.
+- Visibility rules enforce private exports, duplicate exports, duplicate defaults, default value targets, and private-type non-leakage through function signatures, aliases, constants, struct fields, enum fields, foreign functions, and private namespaces.
+- Structured diagnostics cover `NS3001`–`NS3013`, including duplicate declarations (`NS3011`), unresolved modules (`NS3012`), and cyclic named imports/re-exports (`NS3013`); conflicting visibility modifiers now report the spec-required `NS3002`.
+- The compiler boundary now returns resolved HIR metadata for `check`/`compile` instead of the `NS9999` scaffold failure.
+- HIR now retains source declarations for type checking and Nova, alongside resolved imports, symbols, and exports.
+
+Verification: `npm run ci` passed with 9/9 TypeScript tests, 12/12 boundary/CLI tests, 73/73 `astra-core` tests, and 83 Rust tests total; Rust formatting and clippy passed.
+
+### 2026-10-24 — Documentation reconciliation
+
+Aligned the remaining design and agent docs with D25 and the completed formatter work:
+
+- Spec §12 now includes `[nova]`, `[registry]`, universal package IDs, NoPM lockfile fields, and first/later adapters.
+- Spec §16 now lists Nova, NoPM, and manifest formatting in the first slice.
+- Architecture roadmap M1 now includes Nova and the path/Git/npm/Cargo package layer before code generation; M4 covers the registry and later adapters.
+- Runbook Phase 6 is now “Nova and NoPM”; Phase 9 is FFI and concurrency.
+- Tooling §9 documents the manifest formatter's JSON key order, TOML layout, duplicate-key rejection, BOM normalization, and trailing-newline rules.
+- Tooling §14 uses `nopm add` / `nopm remove` instead of the removed `astra add` / `astra remove` surface.
+- The state-log repository tree now distinguishes actual directories from planned `nopm`, `astra-nova`, and `registry` directories.
+
+Verification: 22 Markdown files checked; all local links resolve.
+
+### 2026-10-24 — Type checker (TYPE-002)
+
+Implemented typed-HIR checking in `astra-core`:
+
+- `checker::check_source`, `check_module`, and `check_resolved` run over parsed or resolved modules and return typed HIR plus expression annotations.
+- Structural types cover primitives, tuples, arrays, slices, fixed arrays, maps, functions, named declarations, generics, `Option`, and `Result`.
+- Local inference fills unannotated bindings and infers unambiguous generic-call arguments; function parameters, returns, and error effects remain explicit.
+- Structs, enums, aliases, generic declarations, constructors, fields, methods, indexing, and lvalues are checked with arity and substitution validation.
+- Exhaustiveness uses a recursive pattern matrix, so nested `Option`/`Result`, tuple, multi-field enum, and correlated boolean cases must genuinely be covered.
+- Effect-tracked checking records propagated and handled error effects, validates declared error sets, rejects unhandled fallible calls, and accepts nominal failure construction.
+- Mode checks cover `@requires`, `@tags`, scoped `@mode`, foreign-module system requirements, and scoped `@memory:manual`.
+- The compiler API now runs parse → resolve → check for both `check` and `compile`; type and mode diagnostics stop program output.
+- Generic struct initializers such as `Box<i32> { value: 1 }` now parse without ambiguity.
+- Cleaned checker warnings and removed unused span/name data from resolved checker internals.
+
+Verification: `npm run ci` passed with 9/9 TypeScript tests, 13/13 boundary/CLI tests, 109/109 `astra-core` tests, 120 Rust tests total, and clean Rust formatting and clippy.
+
+---
+
+## Active
+
+### 2026-10-24 — TYPE-003 project type surfaces (complete; boundary gap logged)
+
+- Command: `cargo test --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm run ci`
+- Result: pass
+- Context: work began after the last logged handoff and was interrupted. The tree was left non-compiling: `checker.rs` imported `crate::type_surface`, but `lib.rs` did not declare the module, and `Checker::new` used `options` after moving it.
+- Repair: declared `pub mod type_surface;`, captured `options.mode` before the struct move, collapsed a nested `if` for clippy, and renamed a test helper from the reserved word `private` to `unexported`.
+- Implemented: `ModuleTypeSurface`, `module_type_surface`, `check_module_graph`, and `CheckOptions::module_surfaces` with imported-value and imported-type-definition checking.
+- Verification: 123 `astra-core` tests (13 `type_surface`), 11 compiler API, 26 Nova library, 50 Nova CLI; 210 Rust tests total; `npm run ci` passes.
+- Remaining: `astra-compiler-api` still checks a single module with `check_resolved`; Nova and the CLI do not use the graph checker yet.
+- Reported gap (2026-10-24): project checking is unreachable across the compiler boundary because `CompileRequest` carries one `SourceUnit`. Imported symbols are `Type::Unknown` in the API, CLI, and Nova, so cross-module type errors pass silently. Filed as `TYPE-004` with acceptance criteria in `todo.md`; recorded as caveat 10 in `project-context-glossary.md` §8.
+- Process defect recorded: an undeclared `src/type_surface.rs` left the build red while CI reported nothing, because unbuilt modules are invisible. Rules 7–8 added to `todo.md` and caveat 11 added to the glossary.
+
+`NOVA-002` and `NOPM-001`–`NOPM-004` are complete; `TYPE-003` is complete and `TYPE-004` is the next task.
+
+---
+
+## Next
+
+1. Finish `JS-001`: project-wide typed modules and import/re-export emission, recoverable error effects and `?`, tasks/channels, source maps, checked integer methods, and UTF-8 byte string operations.
+2. Implement `TS-001` by reusing the JS typed-IR and emission infrastructure.
+3. Implement the first `INTEROP-001` slice after both JS and TS backends exist.
+4. Resolve the open questions in `Docs/spec-v0.1.md` §17 before V1 freeze, including inline-script acceptance, import-cycle policy, and TOML manifest key order.
+
+See `todo.md` for task IDs and acceptance criteria.
+
+---
+
+## Known issues
+
+| ID | Issue | Impact | Tracked by |
+|---|---|---|---|
+| KI-002 | A source file in `src/` that is not declared in `lib.rs` is never compiled | The file rots and the build can be red with no CI signal (this happened with `type_surface.rs`) | `todo.md` rules 7–8, glossary caveat 11 |
+
+KI-001 (`CompileRequest` single-source, closed by `TYPE-004`) and the Nova
+single-module limitation (closed by `NOVA-003`) are resolved. KI-002 is
+prevented by making module declaration part of the completion gate.
+
+---
+
+## Blockers
+
+None.
+
+Known tensions to keep visible:
+
+- UTF-8 core strings vs native JS strings
+- Web Worker serialization cost
+- Semantic policies vs modes
+- D4 all-target architecture vs staged implementation
+- Package ecosystem security
+
+These are documented, not unresolved decisions.
+
+---
+
+## Locked decisions
+
+D1–D25 are confirmed in `Docs/architecture.md`.
+
+| ID | Short name |
+|---|---|
+| D1 | Configurable memory; GC default |
+| D2 | Hybrid JS output |
+| D3 | Hybrid compiler |
+| D4 | Whole-system architecture |
+| D5 | Custom syntax style |
+| D6 | Integer policy |
+| D7 | String policy |
+| D8 | Effect-tracked errors |
+| D9 | Structured concurrency |
+| D10 | Polymorphic FFI |
+| D11 | Ecosystem package sources |
+| D12 | Neo Astra naming |
+| D13 | Mode selection pipeline |
+| D14 | Modes are capability layers |
+| D15 | Least-privileged inference |
+| D16 | Readability and AI-friendliness |
+| D17 | `//` comments only |
+| D18 | `core.json` or `core.toml` |
+| D19 | TypeScript + Rust compiler split |
+| D20 | Strictness policy |
+| D21 | Memory precedence |
+| D22 | Keyword aliases and canonical formatting |
+| D23 | Declaration visibility, imports, and exports |
+| D24 | Semicolon soft separators and scope-header separators |
+| D25 | Nova development interpreter; NoPM universal package manager; extended manifest; production stays compiled |
+
+Do not reopen these without an explicit user request.
+
+---
+
+## Environment
+
+| Field | Value |
+|---|---|
+| Workspace | `C:\Projects\Neo Astra` |
+| Platform | Windows |
+| Shell | PowerShell |
+| Source extension | `.ns` |
+| CLI | `astra`, with `nova` and `nopm` |
+| Manifest | `core.json` or `core.toml` |
+| Lockfile | `core.lock.json` |
+| Current docs | `Docs/architecture.md`, `Docs/spec-v0.1.md`, `Docs/Agent/*`, `Docs/Design/V1/*` |
+
+---
+
+## Repository files
+
+```text
+C:\Projects\Neo Astra\
+  Cargo.toml
+  Cargo.lock
+  package.json
+  package-lock.json
+  tsconfig.json
+  tsconfig.base.json
+  Docs\
+    architecture.md
+    spec-v0.1.md
+    Agent\
+      agent.md
+      system-prompt.md
+      edge-case-protocol.md
+      project-context-glossary.md
+      definition-of-done.md
+      runbook.md
+      io-schemas.md
+      state-log.md
+      todo.md
+    Design\
+      V1\
+        README.md
+        01-language-design.md
+        02-compiler-design.md
+        03-runtime-and-memory.md
+        04-targets-and-backends.md
+        05-manifest-and-packages.md
+        06-tooling-and-workflow.md
+        07-quality-security-and-delivery.md
+        08-nova-and-nopm.md
+  orchestrator\
+    README.md
+    packages\
+      cli\
+      compiler-client\
+      manifest\
+      lsp\
+      plugins\
+      codegen-js\
+      codegen-ts\
+    tests\
+      compiler-api.test.mjs
+      format-cli.test.mjs
+      manifest.test.mjs
+  crates\
+    README.md
+    astra-core\
+    astra-capabilities\
+    astra-compiler-api\
+    astra-nova\
+    astra-wasm\
+    astra-codegen-c\
+    astra-codegen-wasm\
+    astra-codegen-llvm
+  scripts\
+    bootstrap.mjs
+    test-boundary.mjs
+    ci.mjs
+    README.md
+  .github\
+    workflows\
+      ci.yml
+```
+
+Planned but not created: `orchestrator/packages/nopm/` and `registry/`.
+
+The lexer, parser, formatter, resolver, type checker, typed-HIR Nova interpreter,
+compiler client, CLI formatting, and manifest formatting are implemented; the
+Nova CLI, NoPM, and real backends are not implemented yet.
+
+---
+
+## Verification
+
+### 2026-10-23 — Agent docs
+
+- Command: none
+- Result: not run
+- Reason: documentation-only task
+- Manual check: files created under `Docs/Agent/`; links are relative to that folder.
+
+### 2026-10-23 — V1 design docs
+
+- Command: none
+- Result: not run
+- Reason: documentation-only task
+- Manual check: files created under `Docs/Design/V1/`; relative links follow the folder structure; no compiler source was changed.
+
+### 2026-10-23 — v0.1 specification
+
+- Command: PowerShell relative Markdown link check
+- Result: pass
+- Evidence: all relative Markdown links under `Docs/` resolve.
+- Manual check: `Docs/spec-v0.1.md` exists; contents and decision traceability are present; no compiler source was changed.
+- Open gate: the spec is a draft. §17 questions must be resolved before V1 freeze, but they do not block Phase 3 scaffolding.
+
+### 2026-10-23 — Keyword aliases (D22)
+
+- Command: PowerShell relative Markdown link check and alias grammar presence check
+- Result: pass
+- Evidence: all relative Markdown links under `Docs/` resolve; all alias nonterminals and D22 are present in `Docs/spec-v0.1.md`.
+- Manual check: D22 is recorded in `Docs/architecture.md`; aliases are exact lexical synonyms; formatter normalization is specified.
+
+### 2026-10-24 — Declaration visibility and imports/exports (D23)
+
+- Command: PowerShell relative Markdown link check and declaration grammar presence check
+- Result: pass
+- Evidence: links and UTF-8 checks pass; `private`, `export`, project-path and JS/TS import forms, re-export forms, default export, type-only erasure, `NS3001`–`NS3010`, and D23 are present in `Docs/spec-v0.1.md`.
+- Manual check: private export rejection, normal-to-export promotion, and default-export value rules are specified; no compiler source was changed.
+
+### 2026-10-24 — TypeScript orchestrator scaffold (SCAF-001)
+
+- Command: `npm install`, `npm run build`, `npm test`, `npm run astra -- --help`, `npm run astra -- --version`
+- Result: pass
+- Evidence: workspace installed; TypeScript build passed; 4/4 tests passed; CLI help and version output are correct.
+- Manual check: packages exist for CLI, manifest, LSP, plugins, and JS/TS codegen; the manifest package discovers exactly one `core.json` or `core.toml`; no Rust parser was introduced.
+
+### 2026-10-24 — Toolchain installation
+
+- Command: `winget install Rustlang.Rustup`, `rustup toolchain install stable-x86_64-pc-windows-gnu`, `rustup component add rustfmt clippy`, `cargo new/build/run`
+- Result: pass
+- Evidence: Rust 1.99.1, Cargo 1.99.1, rustfmt 1.10.0, clippy 0.1.99, `wasm32-unknown-unknown`, and `wasm32-wasip1` are installed; a temporary Cargo project built and ran successfully.
+- Manual check: the GNU toolchain is the rustup default because the MSVC linker is unavailable without Visual Studio C++ Build Tools. The compiler core does not depend on MSVC.
+
+### 2026-10-24 — Rust core scaffold (SCAF-002)
+
+- Command: `cargo build --workspace`, `cargo test --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+- Result: pass
+- Evidence: all workspace crates built; 6/6 unit tests passed; formatting and clippy passed with warnings denied.
+- Manual check: `astra-core` owns spans, diagnostics, AST, HIR, IR, and frontend boundaries; `astra-capabilities` owns the mode vocabulary; `astra-compiler-api` owns protocol types; backend crates are explicit stubs.
+
+### 2026-10-24 — Bootstrap command (TOOL-001)
+
+- Command: `npm run bootstrap:check`
+- Result: pass for installed tools; clang/LLVM remains optional and missing
+- Evidence: Node, npm, Git, CMake, rustup, cargo, rustc, rustfmt, and clippy are detected; `npm run bootstrap` installs missing dependencies and `npm run bootstrap:verify` builds and tests both workspaces.
+- Manual check: Node.js 22+ is the only manual prerequisite; Windows falls back to the GNU Rust toolchain when the MSVC linker is unavailable.
+
+### 2026-10-24 — Compiler API boundary (SCAF-003)
+
+- Command: `cargo test --workspace`, `npm run test:boundary`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`
+- Result: pass
+- Evidence: 9/9 Rust tests passed; native JSON-RPC smoke test passed; Wasm linear-memory smoke test passed; formatting and clippy passed.
+- Manual check: native and Wasm entrypoints share `astra-compiler-api`; unsupported frontend commands return structured JSON-RPC errors; no second parser exists.
+
+### 2026-10-24 — Build and CI automation (SCAF-004)
+
+- Command: `npm run ci`
+- Result: pass
+- Evidence: TypeScript build; 4/4 orchestrator tests; 2/2 native/Wasm boundary tests; Rust fmt, clippy, and 9/9 tests all passed.
+- Manual check: `scripts/ci.mjs` is cross-platform; `.github/workflows/ci.yml` covers Ubuntu, Windows, and macOS; no target-specific grammar was introduced.
+
+### 2026-10-24 — Lexer and spans (LEX-001)
+
+- Command: `cargo test -p astra-core`, `cargo test --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm run test:boundary`
+- Result: pass
+- Evidence: 15/15 `astra-core` tests passed; workspace tests, formatting, clippy, and boundary smoke tests passed.
+- Manual check: comments, Unicode identifiers, keywords/aliases, numeric/string literals, escapes, operators, newlines, BOM handling, and byte spans are covered; `check` reports lexical diagnostics before `NS9999`.
+
+### 2026-10-24 — Syntax legend
+
+- Command: PowerShell relative Markdown link and UTF-8 check
+- Result: pass
+- Evidence: `Docs/syntax-legend.md` is linked from the root README, spec quick-reference header, and agent read order; all relative links resolve; UTF-8 is valid.
+- Manual check: the legend covers symbols, precedence, declarations, imports/exports, types, errors, memory, modes, concurrency, FFI, and lookalike mistakes.
+
+### 2026-10-24 — Semicolon separator policy (D24)
+
+- Command: PowerShell relative Markdown link and UTF-8 check
+- Result: pass
+- Evidence: D24 is present in architecture and the specification traceability table; semicolon rules appear in the grammar, syntax legend, and V1 formatter rules; all relative links resolve and UTF-8 is valid.
+- Manual check: newlines remain the normal boundary; same-line constructs require `;`; scope headers keep a required `;`; no ASI.
+
+### 2026-10-24 — Parser and AST (PAR-001)
+
+- Command: `cargo test -p astra-core`, `cargo test --workspace`, `npm run ci`
+- Result: pass
+- Evidence: 29/29 `astra-core` tests passed; workspace tests, formatting, clippy, native/Wasm boundary tests, and `npm run ci` passed.
+- Manual check: module/import/export/item grammar, functions, structs, enums, constants, type aliases, foreign modules, types, expressions, patterns, scoped blocks, semicolon boundaries, and parser recovery are covered.
+
+### 2026-10-24 — Canonical AST formatter (FMT-001)
+
+- Command: `cargo test -p astra-core`, `npm run ci`
+- Result: pass
+- Evidence: 36/36 `astra-core` tests passed; native format boundary test passed; workspace tests, formatting, clippy, and boundary smoke tests passed.
+- Manual check: canonical aliases, indentation, nested blocks, match arms, same-line semicolon groups, scope headers, imports/exports, and types are covered. Comment preservation was still pending at this point and was completed in `FMT-002`.
+
+### 2026-10-24 — Comment preservation (FMT-002)
+
+- Command: `cargo test --workspace`, `npm run ci`
+- Result: pass
+- Evidence: 47/47 `astra-core` tests passed; native and Wasm boundary tests passed; workspace tests, formatting, clippy, and `npm run ci` passed.
+- Manual check: leading, trailing, standalone, empty-body, module, field, variant, match-arm, expression-position, and EOF comments are preserved exactly once; formatted output with comments is idempotent.
+
+### 2026-10-24 — CLI formatter client and wiring (FMT-003)
+
+- Command: `npm run build`, `npm run test:boundary`, `npm run ci`
+- Result: pass
+- Evidence: `@neo-astra/compiler-client` speaks JSON-RPC 2.0 to the native binary; `astra fmt` formats individual files and recursive directories; `--check`, `--json`, and `--compiler` are covered; 8/8 native/Wasm and formatter boundary tests passed; 4/4 TypeScript tests passed; 47/47 `astra-core` tests and all workspace tests passed; Rust formatting and clippy passed.
+- Manual check: comments and canonical aliases survive the CLI round trip; build directories are excluded; `--check` reports differences without writing; when any source has an error, no file is written; invalid UTF-8, missing binaries, malformed JSON-RPC responses, and source diagnostics produce structured errors.
+- Scope: `.ns` source only. Manifest formatting remains `FMT-004`.
+
+### 2026-10-24 — Nova and NoPM design (D25)
+
+- Command: PowerShell relative Markdown link and UTF-8 check
+- Result: pass
+- Evidence: `Docs/Design/V1/08-nova-and-nopm.md` exists; D25 is recorded in architecture and the decision tables; all relative links resolve; UTF-8 is valid.
+- Manual check: Nova reuses typed HIR and has no second parser; NoPM uses universal package IDs and `core.lock.json`; the registry gateway is optional for local development; the manifest remains exactly one of `core.json` or `core.toml`.
+
+### 2026-10-24 — Manifest formatting (FMT-004)
+
+- Command: `npm run ci`
+- Result: pass
+- Evidence: 9/9 TypeScript manifest/CLI tests; 12/12 native/Wasm and formatter boundary tests; 47/47 `astra-core` tests; 56 Rust tests total; Rust formatting and clippy passed.
+- Manual check: JSON key order is canonical; TOML `#` comments survive repeated formatting; manifest-only projects do not require the compiler binary; invalid manifests stop all writes; BOM-prefixed manifests are normalized; direct `core.toml` formatting and `--check` work.
+
+### 2026-10-24 — Resolver (TYPE-001)
+
+- Command: `npm run ci`
+- Result: pass
+- Evidence: 9/9 TypeScript tests; 12/12 native/Wasm and formatter boundary tests; 73/73 `astra-core` tests; 83 Rust tests total; Rust formatting and clippy passed.
+- Manual check: the 25 resolver tests cover symbol tables, direct and promoted exports, all import forms, strict module graphs, missing exports/modules, self-contained re-exports, star conflicts, explicit-export precedence, type-only star exports, default-export rules, duplicate declarations/bindings/exports, scoped items, generic parameters, private type/namespace leaks, and named cycles.
+- Open gate: import-cycle acceptance remains proposal 16 in spec §17; the current resolver rejects named cycles with `NS3013`.
+
+### 2026-10-24 — Type checker (TYPE-002)
+
+- Command: `npm run ci`
+- Result: pass
+- Evidence: 9/9 TypeScript tests; 13/13 native/Wasm, type-diagnostic, and formatter boundary tests; 109/109 `astra-core` tests; 120 Rust tests total; Rust formatting and clippy passed.
+- Manual check: positive and negative tests cover primitive/composite types, aliases, generic structs/enums/calls, struct construction and fields, arrays/maps/tuples/indexing, argument and return boundaries, unknown identifiers/types, mutability, all-path returns, recursive nested exhaustiveness, correlated tuple/enum patterns, effect handling and propagation, declared error sets, failure construction, mode requirements, capability tags, scoped mode narrowing, foreign-module requirements, and manual memory.
+- Compiler API: `check` and `compile` now reject `NS4001`/`NS5001` inputs before producing a program; Rust API tests cover both paths.
+- Open gates: capability inference (`MODE-001`) and the broader error-model task (`ERR-001`) remain separate; imported modules outside the module graph stay opaque by design.
+
+### 2026-10-24 — Nova typed-HIR interpreter (NOVA-001)
+
+- Command: `cargo test --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm run ci`
+- Result: pass
+- Evidence: 26/26 `astra-nova` tests; 110/110 `astra-core` tests; 147 Rust tests total including 11 compiler API tests; Rust formatting and clippy passed; `npm run ci` passed end to end with 9/9 TypeScript tests and 13/13 boundary/CLI tests.
+- Manual check: the interpreter consumes `CheckResult` HIR and never re-parses source; tests cover hello-world output, recursion, structs, enums, tuple structs, arrays and bounds panics, insertion-ordered maps, mutable tuples, Unicode string semantics, `Option`, `Result`, matching, `!` propagation, deferred cleanup order, panic stacks, abort without defers, deterministic eager tasks with inferred `Task<T>` results, eager-task panic scoping, checked and wrapping integer behavior, constants, host stderr, imported-value rejection, missing entry points, and frontend diagnostic forwarding.
+- Manual memory: the checker now exposes every `@memory:manual` span through `CheckResult.manual_memory_scopes`; Nova rejects those programs before execution with `NV0001`, even in system mode.
+- Runtime diagnostics: stable `NV0000`-`NV0007` codes are documented in spec §14.7. Frontend diagnostics keep their original `NSxxxx` codes.
+- Scope boundary: one checked module executes at a time. Imported runtime values and foreign modules fail clearly when reached; project-wide linking, FFI, channels, OS threads, and Web Workers remain later work.
+
+### 2026-10-24 — Nova project linking design (NOVA-003A)
+
+- Command: documentation review against `resolver.rs`, `hir.rs`, `checker.rs`, `interpreter.rs`, `value.rs`, `error.rs`, and spec §3.16/§12.5
+- Result: pass
+- Evidence: `Docs/Design/V1/09-nova-project-linking.md` defines canonical `ModuleId` values, a resolver `ModuleGraph` import map, a deterministic loader, module-aware runtime tables, imported function/constant/struct/enum/namespace resolution, module-aware diagnostics, and a staged implementation plan.
+- Key decision: one `Interpreter` owns many `RuntimeModule` tables and a `current_module` context; it is not one interpreter per module.
+- Key prerequisite: `TYPE-003` must resolve imported symbol types through target export surfaces. Per-module checking still treats imported types as `Unknown`, so multi-module execution is not fully type-safe until it lands.
+- Open decisions: import-cycle policy (spec §17 proposal 16), anonymous default-expression retention in HIR, external `std:`/bare module handling, and Windows path/case normalization.
+
+### 2026-10-24 — Nova CLI foundation (NOVA-002A)
+
+- Command: `cargo test -p astra-nova`, `cargo fmt --all --check`, `cargo clippy -p astra-nova --all-targets -- -D warnings`, `npm run ci`
+- Result: pass
+- Evidence: 26 Nova library tests and 31 Nova CLI integration tests; 110 `astra-core` tests; 11 compiler API tests; 178 Rust tests total; Rust formatting and clippy passed; `npm run ci` passed end to end with 9/9 TypeScript tests and 13/13 boundary/CLI tests.
+- Implementation: `crates/astra-nova/src/bin/nova/main.rs` provides `nova run`, `nova eval`, `nova version`, help, `--mode`, text diagnostics, and one-object JSON reports. Program stdout/stderr are captured in JSON mode.
+- Diagnostics: frontend `NSxxxx` codes are preserved with paths and one-based line/column positions; runtime failures use `NVxxxx`; usage errors exit 2, source/input/runtime failures exit 1.
+- Eval behavior: `nova eval` accepts a complete module or a bare expression/statement list, wrapping the latter in a temporary `main` block while still parsing through `astra-core`.
+- Follow-ups: `nova repl`, `nova watch`, `nova test`, manifest `[nova].entry` discovery, packaged install entry, and project linking after `TYPE-003`.
+- Developer entry: `npm run nova -- <command>` wraps the Rust binary.
+
+### 2026-10-24 — Nova REPL, watch, and test runner (NOVA-002B)
+
+- Command: `cargo test -p astra-nova`, `cargo fmt --all --check`, `cargo clippy -p astra-nova --all-targets -- -D warnings`, `npm run ci`
+- Result: pass
+- Evidence: 26 Nova library tests and 42 Nova CLI integration tests; 110 `astra-core` tests; 11 compiler API tests; 189 Rust tests total; Rust formatting and clippy passed; `npm run ci` passed end to end with 9/9 TypeScript tests and 13/13 boundary/CLI tests.
+- REPL: line-oriented session persists declarations, `let` bindings, and assignments through a synthetic checked module rebuilt per input; errors do not end the session; `:help`, `:quit`, and JSON mode are supported.
+- Watch: portable polling watcher for `nova watch` and `nova run --watch`; `--once` makes the path deterministic for tests.
+- Test runner: recursive `*.test.ns` discovery, `@test` execution, `main` fallback, parameter validation, per-test output, summaries, and `--watch` reruns.
+- Scope: manifest `[nova].entry` discovery, test filters/parallelism, project linking, and hot replacement remain.
+
+### 2026-10-24 — Nova manifest entry discovery (NOVA-002C)
+
+- Command: `cargo test -p astra-nova`, `cargo fmt --all --check`, `cargo clippy -p astra-nova --all-targets -- -D warnings`, `npm run ci`
+- Result: pass
+- Evidence: 26 Nova library tests and 50 Nova CLI integration tests; 110 `astra-core` tests; 11 compiler API tests; 197 Rust tests total; Rust formatting and clippy passed; `npm run ci` passed end to end.
+- Implementation: `nova run` and `nova watch` now resolve `[nova].entry` from exactly one `core.json` or `core.toml` when no file is supplied. JSON and TOML manifests are supported.
+- Validation: rejects missing/ambiguous manifests, missing `[nova].entry`, non-`.ns` entries, absolute paths, paths escaping the project root, and missing files.
+- Boundary: full manifest validation and formatting remain owned by the TypeScript manifest package and `astra fmt`; Nova reads only the development entry path.
+
+### 2026-10-24 — NoPM universal package model (NOPM-001A)
+
+- Command: `npm run build`, `node --test orchestrator/tests/nopm.test.mjs`, `npm run ci`
+- Result: pass
+- Evidence: `@neo-astra/nopm` parses and canonically formats `nova:`, `npm:`, `cargo:`, `git+`, and `path:` IDs; structured descriptors; alias/spec validation; deterministic dependency graph ordering; cycle detection; missing/duplicate descriptor diagnostics; frozen graph outputs; 9 NoPM tests.
+- Diagnostics: provisional `NP0001` invalid package ID, `NP0002` invalid dependency declaration or duplicate descriptor, `NP0003` missing descriptor, `NP0004` dependency cycle, `NP0005` conflicting root alias.
+- Boundary: offline model only. No network, registry, lockfile writing, store, install commands, lifecycle scripts, or target/mode filtering yet.
+- Verification: `npm run ci` passes with 18 TypeScript tests, 13 boundary tests, 110 `astra-core` tests, 11 compiler API tests, 26 Nova library tests, 50 Nova CLI tests, and 197 Rust tests total.
+
+### 2026-10-24 — NoPM target/mode resolution and lockfile model (NOPM-001B)
+
+- Command: `npm run build`, `node --test orchestrator/tests/nopm.test.mjs`, `npm run ci`
+- Result: pass
+- Evidence: target-aware package filtering by target name, backend, or triple; capability-derived mode checks; multi-target resolution; canonical `core.lock.json` creation, formatting, parsing, and validation; 6 additional NoPM tests (15 total).
+- Diagnostics: added provisional `NP0006` target incompatibility, `NP0007` mode incompatibility, and `NP0008` invalid lockfile or missing integrity/commit.
+- Lockfile rules enforced: version 1, canonical package IDs, sorted packages/dependencies, remote integrity, pinned Git commits, lifecycle-script flag, deterministic JSON key order, and trailing newline.
+- Boundary: lockfile model only. File I/O, staleness checks, content-addressed store, adapters, and install commands remain.
+- Verification: `npm run ci` passes with 24 TypeScript tests, 13 boundary tests, 110 `astra-core` tests, 11 compiler API tests, 26 Nova library tests, 50 Nova CLI tests, and 197 Rust tests total.
+
+### 2026-10-24 — NoPM adapters, CLI, store, and registry client (NOPM-001C/NOPM-002/NOPM-003 partial)
+
+- Command: `npm run build`, `node --test orchestrator/tests/nopm.test.mjs`, `npm run ci`
+- Result: pass
+- Evidence: 27 NoPM tests and 4 registry tests; 40 TypeScript tests total; 13 boundary tests; 197 Rust tests total; `npm run ci` passed end to end.
+- Lockfile: added stable manifest hashing, staleness checks, missing-lockfile diagnostics, atomic reads/writes, and canonical formatting.
+- Store: added content-addressed installation with integrity verification, tarball extraction, Git cache copying, store index generation, and path/remote package support.
+- CLI: added `nopm lock`, `nopm tree`, `nopm install`, `nopm version`, and `nopm help`; `--locked`/`--frozen` verify the manifest hash and block stale installs.
+- Adapters: local path, Git pinned to commits, npm via the local npm CLI with lifecycle scripts disabled, Cargo ranges/exact versions through crates.io, PyPI, NuGet, and OCI distributable layers.
+- Registry: client and an in-process HTTP gateway are implemented for exact `nova:` packages, including publish, versions, search, yank, audit, Ed25519 signing/verification, and upstream mirroring. Production key management and federation hardening remain future work.
+- Diagnostics: added `NP0009` stale lockfile, `NP0010` lockfile write failure, `NP0011` adapter/path/fetch/install failure, and `NP0012` CLI usage.
+
+### 2026-10-24 — TYPE-003 build repair and core surfaces
+
+- Command: `cargo test --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm run ci`
+- Result: pass
+- Evidence: 210 Rust tests total (123 `astra-core`, 11 compiler API, 26 Nova library, 50 Nova CLI); 13 new `type_surface` tests; 40 TypeScript tests; 13 boundary tests; `npm run ci` passed end to end.
+- Repair: the tree did not compile because `checker.rs` imported an undeclared `crate::type_surface` module and `Checker::new` used `options` after moving it. Added the module declaration, captured `options.mode` first, fixed a clippy `collapsible_if`, and renamed a test helper from the reserved word `private`.
+- Scope: core-level `check_module_graph` is available and tested; compiler API, Nova, and CLI wiring remain.
+
+### 2026-10-25 — TYPE-004 multi-source compiler API
+
+- Command: `cargo fmt --all --check`, `cargo test -p astra-compiler-api`, `npm run build`, `npm run test:boundary`, `npm run ci`
+- Result: pass
+- Repair: removed a duplicated trailing block in `crates/astra-compiler-api/src/lib.rs` that left an unmatched `)` after the test module; formatting then passed.
+- API: added `ProjectCheckRequest`, `ProjectSourceUnit`, `ModuleCheckResult`, `ProjectCheckResponse`, and `check_project`; exposed the additive JSON-RPC `check_project` method without changing the single-source `check`/`compile` shapes.
+- Semantics: sources are parsed up front, checked through `check_module_graph`, and diagnostics are attributed to module key/path. Responses preserve request order and include `program` plus `metadata.moduleOrder`, `target`, and `mode`.
+- Client: `@neo-astra/compiler-client` now exposes and validates `checkProject()`.
+- Tests: 7 compiler API unit tests and 3 boundary integration tests cover valid two-module projects, cross-module type/argument failures, module ordering, empty sources, and per-module parse errors.
+- Verification: `npm run ci` passes with 40 TypeScript tests, 16 boundary tests, 123 `astra-core` tests, 18 compiler API tests, 26 Nova library tests, 50 Nova CLI tests, and 217 Rust tests total.
+
+### 2026-10-25 — MODE-001 mode inference and ERR-001 effect provenance
+
+- Command: `cargo fmt --all --check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm run ci`
+- Result: pass
+- Evidence: 413 Rust tests (13 `astra-capabilities`, 24 compiler API, 135 `astra-core` library, 35 checker stress, 26 formatter, 26 lexer, 19 parser, 20 resolver, 26 Nova library, 53 Nova CLI, 36 interpreter stress); 40 TypeScript tests; 18 native/Wasm boundary tests; Rust formatting and clippy passed; `npm run ci` passed end to end.
+- MODE-001: implemented `astra-capabilities` with `ModeInference`, `ModeReason`, `ModeReasonKind`, containment `join_modes`, `infer_module_mode`, `infer_module_mode_named`, `infer_project`, and `ModeInference::explain`.
+- Inference inputs: module/item `@requires`, `@tags`, foreign modules, manual-memory scopes, console built-ins, scoped `@mode:` blocks, and a local call graph propagated to a fixed point including recursion.
+- Inference joins: `core`/`app`/`web`/`system` use containment, not rank. `web` plus `system` is unsatisfiable and reports `NS5006`. Explicit module requirements narrower than the project requirement report `NS5001`.
+- Compiler API: an omitted `mode` is inferred; an explicit `mode` remains authoritative and is still validated. Responses expose `mode`, `modeSource`, `requiredMode`, `inferredModes`, `modeReasons`, and `modeExplanation`.
+- Nova: `NovaOptions::infer_mode` defaults to true; `run`, `eval`, `repl`, `watch`, and `test` resolve the mode before checking. `--mode` disables inference. JSON reports use the resolved mode. `resolve_source_mode` exposes the decision to library callers.
+- ERR-001: `ErrorEffect` now carries a span; expression and lvalue results carry effect provenance; effects merge deterministically by nominal type while retaining the first site. Unhandled effects report `NS4011` at the call/failure site, and propagation reports `NS4012`/`NS4013` at the propagation site.
+- Failure construction now rejects non-nominal, non-constructible, and ambiguous multi-variant enum errors; named fields validate types at the field value, and missing/duplicate fields use `NS4016`. Exhaustive `match` consumes the scrutinee effect; a non-exhaustive match reports `NS4010` only.
+- Cross-module error effects are preserved through type surfaces. Imported type definitions are now registered before local signatures are resolved, so an imported type in `! E` resolves instead of becoming `NS4003` plus `NS4012`. Regression tests cover precise spans, duplicate/multiple effects, arguments and collections, match handling, malformed failures, cross-module effects, and generic function-value calls.
+- Repairs: `None` now has an unconstrained `Option<Unknown>` payload so `None.unwrap_or(value)` works; stale parser/checker/interpreter stress tests were corrected for `_` bindings, enum syntax, expected `NS3002`, string lengths, and literal `\n` escapes.
+- Docs: specification, architecture, tooling/Nova design, runbook, glossary, README, todo, compiler-client comments/types, and this state log updated.
+- Next: implement `NOVA-003` project module loading and runtime linking.
+
+### 2026-10-25 — INTEROP-001 inline `@script` design
+
+- Command: documentation-only change; no build or test run required.
+- Result: design complete, implementation pending.
+- Proposal: added `Docs/Design/V1/10-inline-script-interop.md` for declaration-level `{@script:<language> as <name>; ... }` blocks.
+- Syntax: required `@mode(...)`, typed `@exports { ... }`, verbatim `@impl` body, and an explicit `@end` line followed by the closing `}`. The body never enters the Nova parser or checker.
+- Boundary: calls use a module-local namespace such as `math.add(...)`; exported signatures use the existing FFI type map; unsupported or unsafe signatures fail before code generation.
+- Targets: JS/TS first on JS targets, C/C++ second on native through a C ABI, Python deferred behind an embedded runtime, Java deferred until a JVM backend. Nova rejects script calls with `NV0008` in V1.
+- Diagnostics: provisional `NS7001`–`NS7008` for unknown languages, target mismatch, malformed blocks, unsafe exports, namespace collisions, manifest mappings, and link failures.
+- Security: raw bodies are opaque and unsafe; `@mode` is trusted, not verified; `astra check`/`fmt` never execute foreign code; NoPM lifecycle rules are unchanged.
+- Docs: updated the specification open questions, architecture D10 extension, V1 design baseline (`01`, `02`, `04`, `05`, `06`, `07`, `08`, `README`), runbook, glossary, syntax legend, root README, todo, and this state log.
+- Next: keep `NOVA-003` as the next implementation task. The order is `JS-001` → `TS-001` → the first `INTEROP-001` slice; interop does not start until both JS and TS backends exist.
+
+### 2026-10-25 - NOVA-003 project module loading and runtime linking
+
+- Command: `cargo test --workspace`, `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm run ci`
+- Result: pass
+- Loader: `crates/astra-nova/src/project.rs` derives canonical `ModuleId`s from project-relative paths, validates root containment, rejects invalid/case-colliding ids, detects missing modules and cycles, loads UTF-8 sources once, checks dependencies first, and returns sorted/deduplicated module diagnostics.
+- Resolver: `crates/astra-core/src/resolver.rs` adds `ModuleGraph` with an explicit `(importer, specifier) -> canonical target` map and specifier collection; `ModuleResolver::from_graph` is used by the project loader.
+- Runtime: one `Interpreter` owns per-module function/constant/struct/enum/annotation tables. `FunctionValue`, constructors, enum namespaces, module namespaces, fault attribution, and panic frames carry module identity. Imported functions/constants, named/tuple structs, enums, namespace imports, named/star re-exports, and default functions link across modules.
+- Type surface: `module_type_surface_with_surfaces` propagates re-exported values, namespace members, and imported type definitions; the checker builds imported tuple-struct constructors and resolves imported enum members.
+- CLI: `nova run` and watch use the project loader, while `nova eval` remains a single in-memory module. Text and JSON diagnostics use module paths.
+- Tests: 7 new project-loader integration tests and expanded project/runtime/type-surface/resolver tests cover multi-file loading, dotted paths, re-exports, namespaces, defaults, tuple structs/enums, constants, side-effect imports, cross-module panics/faults, manual-memory preflight, invalid UTF-8, case mismatches, root escapes, absolute paths, and deterministic diagnostics.
+- Verification evidence: 456 Rust tests, 40 TypeScript tests, 18 native/Wasm boundary tests, formatting, clippy with warnings denied, and `npm run ci` all pass.
+- Known boundary: anonymous default expressions remain `NV0003`; external/`std:` modules remain rejected until backend adapters exist; namespace enum/struct type checking is intentionally opaque where the surface cannot carry a nested type identity.
+
+### 2026-10-25 - JS-001 first JavaScript ESM slice
+
+- Command: `cargo test --workspace`, `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm run build`, `npm run test:boundary`, `npm run ci`
+- Result: pass
+- Compiler API: added `IntegerPolicy`, `ModuleIr`, and the typed `ir` payload on `compile`; added serde serialization to the AST, HIR, semantic types, and `TypeAnnotation`; `compile` now rejects non-JS/TS targets with `NS8001`.
+- JS backend: implemented `orchestrator/packages/codegen-js` with serialized typed-module definitions and a readable ESM emitter. It supports functions, constants, locals, control flow, defer, calls, assignments, arrays, structural maps, tuples, structs, enums, options, results, match patterns, built-ins, checked collection/string/option/result methods, named/default exports, and tree-shaken local helpers.
+- Integer semantics: wrapping helpers for fixed-width signed/unsigned integers, `BigInt` for `i64`/`u64`, and checked helpers for `safe-checked`. Floats are tagged objects so `f64`/`f32` rendering preserves `.0`; `f32` operations use `Math.fround`. The `arbitrary` policy and checked integer methods are explicitly unsupported.
+- Representation: `Option` and `Result` are tagged objects; maps use a structural-key helper so key equality and insertion order match the language contract. Generated code has no framework dependency, no hidden global state, and no source re-parsing.
+- CLI: `astra build [dir] [--target name] [--compiler path] [--json]` selects a target (`--target`, `ASTRA_TARGET`, `build.defaultTarget`), reads `nova.entry`, chooses target/build mode and `math.integers`, calls `compile`, emits one ESM module under `outDir`, and writes `{"type":"module"}` when absent.
+- Diagnostics: backend failures use `NS8001` and `NS8003` with source locations; project imports, error propagation, tasks, arbitrary integers, and manual memory fail before emission.
+- Tests: 9 new end-to-end codegen/build tests compile real `.ns` sources, execute generated ESM, check struct/enum/option/map/tuple/defer/float rendering, named/default exports, verify wrapping and checked overflow behavior, reject unsupported constructs, and run `astra build` output through Node.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 27 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Current boundary: `astra build` emits one module and rejects project imports with `NS8001`; recoverable error effects, `?`, `fail`, spawn/tasks/channels, source maps, `.d.ts`, checked integer methods, `arbitrary`, and full UTF-8 byte slicing remain.
+
+---
+
+## Handoff
+
+```markdown
+### Handoff
+- Phase: 5 - Types, Nova, and NoPM / Phase 7 backend start
+- Task: JS-001 in progress; first single-module JavaScript ESM slice complete
+- Status: Ready
+- Files changed: `crates/astra-core/src/ast.rs`, `crates/astra-core/src/hir.rs`, `crates/astra-core/src/types.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/codegen-js/src/{index,ir,generate}.ts`, `orchestrator/packages/codegen-js/package.json`, `orchestrator/packages/compiler-client/src/index.ts`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/cli/package.json`, `orchestrator/packages/cli/tsconfig.json`, `orchestrator/tests/codegen-js.test.mjs`, `scripts/test-boundary.mjs`, `package-lock.json`, `README.md`, `Docs/Agent/todo.md`, `Docs/Agent/runbook.md`, `Docs/Design/V1/04-targets-and-backends.md`, `Docs/Design/V1/06-tooling-and-workflow.md`, `Docs/Design/V1/README.md`, `Docs/Agent/state-log.md`
+- Verification: `npm run ci` green (459 Rust, 40 TypeScript unit, 27 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
+- Blockers: none
+- Next action: extend JS-001 with project-wide typed modules and import/re-export emission, then recoverable error effects, tasks, source maps, checked integer methods, and full UTF-8 byte strings; then TS-001
+```
+
+
+---
+
+## Update protocol
+
+When updating this file:
+
+1. Change `Last updated`.
+2. Update `Current snapshot`.
+3. Append a dated entry under `Completed` or `Active`.
+4. Update `Next`.
+5. Update `Blockers`.
+6. Add verification evidence.
+7. Refresh `Handoff`.
+
+Do not delete old entries unless they are factually wrong. If a decision changes, record the supersession instead of erasing history.

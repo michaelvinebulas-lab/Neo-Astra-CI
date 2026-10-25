@@ -1,0 +1,32 @@
+{
+  "name": "neo-astra",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Neo Astra compiler workspace.",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "workspaces": [
+    "orchestrator/packages/*"
+  ],
+  "scripts": {
+    "bootstrap": "node scripts/bootstrap.mjs",
+    "bootstrap:check": "node scripts/bootstrap.mjs --check",
+    "bootstrap:verify": "node scripts/bootstrap.mjs --verify",
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "typecheck": "tsc -b",
+    "test": "node --test orchestrator/tests/manifest.test.mjs orchestrator/tests/nopm.test.mjs orchestrator/tests/registry.test.mjs",
+    "test:boundary": "node scripts/test-boundary.mjs",
+    "ci": "node scripts/ci.mjs",
+    "verify": "npm run build && npm test && npm run test:boundary && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings",
+    "astra": "node orchestrator/packages/cli/dist/index.js",
+    "nova": "cargo run -q -p astra-nova --bin nova --",
+    "nopm": "node orchestrator/packages/nopm/dist/cli.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}

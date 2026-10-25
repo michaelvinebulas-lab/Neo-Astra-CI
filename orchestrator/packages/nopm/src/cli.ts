@@ -1,0 +1,599 @@
+#!/usr/bin/env node
+
+//! NoPM command-line entry point.
+//!
+//! The CLI currently supports project locking, tree inspection, and installation
+//! for path packages. Remote adapters are staged behind the same command surface.
+
+import {
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
+
+import { ManifestError } from "@neo-astra/manifest";
+
+import {
+  LOCKFILE_NAME,
+  NopmError,
+  assertLockfileCurrent,
+  createLockfile,
+  formatLockfile,
+  formatPackageId,
+  parseDependencyRequest,
+  parsePackageId,
+  readLockfileFile,
+  resolveForTargets,
+  type DependencyRequest,
+  type PackageDescriptor,
+} from "./index.js";
+import { resolvePathPackage } from "./path-adapter.js";
+import { resolveNpmPackage, type AdapterResolution } from "./npm-adapter.js";
+import { resolveGitPackage } from "./git-adapter.js";
+import { resolveCargoPackage } from "./cargo-adapter.js";
+import { resolvePyPiPackage } from "./pypi-adapter.js";
+import { resolveNuGetPackage } from "./nuget-adapter.js";
+import { resolveOciPackage } from "./oci-adapter.js";
+import { resolveRegistryPackage } from "./registry-client.js";
+import { installLockedPackages } from "./store.js";
+import { readProject, type ProjectManifest } from "./project.js";
+
+const VERSION = "0.1.0";
+const GENERATED_BY = `nopm/${VERSION}`;
+const COMPILER = { version: VERSION, apiVersion: "1.0" } as const;
+
+const HELP = `NoPM universal package manager
+
+Usage:
+  nopm <command> [options]
+
+Commands:
+  lock [dir] [--json]        Resolve dependencies and write core.lock.json
+  tree [dir] [--json]        Print the locked dependency package list
+  install [dir] [--locked|--frozen] [--json]
+                             Verify and install locked packages
+  search <query> [--registry <url>] [--json]
+                             Search a registry gateway
+  audit <id> [--registry <url>] [--json]
+                             Read registry audit metadata for a package
+  why <name>                 Show packages that depend on a package
+  update [dir] [--json]      Re-resolve the lockfile
+  version                    Print the NoPM version
+  help                       Show this help
+
+Current adapters:
+  path, git, npm, cargo, pypi, nuget, oci
+
+Staged adapters:
+  none
+
+Exit codes:
+  0  success
+  1  package, lockfile, or installation failure
+  2  usage error
+`;
+
+interface CliOptions {
+  readonly command: string;
+  readonly directory: string;
+  readonly target: string | null;
+  readonly registry: string | null;
+  readonly json: boolean;
+  readonly locked: boolean;
+  readonly frozen: boolean;
+}
+
+interface Diagnostic {
+  readonly code: string;
+  readonly message: string;
+  readonly path: string | null;
+}
+
+async function main(): Promise<number> {
+  try {
+    const options = parseArgs(process.argv.slice(2));
+    switch (options.command) {
+      case "help":
+        process.stdout.write(HELP);
+        return 0;
+      case "version":
+        process.stdout.write(`nopm ${VERSION}\n`);
+        return 0;
+      case "lock":
+        return await runLock(options);
+      case "update":
+        return await runLock({ ...options, command: "update" });
+      case "tree":
+        return runTree(options);
+      case "install":
+        return await runInstall(options);
+      case "search":
+        return await runSearch(options);
+      case "audit":
+        return await runAudit(options);
+      case "why":
+        return runWhy(options);
+      default:
+        throw usage(`Unknown command '${options.command}'.`);
+    }
+  } catch (error) {
+    return emitError(error, process.argv.includes("--json"));
+  }
+}
+
+function parseArgs(args: readonly string[]): CliOptions {
+  const json = args.includes("--json");
+  const locked = args.includes("--locked");
+  const frozen = args.includes("--frozen");
+  const positional: string[] = [];
+  let registry: string | null = null;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index];
+    if (argument === undefined) {
+      continue;
+    }
+    if (argument === "--json" || argument === "--locked" || argument === "--frozen") {
+      continue;
+    }
+    if (argument === "--registry") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("-")) {
+        throw usage("The --registry option requires a base URL.");
+      }
+      registry = value;
+      index += 1;
+      continue;
+    }
+    if (argument === "-h" || argument === "--help") {
+      return baseOptions("help", json, locked, frozen, registry);
+    }
+    if (argument === "-v" || argument === "--version") {
+      return baseOptions("version", json, locked, frozen, registry);
+    }
+    if (argument.startsWith("-")) {
+      throw usage(`Unknown option '${argument}'.`);
+    }
+    positional.push(argument);
+  }
+
+  const [command, ...rest] = positional;
+  if (command === undefined) {
+    return baseOptions("help", json, locked, frozen, registry);
+  }
+  if (rest.length > 1) {
+    throw usage(`nopm ${command} accepts at most one argument.`);
+  }
+  if (locked && frozen) {
+    throw usage("Use only one of --locked or --frozen.");
+  }
+
+  const targetCommands = new Set(["search", "audit", "why"]);
+  if (targetCommands.has(command)) {
+    return {
+      command,
+      directory: process.cwd(),
+      target: rest[0] ?? null,
+      registry,
+      json,
+      locked,
+      frozen,
+    };
+  }
+
+  return {
+    command,
+    directory: resolve(process.cwd(), rest[0] ?? "."),
+    target: null,
+    registry,
+    json,
+    locked,
+    frozen,
+  };
+}
+
+function baseOptions(
+  command: string,
+  json: boolean,
+  locked: boolean,
+  frozen: boolean,
+  registry: string | null,
+): CliOptions {
+  return {
+    command,
+    directory: process.cwd(),
+    target: null,
+    registry,
+    json,
+    locked,
+    frozen,
+  };
+}
+
+function runLock(options: CliOptions): Promise<number> {
+  return runLockAsync(options);
+}
+
+async function runLockAsync(options: CliOptions): Promise<number> {
+  const project = readProject(options.directory);
+  const requests = project.dependencies.map((dependency) => dependency.request);
+  const resolved = await collectDescriptors(project, requests);
+  const resolution = resolveForTargets(
+    resolved.requests,
+    resolved.descriptors,
+    project.targets,
+  );
+  const lockfile = createLockfile({
+    resolution,
+    generatedBy: GENERATED_BY,
+    manifestHash: project.manifestHash,
+    compiler: COMPILER,
+    ffi: project.ffi,
+  });
+  const path = join(project.directory, LOCKFILE_NAME);
+  writeAtomically(path, formatLockfile(lockfile));
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          command: options.command,
+          lockfile: path,
+          packages: lockfile.packages.length,
+          targets: Object.keys(lockfile.targets),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } else {
+    process.stdout.write(
+      `Locked ${lockfile.packages.length} package(s) for ${Object.keys(lockfile.targets).length} target(s).\n`,
+    );
+  }
+  return 0;
+}
+
+function runTree(options: CliOptions): number {
+  const project = readProject(options.directory);
+  const lockfile = currentLockfile(project, options);
+  const packages = lockfile.packages;
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({ ok: true, command: "tree", packages }, null, 2)}\n`,
+    );
+  } else {
+    for (const entry of packages) {
+      const targets = entry.targets.length === 0 ? "universal" : entry.targets.join(", ");
+      process.stdout.write(`${entry.id} [${targets}]\n`);
+      for (const dependency of entry.dependencies) {
+        process.stdout.write(`  -> ${dependency}\n`);
+      }
+    }
+  }
+  return 0;
+}
+
+function runInstall(options: CliOptions): Promise<number> {
+  return runInstallAsync(options);
+}
+
+async function runInstallAsync(options: CliOptions): Promise<number> {
+  const project = readProject(options.directory);
+  const lockfile = currentLockfile(project, options);
+  const store = await installLockedPackages(project.directory, lockfile, {
+    generatedBy: GENERATED_BY,
+  });
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          command: "install",
+          packages: store.packages.length,
+          store: join(project.directory, ".astra", "store", "index.json"),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } else {
+    process.stdout.write(`Installed ${store.packages.length} package(s).\n`);
+  }
+  return 0;
+}
+
+function currentLockfile(project: ProjectManifest, options: CliOptions) {
+  const lockfile = readLockfileFile(join(project.directory, LOCKFILE_NAME));
+  if (options.locked || options.frozen) {
+    assertLockfileCurrent(lockfile, project.source);
+  } else if (lockfile.manifestHash !== project.manifestHash) {
+    throw new NopmError(
+      "NP0009",
+      "Lockfile is stale. Run `nopm lock` before installing.",
+      LOCKFILE_NAME,
+    );
+  }
+  return lockfile;
+}
+
+function collectDescriptors(
+  project: ProjectManifest,
+  requests: readonly DependencyRequest[],
+): Promise<{ descriptors: PackageDescriptor[]; requests: DependencyRequest[] }> {
+  return collectDescriptorsAsync(project, requests);
+}
+
+async function collectDescriptorsAsync(
+  project: ProjectManifest,
+  requests: readonly DependencyRequest[],
+): Promise<{ descriptors: PackageDescriptor[]; requests: DependencyRequest[] }> {
+  const descriptors = new Map<string, PackageDescriptor>();
+  const exactRoots: DependencyRequest[] = [];
+  const queue = requests.map((request) => ({ request, root: true }));
+
+  while (queue.length > 0) {
+    const item = queue.shift();
+    if (item === undefined) {
+      break;
+    }
+    const key = formatPackageId(item.request.id);
+    if (descriptors.has(key)) {
+      if (item.root) {
+        exactRoots.push(item.request);
+      }
+      continue;
+    }
+    if (project.packageSources[item.request.id.source] === false) {
+      throw new NopmError(
+        "NP0011",
+        `The '${item.request.id.source}' package source is disabled in the manifest.`,
+        key,
+      );
+    }
+
+    let resolved: AdapterResolution;
+    switch (item.request.id.source) {
+      case "path": {
+        const descriptor = resolvePathPackage(project.directory, item.request.id);
+        resolved = {
+          descriptor,
+          request: parseDependencyRequest(item.request.alias, formatPackageId(descriptor.id)),
+        };
+        break;
+      }
+      case "npm":
+        resolved = resolveNpmPackage(item.request.id, item.request.alias);
+        break;
+      case "git":
+        resolved = resolveGitPackage(
+          item.request.id,
+          item.request.alias,
+          join(project.directory, ".astra", "cache"),
+        );
+        break;
+      case "cargo":
+        resolved = await resolveCargoPackage(item.request.id, item.request.alias);
+        break;
+      case "pypi":
+        resolved = await resolvePyPiPackage(item.request.id, item.request.alias);
+        break;
+      case "nuget":
+        resolved = await resolveNuGetPackage(item.request.id, item.request.alias);
+        break;
+      case "oci":
+        resolved = await resolveOciPackage(item.request.id, item.request.alias);
+        break;
+      case "nova":
+        if (project.registry === null) {
+          throw new NopmError(
+            "NP0011",
+            `No [registry].default is configured; cannot resolve '${key}'.`,
+            key,
+          );
+        }
+        resolved = await resolveRegistryPackage(item.request.id, item.request.alias, {
+          registry: project.registry,
+        });
+        break;
+      default:
+        throw new NopmError(
+          "NP0011",
+          `Unsupported package source '${item.request.id.source}'.`,
+          key,
+        );
+    }
+
+    const exactKey = formatPackageId(resolved.descriptor.id);
+    if (!descriptors.has(exactKey)) {
+      descriptors.set(exactKey, resolved.descriptor);
+      for (const [alias, spec] of Object.entries(resolved.descriptor.dependencies)) {
+        queue.push({ request: parseDependencyRequest(alias, spec), root: false });
+      }
+    }
+    if (item.root) {
+      exactRoots.push(resolved.request);
+    }
+  }
+
+  return {
+    descriptors: [...descriptors.values()].sort((left, right) =>
+      formatPackageId(left.id).localeCompare(formatPackageId(right.id)),
+    ),
+    requests: exactRoots,
+  };
+}
+
+function runWhy(options: CliOptions): number {
+  const target = requiredTarget(options, "package name");
+  const project = readProject(options.directory);
+  const lockfile = currentLockfile(project, options);
+  const matches = lockfile.packages.filter((entry) =>
+    entry.dependencies.some((dependency) => dependencyMatches(dependency, target)),
+  );
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify(
+        {
+          ok: true,
+          command: "why",
+          target,
+          packages: matches.map((entry) => entry.id),
+        },
+        null,
+        2,
+      )}\n`,
+    );
+  } else if (matches.length === 0) {
+    process.stdout.write(`No locked package depends on ${target}.\n`);
+  } else {
+    for (const entry of matches) {
+      process.stdout.write(`${entry.id} depends on ${target}\n`);
+    }
+  }
+  return 0;
+}
+
+async function runSearch(options: CliOptions): Promise<number> {
+  const query = requiredTarget(options, "search query");
+  const registry = registryFor(options);
+  const response = await fetch(`${registry}/v1/search?q=${encodeURIComponent(query)}`, {
+    headers: { Accept: "application/json", "User-Agent": "neo-astra-nopm/0.1.0" },
+  });
+  if (!response.ok) {
+    throw new NopmError("NP0011", `Registry search failed: HTTP ${response.status}.`, registry);
+  }
+  const value = (await response.json()) as unknown;
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ok: true, command: "search", result: value }, null, 2)}\n`);
+    return 0;
+  }
+  if (!isRecord(value) || !Array.isArray(value["results"])) {
+    throw new NopmError("NP0011", "Registry returned an invalid search response.", registry);
+  }
+  for (const result of value["results"]) {
+    if (isRecord(result)) {
+      process.stdout.write(`${String(result["name"])}@${String(result["version"])}\n`);
+    }
+  }
+  return 0;
+}
+
+async function runAudit(options: CliOptions): Promise<number> {
+  const target = requiredTarget(options, "package ID");
+  const id = parsePackageId(target);
+  if (id.version === null) {
+    throw usage("nopm audit requires an exact package version.");
+  }
+  const registry = registryFor(options);
+  const response = await fetch(
+    `${registry}/v1/audit/${encodeURIComponent(id.name)}/${encodeURIComponent(id.version)}`,
+    { headers: { Accept: "application/json", "User-Agent": "neo-astra-nopm/0.1.0" } },
+  );
+  if (!response.ok) {
+    throw new NopmError("NP0011", `Registry audit failed: HTTP ${response.status}.`, registry);
+  }
+  const value = (await response.json()) as unknown;
+  if (options.json) {
+    process.stdout.write(`${JSON.stringify({ ok: true, command: "audit", result: value }, null, 2)}\n`);
+  } else if (isRecord(value)) {
+    process.stdout.write(
+      `${id.name}@${id.version}: ${value["yanked"] === true ? "yanked" : "not yanked"}, ${Array.isArray(value["advisories"]) ? value["advisories"].length : 0} advisory(ies)\n`,
+    );
+  }
+  return 0;
+}
+
+function registryFor(options: CliOptions): string {
+  if (options.registry !== null) {
+    return options.registry;
+  }
+  try {
+    const project = readProject(options.directory);
+    if (project.registry !== null) {
+      return project.registry;
+    }
+  } catch {
+    // Fall through to the usage error.
+  }
+  throw usage("No registry is configured. Pass --registry <url> or set [registry].default.");
+}
+
+function requiredTarget(options: CliOptions, label: string): string {
+  if (options.target === null) {
+    throw usage(`nopm ${options.command} requires a ${label}.`);
+  }
+  return options.target;
+}
+
+function dependencyMatches(dependency: string, target: string): boolean {
+  if (dependency === target) {
+    return true;
+  }
+  try {
+    return parsePackageId(dependency).name === target;
+  } catch {
+    return false;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function writeAtomically(path: string, source: string): void {
+  const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    writeFileSync(temporary, source, "utf8");
+    renameSync(temporary, path);
+  } catch (error) {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      // Preserve the original failure.
+    }
+    throw error;
+  }
+}
+
+function usage(message: string): NopmError {
+  return new NopmError("NP0012", message);
+}
+
+function emitError(error: unknown, json: boolean): number {
+  const diagnostic = diagnosticFor(error);
+  if (json) {
+    process.stdout.write(
+      `${JSON.stringify({ ok: false, diagnostics: [diagnostic] }, null, 2)}\n`,
+    );
+  } else {
+    process.stderr.write(`${diagnostic.code}: ${diagnostic.message}\n`);
+  }
+  return error instanceof NopmError && error.code === "NP0012" ? 2 : 1;
+}
+
+function diagnosticFor(error: unknown): Diagnostic {
+  if (error instanceof NopmError) {
+    return { code: error.code, message: error.message, path: error.input ?? null };
+  }
+  if (error instanceof ManifestError) {
+    return {
+      code: error.code,
+      message: error.message,
+      path: error.path ?? null,
+    };
+  }
+  return {
+    code: "NP0010",
+    message: error instanceof Error ? error.message : String(error),
+    path: null,
+  };
+}
+
+// Keep the command entry point explicit for bundled binaries.
+process.exitCode = await main();
