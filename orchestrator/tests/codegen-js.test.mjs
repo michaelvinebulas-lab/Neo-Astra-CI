@@ -195,6 +195,98 @@ test("javascript backend implements wrapping and checked integer policies", () =
   assert.match(checkedResult.stderr, /integer overflow/);
 });
 
+test("javascript backend implements checked integer methods", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let value: i32 = 2147483647",
+      "    match value.checked_add(1) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    let other: i32 = 7",
+      "    match other.checked_mul(6) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    let quotient: i32 = 9",
+      "    match quotient.checked_div(2) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$checkedInteger\(tag, operation, left, right\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "overflow\n42\n4\nRETURN=0");
+});
+
+test("javascript backend runs spawned tasks eagerly and joins them", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let task = spawn || {",
+      '        println("task")',
+      "        21",
+      "    }",
+      '    println("after")',
+      "    return task.join()",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$spawn\(body\)/);
+  assert.match(generated.code, /function \$taskJoin\(task\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "task\nafter\nRETURN=21");
+});
+
+test("javascript backend propagates panics from joined tasks", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let task = spawn || { panic("task boom") }',
+      "    task.join()",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /panic: task boom/);
+});
+
+test("javascript backend fails a scope for unjoined task panics", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    spawn || { panic("scope boom") }',
+      '    println("after")',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "after\n");
+  assert.match(result.stderr, /panic: scope boom/);
+});
+
 test("javascript backend preserves float values and rendering", () => {
   const generated = generate(
     [
@@ -321,23 +413,159 @@ test("javascript backend rejects manual memory explicitly", () => {
   );
 });
 
-test("javascript backend rejects error propagation explicitly", () => {
+test("javascript backend executes recoverable failures and propagation", () => {
   const generated = generate(
     [
-      "fn parse() -> i32 ! ParseIntError {",
-      '    return "1".to_int()!',
+      "struct ParseError(str)",
+      "",
+      "fn reject() -> i32 ! ParseError {",
+      '    return !ParseError("negative")',
       "}",
-      "pub fn main() -> i32 ! ParseIntError { return parse()! }",
+      "",
+      "fn checked(value: i32) -> i32 ! ParseError {",
+      "    return match value < 0 {",
+      "        true => reject()!,",
+      "        false => value,",
+      "    }",
+      "}",
+      "",
+      "pub fn main() -> i32 {",
+      "    match checked(-1) {",
+      '        Ok(value) => println(value)',
+      '        Err(error) => println("caught")',
+      "    }",
+      "    match checked(2) {",
+      "        Ok(value) => println(value)",
+      '        Err(_) => println("unexpected")',
+      "    }",
+      '    match "not a number".to_int() {',
+      "        Ok(value) => println(value)",
+      '        Err(error) => println("parse error")',
+      "    }",
+      "    return 0",
+      "}",
       "",
     ].join("\n"),
   );
-  assert.ok(
-    generated.diagnostics.some(
-      (diagnostic) =>
-        diagnostic.code === "NS8001" &&
-        diagnostic.message.includes("Error propagation"),
-    ),
-  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$failure\(error\)/);
+  assert.match(generated.code, /function \$fail\(error\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "caught\n2\nparse error\nRETURN=0");
+});
+
+test("astra build emits a linked multi-module project with re-exports", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-build-project-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "web", defaultMode: "core" },
+          nova: { entry: "src/main.ns" },
+          targets: {
+            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
+          },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "src", "lib.ns"),
+      [
+        "module demo.lib",
+        "",
+        "pub fn add(a: i32, b: i32) -> i32 { return a + b }",
+        "pub fn make() -> i32 { return 7 }",
+        "export default make",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "barrel.ns"),
+      [
+        "module demo.barrel",
+        "",
+        'export { add as plus } from "./lib"',
+        'export * from "./lib"',
+        'export * as math from "./lib"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        'import { add, plus, math } from "./barrel"',
+        'import make from "./lib"',
+        'import * as libMath from "./lib"',
+        "",
+        "pub fn main() -> i32 {",
+        "    println(plus(2, 3))",
+        "    println(libMath.add(4, 5))",
+        "    println(math.add(6, 7))",
+        "    println(make())",
+        "    return add(1, 2)",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built web/);
+
+    const mainPath = join(project, "dist", "web", "src", "main.js");
+    assert.ok(existsSync(mainPath));
+    const mainCode = readFileSync(mainPath, "utf8");
+    assert.match(mainCode, /import \{ add, plus, math \} from "\.\/barrel\.js";/);
+    assert.match(mainCode, /import make from "\.\/lib\.js";/);
+    assert.match(mainCode, /import \* as libMath from "\.\/lib\.js";/);
+
+    const barrelCode = readFileSync(
+      join(project, "dist", "web", "src", "barrel.js"),
+      "utf8",
+    );
+    assert.match(barrelCode, /export \{ add as plus \} from "\.\/lib\.js";/);
+    assert.match(barrelCode, /export \* from "\.\/lib\.js";/);
+    assert.match(barrelCode, /export \* as math from "\.\/lib\.js";/);
+
+    writeFileSync(
+      join(project, "dist", "web", "runner.mjs"),
+      [
+        'import { main } from "./src/main.js";',
+        "const value = main();",
+        'process.stdout.write("RETURN=" + String(value));',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const run = spawnSync(
+      process.execPath,
+      [join(project, "dist", "web", "runner.mjs")],
+      { cwd: join(project, "dist", "web"), encoding: "utf8" },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, "5\n9\n13\n7\nRETURN=3");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
 });
 
 test("astra build writes runnable ESM and a module package marker", () => {
@@ -361,19 +589,16 @@ test("astra build writes runnable ESM and a module package marker", () => {
       ),
       "utf8",
     );
-    writeFileSync(
-      join(project, "src", "main.ns"),
-      [
-        "module demo.main",
-        "",
-        "pub fn main() -> i32 {",
-        '    println("hello from build")',
-        "    return 0",
-        "}",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
+    const mainSource = [
+      "module demo.main",
+      "",
+      "pub fn main() -> i32 {",
+      '    println("hello from build")',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n");
+    writeFileSync(join(project, "src", "main.ns"), mainSource, "utf8");
 
     const result = spawnSync(
       process.execPath,
@@ -389,6 +614,18 @@ test("astra build writes runnable ESM and a module package marker", () => {
       readFileSync(join(project, "dist", "web", "package.json"), "utf8"),
       '{ "type": "module" }\n',
     );
+
+    const mapPath = `${outputPath}.map`;
+    assert.ok(existsSync(mapPath));
+    assert.match(
+      readFileSync(outputPath, "utf8"),
+      /\/\/# sourceMappingURL=main\.js\.map/,
+    );
+    const sourceMap = JSON.parse(readFileSync(mapPath, "utf8"));
+    assert.equal(sourceMap.version, 3);
+    assert.equal(sourceMap.file, "main.js");
+    assert.deepEqual(sourceMap.sourcesContent, [mainSource]);
+    assert.ok(sourceMap.mappings.length > 0);
 
     writeFileSync(
       join(project, "dist", "web", "runner.mjs"),

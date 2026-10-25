@@ -25,8 +25,8 @@ and `NOPM-001`-`NOPM-004` are complete. Nova now loads, checks, and links local
 project modules through one interpreter, and cross-module diagnostics and panic
 stacks carry canonical module paths. `JS-001` is in progress: the first
 single-module JavaScript ESM slice consumes typed AST/HIR from the compiler
-boundary and `astra build` writes runnable ESM. Project imports, error effects,
-tasks, source maps, and TypeScript remain. The `INTEROP-001` inline-script design
+boundary and `astra build` writes linked, runnable ESM. Channels and a scheduler,
+the `arbitrary` integer policy, `.d.ts`, and TypeScript remain. The `INTEROP-001` inline-script design
 is complete in `Docs/Design/V1/10-inline-script-interop.md`; implementation is
 parked for the FFI/backend phase. Open questions remain documented as proposals
 in `Docs/spec-v0.1.md` §17.
@@ -618,7 +618,9 @@ constant, and panic state.
 
 ## JS-001 - JavaScript ESM backend
 
-**Status:** In progress. The first single-module slice is implemented.
+**Status:** In progress. The JavaScript backend now emits linked multi-module
+projects and supports recoverable error effects, checked integer methods, eager
+spawn/tasks, and line-level source maps.
 
 **Goal**
 
@@ -651,18 +653,29 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - [x] Report compiler and codegen diagnostics with source locations.
 - [x] Add execution tests for structs, enums, options, maps, tuples, defer,
       wrapping/checked integers, and `astra build`.
-- [ ] Link and emit project imports, namespace imports, and re-exports. The
-      current backend rejects imports with `NS8001`.
-- [ ] Implement recoverable error effects, `fail`, and `?` propagation.
-- [ ] Implement tasks, channels, and `spawn`.
-- [ ] Implement source maps and optional `.d.ts` artifacts.
-- [ ] Implement checked integer methods and the `arbitrary` policy.
+- [x] Link and emit project imports, namespace imports, default imports, named
+      imports, named re-exports, namespace re-exports, and star re-exports.
+- [x] Implement recoverable error effects, `!Error(...)` failure construction, and
+      `?` propagation.
+- [x] Implement checked integer methods (`checked_add`, `checked_sub`,
+      `checked_mul`, `checked_div`).
+- [x] Implement `spawn` and eager `Task` join/cancel, including unjoined task
+      panics at function-scope exit.
+- [ ] Implement channels and a structured-concurrency scheduler.
+- [x] Emit line-level source maps with `sourcesContent` and a
+      `sourceMappingURL` comment.
+- [ ] Emit optional `.d.ts` artifacts.
+- [ ] Implement the `arbitrary` integer policy.
 - [ ] Implement full UTF-8 byte-slice and byte-index string operations.
 - [ ] Add conformance cases shared with `TS-001`.
 
 **Current scope boundary**
 
-- One module per build. `astra build` reads `nova.entry` and emits one module.
+- `astra build` discovers local modules from relative imports, checks the
+  project graph, and emits one ESM module per source with rewritten relative
+  specifiers.
+- External/non-project imports remain compile-time errors; V1 does not yet link
+  package-provided modules.
 - `Option` is a tagged object, not JavaScript `null`; `Result` is a tagged object.
 - Maps use a small structural-key helper rather than JavaScript `Map`, preserving
   Neo Astra structural key equality and insertion order.
@@ -673,6 +686,19 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - Render helpers preserve integer, float, string, tuple, struct, enum, map,
   `Option`, and `Result` shapes; `f64`/`f32` values use tagged numbers so integral
   floats render with a trailing `.0`.
+- Recoverable failures use a tagged `{ $failure: true, error }` value. A
+  fallible function returns `Ok` for normal completion and a failure sentinel
+  for `!Error(...)` or a propagated `?`; a `match` subject normalizes a failure
+  sentinel to `Err` so the existing pattern lowering applies.
+- Checked integer methods return `Result` and produce `OverflowError` on
+  overflow; division by zero remains a panic, matching Nova.
+- `spawn || { ... }` runs eagerly and returns a task value. `join` retrieves the
+  outcome or re-raises a task panic; `cancel` marks the task cancelled. A
+  function containing spawn owns a task scope, and an unjoined task panic is
+  raised when that function exits. Channels and a real scheduler remain.
+- `astra build` writes a line-level `.js.map` with `sourcesContent`, rewrites the
+  source path for the output directory, and appends a `sourceMappingURL`
+  comment.
 
 **Evidence**
 
@@ -680,12 +706,16 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
   adds serde derives to the typed AST/HIR/type surface.
 - `orchestrator/packages/codegen-js/src/ir.ts` describes the serialized typed
   module; `generate.ts` implements ESM emission and diagnostics.
-- `orchestrator/packages/cli/src/index.ts` implements `astra build`.
+- `orchestrator/packages/cli/src/index.ts` implements `astra build`, including
+  local module discovery, project checking, per-module source maps, and ESM
+  output rewriting.
 - `orchestrator/tests/codegen-js.test.mjs` compiles real `.ns` sources, executes
-  generated ESM, covers integer policies, rejects unsupported constructs, and
-  builds a project end to end.
-- Verification: 459 Rust tests, 40 TypeScript unit tests, 27 native/Wasm/boundary
-  tests (including 9 codegen/build tests), formatting, clippy with warnings denied,
+  generated ESM, covers integer policies, recoverable failures, `?` propagation,
+  checked integer methods, eager spawn/join, task panic scope failure, source
+  maps, linked multi-module projects with re-exports, rejects unsupported
+  constructs, and builds a project end to end.
+- Verification: 460 Rust tests, 40 TypeScript unit tests, 34 native/Wasm/boundary
+  tests (including 16 codegen/build tests), formatting, clippy with warnings denied,
   and `npm run ci` pass.
 
 **Depends on**

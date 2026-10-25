@@ -300,9 +300,10 @@ work is production backends, starting with `JS-001`, and conformance coverage.
 
 ## 9. Phase 7 - JavaScript/TypeScript backend and playground
 
-**Status:** In progress. The first `JS-001` single-module slice is implemented;
-project imports, recoverable error effects, tasks, source maps, and `TS-001`
-remain.
+**Status:** In progress. The `JS-001` backend now emits linked multi-module
+projects and supports recoverable errors, checked integer methods, eager tasks,
+and source maps. Channels/scheduler, the `arbitrary` policy, `.d.ts`, external
+package modules, and `TS-001` remain.
 
 **Goal:** Produce readable, runnable web output.
 
@@ -325,12 +326,15 @@ remain.
 - `@neo-astra/codegen-js` emits functions, constants, control flow, defer,
   structs, enums, arrays, structural maps, tuples, options, results, match,
   built-ins, and tree-shaken local helpers.
-- `astra build` selects a target, checks the entry module, emits ESM under the
+- `astra build` selects a target, discovers reachable local modules, checks the
+  project graph, emits linked ESM modules plus per-module source maps under the
   target `outDir`, and adds `"type": "module"` when needed.
-- Unsupported imports, error effects, tasks, and manual memory fail with
-  source-located diagnostics instead of changing semantics.
-- Next: project-wide typed modules and import emission, error effects, source
-  maps, checked integer methods, then the TypeScript backend.
+- Recoverable failures, `?`, checked integer methods, eager spawn/tasks, named/
+  default/namespace imports, and named/namespace/default/star re-exports are
+  implemented. External imports, channels, the `arbitrary` policy, and manual
+  memory fail with source-located diagnostics instead of changing semantics.
+- Next: channels/scheduler, the `arbitrary` policy, UTF-8 byte operations, and
+  the TypeScript backend.
 
 ### Gate
 

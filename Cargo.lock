@@ -36,6 +36,7 @@ name = "astra-compiler-api"
 version = "0.1.0"
 dependencies = [
  "astra-capabilities",
+ "astra-codegen-c",
  "astra-core",
  "serde",
  "serde_json",
