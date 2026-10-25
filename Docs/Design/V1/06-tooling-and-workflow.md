@@ -191,9 +191,9 @@ Steps:
 with `module: "esm"`. It selects `--target`, then `ASTRA_TARGET`, then
 `build.defaultTarget`; it applies target/build mode and `math.integers`, emits
 the module under `outDir`, and adds `"type": "module"` when absent. The backend
-also supports recoverable failures, `?` propagation, and checked integer
-methods. Multi-target builds, lockfile-aware builds, project module graphs, and
-native/Wasm toolchains remain.
+also supports recoverable failures, `?` propagation, checked integer methods,
+and eager spawn/tasks. Multi-target builds, lockfile-aware builds, project module
+graphs, and native/Wasm toolchains remain.
 
 ---
 

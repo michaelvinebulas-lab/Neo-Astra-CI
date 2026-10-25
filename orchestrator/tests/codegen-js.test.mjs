@@ -227,6 +227,66 @@ test("javascript backend implements checked integer methods", () => {
   assert.equal(result.stdout, "overflow\n42\n4\nRETURN=0");
 });
 
+test("javascript backend runs spawned tasks eagerly and joins them", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let task = spawn || {",
+      '        println("task")',
+      "        21",
+      "    }",
+      '    println("after")',
+      "    return task.join()",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$spawn\(body\)/);
+  assert.match(generated.code, /function \$taskJoin\(task\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "task\nafter\nRETURN=21");
+});
+
+test("javascript backend propagates panics from joined tasks", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let task = spawn || { panic("task boom") }',
+      "    task.join()",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /panic: task boom/);
+});
+
+test("javascript backend fails a scope for unjoined task panics", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    spawn || { panic("scope boom") }',
+      '    println("after")',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "after\n");
+  assert.match(result.stderr, /panic: scope boom/);
+});
+
 test("javascript backend preserves float values and rendering", () => {
   const generated = generate(
     [

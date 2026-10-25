@@ -115,6 +115,10 @@ const HELPER_ORDER = [
   "abort",
   "failure",
   "fail",
+  "taskScope",
+  "spawn",
+  "taskJoin",
+  "taskCancel",
   "renderFloat",
   "render",
   "renderDebug",
@@ -171,6 +175,8 @@ type HelperName = (typeof HELPER_ORDER)[number];
 
 const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = {
   fail: ["failure"],
+  spawn: ["taskScope"],
+  taskJoin: ["failure"],
   render: ["renderFloat"],
   print: ["write", "render"],
   println: ["write", "render"],
@@ -221,6 +227,50 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   fail: [
     "function $fail(error) {",
     "  throw $failure(error);",
+    "}",
+  ],
+  taskScope: [
+    "const $taskScopes = [];",
+    "function $enterTaskScope() {",
+    "  const scope = { tasks: [] };",
+    "  $taskScopes.push(scope);",
+    "  return scope;",
+    "}",
+    "function $exitTaskScope(scope) {",
+    "  $taskScopes.pop();",
+    "  for (const task of scope.tasks) {",
+    "    if (!task.joined && task.outcome && task.outcome.panic !== undefined) throw task.outcome.panic;",
+    "  }",
+    "}",
+  ],
+  spawn: [
+    "function $spawn(body) {",
+    "  const task = { $task: true, cancelled: false, joined: false, outcome: undefined };",
+    "  try {",
+    "    task.outcome = { ok: true, value: body() };",
+    "  } catch (error) {",
+    "    if (error && error.$failure) task.outcome = { ok: false, error: error.error };",
+    "    else task.outcome = { panic: error };",
+    "  }",
+    "  if ($taskScopes.length > 0) $taskScopes[$taskScopes.length - 1].tasks.push(task);",
+    "  return task;",
+    "}",
+  ],
+  taskJoin: [
+    "function $taskJoin(task) {",
+    "  task.joined = true;",
+    "  if (task.cancelled) {",
+    '    return $failure({ $type: "TaskError", 0: "task was cancelled" });',
+    "  }",
+    "  if (task.outcome.panic !== undefined) throw task.outcome.panic;",
+    "  if (!task.outcome.ok) return $failure(task.outcome.error);",
+    "  return task.outcome.value;",
+    "}",
+  ],
+  taskCancel: [
+    "function $taskCancel(task) {",
+    "  task.cancelled = true;",
+    "  return undefined;",
     "}",
   ],
   renderFloat: [
@@ -748,7 +798,20 @@ class JavaScriptGenerator {
     const wrapsSuccess = fallible && !isResultReturnType(declaration.return_type);
     const previousWrap = this.currentSuccessWrap;
     this.currentSuccessWrap = wrapsSuccess;
-    const body = this.emitBlock(declaration.body, "statement");
+    let body = this.emitBlock(declaration.body, "statement");
+    if (containsVariant(declaration.body, "Spawn")) {
+      this.useHelper("taskScope");
+      const scope = this.temporary("taskScope");
+      body = [
+        "{",
+        `  const ${scope} = $enterTaskScope();`,
+        `  try ${body}`,
+        "  finally {",
+        `    $exitTaskScope(${scope});`,
+        "  }",
+        "}",
+      ].join("\n");
+    }
     this.currentSuccessWrap = previousWrap;
     const signature = `function ${name}(${parameters.join(", ")})`;
     if (!fallible) {
@@ -1174,12 +1237,15 @@ class JavaScriptGenerator {
         }>(kind, "Match");
         return this.emitMatchExpression(data.value, data.arms);
       }
-      case "Spawn":
-        this.unsupported(
-          expression.span,
-          "Tasks and spawn blocks are not implemented by the JavaScript backend yet.",
-        );
-        return "undefined";
+      case "Spawn": {
+        const block = structPayload<{ body: Block }>(kind, "Spawn").body;
+        const previousWrap = this.currentSuccessWrap;
+        this.currentSuccessWrap = false;
+        const body = this.emitBlock(block, "value");
+        this.currentSuccessWrap = previousWrap;
+        this.useHelper("spawn");
+        return `$spawn(() => ${body})`;
+      }
       case "Fail": {
         const data = structPayload<{ error: TypePath; arguments: unknown }>(
           kind,
@@ -1608,6 +1674,21 @@ class JavaScriptGenerator {
     if (method === "to_int" && tag === "Str") {
       this.useHelper("parseInt");
       return `$parseInt(${target})`;
+    }
+    if (tag === "Named") {
+      const named = payloadOf(receiverType) as readonly [string, ...unknown[]];
+      if (named[0] === "Task") {
+        switch (method) {
+          case "join":
+            this.useHelper("taskJoin");
+            return `$taskJoin(${target})`;
+          case "cancel":
+            this.useHelper("taskCancel");
+            return `$taskCancel(${target})`;
+          default:
+            break;
+        }
+      }
     }
     if (tag === "Option") {
       switch (method) {
@@ -2178,6 +2259,19 @@ function spanKey(span: Span): string {
 
 function isSequence(tag: string): boolean {
   return tag === "Array" || tag === "FixedArray" || tag === "Slice" || tag === "Bytes";
+}
+
+function containsVariant(value: unknown, variant: string): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsVariant(entry, variant));
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, variant)) {
+    return true;
+  }
+  return Object.values(value).some((entry) => containsVariant(entry, variant));
 }
 
 function isResultReturnType(type: AstType | null | undefined): boolean {

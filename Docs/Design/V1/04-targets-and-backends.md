@@ -400,6 +400,8 @@ TypeScript backend never parses `.ns` source.
   methods.
 - Recoverable failures: `!Error(...)`, `?` propagation across calls, function
   boundary conversion to failure values, and matching a failure as `Err`.
+- Eager `spawn` tasks with `join`/`cancel`, joined-panic propagation, and
+  unjoined task panics at function-scope exit.
 - Named/default/`pub` exports; type-only exports are erased.
 - Source-located diagnostics for unsupported constructs.
 
@@ -407,7 +409,8 @@ TypeScript backend never parses `.ns` source.
 
 - Project imports, namespace imports, and re-exports are rejected with `NS8001`.
   Multi-module emission waits for a project-wide typed-module request.
-- Tasks, channels, and `spawn` are rejected with `NS8001`.
+- Channels and a structured-concurrency scheduler are not implemented. Spawned
+  tasks run eagerly and deterministically in the current function scope.
 - Source maps, `.d.ts`, the `arbitrary` integer policy, and full UTF-8
   byte-slice/index operations are not implemented.
 - `Option` and `Result` use tagged objects. Maps use a structural-key helper, not

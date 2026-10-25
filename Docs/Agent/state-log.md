@@ -10,12 +10,12 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-25 |
 | Current phase | Phase 5 - Types, Nova, and NoPM |
-| Current task | `JS-001` in progress; single-module JavaScript ESM backend with recoverable errors and checked integer methods |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented; project imports, tasks, source maps, the `arbitrary` integer policy, full UTF-8 byte operations, TypeScript, and conformance coverage remain; inline `@script` interop is designed and implementation is in progress |
+| Current task | `JS-001` in progress; single-module JavaScript ESM backend with recoverable errors, checked integer methods, and eager spawn/tasks |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented; project imports, channels and a scheduler, source maps, the `arbitrary` integer policy, full UTF-8 byte operations, TypeScript, and conformance coverage remain; inline `@script` interop is designed and implementation is in progress |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None |
-| Next action | Extend `JS-001` with project-wide typed modules/import emission, tasks, source maps, the `arbitrary` policy, and UTF-8 byte operations; then `TS-001` |
+| Next action | Extend `JS-001` with project-wide typed modules/import emission, channels/scheduler, source maps, the `arbitrary` policy, and UTF-8 byte operations; then `TS-001` |
 
 ---
 
@@ -854,6 +854,27 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 - Verification: 459 Rust tests, 40 TypeScript unit tests, 30 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
 - Current boundary: project imports/re-exports, spawn/tasks/channels, source maps, `.d.ts`, the `arbitrary` integer policy, and full UTF-8 byte-slice/index operations remain.
 
+### 2026-10-25 - JS-001 eager spawn and task scope
+
+- Command: `npm run ci`
+- Result: pass
+- Tasks: `spawn || { ... }` now runs the body eagerly through a tree-shaken
+  `$spawn` helper and returns a task value. `Task.join()` returns the task value,
+  re-raises a captured panic, or returns a failure value for a cancelled task;
+  `Task.cancel()` marks the task cancelled.
+- Scope: a function containing spawn enters a task scope and checks unjoined
+  tasks in a `finally` block. A task panic that was never joined fails the
+  function after its side effects, matching Nova's scope-failure behavior for
+  the supported single-scope case.
+- Tests: added execution tests for eager ordering plus `join`, a joined-task
+  panic, and an unjoined task panic failing the function scope. The codegen test
+  file now has 15 tests.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 33 native/Wasm/boundary
+  tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Current boundary: project imports/re-exports, channels and a real scheduler,
+  source maps, `.d.ts`, the `arbitrary` integer policy, and full UTF-8
+  byte-slice/index operations remain.
+
 ---
 
 ## Handoff
@@ -864,9 +885,9 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 - Task: JS-001 in progress; first single-module JavaScript ESM slice complete
 - Status: Ready
 - Files changed: `crates/astra-core/src/ast.rs`, `crates/astra-core/src/hir.rs`, `crates/astra-core/src/types.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/codegen-js/src/{index,ir,generate}.ts`, `orchestrator/packages/codegen-js/package.json`, `orchestrator/packages/compiler-client/src/index.ts`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/cli/package.json`, `orchestrator/packages/cli/tsconfig.json`, `orchestrator/tests/codegen-js.test.mjs`, `scripts/test-boundary.mjs`, `package-lock.json`, `README.md`, `Docs/Agent/todo.md`, `Docs/Agent/runbook.md`, `Docs/Design/V1/04-targets-and-backends.md`, `Docs/Design/V1/06-tooling-and-workflow.md`, `Docs/Design/V1/README.md`, `Docs/Agent/state-log.md`
-- Verification: `npm run ci` green (459 Rust, 40 TypeScript unit, 30 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
+- Verification: `npm run ci` green (459 Rust, 40 TypeScript unit, 33 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
 - Blockers: none
-- Next action: extend JS-001 with project-wide typed modules and import/re-export emission, then tasks, source maps, the `arbitrary` integer policy, and full UTF-8 byte strings; then TS-001
+- Next action: extend JS-001 with project-wide typed modules and import/re-export emission, then channels/scheduler, source maps, the `arbitrary` integer policy, and full UTF-8 byte strings; then TS-001
 ```
 
 
