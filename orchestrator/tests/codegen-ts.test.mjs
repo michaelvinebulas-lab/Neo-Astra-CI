@@ -53,6 +53,11 @@ test("TypeScript backend emits typed function declarations and exports", () => {
     ir: compiled.ir,
   });
 
-  assert.match(generated.code, /export function add\(a: number, b: number\): number/);
-  assert.match(generated.code, /export function main\(\): number/);
+  assert.match(generated.code, /\/\/ Target: TypeScript ESM\./);
+  assert.match(generated.code, /function add\(a: number, b: number\): number \{/);
+  assert.match(generated.code, /function main\(\): number \{/);
+  assert.match(generated.code, /export \{ add \};/);
+  assert.match(generated.code, /export \{ main \};/);
+  // Strict TypeScript: no implicit-any annotations anywhere in the output.
+  assert.doesNotMatch(generated.code, /:\s*any\b/);
 });
