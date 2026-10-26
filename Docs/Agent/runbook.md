@@ -300,11 +300,11 @@ work is production backends, starting with `JS-001`, and conformance coverage.
 
 ## 9. Phase 7 - JavaScript/TypeScript backend and playground
 
-**Status:** In progress. The `JS-001` backend emits linked multi-module projects,
+**Status:** `JS-001` complete. The backend emits linked multi-module projects,
 inline `@script:js` ESM modules, recoverable errors, checked and arbitrary
-integer policies, eager tasks, source maps, and `.d.ts` artifacts.
-Channels/scheduler, external package modules, TypeScript-target script emission,
-and `TS-001` remain.
+integer policies, eager tasks, bounded channels, UTF-8 string/byte operations,
+source maps, `.d.ts` artifacts, and the shared `conformance/` suite. External
+package modules, TypeScript-target script emission, and `TS-001` remain.
 
 **Goal:** Produce readable, runnable web output.
 
@@ -330,11 +330,19 @@ and `TS-001` remain.
 - `astra build` selects a target, discovers reachable local modules, checks the
   project graph, emits linked ESM modules plus per-module source maps under the
   target `outDir`, and adds `"type": "module"` when needed.
-- Recoverable failures, `?`, checked integer methods, eager spawn/tasks, named/
-  default/namespace imports, and named/namespace/default/star re-exports are
-  implemented. External imports, channels, and manual memory fail with
-  source-located diagnostics instead of changing semantics.
-- Next: channels/scheduler, UTF-8 byte operations, and the TypeScript backend.
+- Recoverable failures, `?`, checked integer methods, eager spawn/tasks, bounded
+  channels (capacity 16; recoverable `ChannelError` on a closed channel;
+  single-threaded deadlock panic instead of blocking), UTF-8 string/byte
+  operations (`char_count`, `bytes`, `chars`, `byte_at`, `char_at`, `slice`
+  with `SliceError`, `bytes.new`, indexed `u8` writes), named/default/namespace
+  imports, and named/namespace/default/star re-exports are implemented.
+  External imports and manual memory fail with source-located diagnostics
+  instead of changing semantics.
+- The backend-neutral `conformance/` suite (runner:
+  `orchestrator/tests/conformance.mjs`) pins shared semantics; `TS-001` must
+  run the same cases.
+- Next: the TypeScript backend (WIP preserved from the retired `js-001`
+  branch).
 
 ### Gate
 

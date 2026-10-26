@@ -1,0 +1,24 @@
+pub fn main() -> i32 {
+    let text = "héllo"
+    println(text.len())
+    println(text.char_count())
+    match text.byte_at(1) {
+        Some(byte) => println(byte),
+        None => println("none"),
+    }
+    match text.char_at(1) {
+        Some(character) => println(character),
+        None => println("none"),
+    }
+    match text.slice(0, 3) {
+        Ok(part) => println(part),
+        Err(error) => println("slice failed"),
+    }
+    match text.slice(0, 2) {
+        Ok(part) => println(part),
+        Err(error) => println("slice failed"),
+    }
+    println(text.bytes().len())
+    println(text.chars().len())
+    return 0
+}

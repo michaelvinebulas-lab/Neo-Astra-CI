@@ -13,6 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateJavaScript } from "../packages/codegen-js/dist/index.js";
+import {
+  loadConformanceCases,
+  normalizeConformanceText,
+} from "./conformance.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const binary = join(
@@ -993,5 +997,223 @@ test("astra build writes runnable ESM and a module package marker", () => {
     assert.equal(run.stdout, "hello from build\nRETURN=0");
   } finally {
     rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("javascript backend implements UTF-8 string and byte operations", () => {
+  const source = [
+    "pub fn main() -> i32 {",
+    '    let text = "héllo"',
+    "    println(text.len())",
+    "    println(text.char_count())",
+    "    match text.byte_at(1) {",
+    "        Some(byte) => println(byte),",
+    '        None => println("none"),',
+    "    }",
+    "    match text.char_at(1) {",
+    "        Some(character) => println(character),",
+    '        None => println("none"),',
+    "    }",
+    "    match text.slice(0, 3) {",
+    "        Ok(part) => println(part),",
+    '        Err(error) => println("slice failed"),',
+    "    }",
+    "    match text.slice(0, 2) {",
+    "        Ok(part) => println(part),",
+    '        Err(error) => println("slice failed"),',
+    "    }",
+    "    match text.slice(1, 99) {",
+    "        Ok(part) => println(part),",
+    '        Err(error) => println("oob"),',
+    "    }",
+    "    println(text.bytes().len())",
+    "    println(text.chars().len())",
+    "    println(text.chars()[1])",
+    "    return 0",
+    "}",
+    "",
+  ].join("\n");
+
+  const generated = generate(source);
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /\$charCount\(/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    [
+      "6",
+      "5",
+      "195",
+      "é",
+      "hé",
+      "slice failed",
+      "oob",
+      "6",
+      "5",
+      "é",
+      "RETURN=0",
+    ].join("\n"),
+  );
+});
+
+test("javascript backend implements bounded channels with structured errors", () => {
+  const source = [
+    "fn produce(channel: Channel<str>) -> () ! ChannelError {",
+    '    channel.send("hello")!',
+    '    channel.send("world")!',
+    "}",
+    "",
+    "pub fn main() -> i32 {",
+    "    let channel = Channel.create<str>()",
+    "    spawn || {",
+    "        match produce(channel) {",
+    '            Ok(value) => println("sent"),',
+    '            Err(error) => println("send failed"),',
+    "        }",
+    "    }",
+    "    match channel.receive() {",
+    "        Ok(message) => println(message),",
+    '        Err(error) => println("closed"),',
+    "    }",
+    "    match channel.receive() {",
+    "        Ok(message) => println(message),",
+    '        Err(error) => println("closed"),',
+    "    }",
+    "    channel.close()",
+    '    match channel.send("late") {',
+    '        Ok(value) => println("sent late"),',
+    '        Err(error) => println("closed send"),',
+    "    }",
+    "    match channel.receive() {",
+    "        Ok(message) => println(message),",
+    '        Err(error) => println("closed recv"),',
+    "    }",
+    "    return 0",
+    "}",
+    "",
+  ].join("\n");
+
+  const generated = generate(source);
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$channel\(/);
+  assert.match(generated.code, /\$channelSend\(/);
+  assert.match(generated.code, /\$channelReceive\(/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    ["sent", "hello", "world", "closed send", "closed recv", "RETURN=0"].join("\n"),
+  );
+});
+
+test("javascript backend turns a full bounded channel into a structured deadlock panic", () => {
+  const source = [
+    "fn fill(channel: Channel<i32>) -> () ! ChannelError {",
+    "    let mut index = 0",
+    "    while index < 17 {",
+    "        channel.send(index)!",
+    "        index = index + 1",
+    "    }",
+    "}",
+    "",
+    "pub fn main() -> i32 {",
+    "    let channel = Channel.create<i32>()",
+    "    match fill(channel) {",
+    '        Ok(value) => println("filled"),',
+    '        Err(error) => println("failed"),',
+    "    }",
+    "    return 0",
+    "}",
+    "",
+  ].join("\n");
+
+  const generated = generate(source);
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /channel deadlock/);
+});
+
+test("javascript backend implements bytes buffers with bounds-checked writes", () => {
+  const source = [
+    "pub fn main() -> i32 {",
+    "    let mut buffer = bytes.new(4)",
+    "    buffer[0] = 0xFF",
+    "    buffer[1] = 7",
+    "    println(buffer.len())",
+    "    println(buffer[0])",
+    "    println(buffer[1])",
+    "    return 0",
+    "}",
+    "",
+  ].join("\n");
+
+  const generated = generate(source);
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /\$indexSet\(/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, ["4", "255", "7", "RETURN=0"].join("\n"));
+
+  const outOfBounds = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let mut buffer = bytes.new(2)",
+      "    buffer[5] = 1",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const failed = runGenerated(outOfBounds.code);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /index out of bounds/);
+});
+
+test("javascript backend declares channel runtime shapes in TypeScript output", () => {
+  const generated = generate(
+    [
+      "pub fn produce(channel: Channel<str>) -> () ! ChannelError {",
+      '    channel.send("hello")!',
+      "}",
+      "",
+      "pub fn main() -> i32 {",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.declarations, /interface AstraChannel<T> \{/);
+  assert.match(
+    generated.declarations,
+    /declare function produce\(channel: AstraChannel<string>\): /,
+  );
+
+  const plain = generate("pub fn main() -> i32 {\n    return 0\n}\n");
+  assert.doesNotMatch(plain.declarations, /AstraChannel/);
+});
+
+test("javascript backend passes the shared conformance suite", () => {
+  const cases = loadConformanceCases();
+  assert.ok(cases.length >= 4, "expected the shared conformance suite to have cases");
+  for (const conformanceCase of cases) {
+    const generated = generate(conformanceCase.source);
+    assert.deepEqual(
+      generated.diagnostics,
+      [],
+      `${conformanceCase.name}: ${JSON.stringify(generated.diagnostics)}`,
+    );
+    const result = runGenerated(generated.code);
+    assert.equal(result.status, 0, `${conformanceCase.name}: ${result.stderr}`);
+    assert.equal(
+      normalizeConformanceText(result.stdout),
+      conformanceCase.expected,
+      conformanceCase.name,
+    );
   }
 });

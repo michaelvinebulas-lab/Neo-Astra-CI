@@ -10,11 +10,11 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-26 |
 | Current phase | Phase 5 - Types, Nova, and NoPM |
-| Current task | `INTEROP-001` Slices A+B and the JavaScript backend slice are done; TypeScript-target script emission and the C/C++ native slice remain |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented with linked multi-module output, recoverable errors, checked integer methods, eager tasks, source maps, and inline `@script:js` ESM artifacts; `@script` inline interop is implemented through the frontend (lexer, parser, AST, HIR, formatter, resolver, checker NS7001-NS7006, Nova NV0008) with full conformance tests; TypeScript-target script emission, C/C++ native slice, channels/scheduler, full UTF-8 byte operations, TypeScript, and post-V1 work remain |
+| Current task | `JS-001` complete (channels, UTF-8 string/byte operations, shared conformance suite); `TS-001` groundwork preserved from the retired `js-001` branch |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the JavaScript ESM backend/`astra build` slice implemented with linked multi-module output, recoverable errors, checked integer methods, eager tasks, bounded channels, UTF-8 string/byte operations, source maps, inline `@script:js` ESM artifacts, and a backend-neutral conformance suite; `@script` inline interop is implemented through the frontend (lexer, parser, AST, HIR, formatter, resolver, checker NS7001-NS7006, Nova NV0008) with full conformance tests; TypeScript-target script emission, C/C++ native slice, the TypeScript backend, and post-V1 work remain |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
-| Next action | Continue `JS-001` channels/scheduler and UTF-8 byte operations; then `TS-001` and TypeScript-target script emission |
+| Next action | Continue `TS-001` (WIP preserved); merge `js-interop` into `master` once the C backend work lands |
 
 
 ---
@@ -978,19 +978,63 @@ Nova CLI, NoPM, and real backends are not implemented yet.
   pinned transpiler; C/C++ scripts wait for the native backend. Channels and a
   scheduler and full UTF-8 byte operations remain.
 
+### 2026-10-26 - JS-001 complete: channels, UTF-8 string/byte operations, conformance suite
+
+- Command: `npm run ci`
+- Result: pass
+- Checker: added the `Channel` builtin namespace (`Channel.create<T>()` with
+  `send`/`receive` returning recoverable `ChannelError` results and infallible
+  `close`), the `bytes` namespace (`bytes.new(n)`), spec §6 string operations
+  (`char_count`, `bytes`, `chars`, `byte_at`, `char_at`, and `slice` with
+  `SliceError`), `bytes` indexing by `usize` yielding `u8`, and the
+  `ChannelError`/`SliceError` builtin error sets. Lvalue checks now annotate
+  target types, so indexed writes (`array[i] = x`, `buffer[i] = u8`, including
+  nested sequences) type-check and emit bounds-checked writes.
+- Codegen: new tree-shaken helpers (`$channel*`, `$charCount`, `$strBytes`,
+  `$strChars`, `$byteAt`, `$charAt`, `$strSlice`, `$bytesNew`, `$indexSet`);
+  sequence-tagged index assignments lower to `$indexSet`; void fallible
+  functions without an explicit `return` now end with `return $ok(undefined)`
+  so callers can `match` them; `.d.ts` artifacts declare `AstraChannel<T>`
+  (and `AstraTask<T>`) runtime shapes and map `Channel<T>`/`Task<T>`
+  signatures to them.
+- Semantics: channels are bounded (capacity 16) plain records; `send`/`receive`
+  fail recoverably on a closed channel; because spawn stays eager in the V1
+  single-threaded runtime, a full-channel send or empty-channel receive raises
+  a structured deadlock panic instead of blocking. `len` on `str` remains the
+  UTF-8 byte length; `slice` takes byte offsets and rejects out-of-range or
+  scalar-splitting ranges.
+- Conformance: new `conformance/` suite (`hello`, `strings_utf8`,
+  `bytes_buffer`, `channels` with `.expected` stdout) plus
+  `orchestrator/tests/conformance.mjs`; `codegen-js.test.mjs` runs every case
+  and `TS-001` will reuse the same runner.
+- Tests: 8 new checker unit tests, 5 new codegen execution tests (UTF-8 ops,
+  bounded channels with closed errors, the deadlock panic, bytes buffers with
+  an out-of-bounds panic, and `AstraChannel` declarations), and the shared
+  conformance test.
+- Housekeeping: the deprecated `js-001` branch and worktree were deleted after
+  verifying full containment; their uncommitted TS-001 groundwork (codegen-ts
+  emission work and `codegen-ts.test.mjs`) was preserved in this branch and is
+  green here.
+- Verification: 493 Rust tests, 41 TypeScript unit tests, 45 native/Wasm/boundary
+  tests (27 codegen/build), `cargo fmt --check`, clippy with warnings denied,
+  and `npm run ci` pass.
+- Current boundary: TypeScript-target script emission waits for `TS-001`; C/C++
+  scripts wait for the native backend. Channels are single-threaded in V1:
+  blocking operations panic rather than yield.
+
 ---
 
 ## Handoff
 
 ```markdown
 ### Handoff
-- Phase: 5 - Types, Nova, and NoPM / Phase 7 backend start
-- Task: JS-001 multi-module backend and INTEROP-001 JavaScript slice complete
+- Phase: 5 - Types, Nova, and NoPM / Phase 7 backend progress
+- Task: JS-001 complete (channels, UTF-8 string/byte operations, shared conformance suite); TS-001 groundwork preserved from the retired js-001 branch
 - Status: Ready; user is implementing the C backend and INTEROP-001 C/C++ slice
-- Files changed: `crates/astra-compiler-api/src/lib.rs`, `crates/astra-core/src/type_surface.rs`, `orchestrator/packages/codegen-js/src/{ir,generate}.ts`, `orchestrator/packages/compiler-client/src/index.ts`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/tests/codegen-js.test.mjs`, plus merged INTEROP frontend files and documentation
-- Verification: `npm run ci` green (485 Rust, 40 TypeScript unit, 39 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
-- Blockers: none
-- Next action: channels/scheduler and UTF-8 byte operations; then TS-001 and TypeScript-target script emission; coordinate merging `js-interop` with the C backend work
+- Files changed: `crates/astra-core/src/checker.rs`, `orchestrator/packages/codegen-js/src/generate.ts`, `orchestrator/tests/{codegen-js.test.mjs,conformance.mjs}`, `conformance/`, `orchestrator/packages/codegen-ts/src/index.ts` + `orchestrator/tests/codegen-ts.test.mjs` (preserved WIP), `Docs/Agent/{todo,state-log,runbook}.md`
+- Verification: `npm run ci` green (493 Rust, 41 TypeScript unit, 45 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
+- Blockers: merging `js-interop` into `master` waits for the user's C backend work
+- Next action: continue TS-001 (WIP present); merge `js-interop` → `master` when the C backend lands
 ```
 
 

@@ -23,12 +23,13 @@ Only one item may be `[~]` at a time.
 `FMT-004`, `TYPE-001`-`TYPE-004`, `MODE-001`, `ERR-001`, `NOVA-001`-`NOVA-003`,
 and `NOPM-001`-`NOPM-004` are complete. Nova now loads, checks, and links local
 project modules through one interpreter, and cross-module diagnostics and panic
-stacks carry canonical module paths. `JS-001` is in progress: the JavaScript ESM
-backend consumes typed AST/HIR, emits linked multi-module projects, and emits
-inline `@script:js` blocks as real ESM modules. Channels and a scheduler, the
-the TypeScript backend remains. The `INTEROP-001` frontend and JavaScript backend
-slice are implemented; the C/C++ native slice is in progress. Open questions
-remain documented as proposals in `Docs/spec-v0.1.md` §17.
+stacks carry canonical module paths. `JS-001` is complete: the JavaScript ESM
+backend consumes typed AST/HIR, emits linked multi-module projects, emits inline
+`@script:js` blocks as real ESM modules, and implements bounded channels, UTF-8
+string/byte operations, and backend-neutral conformance cases. The TypeScript
+backend remains. The `INTEROP-001` frontend and JavaScript backend slice are
+implemented; the C/C++ native slice is in progress. Open questions remain
+documented as proposals in `Docs/spec-v0.1.md` §17.
 
 ---
 
@@ -617,10 +618,11 @@ constant, and panic state.
 
 ## JS-001 - JavaScript ESM backend
 
-**Status:** In progress. The JavaScript backend emits linked multi-module
+**Status:** Complete. The JavaScript backend emits linked multi-module
 projects, inline `@script:js` ESM modules, recoverable error effects, checked and
-arbitrary integer policies, eager spawn/tasks, line-level source maps, and
-TypeScript declaration artifacts.
+arbitrary integer policies, eager spawn/tasks with bounded channels, UTF-8
+string/byte operations, line-level source maps, and TypeScript declaration
+artifacts. Shared conformance cases live in `conformance/` for `TS-001` to reuse.
 
 **Goal**
 
@@ -664,14 +666,14 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
       `checked_mul`, `checked_div`).
 - [x] Implement `spawn` and eager `Task` join/cancel, including unjoined task
       panics at function-scope exit.
-- [ ] Implement channels and a structured-concurrency scheduler.
+- [x] Implement channels and a structured-concurrency scheduler.
 - [x] Emit line-level source maps with `sourcesContent` and a
       `sourceMappingURL` comment.
 - [x] Emit `.d.ts` artifacts for modules and inline script modules.
 - [x] Implement the `arbitrary` integer policy with `BigInt` arithmetic,
       arbitrary `usize`/`isize`, length values, and explicit wrapping methods.
-- [ ] Implement full UTF-8 byte-slice and byte-index string operations.
-- [ ] Add conformance cases shared with `TS-001`.
+- [x] Implement full UTF-8 byte-slice and byte-index string operations.
+- [x] Add conformance cases shared with `TS-001`.
 
 **Current scope boundary**
 
@@ -702,7 +704,20 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - `spawn || { ... }` runs eagerly and returns a task value. `join` retrieves the
   outcome or re-raises a task panic; `cancel` marks the task cancelled. A
   function containing spawn owns a task scope, and an unjoined task panic is
-  raised when that function exits. Channels and a real scheduler remain.
+  raised when that function exits.
+- `Channel.create<T>()` returns a bounded channel (capacity 16). `send` and
+  `receive` are recoverable (`ChannelError` when the channel is closed);
+  `close` is infallible. Because spawn stays eager and the V1 runtime is
+  single-threaded, a send to a full channel or a receive from an empty open
+  channel raises a structured deadlock panic instead of blocking. Channels are
+  plain runtime records, and `.d.ts` artifacts describe them as
+  `AstraChannel<T>`.
+- String operations follow spec §6: `len` stays the UTF-8 byte length, and
+  `char_count`, `bytes`, `chars`, `byte_at`, `char_at`, and `slice` operate on
+  UTF-8 bytes and scalar values. `slice` returns `Result` and fails with
+  `SliceError` when the range is out of bounds or would split a scalar value.
+  `bytes.new(n)` allocates a bounds-checked `u8` buffer; indexed writes
+  require `let mut` and go through a checked `$indexSet` helper.
 - `astra build` writes a line-level `.js.map` with `sourcesContent`, rewrites the
   source path for the output directory, and appends a `sourceMappingURL`
   comment.
@@ -718,13 +733,22 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
   output rewriting.
 - `orchestrator/tests/codegen-js.test.mjs` compiles real `.ns` sources, executes
   generated ESM, covers integer policies, recoverable failures, `?` propagation,
-  checked integer methods, eager spawn/join, task panic scope failure, source
-  maps, linked multi-module projects with re-exports, inline `@script:js` modules
-  with boundary conversions and error mapping, missing script exports, `.d.ts`
-  artifacts, rejects unsupported constructs, and builds a project end to end.
-- Verification: 485 Rust tests, 40 TypeScript unit tests, 39 native/Wasm/boundary
-  tests (including 21 codegen/build tests), formatting, clippy with warnings denied,
-  and `npm run ci` pass.
+  checked integer methods, eager spawn/join, task panic scope failure, UTF-8
+  string/byte operations, bounded channels (closed-channel errors and the
+  single-threaded deadlock panic), bounds-checked bytes buffers, `AstraChannel`
+  declarations, source maps, linked multi-module projects with re-exports, inline
+  `@script:js` modules with boundary conversions and error mapping, missing
+  script exports, `.d.ts` artifacts, rejects unsupported constructs, runs the
+  shared conformance suite, and builds a project end to end.
+- `conformance/cases/*.ns` with `.expected` output plus
+  `orchestrator/tests/conformance.mjs` provide the backend-neutral suite that
+  `TS-001` reuses; `conformance/README.md` documents the format.
+- `crates/astra-core/src/checker.rs` adds the `Channel` and `bytes` builtin
+  namespaces, the `ChannelError`/`SliceError` error sets, spec §6 string/bytes
+  member signatures, and lvalue type annotations that back indexed writes.
+- Verification: 493 Rust tests, 41 TypeScript unit tests, 45 native/Wasm/boundary
+  tests (including 27 codegen/build tests), formatting, clippy with warnings
+  denied, and `npm run ci` pass.
 
 **Depends on**
 
@@ -811,7 +835,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `NOPM-002` Path, Git, npm, and Cargo adapters
 - [x] `NOPM-003` Universal registry gateway
 - [x] `NOPM-004` Later ecosystem adapters
-- [~] `JS-001` JavaScript ESM backend
+- [x] `JS-001` JavaScript ESM backend
 - [ ] `TS-001` TypeScript backend
 - [~] `INTEROP-001` Inline `@script` foreign-language blocks
 - [ ] `PLAY-001` Browser playground
@@ -820,7 +844,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
-- [ ] `CONF-001` Conformance suite
+- [~] `CONF-001` Conformance suite
 - [ ] `HARD-001` v0.1 hardening
 
 ---

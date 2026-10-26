@@ -137,6 +137,7 @@ const HELPER_ORDER = [
   "spawn",
   "taskJoin",
   "taskCancel",
+  "channel",
   "renderFloat",
   "render",
   "renderDebug",
@@ -150,7 +151,15 @@ const HELPER_ORDER = [
   "len",
   "lenBig",
   "strAt",
+  "charCount",
+  "strBytes",
+  "strChars",
+  "byteAt",
+  "charAt",
+  "strSlice",
+  "bytesNew",
   "index",
+  "indexSet",
   "getArray",
   "tuple",
   "tupleAt",
@@ -203,6 +212,11 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   dbg: ["render"],
   assert: ["panic"],
   len: ["panic", "utf8Len"],
+  byteAt: ["some", "none"],
+  charAt: ["some", "none"],
+  strSlice: ["ok", "err"],
+  indexSet: ["panic"],
+  channel: ["ok", "err", "panic"],
   lenBig: ["panic"],
   strAt: ["panic"],
   index: ["panic"],
@@ -292,6 +306,33 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   taskCancel: [
     "function $taskCancel(task) {",
     "  task.cancelled = true;",
+    "  return undefined;",
+    "}",
+  ],
+  channel: [
+    "function $channel() {",
+    "  return { $channel: true, capacity: 16, buffer: [], closed: false };",
+    "}",
+    "function $channelError(message) {",
+    '  return { $type: "ChannelError", 0: message };',
+    "}",
+    "function $channelSend(channel, value) {",
+    '  if (channel.closed) return $err($channelError("send on a closed channel"));',
+    "  if (channel.buffer.length >= channel.capacity) {",
+    '    $panic("channel deadlock: send on a full bounded channel would block (single-threaded runtime)");',
+    "  }",
+    "  channel.buffer.push(value);",
+    "  return $ok(undefined);",
+    "}",
+    "function $channelReceive(channel) {",
+    "  if (channel.buffer.length === 0) {",
+    '    if (channel.closed) return $err($channelError("receive on a closed channel"));',
+    '    $panic("channel deadlock: receive on an empty channel would block (single-threaded runtime)");',
+    "  }",
+    "  return $ok(channel.buffer.shift());",
+    "}",
+    "function $channelClose(channel) {",
+    "  channel.closed = true;",
     "  return undefined;",
     "}",
   ],
@@ -437,11 +478,68 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  return characters[position];",
     "}",
   ],
+  charCount: [
+    "function $charCount(value) {",
+    "  return Array.from(value).length;",
+    "}",
+  ],
+  strBytes: [
+    "function $strBytes(value) {",
+    "  return Array.from(new TextEncoder().encode(value));",
+    "}",
+  ],
+  strChars: [
+    "function $strChars(value) {",
+    "  return Array.from(value);",
+    "}",
+  ],
+  byteAt: [
+    "function $byteAt(value, index) {",
+    "  const bytes = new TextEncoder().encode(value);",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= bytes.length) return $none;',
+    "  return $some(bytes[position]);",
+    "}",
+  ],
+  charAt: [
+    "function $charAt(value, index) {",
+    "  const characters = Array.from(value);",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= characters.length) return $none;',
+    "  return $some(characters[position]);",
+    "}",
+  ],
+  strSlice: [
+    "function $strSlice(value, start, end) {",
+    "  const bytes = new TextEncoder().encode(value);",
+    "  const from = Number(start);",
+    "  const to = Number(end);",
+    "  const boundary = (position) =>",
+    "    position === bytes.length || (position >= 0 && position < bytes.length && (bytes[position] & 0xc0) !== 0x80);",
+    "  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > bytes.length || !boundary(from) || !boundary(to)) {",
+    '    return $err({ $type: "SliceError", 0: "slice range is out of bounds or splits a UTF-8 scalar value" });',
+    "  }",
+    '  return $ok(new TextDecoder("utf-8").decode(bytes.subarray(from, to)));',
+    "}",
+  ],
+  bytesNew: [
+    "function $bytesNew(length) {",
+    "  return new Uint8Array(Number(length));",
+    "}",
+  ],
   index: [
     "function $index(value, index) {",
     "  const position = Number(index);",
     '  if (!Number.isInteger(position) || position < 0 || position >= value.length) $panic("index out of bounds");',
     "  return value[position];",
+    "}",
+  ],
+  indexSet: [
+    "function $indexSet(value, index, item) {",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.length) $panic("index out of bounds");',
+    "  value[position] = item;",
+    "  return item;",
     "}",
   ],
   getArray: [
@@ -947,6 +1045,28 @@ class JavaScriptGenerator {
     }
     const localExported = (name: string): boolean => localExportNames.has(name);
 
+    // Built-in nominal types cross the module boundary as plain runtime
+    // records, so describe their real shapes for TypeScript consumers.
+    if (this.ast.items.some((item) => referencesTypePath(item.kind, "Task"))) {
+      lines.push(
+        "interface AstraTask<T> {",
+        "  readonly $task: true;",
+        "  readonly cancelled: boolean;",
+        "  join(): T;",
+        "}",
+      );
+    }
+    if (this.ast.items.some((item) => referencesTypePath(item.kind, "Channel"))) {
+      lines.push(
+        "interface AstraChannel<T> {",
+        "  readonly $channel: true;",
+        "  readonly capacity: number;",
+        "  readonly buffer: T[];",
+        "  readonly closed: boolean;",
+        "}",
+      );
+    }
+
     for (const item of this.ast.items) {
       this.emitDeclarationItem(item, lines, localExported);
     }
@@ -1148,6 +1268,16 @@ class JavaScriptGenerator {
     const previousWrap = this.currentSuccessWrap;
     this.currentSuccessWrap = wrapsSuccess;
     let body = this.emitBlock(declaration.body, "statement");
+    // A void fallible function has no explicit `return`, but callers still
+    // expect a Result-shaped success value when they `match` the call.
+    if (wrapsSuccess) {
+      const statements = declaration.body.statements;
+      const last = statements[statements.length - 1];
+      if (last === undefined || variantOf(last.kind) !== "Return") {
+        this.useHelper("ok");
+        body = `${body.slice(0, -1)}  return $ok(undefined);\n}`;
+      }
+    }
     if (containsVariant(declaration.body, "Spawn")) {
       this.useHelper("taskScope");
       const scope = this.temporary("taskScope");
@@ -1712,6 +1842,18 @@ class JavaScriptGenerator {
         );
       case "Assign": {
         const data = structPayload<{ target: Expr; value: Expr }>(kind, "Assign");
+        if (variantOf(data.target.kind) === "Index") {
+          const indexTarget = structPayload<{ target: Expr; index: Expr }>(
+            data.target.kind,
+            "Index",
+          );
+          const targetType = this.typeAt(indexTarget.target.span);
+          const targetTag = targetType === undefined ? undefined : typeTag(targetType);
+          if (targetTag !== undefined && isSequence(targetTag)) {
+            this.useHelper("indexSet");
+            return `$indexSet(${this.emitExpr(indexTarget.target)}, ${this.emitExpr(indexTarget.index)}, ${this.emitExpr(data.value)})`;
+          }
+        }
         return `${this.emitExpr(data.target)} = ${this.emitExpr(data.value)}`;
       }
       case "Call":
@@ -2219,6 +2361,29 @@ class JavaScriptGenerator {
     const tag = receiverType === undefined ? undefined : typeTag(receiverType);
     const target = this.emitExpr(receiver);
 
+    // Built-in namespace constructors: `Channel.create<T>()` and
+    // `bytes.new(length)`. These only appear when the namespace identifier
+    // carries no value annotation, so user values named `Channel`/`bytes`
+    // still emit through the ordinary paths.
+    if (
+      receiverType === undefined &&
+      method === "create" &&
+      variantOf(receiver.kind) === "Identifier" &&
+      (payloadOf(receiver.kind) as string) === "Channel"
+    ) {
+      this.useHelper("channel");
+      return "$channel()";
+    }
+    if (
+      receiverType === undefined &&
+      method === "new" &&
+      variantOf(receiver.kind) === "Identifier" &&
+      (payloadOf(receiver.kind) as string) === "bytes"
+    ) {
+      this.useHelper("bytesNew");
+      return `$bytesNew(${args[0] ?? "0"})`;
+    }
+
     if (method === "len") {
       if (this.ir.integerPolicy === "arbitrary") {
         this.useHelper("lenBig");
@@ -2258,6 +2423,32 @@ class JavaScriptGenerator {
       this.useHelper("parseInt");
       return `$parseInt(${target})`;
     }
+    if (tag === "Str") {
+      switch (method) {
+        case "char_count":
+          this.useHelper("charCount");
+          return this.ir.integerPolicy === "arbitrary"
+            ? `BigInt($charCount(${target}))`
+            : `$charCount(${target})`;
+        case "bytes":
+          this.useHelper("strBytes");
+          return `$strBytes(${target})`;
+        case "chars":
+          this.useHelper("strChars");
+          return `$strChars(${target})`;
+        case "byte_at":
+          this.useHelper("byteAt");
+          return `$byteAt(${target}, ${args[0] ?? "0"})`;
+        case "char_at":
+          this.useHelper("charAt");
+          return `$charAt(${target}, ${args[0] ?? "0"})`;
+        case "slice":
+          this.useHelper("strSlice");
+          return `$strSlice(${target}, ${args[0] ?? "0"}, ${args[1] ?? "0"})`;
+        default:
+          break;
+      }
+    }
     if (tag === "Named") {
       const named = payloadOf(receiverType) as readonly [string, ...unknown[]];
       if (named[0] === "Task") {
@@ -2268,6 +2459,21 @@ class JavaScriptGenerator {
           case "cancel":
             this.useHelper("taskCancel");
             return `$taskCancel(${target})`;
+          default:
+            break;
+        }
+      }
+      if (named[0] === "Channel") {
+        switch (method) {
+          case "send":
+            this.useHelper("channel");
+            return `$channelSend(${target}, ${args[0] ?? "undefined"})`;
+          case "receive":
+            this.useHelper("channel");
+            return `$channelReceive(${target})`;
+          case "close":
+            this.useHelper("channel");
+            return `$channelClose(${target})`;
           default:
             break;
         }
@@ -2852,6 +3058,25 @@ function taggedResultType(ok: string, error: string): string {
   return `{ readonly $result: true; readonly ok: true; readonly value: ${ok} } | { readonly $result: true; readonly ok: false; readonly error: ${error} }`;
 }
 
+/** Walks an AST declaration looking for a reference to a built-in type path. */
+function referencesTypePath(node: unknown, name: string): boolean {
+  if (Array.isArray(node)) {
+    return node.some((child) => referencesTypePath(child, name));
+  }
+  if (node !== null && typeof node === "object") {
+    const path = (node as { readonly Path?: TypePath }).Path;
+    if (path !== undefined && Array.isArray(path.segments)) {
+      if (path.segments[path.segments.length - 1] === name) {
+        return true;
+      }
+    }
+    return Object.values(node as Record<string, unknown>).some((child) =>
+      referencesTypePath(child, name),
+    );
+  }
+  return false;
+}
+
 function astTypeToTs(
   type: AstType,
   policy: "wrapping" | "safe-checked" | "arbitrary",
@@ -2901,6 +3126,12 @@ function astTypeToTs(
       }
       if ((name === "Array" || name === "Slice") && argumentsText.length === 1) {
         return `${argumentsText[0]}[]`;
+      }
+      if (name === "Channel" && argumentsText.length === 1) {
+        return `AstraChannel<${argumentsText[0]}>`;
+      }
+      if (name === "Task" && argumentsText.length === 1) {
+        return `AstraTask<${argumentsText[0]}>`;
       }
       if (name === "FixedArray" && argumentsText.length === 1) {
         return `${argumentsText[0]}[]`;
