@@ -571,7 +571,8 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
 
     // Parse all sources.
     let mut project_modules: Vec<astra_core::type_surface::ProjectModule> = Vec::new();
-    let mut path_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut path_map: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     let mut parse_errors: Vec<Diagnostic> = Vec::new();
 
     for unit in &request.sources {
@@ -677,7 +678,7 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
         Ok(generated) => {
             let mut modules = Vec::new();
             let mut host_shim = String::new();
-            for (entry, gen) in entries.iter().zip(generated.iter()) {
+            for (entry, module_out) in entries.iter().zip(generated.iter()) {
                 let stem = entry.key.replace(['/', '.', '-'], "_");
                 let c_filename = format!("{stem}.c");
                 let h_filename = format!("{stem}.h");
@@ -689,12 +690,12 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
                         .unwrap_or_else(|| entry.key.clone()),
                     c_filename,
                     h_filename,
-                    c_source: gen.source.clone(),
-                    h_source: gen.header.clone().unwrap_or_default(),
-                    script_sources: gen.script_sources.clone(),
+                    c_source: module_out.source.clone(),
+                    h_source: module_out.header.clone().unwrap_or_default(),
+                    script_sources: module_out.script_sources.clone(),
                 });
                 if host_shim.is_empty() {
-                    host_shim = gen.host_shim.clone();
+                    host_shim = module_out.host_shim.clone();
                 }
             }
             ProjectCompileResponse {
@@ -834,7 +835,8 @@ impl FrontendCompiler {
                                                         "filename": "astra_host.c",
                                                         "content": generated.host_shim,
                                                     }));
-                                                for (filename, content) in generated.script_sources {
+                                                for (filename, content) in generated.script_sources
+                                                {
                                                     response = response.with_artifact(json!({
                                                         "type": "c-script",
                                                         "name": filename,

@@ -500,9 +500,16 @@ fn unsupported_target_map_emits_ns_map() {
         integer_policy: IntegerPolicy::Wrapping,
     };
     let result = generate(&c_module);
-    assert!(result.is_ok(), "C backend should emit map literals: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "C backend should emit map literals: {:?}",
+        result
+    );
     let out = result.unwrap().source;
-    assert!(out.contains("astra_map_new"), "expected astra_map_new:\n{out}");
+    assert!(
+        out.contains("astra_map_new"),
+        "expected astra_map_new:\n{out}"
+    );
 }
 
 #[test]
@@ -740,7 +747,10 @@ fn get_len(m: {str: i32}) -> usize {
 "#;
     let out = compile_and_emit(src);
     // Map len call must appear.
-    assert!(out.contains("astra_map_len"), "expected astra_map_len:\n{out}");
+    assert!(
+        out.contains("astra_map_len"),
+        "expected astra_map_len:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -755,9 +765,18 @@ pub fn main() {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_map_new"), "expected astra_map_new:\n{out}");
-    assert!(out.contains("astra_map_set"), "expected astra_map_set:\n{out}");
-    assert!(out.contains("astra_map_len"), "expected astra_map_len:\n{out}");
+    assert!(
+        out.contains("astra_map_new"),
+        "expected astra_map_new:\n{out}"
+    );
+    assert!(
+        out.contains("astra_map_set"),
+        "expected astra_map_set:\n{out}"
+    );
+    assert!(
+        out.contains("astra_map_len"),
+        "expected astra_map_len:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -771,7 +790,10 @@ fn check(m: {str: i32}) -> bool {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_map_contains"), "expected astra_map_contains:\n{out}");
+    assert!(
+        out.contains("astra_map_contains"),
+        "expected astra_map_contains:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -785,9 +807,15 @@ fn lookup(m: {str: i32}) -> Option<i32> {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_map_get"), "expected astra_map_get:\n{out}");
+    assert!(
+        out.contains("astra_map_get"),
+        "expected astra_map_get:\n{out}"
+    );
     // The result should be wrapped in an Option typedef.
-    assert!(out.contains("NS_Option_i32"), "expected NS_Option_i32:\n{out}");
+    assert!(
+        out.contains("NS_Option_i32"),
+        "expected NS_Option_i32:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -802,9 +830,18 @@ fn add_or_update() -> Option<i32> {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_map_set"), "expected astra_map_set:\n{out}");
-    assert!(out.contains("astra_map_get"), "expected astra_map_get:\n{out}");
-    assert!(out.contains("NS_Option_i32"), "expected NS_Option_i32:\n{out}");
+    assert!(
+        out.contains("astra_map_set"),
+        "expected astra_map_set:\n{out}"
+    );
+    assert!(
+        out.contains("astra_map_get"),
+        "expected astra_map_get:\n{out}"
+    );
+    assert!(
+        out.contains("NS_Option_i32"),
+        "expected NS_Option_i32:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -821,7 +858,10 @@ fn iterate_map() {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_map_key_at"), "expected astra_map_key_at:\n{out}");
+    assert!(
+        out.contains("astra_map_key_at"),
+        "expected astra_map_key_at:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -838,7 +878,10 @@ fn iterate_array() {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_array_index"), "expected astra_array_index:\n{out}");
+    assert!(
+        out.contains("astra_array_index"),
+        "expected astra_array_index:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -857,9 +900,18 @@ fn data() -> bytes {
     let out = compile_and_emit(src);
     assert!(out.contains("NS_Bytes"), "expected NS_Bytes:\n{out}");
     // The hex-encoded byte values must appear (a=0x61, b=0x62, c=0x63).
-    assert!(out.contains("0x61"), "expected 0x61 in bytes literal:\n{out}");
-    assert!(out.contains("0x62"), "expected 0x62 in bytes literal:\n{out}");
-    assert!(out.contains("0x63"), "expected 0x63 in bytes literal:\n{out}");
+    assert!(
+        out.contains("0x61"),
+        "expected 0x61 in bytes literal:\n{out}"
+    );
+    assert!(
+        out.contains("0x62"),
+        "expected 0x62 in bytes literal:\n{out}"
+    );
+    assert!(
+        out.contains("0x63"),
+        "expected 0x63 in bytes literal:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -892,8 +944,14 @@ fn process(b: bytes) -> u8 {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_bytes_get"), "expected astra_bytes_get:\n{out}");
-    assert!(out.contains("astra_bytes_slice"), "expected astra_bytes_slice:\n{out}");
+    assert!(
+        out.contains("astra_bytes_get"),
+        "expected astra_bytes_get:\n{out}"
+    );
+    assert!(
+        out.contains("astra_bytes_slice"),
+        "expected astra_bytes_slice:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -916,10 +974,22 @@ fn cmp_str(a: str, b: str) -> bool {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_bytes_eq"), "expected astra_bytes_eq:\n{out}");
-    assert!(out.contains("astra_bytes_cmp"), "expected astra_bytes_cmp:\n{out}");
-    assert!(out.contains("astra_str_eq"), "expected astra_str_eq:\n{out}");
-    assert!(out.contains("astra_str_cmp"), "expected astra_str_cmp:\n{out}");
+    assert!(
+        out.contains("astra_bytes_eq"),
+        "expected astra_bytes_eq:\n{out}"
+    );
+    assert!(
+        out.contains("astra_bytes_cmp"),
+        "expected astra_bytes_cmp:\n{out}"
+    );
+    assert!(
+        out.contains("astra_str_eq"),
+        "expected astra_str_eq:\n{out}"
+    );
+    assert!(
+        out.contains("astra_str_cmp"),
+        "expected astra_str_cmp:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -935,7 +1005,10 @@ fn count_bytes(b: bytes) {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_bytes_get"), "expected astra_bytes_get in loop:\n{out}");
+    assert!(
+        out.contains("astra_bytes_get"),
+        "expected astra_bytes_get in loop:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -953,7 +1026,10 @@ fn evaluate(s: str) -> i32 {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_str_eq"), "expected astra_str_eq in match:\n{out}");
+    assert!(
+        out.contains("astra_str_eq"),
+        "expected astra_str_eq in match:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -971,7 +1047,10 @@ fn evaluate_bytes(b: bytes) -> i32 {
 }
 "#;
     let out = compile_and_emit(src);
-    assert!(out.contains("astra_bytes_eq"), "expected astra_bytes_eq in match:\n{out}");
+    assert!(
+        out.contains("astra_bytes_eq"),
+        "expected astra_bytes_eq in match:\n{out}"
+    );
     assert_clang_ok(&out);
 }
 
@@ -1011,7 +1090,9 @@ fn calculate(x: i32, y: i32) -> i32 {
     };
     let generated = generate(&c_module).expect("C generation failed");
     assert!(
-        generated.source.contains("int32_t mul(int32_t a, int32_t b);"),
+        generated
+            .source
+            .contains("int32_t mul(int32_t a, int32_t b);"),
         "missing proto in:\n{}",
         generated.source
     );
@@ -1063,7 +1144,9 @@ fn calculate(x: i32, y: i32) -> i32 {
     };
     let generated = generate(&c_module).expect("C generation failed");
     assert!(
-        generated.source.contains("int32_t add(int32_t a, int32_t b);"),
+        generated
+            .source
+            .contains("int32_t add(int32_t a, int32_t b);"),
         "missing proto in:\n{}",
         generated.source
     );
@@ -1110,4 +1193,3 @@ module test.script_js
     let err = generate(&c_module).expect_err("should reject js script on c target");
     assert_eq!(err.code, "NS7002");
 }
-

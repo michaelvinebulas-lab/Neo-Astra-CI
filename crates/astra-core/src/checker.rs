@@ -2311,12 +2311,6 @@ impl<'a> Checker<'a> {
                 }
                 (**value).clone()
             }
-            Type::Bytes => {
-                if !index.accepts(&Type::Usize) && !index.is_opaque() {
-                    self.type_mismatch(&Type::Usize, index, span);
-                }
-                Type::U8
-            }
             Type::Tuple(elements) => {
                 if let Some(index) = tuple_index
                     && let Some(element) = elements.get(index)
@@ -3918,12 +3912,6 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                 return_type: Box::new(Type::Usize),
                 errors: Vec::new(),
             },
-            "slice" => FunctionType {
-                type_parameters: Vec::new(),
-                parameters: vec![Type::Usize, Type::Usize],
-                return_type: Box::new(Type::Str),
-                errors: Vec::new(),
-            },
             "to_int" => FunctionType {
                 type_parameters: Vec::new(),
                 parameters: Vec::new(),
@@ -4130,15 +4118,6 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                 _ => return None,
             }
         }
-        Type::Bytes => match member {
-            "len" => FunctionType {
-                type_parameters: Vec::new(),
-                parameters: Vec::new(),
-                return_type: Box::new(Type::Usize),
-                errors: Vec::new(),
-            },
-            _ => return None,
-        },
         _ if ty.is_integer() => match member {
             "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "wrapping_div" => FunctionType {
                 type_parameters: Vec::new(),
