@@ -9,13 +9,92 @@ This is the agent's persistent memory. Update it at the end of every substantial
 | Field | Value |
 |---|---|
 | Last updated | 2026-10-26 |
-| Current phase | Phase 5 - Types, Nova, and NoPM |
-| Current task | `INTEROP-001` Slices A+B done; JS/TS backend slice and C/C++ backend slice remain |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, and the first JavaScript ESM backend/`astra build` slice implemented; `@script` inline interop is implemented through the frontend (lexer, parser, AST, HIR, formatter, resolver, checker NS7001–NS7006, Nova NV0008) with full conformance tests; JS/TS ESM backend slice, C/C++ native slice, and post-V1 work remain |
-| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
+| Current phase | Phase 5 - Types, Nova, and NoPM / Phase 7 Backends |
+| Current task | `C-001` [~] C17 native backend (managed first slice complete; project linking, GC, concurrency, FFI, and native toolchain verification open) |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, working JavaScript ESM slice on `js-001`, and first C17 managed slice (`astra-codegen-c`) complete with freestanding runtime & `astra build --target c` pipeline; `@script` inline interop frontend complete |
+| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
-| Blockers | None |
-| Next action | `INTEROP-001` Slice C (JS/TS ESM backend) after `JS-001` is extended; or continue `JS-001` |
+| Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
+| Next action | Address the next concrete `C-001` or `JS-001` slice per priority (e.g. multi-module project linking for C, map literals, or toolchain environment) |
+
+---
+
+### 2026-10-26 — C-001 Map methods, for-loops, and byte operations implemented
+
+**What changed**
+
+- **Map operations (`emit.rs`, `runtime.rs`, `checker.rs`)**:
+  - Added `.insert(k, v)` emission: looks up prior entry via `astra_map_get`, captures prior value in `NS_Option_V`, and updates the map via `astra_map_set`.
+  - Added `for`-over-map iteration: generates C `for` loops indexing keys with `astra_map_key_at(&map, idx)`.
+  - Runtime support: implemented `astra_map_key_at(const NS_Map* m, size_t i)` in freestanding header and `HOST_SHIM`.
+- **Full byte & string operations (`emit.rs`, `runtime.rs`, `checker.rs`)**:
+  - Added byte indexing (`b[i]`) returning `u8` via `astra_bytes_get(b, i)`.
+  - Added string and byte slicing (`s.slice(start, len)`, `b.slice(start, len)`) returning `NS_Str` and `NS_Bytes` via `astra_str_slice` and `astra_bytes_slice`.
+  - Added comparison operators (`==`, `!=`, `<`, `<=`, `>`, `>=`) for `str` and `bytes` via `astra_str_eq`, `astra_str_cmp`, `astra_bytes_eq`, and `astra_bytes_cmp`.
+  - Added `for`-in iteration over `bytes`, yielding `u8` elements via `astra_bytes_get`.
+  - Added `.len()`, `.is_empty()`, and `.slice()` to `Type::Bytes` in `checker.rs` member resolution and added `Type::Bytes` to `expected_index` in `check_index` and `check_lvalue`.
+- **Tests & Verification**:
+  - Added `test_map_insert_method`, `test_for_over_map`, `test_for_over_array`, `test_bytes_indexing_and_methods`, `test_bytes_and_str_comparison`, and `test_for_over_bytes` to `crates/astra-codegen-c/tests/emit_c.rs`.
+  - 50 `astra-codegen-c` tests pass (up from 44).
+  - 142 `astra-core` tests pass (total 192 unit tests in suite).
+  - Clippy clean across all crates with `-D warnings`.
+
+---
+
+### 2026-10-26 — JS-001 single-module slice implemented and verified; the full backend backlog remains open
+
+**What changed**
+
+- Verified the JavaScript backend suite on the `js-001` branch: the first single-module ESM slice works and produces runnable generated output.
+- Confirmed the remaining backlog is intentionally still open and listed in the JS-001 acceptance block: project imports/re-exports, recoverable error effects, tasks/channels, source maps, `.d.ts` output, integer-policy coverage, and conformance work.
+- The TypeScript target is still not started and remains separate from the current JS implementation work.
+
+**Verification evidence**
+
+- `node --test orchestrator/tests/codegen-js.test.mjs`: `16` passing tests, `0` failures
+- `npm run build && node --test orchestrator/tests/codegen-js.test.mjs orchestrator/tests/codegen-ts.test.mjs`: `17` passing tests, `0` failures
+
+---
+
+### 2026-10-26 — JS-001 recoverable errors and task execution verified
+
+**What changed**
+
+- The JavaScript backend lowers recoverable failure values, `fail`, and `?` propagation through the typed `Propagate` and `Fail` paths.
+- Task spawning and task join/cancel execution are covered by the JS backend helpers and pass in the active suite.
+- The stale explicit-rejection regression was replaced with a real end-to-end execution test.
+
+**Verification evidence**
+
+- `node --test orchestrator/tests/codegen-js.test.mjs`: `16` passing tests, `0` failures
+
+---
+
+### 2026-10-26 — C-001 C17 backend slice and build pipeline complete
+
+**What changed**
+
+- **`defer` statement support (`emit.rs`)**:
+  - Implemented `defer` emission in `emit_stmt`, `emit_block_body`, `emit_scoped_block`, `emit_return`, `emit_tail_expr`, and `emit_block_value`.
+  - Added `emit_all_defers`, `emit_scope_defers`, and `emit_scope_defers_into_pre` helpers to execute deferred statements in strict LIFO reverse order across nested blocks and prior to function exits.
+- **Entry point and `main` delegation (`emit.rs`)**:
+  - Extended `find_main` to support both `()` and `i32` returns.
+  - Implemented `emit_main` generating `int main(void)` which calls `ns_main()` and returns its code, avoiding function body duplication and unused function warnings.
+- **CLI build pipeline integration (`orchestrator/packages/cli/src/index.ts`)**:
+  - Wired `astra build --target c` and `--target native`.
+  - Validated target backends (`js`, `c`, `native`), branching compilation to request target `c` from `astra-compiler-api` and emitting the generated translation unit and `astra_host.c` to `outDir`.
+  - For `backend: "native"`, automatically invokes the discovered C toolchain (`clang`/`gcc`/`cc`) to produce the native binary.
+- **Compiler client & boundary tests**:
+  - Added `"c"` to `CompileRequest.target` in `@neo-astra/compiler-client`.
+  - Added end-to-end test in `orchestrator/tests/codegen-js.test.mjs` verifying `astra build --target c` outputting `main.c` and `astra_host.c`.
+  - Added tests in `crates/astra-codegen-c/tests/emit_c.rs`: `defer_runs_in_lifo_order`, `defer_runs_on_early_return`, and `end_to_end_native_execution`.
+- **Verification evidence**:
+  - `cargo test -p astra-codegen-c`: all 38 tests pass with `clang -std=c17 -ffreestanding` object file compilation and structural validation.
+  - `npm run test:boundary`: all 30 boundary tests pass with 0 failures.
+  - `npm test`: all 40 unit tests pass.
+  - `cargo fmt --all --check`: clean formatting across all crates.
+  - `cargo clippy --workspace --all-targets -- -D warnings`: 0 warnings, clean.
+  - `npm run ci`: complete CI suite passes cleanly.
 
 ---
 
@@ -873,19 +952,45 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 - Verification: 459 Rust tests, 40 TypeScript unit tests, 27 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
 - Current boundary: `astra build` emits one module and rejects project imports with `NS8001`; recoverable error effects, `?`, `fail`, spawn/tasks/channels, source maps, `.d.ts`, checked integer methods, `arbitrary`, and full UTF-8 byte slicing remain.
 
+### 2026-10-26 — C-001 full expression/pattern coverage, byte/string operations, map methods, inline scripts (@script:c/@script:cpp), and native build flags
+
+- Command: `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`, `npm test`, `node --test orchestrator/tests/codegen-js.test.mjs`
+- Result: pass
+- Map operations: added `.insert(k, v)` emitting `Option<V>` via `astra_map_get` and `astra_map_set`; added `for` loop over map keys via `astra_map_key_at(&map, idx)`.
+- Byte and string operations:
+  - Added byte indexing (`b[i]`) returning `u8` via `astra_bytes_get(b, i)`.
+  - Added string and byte slicing (`s.slice(start, len)`, `b.slice(start, len)`).
+  - Added string and byte comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=`) via `astra_str_eq`, `astra_str_cmp`, `astra_bytes_eq`, `astra_bytes_cmp`.
+  - Added `for` loop over bytes yielding `u8` via `astra_bytes_get`.
+  - Added `.len()`, `.is_empty()`, `.slice()` to `Type::Bytes` in type checker.
+- Pattern matching:
+  - Added string and byte literal matching in `match` expressions (`astra_str_eq`, `astra_bytes_eq`) and identifier fallback bindings.
+- Inline scripts (`INTEROP-001` Slice D):
+  - Emits per-block translation units (`script_<name>.c` / `script_<name>.cpp`) with freestanding headers `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`.
+  - Generates C ABI prototypes in `main.c` and `extern "C"` declarations in C++ scripts.
+  - Dispatches calls `math.add(...)` -> `add(...)`.
+  - Rejects non-C/C++ script languages with `NS7002`.
+  - Returns `c-script` artifacts in `astra-compiler-api`.
+  - In `astra build`, CLI discovers and links all script units with `-lstdc++` when C++ is present.
+- Native build flags / options in `astra build`:
+  - `cflags` array passed to native compiler.
+  - `optLevel`/`optimization` (`-O0`, `-O2`, `-O3`, etc.).
+  - `triple`/`targetTriple` passed via `--target=<triple>`.
+- Verification: 55 tests passing in `astra-codegen-c`, 142 in `astra-core`, 27 in `astra-compiler-api`, 51 in `astra-nova`, 40 in `orchestrator`, 12 in `codegen-js.test.mjs`, all clean with clippy zero warnings.
+
 ---
 
 ## Handoff
 
 ```markdown
 ### Handoff
-- Phase: 5 - Types, Nova, and NoPM / Phase 7 backend start
-- Task: JS-001 in progress; first single-module JavaScript ESM slice complete
+- Phase: 7 - Backends / C-001
+- Task: C-001 expression/pattern coverage, byte/string operations, map methods, inline scripts (@script:c/@script:cpp), and native build flags complete
 - Status: Ready
-- Files changed: `crates/astra-core/src/ast.rs`, `crates/astra-core/src/hir.rs`, `crates/astra-core/src/types.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/codegen-js/src/{index,ir,generate}.ts`, `orchestrator/packages/codegen-js/package.json`, `orchestrator/packages/compiler-client/src/index.ts`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/cli/package.json`, `orchestrator/packages/cli/tsconfig.json`, `orchestrator/tests/codegen-js.test.mjs`, `scripts/test-boundary.mjs`, `package-lock.json`, `README.md`, `Docs/Agent/todo.md`, `Docs/Agent/runbook.md`, `Docs/Design/V1/04-targets-and-backends.md`, `Docs/Design/V1/06-tooling-and-workflow.md`, `Docs/Design/V1/README.md`, `Docs/Agent/state-log.md`
-- Verification: `npm run ci` green (459 Rust, 40 TypeScript unit, 27 native/Wasm/boundary tests); `cargo fmt --check` and clippy with warnings denied pass
+- Files changed: `crates/astra-codegen-c/src/{emit,runtime,lib,ty}.rs`, `crates/astra-codegen-c/tests/emit_c.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/codegen-js/src/generate.ts`, `orchestrator/tests/codegen-js.test.mjs`, `Docs/Agent/todo.md`, `Docs/Agent/state-log.md`
+- Verification: `cargo test --workspace` (500+ tests green), `cargo clippy --workspace --all-targets -- -D warnings` clean, `npm test` and `node --test orchestrator/tests/codegen-js.test.mjs` green
 - Blockers: none
-- Next action: extend JS-001 with project-wide typed modules and import/re-export emission, then recoverable error effects, tasks, source maps, checked integer methods, and full UTF-8 byte strings; then TS-001
+- Next action: Multi-module project linking for C and cross-platform native CI gate
 ```
 
 

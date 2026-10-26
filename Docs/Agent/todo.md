@@ -23,13 +23,15 @@ Only one item may be `[~]` at a time.
 `FMT-004`, `TYPE-001`-`TYPE-004`, `MODE-001`, `ERR-001`, `NOVA-001`-`NOVA-003`,
 and `NOPM-001`-`NOPM-004` are complete. Nova now loads, checks, and links local
 project modules through one interpreter, and cross-module diagnostics and panic
-stacks carry canonical module paths. `JS-001` is in progress: the first
-single-module JavaScript ESM slice consumes typed AST/HIR from the compiler
-boundary and `astra build` writes runnable ESM. Project imports, error effects,
-tasks, source maps, and TypeScript remain. The `INTEROP-001` inline-script design
-is complete in `Docs/Design/V1/10-inline-script-interop.md`; implementation is
-parked for the FFI/backend phase. Open questions remain documented as proposals
-in `Docs/spec-v0.1.md` §17.
+stacks carry canonical module paths. `JS-001` is complete on the `js-interop`
+branch (commit `39437d0`): linked multi-module ESM, inline `@script:js` blocks,
+recoverable errors, integer policies, eager tasks, bounded channels, UTF-8
+string/byte operations, source maps, `.d.ts`, and the shared `conformance/`
+suite — merging into `master` is parked until the C backend work lands. The
+TypeScript target has not started; its groundwork is preserved on `js-interop`.
+The `INTEROP-001` inline-script design is complete in
+`Docs/Design/V1/10-inline-script-interop.md`; the C/C++ slice is in progress.
+Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
 ---
 
@@ -618,7 +620,9 @@ constant, and panic state.
 
 ## JS-001 - JavaScript ESM backend
 
-**Status:** In progress. The first single-module slice is implemented.
+**Status:** Complete on the `js-interop` branch (commit `39437d0`), verified by
+full `npm run ci`. Merge into `master` is parked until the C backend work lands;
+the checkbox states below describe `js-interop`, not `master`, until then.
 
 **Goal**
 
@@ -651,18 +655,33 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - [x] Report compiler and codegen diagnostics with source locations.
 - [x] Add execution tests for structs, enums, options, maps, tuples, defer,
       wrapping/checked integers, and `astra build`.
-- [ ] Link and emit project imports, namespace imports, and re-exports. The
-      current backend rejects imports with `NS8001`.
-- [ ] Implement recoverable error effects, `fail`, and `?` propagation.
-- [ ] Implement tasks, channels, and `spawn`.
-- [ ] Implement source maps and optional `.d.ts` artifacts.
-- [ ] Implement checked integer methods and the `arbitrary` policy.
-- [ ] Implement full UTF-8 byte-slice and byte-index string operations.
-- [ ] Add conformance cases shared with `TS-001`.
+- [x] Link and emit project imports, namespace imports, default imports, named
+      imports, named re-exports, namespace re-exports, and star re-exports.
+- [x] Implement recoverable error effects, `!Error(...)` failure construction, and
+      `?` propagation.
+- [x] Implement checked integer methods (`checked_add`, `checked_sub`,
+      `checked_mul`, `checked_div`).
+- [x] Implement `spawn` and eager `Task` join/cancel, including unjoined task
+      panics at function-scope exit.
+- [x] Implement channels and a structured-concurrency scheduler.
+- [x] Emit line-level source maps with `sourcesContent` and a
+      `sourceMappingURL` comment.
+- [x] Emit `.d.ts` artifacts for modules and inline script modules.
+- [x] Implement the `arbitrary` integer policy with `BigInt` arithmetic,
+      arbitrary `usize`/`isize`, length values, and explicit wrapping methods.
+- [x] Implement full UTF-8 byte-slice and byte-index string operations.
+- [x] Add conformance cases shared with `TS-001`.
+- [x] Emit `@script:js` blocks as separate ESM artifacts, import their namespace,
+      validate declared exports, convert `Option` boundaries, map declared error
+      effects, and write script source maps.
 
 **Current scope boundary**
 
-- One module per build. `astra build` reads `nova.entry` and emits one module.
+- `astra build` discovers local modules from relative imports, checks the
+  project graph, and emits one ESM module per source with rewritten relative
+  specifiers. External/non-project imports remain compile-time errors.
+- Inline `@script:js` blocks are project source; `@script:ts` is rejected on the
+  JavaScript target until the TypeScript target or a pinned transpiler exists.
 - `Option` is a tagged object, not JavaScript `null`; `Result` is a tagged object.
 - Maps use a small structural-key helper rather than JavaScript `Map`, preserving
   Neo Astra structural key equality and insertion order.
@@ -670,9 +689,14 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
   semantics are enforced for `i8`-`i64` and `u8`-`u64`.
 - Floats are tagged numeric values so `f64`/`f32` rendering keeps their fractional
   identity; `f32` operations use `Math.fround`.
-- Render helpers preserve integer, float, string, tuple, struct, enum, map,
-  `Option`, and `Result` shapes; `f64`/`f32` values use tagged numbers so integral
-  floats render with a trailing `.0`.
+- `spawn || { ... }` runs eagerly and returns a task value. Channels are bounded
+  (capacity 16); `send`/`receive` fail recoverably on a closed channel, and a
+  full-channel send or empty-channel receive raises a structured deadlock panic
+  in the single-threaded V1 runtime.
+- String operations follow spec §6 (`len` is UTF-8 byte length; `slice` fails
+  with `SliceError` on out-of-range or scalar-splitting ranges); `bytes.new(n)`
+  allocates bounds-checked `u8` buffers and indexed writes emit `$indexSet`.
+- The backend-neutral `conformance/` suite pins shared semantics for `TS-001`.
 
 **Evidence**
 
@@ -682,15 +706,107 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
   module; `generate.ts` implements ESM emission and diagnostics.
 - `orchestrator/packages/cli/src/index.ts` implements `astra build`.
 - `orchestrator/tests/codegen-js.test.mjs` compiles real `.ns` sources, executes
-  generated ESM, covers integer policies, rejects unsupported constructs, and
-  builds a project end to end.
-- Verification: 459 Rust tests, 40 TypeScript unit tests, 27 native/Wasm/boundary
-  tests (including 9 codegen/build tests), formatting, clippy with warnings denied,
-  and `npm run ci` pass.
+  generated ESM, and covers all acceptance areas including channels, UTF-8
+  string/byte operations, bytes buffers, and the shared conformance suite.
+- `conformance/` + `orchestrator/tests/conformance.mjs` hold the backend-neutral
+  cases (`hello`, `strings_utf8`, `bytes_buffer`, `channels`).
+- Verification on `js-interop`: 493 Rust tests, 41 TypeScript unit tests, 45
+  native/Wasm/boundary tests (including 27 codegen/build tests), formatting,
+  clippy with warnings denied, and `npm run ci` pass.
 
 **Depends on**
 
 - `TYPE-004` and `NOVA-003` (done).
+
+---
+
+## TS-001 - TypeScript ESM backend
+
+**Status:** Not started. Depends on the completed `JS-001` backend and the
+`INTEROP-001` frontend.
+
+**Why**
+
+The JavaScript backend proves the typed-AST/HIR pipeline, but TypeScript is a
+release-blocking target. It must emit strict TypeScript that preserves the same
+runtime semantics as the JavaScript backend while giving editors, `tsc`, and
+downstream TypeScript users real types. The backend must consume the shared
+typed module from the Rust compiler; it must not re-parse `.ns` source in
+TypeScript.
+
+**Goal**
+
+Add `@neo-astra/codegen-ts` and wire `astra build --target <typescript target>`
+so the same `.ns` project can produce strict TypeScript ESM, declarations, and
+source maps that compile with ordinary `tsc` and run through Node or a bundler.
+
+**Acceptance**
+
+- [ ] Add a `codegen-ts` package that consumes the same serialized typed module
+      as `codegen-js` (AST, HIR, annotations, manual-memory scopes, integer
+      policy, and project module keys).
+- [ ] Share JS runtime semantics and tree-shaken helpers with the JavaScript
+      backend without forking behavior or duplicating source parsing.
+- [ ] Emit strict TypeScript ESM for the supported language subset: functions,
+      constants, locals, control flow, `defer`, calls, assignments, arrays,
+      maps, tuples, structs, enums, `Option`, `Result`, `match`, errors, tasks,
+      and the supported built-ins.
+- [ ] Emit explicit types for parameters, returns, locals, constants, struct
+      fields, enum payloads, maps, tuples, and `Option`/`Result` values; do not
+      rely on implicit `any` except at an explicitly marked FFI boundary.
+- [ ] Support linked multi-module projects, imports, default/named/namespace
+      imports, re-exports, star re-exports, and rewritten relative specifiers
+      with parity to `JS-001`.
+- [ ] Emit `.ts`, `.ts.map`, and `.d.ts` artifacts; keep `sourcesContent` and
+      line-level mappings. Write `package.json` with `"type": "module"` when the
+      out directory needs it.
+- [ ] Support `wrapping`, `safe-checked`, and `arbitrary` integer policies with
+      the same observable semantics as the JavaScript backend.
+- [ ] Support eager `spawn`/`join`/`cancel` and recoverable error effects with
+      the same boundary behavior as the JavaScript backend.
+- [ ] Implement `@script:ts` emission on the TypeScript target with one pinned
+      TypeScript compiler version. Missing or mismatched transpilers are hard
+      errors; no best-effort fallback. `@script:js` remains valid where the
+      target permits it.
+- [ ] Extend `astra build` target selection to `backend: "ts"`, including
+      `--target`, `ASTRA_TARGET`, `build.defaultTarget`, target `outDir`, and
+      mode/integer-policy selection.
+- [ ] Report frontend and backend diagnostics with `.ns` source locations, and
+      reject unsupported constructs instead of changing semantics.
+- [ ] Add end-to-end tests that build a real project, run `tsc --strict
+      --noEmit`, execute the emitted JavaScript, and verify linked imports,
+      source maps, declarations, error propagation, tasks, and integer policies.
+- [ ] Add conformance cases shared with `JS-001` so both backends execute the
+      same portable-core programs.
+
+**Current boundary**
+
+- No TypeScript backend exists yet; `astra build` only selects the JavaScript
+  backend. `@script:ts` is rejected by the JavaScript backend.
+- The TypeScript target must not emit `any` merely to make checking pass; use
+  the typed IR or reject the construct.
+- TypeScript-specific packaging (bundler presets, `.d.ts` library layout, and
+  declaration rollups) follows the same V1 module and target rules as JS.
+- Runtime helpers stay framework-free and target the same portable semantics as
+  `JS-001`; Node-only APIs are not allowed in `web` mode.
+
+**Evidence**
+
+- `Docs/Design/V1/04-targets-and-backends.md` defines the TypeScript output
+  shape, strictness rules, `.d.ts` requirements, and pinned-transpiler rule for
+  `@script:ts`.
+- `orchestrator/packages/codegen-js` and the `JS-001` test suite are the semantic
+  reference and the starting point for shared generator infrastructure.
+- `orchestrator/packages/compiler-client` and `astra build` already expose the
+  typed module and target selection needed to add a second codegen package.
+
+**Depends on**
+
+- `JS-001` (typed AST/HIR consumption, module linking, errors, tasks, integer
+  policies, source maps, and `.d.ts` output).
+- `INTEROP-001` frontend for `@script` AST/HIR and target/language validation.
+- `TS-001` unblocks TypeScript-target `@script` emission and completes the first
+  JS/TS interop slice.
 
 ---
 
@@ -745,6 +861,232 @@ export surface.
 
 ---
 
+## C-001 - C17 native backend
+
+**Status:** `[~]` The managed C17 first slice is implemented and tested. The
+production native backend is **not complete**; the current C-001 checkbox in the
+backlog means "first slice", not the full backend.
+
+**Why**
+
+The C backend is the bootstrap path for native and Wasm targets:
+
+```text
+Astra IR -> C17 -> clang -> native binary or Wasm module
+```
+
+It must produce correct, explicit C for the portable managed subset, reject
+unsupported constructs before emission, and eventually provide the runtime
+pieces (GC, bounds checks, concurrency, FFI, and platform abstractions) required
+by a production native target.
+
+**Done**
+
+- [x] Consume the shared typed module (AST, HIR, annotations, manual-memory
+      scopes, and integer policy) instead of re-parsing `.ns` source.
+- [x] Emit a self-contained C17 translation unit plus freestanding runtime
+      header and `astra_host.c` host shim.
+- [x] Fixed-width integers, wrapping operations, checked helpers, floats, and
+      the `wrapping`/`safe-checked`/`arbitrary` policy plumbing.
+- [x] Functions, constants, locals, assignment, `if`/`else`, `while`, `for`
+      over arrays, calls, returns, blocks, and `defer` with LIFO execution.
+- [x] `print`/`println`/`assert`/`panic`, string literals, arrays, named and
+      tuple structs, enums with payloads, `Option`, `Result`, single-error `!`
+      propagation, and matches over bool/enum/`Option`/`Result`/struct.
+- [x] `main` delegation, generated prototypes, deterministic symbol sanitizing,
+      and `NS8011`-`NS8025` diagnostics for unsupported constructs.
+- [x] Compiler API `c` target returns `c-source` and `astra_host.c` artifacts.
+- [x] `astra build --target c` writes `main.c` and `astra_host.c`;
+      `--target native` discovers `clang`/`gcc`/`cc` and attempts to link a
+      host executable.
+- [x] 50 `astra-codegen-c` tests pass, including generated-C checks with the
+      available clang toolchain and freestanding object compilation.
+- [x] Map literals `{ k: v, ... }` emit `astra_map_new` + `astra_map_set`.
+- [x] Map methods `.len()`, `.contains(k)`, `.get(k)`, `.insert(k, v)` emit typed C via
+      the `NS_Map` runtime helpers; `.get` and `.insert` return `NS_Option_V`.
+- [x] `for` loops iterate over arrays, maps (yielding keys via `astra_map_key_at`),
+      and bytes (yielding `u8` via `astra_bytes_get`).
+- [x] Byte operations: byte indexing (`b[i]`), slicing (`b.slice`, `s.slice`),
+      comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=` via `astra_bytes_eq`,
+      `astra_bytes_cmp`, `astra_str_eq`, `astra_str_cmp`), and methods (`.len()`,
+      `.is_empty()`, `.slice()`).
+- [x] `contains` added to the type checker's `Type::Map` member resolution.
+- [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
+      byte arrays; empty byte literals use the zero-length sentinel.
+- [x] `println(bytes_val)` dispatches to `astra_println_bytes`.
+- [x] Full expression/pattern coverage: string/byte literals in `match` (`astra_str_eq`,
+      `astra_bytes_eq`), wildcard and identifier bindings in match arms.
+- [x] FFI and inline scripts (`INTEROP-001` Slice D):
+      - Emits per-block translation units (`script_<name>.c`, `script_<name>.cpp`)
+        with freestanding headers `<stdint.h>`, `<stdbool.h>`, `<stddef.h>`.
+      - Generates C ABI prototypes in `main.c` and `extern "C"` blocks in C++ scripts.
+      - Dispatches direct calls `math.add(...)` -> `add(...)`.
+      - Rejects non-C/C++ script languages with `NS7002`.
+      - Compiler API returns `c-script` artifacts.
+      - CLI compiles all script translation units and links with `-lstdc++` when C++ is used.
+- [x] Native build options in `astra build`: `cflags` array, `optLevel`/`optimization`,
+      and target triple (`--target=<triple>`).
+
+**Actually left**
+
+- [ ] Multi-module/project linking. Imports are rejected with `NS8019`; the
+      backend currently emits one self-contained translation unit and cannot
+      link a project module graph or Cargo/npm/native packages.
+- [ ] Manual memory and GC. `@memory:manual` is rejected with `NS8012`; native
+      allocation, ownership, roots, and finalization are not implemented
+      (`GC-001`).
+- [ ] Concurrency. `spawn` and channels are rejected with `NS8011`; no task
+      scheduler, channel runtime, cancellation, or thread/worker mapping
+      (`CONC-001`).
+- [ ] Native library output and stable ABI. Only an executable via `main` is
+      produced; static/dynamic libraries, exported headers, and a declared C ABI
+      are not implemented.
+- [ ] Cross-platform native verification. The first slice has been exercised on
+      this Windows host, but hosted native linking currently fails here because
+      clang lacks MSVC/Windows SDK headers for `astra_host.c` (`stdio.h` not
+      found). `astra build --target c` succeeds; `--target native` needs a
+      complete host toolchain. Linux/macOS natively linked builds are unverified.
+- [ ] Native CI gate. C tests skip hosted execution when no libc/SDK is
+      available; CI must compile and run native binaries on at least one Tier-1
+      host before C-001 can be marked fully done.
+- [ ] Wasm path through C17 (`WASM-001`) remains deferred.
+
+**Evidence**
+
+- `crates/astra-codegen-c/tests/emit_c.rs`: 55 passing tests covering emission,
+  runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
+  arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
+  `for` loops (arrays, maps, bytes), byte literals/indexing/slicing/comparisons,
+  `@script:c` and `@script:cpp` emission, compiler API artifacts, and rejection paths.
+- `cargo test --workspace` passes (55 in `astra-codegen-c`, 142 in `astra-core`, 27 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
+- `astra build --target c` emits `main.c` and `astra_host.c`.
+- `astra build --target native` currently fails on this Windows host at host
+  shim compilation because the clang installation has no Windows SDK/libc
+  headers. This is a toolchain/CI gap that must be closed before claiming a
+  working native binary.
+- Repo-wide `npm run ci` is currently red in the JavaScript project-import test
+  because the JS backend work is not merged into `master`; this is separate from
+  the C backend result.
+
+**Depends on**
+
+- `TYPE-001`-`TYPE-004`, `ERR-001`, and the shared typed-module boundary.
+- `GC-001` for native manual memory and managed allocation.
+- `CONC-001` for tasks and channels.
+- `FFI-001` and `INTEROP-001` Slice D for C/C++ foreign blocks.
+- `WASM-001` for the C-to-Wasm path.
+
+---
+
+## PLAY-001 — Browser playground
+
+**Status:** Not started. Backlog entry expanded into a runnable plan. No design decision blocks it, but two API methods it needs (`ast`, `explain`) are still stubs.
+
+**Goal**
+
+A static, browser-hosted playground where a visitor edits Neo Astra source plus a minimal manifest, runs `check`, `ast`, `fmt`, and `explain`, generates JavaScript ESM, and executes simple programs — with no backend server for core features.
+
+**Architecture**
+
+This follows the existing split in `Docs/architecture.md` §7.5; it does not introduce a second compiler.
+
+- The Rust core is compiled to `wasm32-unknown-unknown` and keeps its linear-memory ABI: `astra_protocol_version`, `astra_alloc`, `astra_compile`, `astra_free`.
+- The host is a TypeScript package, `orchestrator/packages/playground`, that loads the `.wasm`, writes JSON-RPC requests, and reads packed responses.
+- JavaScript emission stays in TypeScript: the browser bundles `@neo-astra/codegen-js` and feeds it the typed-module JSON returned by the core. The Rust core does not grow a JS backend.
+- Execution runs generated ESM inside an origin-isolated sandboxed iframe (`sandbox="allow-scripts"`), never in the host page.
+- Local compilation is the default. A hosted compile API is out of scope for V1 unless explicitly enabled, and must be disclosed as a separate trust boundary (`Docs/Design/V1/07-quality-security-and-delivery.md` §5.8).
+
+**Prerequisite gaps found while expanding**
+
+- `astra-compiler-api` advertises `ast` and `explain` but returns an error for both; `astra explain` is also a CLI stub. Slice C must either implement them or show the typed-module/metadata view instead, and the task cannot be marked done while the UI promises a method that fails.
+- `check_project` and multi-source `compile` exist, so multi-module samples are possible, but in-browser module resolution and ESM URL mapping still need to be built.
+
+**Scope slices**
+
+- **A — Core bridge:** wasm loader, protocol-version check, alloc/free, request/response framing, timeout, trap/panic mapping.
+- **B — Editor surface:** source editor with `.ns` highlighting, manifest editor (`core.json` / `core.toml`), target and mode selectors, sample gallery, shareable URL state.
+- **C — Compiler actions:** `check`, `ast`, `fmt`, `explain`, and JS emission, each with a structured output pane.
+- **D — Sandbox execution:** run generated ESM, capture `print`/`println`/`dbg`, enforce timeout and output caps, terminate on demand, deny network by default.
+- **E — Hosting:** static build, deploy config, offline-friendly assets, size budget, README and privacy note.
+
+**Acceptance**
+
+Core bridge
+- [ ] `astra-wasm` builds for `wasm32-unknown-unknown` in CI; the artifact is versioned with the host bundle
+- [ ] The host checks `astra_protocol_version` and refuses mismatched artifacts with a clear error
+- [ ] Requests and responses are UTF-8 JSON matching the existing JSON-RPC schema
+- [ ] A wasm trap or panic surfaces as an internal error, never as a user syntax error
+- [ ] Every allocation is freed; a soak test of 1,000 compiles shows stable memory
+
+Editor
+- [ ] Edit `.ns` source and a minimal manifest; switch between JSON and TOML manifests
+- [ ] Target and mode are selectable and sent in the request
+- [ ] Diagnostics render severity, stable code, file, line/column, message, and hint; selecting one moves the cursor
+- [ ] Samples load without network access after first visit
+
+Compiler actions
+- [ ] `check` shows `NS4xxx`/`NS5xxx` diagnostics
+- [ ] `ast` shows the parsed tree, or the task records the API dependency and shows the typed module instead
+- [ ] `fmt` rewrites the editor through the same formatter as `astra fmt`
+- [ ] `explain` shows mode and capability inference, or is explicitly deferred with the stub noted in the UI
+- [ ] JS emission uses `@neo-astra/codegen-js` and shows generated ESM with copy and download
+
+Execution
+- [ ] Generated ESM runs in a sandbox with no access to host page globals, storage, or credentials
+- [ ] `print`/`println`/`dbg` output is captured and attributed to the sandbox
+- [ ] Infinite loops terminate at a configurable timeout; output is capped
+- [ ] Runtime failures show `NVxxxx` codes and a call stack when available
+- [ ] The sandbox cannot navigate the host page or open popups
+
+Security and privacy
+- [ ] Compilation is local by default and the UI states this
+- [ ] No source leaves the browser unless the user explicitly opts into a remote compiler
+- [ ] A remote compiler, if enabled, discloses upload, retention, and trust boundary before the first request
+- [ ] The sandbox runs under a restrictive CSP with network access denied by default
+- [ ] No analytics or third-party script receives source text
+
+Quality
+- [ ] Tests cover the wasm loader, codegen bridge, diagnostic mapping, URL state, and sandbox timeout
+- [ ] One end-to-end test compiles and runs a sample in a headless browser
+- [ ] `npm run ci` includes the playground build and tests
+- [ ] Initial payload (wasm + JS, gzipped) targets ≤ 5 MB; the measured number is recorded in the README
+- [ ] Works in current Chrome, Firefox, Safari, and Edge
+
+**Non-goals**
+
+- No second compiler, parser, or JS backend in Rust.
+- No package installation or NoPM resolution in the browser for V1.
+- No LSP in the playground; that belongs to editor integration.
+- No native or Wasm execution target in V1; execution is generated JS only.
+- No accounts, persistence, or server-side project storage.
+
+**Risks**
+
+- Wasm bundle size may exceed budget; mitigate with `wasm-opt`, `opt-level = "z"`, and lazy-loaded codegen.
+- The TS codegen bundle duplicates logic that also runs in the CLI; keep one package and one set of golden tests.
+- Sandbox escape or credential exposure; keep the iframe origin-isolated and never inject host tokens.
+- Protocol drift between the wasm artifact and the host; pin both to the same `apiVersion` at build time.
+- In-browser module resolution may be too large for V1; if so, ship single-module samples first and keep multi-module as a follow-up slice.
+
+**Open decisions to settle before slice B**
+
+1. Local-only at launch? Proposal: yes (`07-quality-security-and-delivery.md` Q9).
+2. In-browser native/Wasm execution? Proposal: no, generated JS only (`06-tooling-and-workflow.md` Q10).
+3. Shareable state: encode source in the URL fragment, or `localStorage` only? Fragment avoids any server retention.
+
+**Evidence**
+
+- None yet.
+
+**Depends on**
+
+- `JS-001` for JavaScript ESM output and the typed-module contract.
+- `TYPE-004` for multi-source project checking if multi-module samples are in scope.
+- `SCAF-003` and `astra-wasm` for the existing JSON-RPC and linear-memory boundary.
+- Not blocked by `WASM-001`: that task is the C-to-Wasm target, not the compiler's own wasm build.
+
+---
+
 ## Implementation backlog
 
 These are intentionally high-level. Break them into smaller tasks when their phase begins.
@@ -768,16 +1110,16 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `NOPM-002` Path, Git, npm, and Cargo adapters
 - [x] `NOPM-003` Universal registry gateway
 - [x] `NOPM-004` Later ecosystem adapters
-- [~] `JS-001` JavaScript ESM backend
+- [~] `JS-001` JavaScript ESM backend (complete on `js-interop` at `39437d0`; merge pending the C backend work)
 - [ ] `TS-001` TypeScript backend
 - [ ] `INTEROP-001` Inline `@script` foreign-language blocks
-- [ ] `PLAY-001` Browser playground
-- [ ] `C-001` C backend
+- [ ] `PLAY-001` Browser playground (expanded plan above)
+- [~] `C-001` C backend - managed first slice done; project linking, GC/manual memory, concurrency, FFI/`@script:c`, full patterns, native target policy, and cross-platform native verification remain
 - [ ] `GC-001` Native GC
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
-- [ ] `CONF-001` Conformance suite
+- [~] `CONF-001` Conformance suite (shared JS cases live in `conformance/` on `js-interop`)
 - [ ] `HARD-001` v0.1 hardening
 
 ---
