@@ -19,6 +19,18 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-26 - js-interop merged into master: JS-001 complete
+
+- Command: `npm run ci`
+- Result: pass
+- Merge: `js-interop` (`39437d0`) merged into `master` (`1119bae`), completing JS-001 on master: linked multi-module ESM, inline `@script:js` ESM artifacts, recoverable errors, eager tasks with bounded channels, UTF-8 string/byte operations, source maps, `.d.ts` artifacts, and the shared `conformance/` suite.
+- Conflict resolution: `crates/astra-codegen-c/*` kept master's C backend; the JS emitter and `codegen-js.test.mjs` took js-interop's tested implementation; `checker.rs`, `astra-compiler-api`, the `astra build` CLI flow, and agent docs were hand-merged so both sides' features survive.
+- Integration fixes: renamed `gen` bindings in `astra-compiler-api` (reserved keyword in edition 2024; the checkpointed C WIP had not compiled), removed duplicate `Type::Bytes`/`slice` checker arms (the spec-fallible `slice` with `SliceError` wins), ported master's `astra build --target c` e2e test into the merged suite, and ran `cargo fmt` over the C WIP.
+- Verification: `npm run ci` green: 548 Rust tests, 41 TypeScript unit tests, 46 native/Wasm/boundary tests (28 codegen/build), fmt and clippy clean.
+- Current boundary: `TS-001` next (groundwork in tree); `C-001` continues (multi-module project linking, cross-platform native CI gate).
+
+---
+
 ### 2026-10-26 — C-001 Map methods, for-loops, and byte operations implemented
 
 **What changed**
@@ -1139,7 +1151,7 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 - Task: JS-001 completed and merged from `js-interop` (39437d0); C-001 expression/pattern coverage, byte/string operations, map methods, inline scripts (@script:c/@script:cpp), and native build flags complete
 - Status: Ready
 - Files changed: `crates/astra-codegen-c/src/{emit,runtime,lib,ty}.rs`, `crates/astra-codegen-c/tests/emit_c.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/codegen-js/src/generate.ts`, `orchestrator/tests/{codegen-js.test.mjs,conformance.mjs}`, `conformance/`, `orchestrator/packages/codegen-ts/src/index.ts` + `orchestrator/tests/codegen-ts.test.mjs` (preserved WIP), `Docs/Agent/{todo,state-log,runbook}.md`
-- Verification: `cargo test --workspace` green, `cargo clippy --workspace --all-targets -- -D warnings` clean, `npm run ci` green (493 Rust, 41 TypeScript unit, 45 native/Wasm/boundary tests on js-interop; master C-backend suites pass)
+- Verification: `npm run ci` green on the merged tree: 548 Rust tests, 41 TypeScript unit tests, 46 native/Wasm/boundary tests (28 codegen/build), fmt clean, clippy with warnings denied
 - Blockers: none
 - Next action: multi-module project linking for C and cross-platform native CI gate; then continue TS-001 (WIP present)
 ```

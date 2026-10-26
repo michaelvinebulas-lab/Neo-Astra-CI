@@ -751,8 +751,8 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - `crates/astra-core/src/checker.rs` adds the `Channel` and `bytes` builtin
   namespaces, the `ChannelError`/`SliceError` error sets, spec §6 string/bytes
   member signatures, and lvalue type annotations that back indexed writes.
-- Verification: 493 Rust tests, 41 TypeScript unit tests, 45 native/Wasm/boundary
-  tests (including 27 codegen/build tests), formatting, clippy with warnings
+- Verification (merged tree): 548 Rust tests, 41 TypeScript unit tests, 46 native/Wasm/boundary
+  tests (including 28 codegen/build tests), formatting, clippy with warnings
   denied, and `npm run ci` pass.
 
 **Depends on**
