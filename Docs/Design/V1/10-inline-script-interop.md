@@ -1,7 +1,8 @@
 # V1 Inline Script Interop (`@script`)
 
-**Status:** V1 design proposal, not implemented  
-**Date:** 2026-10-25  
+**Status:** Slices A+B and the JavaScript backend slice (C) are implemented; the
+TypeScript target and C/C++ native slice remain.  
+**Date:** 2026-10-25, updated 2026-10-26  
 **Depends on:** D10, D19, D25  
 **Related:** [`01-language-design.md`](./01-language-design.md), [`02-compiler-design.md`](./02-compiler-design.md), [`04-targets-and-backends.md`](./04-targets-and-backends.md), [`05-manifest-and-packages.md`](./05-manifest-and-packages.md), [`06-tooling-and-workflow.md`](./06-tooling-and-workflow.md), [`07-quality-security-and-delivery.md`](./07-quality-security-and-delivery.md), [`08-nova-and-nopm.md`](./08-nova-and-nopm.md)
 
@@ -462,10 +463,9 @@ whole file. The raw body is never partially parsed for Nova diagnostics.
 
 ## 8. Implementation slices
 
-**Ordering:** frontend/parser work may start earlier, but the first end-to-end
-`@script` slice comes after both `JS-001` (JavaScript ESM backend) and `TS-001`
-(TypeScript backend) exist. The native C/C++ slice follows the C backend. Do not
-start `INTEROP-001` end-to-end work before the JS and TS backends are usable.
+**Ordering:** the JavaScript slice landed on `JS-001`; the TypeScript-target
+slice waits for `TS-001` or a pinned transpiler. The native C/C++ slice follows
+the C backend.
 
 ### Slice A — frontend and tooling
 
@@ -484,12 +484,14 @@ start `INTEROP-001` end-to-end work before the JS and TS backends are usable.
 - Compiler API and metadata fields
 - `astra explain` reasons for script mode requirements
 
-### Slice C — JavaScript backend
+### Slice C - JavaScript backend
 
-- Emit ESM script modules
-- Validate declared exports
-- Source maps and build metadata
-- End-to-end tests on the `js` and `typescript` targets
+- [x] Emit ESM script modules and import their namespaces
+- [x] Validate declared exports with `NS7008`
+- [x] Source maps and build artifacts
+- [x] Boundary conversion for `Option<T>` and declared error effects
+- [x] End-to-end tests on the `js` target
+- [ ] End-to-end tests on the `typescript` target after `TS-001`
 
 ### Slice D — C/C++ native backend
 

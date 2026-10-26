@@ -14,7 +14,7 @@ use crate::ast;
 use crate::checker::{CheckOptions, CheckResult, check_resolved};
 use crate::diagnostic::Diagnostic;
 use crate::hir;
-use crate::resolver::ModuleResolver;
+use crate::resolver::{ModuleGraph, ModuleResolver, collect_module_specifiers};
 use crate::types::{FunctionType, Type};
 
 // ─── Surface types ────────────────────────────────────────────────────────────
@@ -309,17 +309,42 @@ impl GraphCheckResult {
 /// so the quality of cross-module type checking improves as the graph is
 /// resolved in dependency order.
 pub fn check_module_graph(modules: &[ProjectModule], options: CheckOptions) -> GraphCheckResult {
+    let mut graph = ModuleGraph::default();
+    for module in modules {
+        graph.insert_module(module.key.clone(), module.source.clone());
+    }
+    // The original multi-source API treats each raw specifier as its own
+    // module key. Keep that behavior for callers that do not provide an
+    // explicit import graph.
+    for module in modules {
+        for specifier in collect_module_specifiers(&module.source) {
+            graph.insert_import(
+                module.key.clone(),
+                specifier.specifier.clone(),
+                specifier.specifier,
+            );
+        }
+    }
+    check_module_graph_with_imports(modules, &graph, options)
+}
+
+/// Checks a project module graph using explicit import targets.
+///
+/// `modules` must be supplied in dependency order. `graph` supplies canonical
+/// module identities and the `(importer, specifier) -> target` map used by the
+/// resolver.
+pub fn check_module_graph_with_imports(
+    modules: &[ProjectModule],
+    graph: &ModuleGraph,
+    options: CheckOptions,
+) -> GraphCheckResult {
     let mut surfaces: BTreeMap<String, ModuleTypeSurface> = BTreeMap::new();
     let mut results: Vec<(String, CheckResult)> = Vec::new();
     let mut all_diagnostics: Vec<(String, Vec<Diagnostic>)> = Vec::new();
 
-    // Build the full resolver over all source modules so every module's
-    // symbol table can be resolved.
-    let resolver = ModuleResolver::from_modules(
-        modules
-            .iter()
-            .map(|module| (module.key.clone(), module.source.clone())),
-    );
+    // Build the full resolver over all source modules and their import edges so
+    // every module's symbol table can be resolved.
+    let resolver = ModuleResolver::from_graph(graph);
 
     for project_module in modules {
         // Resolve this module using the full module graph.

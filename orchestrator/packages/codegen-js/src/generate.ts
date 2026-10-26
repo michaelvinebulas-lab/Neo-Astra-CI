@@ -5,6 +5,7 @@
 //! are not implemented yet rather than silently changing them.
 
 import {
+  type AstItem,
   type AstModule,
   type AstType,
   type Block,
@@ -17,6 +18,8 @@ import {
   type MatchArm,
   type ModuleIr,
   type Pattern,
+  type ScriptBlockDecl,
+  type ScriptExport,
   type SemanticType,
   type Span,
   type Stmt,
@@ -45,11 +48,22 @@ export interface CodegenRequest {
   readonly moduleSpecifiers?: Readonly<Record<string, string>>;
 }
 
+/** An additional ESM file emitted for a script block. */
+export interface CodegenArtifact {
+  /** Path relative to the project output directory. */
+  readonly path: string;
+  readonly code: string;
+  readonly sourceMap?: string;
+  readonly declarations?: string;
+}
+
 /** Output produced by `generateJavaScript`. */
 export interface CodegenResult {
   readonly code: string;
   readonly diagnostics: readonly CodegenDiagnostic[];
   readonly sourceMap?: string;
+  readonly declarations?: string;
+  readonly artifacts?: readonly CodegenArtifact[];
 }
 
 /** The requested typed module is malformed. */
@@ -123,6 +137,7 @@ const HELPER_ORDER = [
   "spawn",
   "taskJoin",
   "taskCancel",
+  "channel",
   "renderFloat",
   "render",
   "renderDebug",
@@ -134,8 +149,17 @@ const HELPER_ORDER = [
   "assert",
   "utf8Len",
   "len",
+  "lenBig",
   "strAt",
+  "charCount",
+  "strBytes",
+  "strChars",
+  "byteAt",
+  "charAt",
+  "strSlice",
+  "bytesNew",
   "index",
+  "indexSet",
   "getArray",
   "tuple",
   "tupleAt",
@@ -152,6 +176,7 @@ const HELPER_ORDER = [
   "unwrapResult",
   "resultError",
   "parseInt",
+  "parseIntBig",
   "div",
   "rem",
   "divBig",
@@ -187,6 +212,12 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   dbg: ["render"],
   assert: ["panic"],
   len: ["panic", "utf8Len"],
+  byteAt: ["some", "none"],
+  charAt: ["some", "none"],
+  strSlice: ["ok", "err"],
+  indexSet: ["panic"],
+  channel: ["ok", "err", "panic"],
+  lenBig: ["panic"],
   strAt: ["panic"],
   index: ["panic"],
   mapGet: ["eq", "none"],
@@ -194,6 +225,7 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   mapKeys: [],
   getArray: ["none"],
   parseInt: ["ok", "err"],
+  parseIntBig: ["ok", "err"],
   div: ["panic"],
   rem: ["panic"],
   divBig: ["panic"],
@@ -274,6 +306,33 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   taskCancel: [
     "function $taskCancel(task) {",
     "  task.cancelled = true;",
+    "  return undefined;",
+    "}",
+  ],
+  channel: [
+    "function $channel() {",
+    "  return { $channel: true, capacity: 16, buffer: [], closed: false };",
+    "}",
+    "function $channelError(message) {",
+    '  return { $type: "ChannelError", 0: message };',
+    "}",
+    "function $channelSend(channel, value) {",
+    '  if (channel.closed) return $err($channelError("send on a closed channel"));',
+    "  if (channel.buffer.length >= channel.capacity) {",
+    '    $panic("channel deadlock: send on a full bounded channel would block (single-threaded runtime)");',
+    "  }",
+    "  channel.buffer.push(value);",
+    "  return $ok(undefined);",
+    "}",
+    "function $channelReceive(channel) {",
+    "  if (channel.buffer.length === 0) {",
+    '    if (channel.closed) return $err($channelError("receive on a closed channel"));',
+    '    $panic("channel deadlock: receive on an empty channel would block (single-threaded runtime)");',
+    "  }",
+    "  return $ok(channel.buffer.shift());",
+    "}",
+    "function $channelClose(channel) {",
+    "  channel.closed = true;",
     "  return undefined;",
     "}",
   ],
@@ -403,23 +462,91 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     '  $panic("len() is not implemented for this value");',
     "}",
   ],
+  lenBig: [
+    "function $lenBig(value) {",
+    '  if (typeof value === "string") return BigInt(new TextEncoder().encode(value).length);',
+    "  if (Array.isArray(value) || value instanceof Uint8Array) return BigInt(value.length);",
+    "  if (value && value.$map) return BigInt(value.$map.length);",
+    '  $panic("len() is not implemented for this value");',
+    "}",
+  ],
   strAt: [
     "function $strAt(value, index) {",
     "  const characters = Array.from(value);",
-    '  if (!Number.isInteger(index) || index < 0 || index >= characters.length) $panic("index out of bounds");',
-    "  return characters[index];",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= characters.length) $panic("index out of bounds");',
+    "  return characters[position];",
+    "}",
+  ],
+  charCount: [
+    "function $charCount(value) {",
+    "  return Array.from(value).length;",
+    "}",
+  ],
+  strBytes: [
+    "function $strBytes(value) {",
+    "  return Array.from(new TextEncoder().encode(value));",
+    "}",
+  ],
+  strChars: [
+    "function $strChars(value) {",
+    "  return Array.from(value);",
+    "}",
+  ],
+  byteAt: [
+    "function $byteAt(value, index) {",
+    "  const bytes = new TextEncoder().encode(value);",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= bytes.length) return $none;',
+    "  return $some(bytes[position]);",
+    "}",
+  ],
+  charAt: [
+    "function $charAt(value, index) {",
+    "  const characters = Array.from(value);",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= characters.length) return $none;',
+    "  return $some(characters[position]);",
+    "}",
+  ],
+  strSlice: [
+    "function $strSlice(value, start, end) {",
+    "  const bytes = new TextEncoder().encode(value);",
+    "  const from = Number(start);",
+    "  const to = Number(end);",
+    "  const boundary = (position) =>",
+    "    position === bytes.length || (position >= 0 && position < bytes.length && (bytes[position] & 0xc0) !== 0x80);",
+    "  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > bytes.length || !boundary(from) || !boundary(to)) {",
+    '    return $err({ $type: "SliceError", 0: "slice range is out of bounds or splits a UTF-8 scalar value" });',
+    "  }",
+    '  return $ok(new TextDecoder("utf-8").decode(bytes.subarray(from, to)));',
+    "}",
+  ],
+  bytesNew: [
+    "function $bytesNew(length) {",
+    "  return new Uint8Array(Number(length));",
     "}",
   ],
   index: [
     "function $index(value, index) {",
-    '  if (!Number.isInteger(index) || index < 0 || index >= value.length) $panic("index out of bounds");',
-    "  return value[index];",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.length) $panic("index out of bounds");',
+    "  return value[position];",
+    "}",
+  ],
+  indexSet: [
+    "function $indexSet(value, index, item) {",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.length) $panic("index out of bounds");',
+    "  value[position] = item;",
+    "  return item;",
     "}",
   ],
   getArray: [
     "function $getArray(value, index) {",
-    '  if (!Number.isInteger(index) || index < 0 || index >= value.length) return $none;',
-    "  return $some(value[index]);",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.length) return $none;',
+    "  return $some(value[position]);",
     "}",
   ],
   tuple: [
@@ -429,8 +556,9 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   ],
   tupleAt: [
     "function $tupleAt(value, index) {",
-    '  if (!Number.isInteger(index) || index < 0 || index >= value.$tuple.length) $panic("index out of bounds");',
-    "  return value.$tuple[index];",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.$tuple.length) $panic("index out of bounds");',
+    "  return value.$tuple[position];",
     "}",
   ],
   map: [
@@ -561,6 +689,16 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  return $ok(parsed);",
     "}",
   ],
+  parseIntBig: [
+    "function $parseIntBig(value) {",
+    '  if (!/^[+-]?[0-9]+$/.test(value)) return $err({ $type: "ParseIntError", 0: value });',
+    "  const parsed = BigInt(value);",
+    "  if (parsed < -2147483648n || parsed > 2147483647n) {",
+    '    return $err({ $type: "ParseIntError", 0: value });',
+    "  }",
+    "  return $ok(parsed);",
+    "}",
+  ],
   div: [
     "function $div(left, right) {",
     '  if (right === 0) $panic("division by zero");',
@@ -677,6 +815,34 @@ const HELPERS: Record<HelperName, readonly string[]> = {
 
 const INTEGER_TAGS = new Set(["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"]);
 const BIG_INTEGER_TAGS = new Set(["I64", "U64"]);
+const USIZE_TAGS = new Set(["Usize", "Isize"]);
+
+function isArbitraryIntegerTag(tag: string): boolean {
+  return INTEGER_TAGS.has(tag) || USIZE_TAGS.has(tag);
+}
+
+function integerWidth(tag: string): { readonly width: number; readonly signed: boolean } | undefined {
+  switch (tag) {
+    case "I8":
+      return { width: 8, signed: true };
+    case "I16":
+      return { width: 16, signed: true };
+    case "I32":
+      return { width: 32, signed: true };
+    case "I64":
+      return { width: 64, signed: true };
+    case "U8":
+      return { width: 8, signed: false };
+    case "U16":
+      return { width: 16, signed: false };
+    case "U32":
+      return { width: 32, signed: false };
+    case "U64":
+      return { width: 64, signed: false };
+    default:
+      return undefined;
+  }
+}
 
 class JavaScriptGenerator {
   private readonly ir: ModuleIr;
@@ -688,6 +854,9 @@ class JavaScriptGenerator {
   private readonly helpers = new Set<HelperName>();
   private readonly diagnostics: CodegenDiagnostic[] = [];
   private readonly reported = new Set<string>();
+  private readonly scriptImports: string[] = [];
+  private readonly scriptDeclarations = new Map<string, string>();
+  private readonly scriptArtifacts: CodegenArtifact[] = [];
   private tempIndex = 0;
   private defaultExpression: Expr | undefined;
   private currentSuccessWrap = false;
@@ -726,12 +895,26 @@ class JavaScriptGenerator {
   }
 
   generate(): CodegenResult {
+    if (this.hir.imports.length > 0 && this.moduleSpecifiers === undefined) {
+      this.unsupported(
+        this.hir.imports[0]?.span,
+        "Module imports require output module specifiers, which this build did not provide.",
+      );
+    }
     for (const scope of this.ir.manualMemoryScopes) {
       this.diagnostic(
         "NS8003",
         "Manual memory is not supported by the JavaScript backend.",
         scope,
       );
+    }
+
+    for (const item of this.hir.items) {
+      if (variantOf(item.declaration) === "ScriptBlock") {
+        this.prepareScriptBlock(
+          structPayload<ScriptBlockDecl>(item.declaration, "ScriptBlock"),
+        );
+      }
     }
 
     const bodyParts: { readonly text: string; readonly span: Span }[] = [];
@@ -770,11 +953,278 @@ class JavaScriptGenerator {
         ? undefined
         : createSourceMap(code, this.ir.path, this.sourceText, bodyParts);
 
+    const declarations = this.emitDeclarations();
+
     return {
       code,
       diagnostics: this.diagnostics,
       ...(sourceMap === undefined ? {} : { sourceMap }),
+      ...(declarations.length === 0 ? {} : { declarations }),
+      ...(this.scriptArtifacts.length === 0
+        ? {}
+        : { artifacts: this.scriptArtifacts }),
     };
+  }
+
+  private emitDeclarations(): string {
+    const named = Object.entries(this.hir.exports.named);
+    if (named.length === 0 && this.hir.exports.default === null) {
+      return "";
+    }
+
+    const lines: string[] = [
+      `// Generated declarations for ${this.ir.path}.`,
+      "",
+    ];
+    for (const imported of this.hir.imports) {
+      const specifier = this.moduleSpecifier(imported.module, imported.span);
+      if (specifier === undefined) {
+        continue;
+      }
+      const kind = imported.kind;
+      switch (variantOf(kind)) {
+        case "Named": {
+          const data = structPayload<{ bindings: readonly ImportBinding[] }>(
+            kind,
+            "Named",
+          );
+          lines.push(
+            `import { ${formatImportBindings(data.bindings)} } from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "Default": {
+          const data = structPayload<{ local: string }>(kind, "Default");
+          lines.push(
+            `import ${jsName(data.local)} from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "DefaultNamed": {
+          const data = structPayload<{
+            default: string;
+            bindings: readonly ImportBinding[];
+          }>(kind, "DefaultNamed");
+          lines.push(
+            `import ${jsName(data.default)}, { ${formatImportBindings(data.bindings)} } from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "Namespace": {
+          const data = structPayload<{ alias: string }>(kind, "Namespace");
+          lines.push(
+            `import * as ${jsName(data.alias)} from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    if (lines.length > 2) {
+      lines.push("");
+    }
+
+    const localExportNames = new Map<string, string>();
+    for (const [exported, entry] of named) {
+      if (variantOf(entry.target) === "Local") {
+        const local = payloadOf(entry.target);
+        if (typeof local === "string") {
+          localExportNames.set(local, exported);
+        }
+      }
+    }
+    if (this.hir.exports.default !== null) {
+      const target = this.hir.exports.default.target;
+      if (variantOf(target) === "Local") {
+        const local = payloadOf(target);
+        if (typeof local === "string" && !localExportNames.has(local)) {
+          localExportNames.set(local, "default");
+        }
+      }
+    }
+    const localExported = (name: string): boolean => localExportNames.has(name);
+
+    // Built-in nominal types cross the module boundary as plain runtime
+    // records, so describe their real shapes for TypeScript consumers.
+    if (this.ast.items.some((item) => referencesTypePath(item.kind, "Task"))) {
+      lines.push(
+        "interface AstraTask<T> {",
+        "  readonly $task: true;",
+        "  readonly cancelled: boolean;",
+        "  join(): T;",
+        "}",
+      );
+    }
+    if (this.ast.items.some((item) => referencesTypePath(item.kind, "Channel"))) {
+      lines.push(
+        "interface AstraChannel<T> {",
+        "  readonly $channel: true;",
+        "  readonly capacity: number;",
+        "  readonly buffer: T[];",
+        "  readonly closed: boolean;",
+        "}",
+      );
+    }
+
+    for (const item of this.ast.items) {
+      this.emitDeclarationItem(item, lines, localExported);
+    }
+
+    for (const [exported, entry] of named) {
+      const target = entry.target;
+      if (variantOf(target) === "Local") {
+        const local = payloadOf(target);
+        if (typeof local === "string") {
+          lines.push(
+            local === exported
+              ? `export { ${jsName(local)} };`
+              : `export { ${jsName(local)} as ${exportName(exported)} };`,
+          );
+        }
+        continue;
+      }
+      if (variantOf(target) === "Reexport") {
+        const data = structPayload<{ module: string; name: string }>(
+          target,
+          "Reexport",
+        );
+        const specifier = this.moduleSpecifier(data.module, entry.span);
+        if (specifier === undefined) {
+          continue;
+        }
+        lines.push(
+          data.name === exported
+            ? `export { ${exportName(data.name)} } from ${JSON.stringify(specifier)};`
+            : `export { ${exportName(data.name)} as ${exportName(exported)} } from ${JSON.stringify(specifier)};`,
+        );
+        continue;
+      }
+      if (variantOf(target) === "Namespace") {
+        const data = structPayload<{ module: string }>(target, "Namespace");
+        const specifier = this.moduleSpecifier(data.module, entry.span);
+        if (specifier !== undefined) {
+          lines.push(
+            `export * as ${exportName(exported)} from ${JSON.stringify(specifier)};`,
+          );
+        }
+      }
+    }
+
+    for (const star of this.hir.exports.stars) {
+      const specifier = this.moduleSpecifier(star.module, star.span);
+      if (specifier !== undefined) {
+        lines.push(`export * from ${JSON.stringify(specifier)};`);
+      }
+    }
+
+    const defaultExport = this.hir.exports.default;
+    if (defaultExport !== null) {
+      const target = defaultExport.target;
+      if (variantOf(target) === "Local") {
+        const local = payloadOf(target);
+        if (typeof local === "string") {
+          lines.push(`export { ${jsName(local)} as default };`);
+        }
+      } else if (variantOf(target) === "Reexport") {
+        const data = structPayload<{ module: string; name: string }>(
+          target,
+          "Reexport",
+        );
+        const specifier = this.moduleSpecifier(data.module, defaultExport.span);
+        if (specifier !== undefined) {
+          lines.push(
+            data.name === "default"
+              ? `export { default } from ${JSON.stringify(specifier)};`
+              : `export { ${exportName(data.name)} as default } from ${JSON.stringify(specifier)};`,
+          );
+        }
+      }
+    }
+
+    return `${lines.join("\n")}\n`;
+  }
+
+  private emitDeclarationItem(
+    item: AstItem,
+    lines: string[],
+    localExported: (name: string) => boolean,
+  ): void {
+    const declaration = item.kind;
+    switch (variantOf(declaration)) {
+      case "Function": {
+        const data = structPayload<{
+          name: string;
+          type_parameters: readonly string[];
+          parameters: readonly { readonly name: string; readonly ty: AstType }[];
+          return_type: AstType | null;
+          error_set: readonly TypePath[];
+        }>(declaration, "Function");
+        if (!localExported(data.name)) {
+          return;
+        }
+        const typeParameters =
+          data.type_parameters.length === 0
+            ? ""
+            : `<${data.type_parameters.join(", ")}>`;
+        const parameters = data.parameters
+          .map(
+            (parameter) =>
+              `${jsName(parameter.name)}: ${astTypeToTs(parameter.ty, this.ir.integerPolicy)}`,
+          )
+          .join(", ");
+        const returnType =
+          data.error_set.length === 0
+            ? astTypeToTs(data.return_type ?? { kind: "Unit", span: item.span }, this.ir.integerPolicy)
+            : taggedResultType(
+                astTypeToTs(data.return_type ?? { kind: "Unit", span: item.span }, this.ir.integerPolicy),
+                data.error_set.map((error) => jsName(error.segments[error.segments.length - 1] ?? "unknown")).join(" | "),
+              );
+        lines.push(
+          `declare function ${jsName(data.name)}${typeParameters}(${parameters}): ${returnType};`,
+        );
+        return;
+      }
+      case "Constant": {
+        const data = structPayload<{
+          name: string;
+          ty: AstType;
+        }>(declaration, "Constant");
+        if (localExported(data.name)) {
+          lines.push(
+            `declare const ${jsName(data.name)}: ${astTypeToTs(data.ty, this.ir.integerPolicy)};`,
+          );
+        }
+        return;
+      }
+      case "Struct": {
+        const data = structPayload<StructDecl>(declaration, "Struct");
+        lines.push(...structDeclarationLines(data, this.ir.integerPolicy));
+        return;
+      }
+      case "Enum": {
+        const data = structPayload<EnumDecl>(declaration, "Enum");
+        lines.push(...enumDeclarationLines(data, this.ir.integerPolicy));
+        return;
+      }
+      case "TypeAlias": {
+        const data = structPayload<{
+          name: string;
+          type_parameters: readonly string[];
+          ty: AstType;
+        }>(declaration, "TypeAlias");
+        const typeParameters =
+          data.type_parameters.length === 0
+            ? ""
+            : `<${data.type_parameters.join(", ")}>`;
+        lines.push(
+          `type ${jsName(data.name)}${typeParameters} = ${astTypeToTs(data.ty, this.ir.integerPolicy)};`,
+        );
+        return;
+      }
+      default:
+        return;
+    }
   }
 
   private emitItem(item: HirItem): string {
@@ -796,6 +1246,8 @@ class JavaScriptGenerator {
           `Foreign module '${item.name}' requires a target adapter that the JavaScript backend does not have yet.`,
         );
         return "";
+      case "ScriptBlock":
+        return this.scriptDeclarations.get(item.name) ?? "";
       default:
         this.unsupported(item.span, "Unknown resolved declaration kind.");
         return "";
@@ -816,6 +1268,16 @@ class JavaScriptGenerator {
     const previousWrap = this.currentSuccessWrap;
     this.currentSuccessWrap = wrapsSuccess;
     let body = this.emitBlock(declaration.body, "statement");
+    // A void fallible function has no explicit `return`, but callers still
+    // expect a Result-shaped success value when they `match` the call.
+    if (wrapsSuccess) {
+      const statements = declaration.body.statements;
+      const last = statements[statements.length - 1];
+      if (last === undefined || variantOf(last.kind) !== "Return") {
+        this.useHelper("ok");
+        body = `${body.slice(0, -1)}  return $ok(undefined);\n}`;
+      }
+    }
     if (containsVariant(declaration.body, "Spawn")) {
       this.useHelper("taskScope");
       const scope = this.temporary("taskScope");
@@ -920,8 +1382,112 @@ class JavaScriptGenerator {
     return `const ${jsName(declaration.name)} = ${this.emitExpr(declaration.value)};`;
   }
 
+  private prepareScriptBlock(block: ScriptBlockDecl): void {
+    if (block.language !== "js") {
+      this.diagnostic(
+        "NS7008",
+        `Script language '${block.language}' cannot be emitted by the JavaScript backend yet. Use @script:js or a matching target backend.`,
+        block.header_span,
+      );
+      return;
+    }
+    if (block.raw_source.trim().length === 0) {
+      this.diagnostic(
+        "NS7008",
+        `Script block '${block.name}' has no implementation source.`,
+        block.body_span,
+      );
+      return;
+    }
+
+    for (const exported of block.exports) {
+      if (!hasEsmExport(block.raw_source, exported.name)) {
+        this.diagnostic(
+          "NS7008",
+          `Script block '${block.name}' does not export declared function '${exported.name}'.`,
+          exported.span,
+        );
+      }
+    }
+
+    const artifactPath = scriptArtifactPath(this.ir.path, block.name);
+    const artifactFile = artifactPath.split("/").pop() ?? artifactPath;
+    const alias = `$script_${block.name}`;
+    this.scriptImports.push(
+      `import * as ${alias} from ${JSON.stringify(`./${artifactFile}`)};`,
+    );
+
+    const members = block.exports
+      .map((exported) =>
+        indent(
+          `${objectKey(exported.name)}: ${this.emitScriptExport(alias, exported)},`,
+        ),
+      )
+      .join("\n");
+    this.scriptDeclarations.set(
+      block.name,
+      [`const ${jsName(block.name)} = {`, members, "};"]
+        .filter((line) => line.length > 0)
+        .join("\n"),
+    );
+
+    const code = scriptModuleCode(this.ir.path, block);
+    const sourceMap =
+      this.sourceText === undefined
+        ? undefined
+        : createScriptSourceMap(
+            code,
+            this.ir.path,
+            this.sourceText,
+            block.body_span,
+          );
+    this.scriptArtifacts.push({
+      path: artifactPath,
+      code,
+      ...(sourceMap === undefined ? {} : { sourceMap }),
+      declarations: scriptDeclarations(block, this.ir.integerPolicy),
+    });
+  }
+
+  private emitScriptExport(alias: string, exported: ScriptExport): string {
+    const parameters = exported.parameters.map((_, index) => `arg${index}`);
+    const argumentsText = exported.parameters
+      .map((parameter, index) =>
+        astBoundaryToJavaScript(`arg${index}`, parameter.ty),
+      )
+      .join(", ");
+    const invocation = `${alias}${memberAccess(exported.name)}(${argumentsText})`;
+    const returnType = exported.return_type ?? undefined;
+    const fallible =
+      exported.error_set.length > 0 && !isResultReturnType(returnType);
+    if (isOptionType(returnType) || exported.parameters.some((parameter) => isOptionType(parameter.ty))) {
+      this.useHelper("none");
+      this.useHelper("some");
+    }
+
+    if (!fallible) {
+      return `(${parameters.join(", ")}) => ${astBoundaryFromJavaScript(
+        invocation,
+        returnType,
+      )}`;
+    }
+
+    this.useHelper("ok");
+    this.useHelper("err");
+    const errorType = scriptErrorTypeName(exported.error_set[0]);
+    return [
+      `(${parameters.join(", ")}) => {`,
+      "  try {",
+      `    return $ok(${astBoundaryFromJavaScript(invocation, returnType)});`,
+      "  } catch (error) {",
+      `    return $err({ $type: ${JSON.stringify(errorType)}, 0: String(error && error.message !== undefined ? error.message : error) });`,
+      "  }",
+      "}",
+    ].join("\n");
+  }
+
   private emitImports(): string {
-    const lines: string[] = [];
+    const lines: string[] = [...this.scriptImports];
     for (const imported of this.hir.imports) {
       const specifier = this.moduleSpecifier(imported.module, imported.span);
       if (specifier === undefined) {
@@ -973,9 +1539,7 @@ class JavaScriptGenerator {
   }
 
   private moduleSpecifier(module: string, span: Span): string | undefined {
-    const specifier =
-      this.moduleSpecifiers?.[module] ??
-      (this.moduleSpecifiers === undefined ? module : undefined);
+    const specifier = this.moduleSpecifiers?.[module];
     if (specifier === undefined) {
       this.unsupported(
         span,
@@ -1278,6 +1842,18 @@ class JavaScriptGenerator {
         );
       case "Assign": {
         const data = structPayload<{ target: Expr; value: Expr }>(kind, "Assign");
+        if (variantOf(data.target.kind) === "Index") {
+          const indexTarget = structPayload<{ target: Expr; index: Expr }>(
+            data.target.kind,
+            "Index",
+          );
+          const targetType = this.typeAt(indexTarget.target.span);
+          const targetTag = targetType === undefined ? undefined : typeTag(targetType);
+          if (targetTag !== undefined && isSequence(targetTag)) {
+            this.useHelper("indexSet");
+            return `$indexSet(${this.emitExpr(indexTarget.target)}, ${this.emitExpr(indexTarget.index)}, ${this.emitExpr(data.value)})`;
+          }
+        }
         return `${this.emitExpr(data.target)} = ${this.emitExpr(data.value)}`;
       }
       case "Call":
@@ -1407,8 +1983,14 @@ class JavaScriptGenerator {
         const raw = payloadOf(literal);
         const value = stripIntegerSuffix(String(raw));
         const type = this.typeAt(span);
-        if (type !== undefined && BIG_INTEGER_TAGS.has(typeTag(type))) {
-          return `BigInt(${JSON.stringify(value)})`;
+        if (type !== undefined) {
+          const tag = typeTag(type);
+          if (
+            BIG_INTEGER_TAGS.has(tag) ||
+            (this.ir.integerPolicy === "arbitrary" && isArbitraryIntegerTag(tag))
+          ) {
+            return `BigInt(${JSON.stringify(value)})`;
+          }
         }
         return value;
       }
@@ -1538,7 +2120,11 @@ class JavaScriptGenerator {
 
     const type = this.typeAt(span);
     const tag = type === undefined ? undefined : typeTag(type);
-    if (tag !== undefined && INTEGER_TAGS.has(tag)) {
+    if (
+      tag !== undefined &&
+      (INTEGER_TAGS.has(tag) ||
+        (this.ir.integerPolicy === "arbitrary" && USIZE_TAGS.has(tag)))
+    ) {
       const wrap = data.operator.endsWith("Wrap");
       const operator = data.operator.replace(/Wrap$/, "");
       return this.emitIntegerBinary(tag, operator, left, right, wrap, span);
@@ -1604,13 +2190,8 @@ class JavaScriptGenerator {
     wrapping: boolean,
     span: Span,
   ): string {
-    if (this.ir.integerPolicy === "arbitrary" && !wrapping) {
-      this.unsupported(
-        span,
-        "The 'arbitrary' integer policy is not implemented by the JavaScript backend yet.",
-      );
-    }
-    const big = BIG_INTEGER_TAGS.has(tag);
+    const arbitrary = this.ir.integerPolicy === "arbitrary";
+    const big = BIG_INTEGER_TAGS.has(tag) || (arbitrary && isArbitraryIntegerTag(tag));
     const checked =
       !wrapping && this.ir.integerPolicy === "safe-checked";
     let raw: string;
@@ -1647,6 +2228,17 @@ class JavaScriptGenerator {
         return "undefined";
     }
 
+    if (arbitrary) {
+      if (!wrapping) {
+        return raw;
+      }
+      const width = integerWidth(tag);
+      if (width !== undefined) {
+        return `BigInt.as${width.signed ? "Int" : "Uint"}N(${width.width}, ${raw})`;
+      }
+      return raw;
+    }
+
     if (checked) {
       const helper = `checked_${tag.toLowerCase()}` as HelperName;
       if (HELPER_ORDER.includes(helper)) {
@@ -1680,11 +2272,8 @@ class JavaScriptGenerator {
     if (tag === "Usize" || tag === "Isize") {
       return value;
     }
-    if (this.ir.integerPolicy === "arbitrary" && INTEGER_TAGS.has(tag)) {
-      this.unsupported(
-        span,
-        "The 'arbitrary' integer policy is not implemented by the JavaScript backend yet.",
-      );
+    if (this.ir.integerPolicy === "arbitrary" && isArbitraryIntegerTag(tag)) {
+      return value;
     }
     if (this.ir.integerPolicy === "safe-checked" && INTEGER_TAGS.has(tag)) {
       const checked = `checked_${tag.toLowerCase()}` as HelperName;
@@ -1772,11 +2361,42 @@ class JavaScriptGenerator {
     const tag = receiverType === undefined ? undefined : typeTag(receiverType);
     const target = this.emitExpr(receiver);
 
+    // Built-in namespace constructors: `Channel.create<T>()` and
+    // `bytes.new(length)`. These only appear when the namespace identifier
+    // carries no value annotation, so user values named `Channel`/`bytes`
+    // still emit through the ordinary paths.
+    if (
+      receiverType === undefined &&
+      method === "create" &&
+      variantOf(receiver.kind) === "Identifier" &&
+      (payloadOf(receiver.kind) as string) === "Channel"
+    ) {
+      this.useHelper("channel");
+      return "$channel()";
+    }
+    if (
+      receiverType === undefined &&
+      method === "new" &&
+      variantOf(receiver.kind) === "Identifier" &&
+      (payloadOf(receiver.kind) as string) === "bytes"
+    ) {
+      this.useHelper("bytesNew");
+      return `$bytesNew(${args[0] ?? "0"})`;
+    }
+
     if (method === "len") {
+      if (this.ir.integerPolicy === "arbitrary") {
+        this.useHelper("lenBig");
+        return `$lenBig(${target})`;
+      }
       this.useHelper("len");
       return `$len(${target})`;
     }
     if (method === "is_empty") {
+      if (this.ir.integerPolicy === "arbitrary") {
+        this.useHelper("lenBig");
+        return `($lenBig(${target}) === 0n)`;
+      }
       this.useHelper("len");
       return `($len(${target}) === 0)`;
     }
@@ -1796,8 +2416,38 @@ class JavaScriptGenerator {
       return `$mapInsert(${target}, ${args[0] ?? "undefined"}, ${args[1] ?? "undefined"})`;
     }
     if (method === "to_int" && tag === "Str") {
+      if (this.ir.integerPolicy === "arbitrary") {
+        this.useHelper("parseIntBig");
+        return `$parseIntBig(${target})`;
+      }
       this.useHelper("parseInt");
       return `$parseInt(${target})`;
+    }
+    if (tag === "Str") {
+      switch (method) {
+        case "char_count":
+          this.useHelper("charCount");
+          return this.ir.integerPolicy === "arbitrary"
+            ? `BigInt($charCount(${target}))`
+            : `$charCount(${target})`;
+        case "bytes":
+          this.useHelper("strBytes");
+          return `$strBytes(${target})`;
+        case "chars":
+          this.useHelper("strChars");
+          return `$strChars(${target})`;
+        case "byte_at":
+          this.useHelper("byteAt");
+          return `$byteAt(${target}, ${args[0] ?? "0"})`;
+        case "char_at":
+          this.useHelper("charAt");
+          return `$charAt(${target}, ${args[0] ?? "0"})`;
+        case "slice":
+          this.useHelper("strSlice");
+          return `$strSlice(${target}, ${args[0] ?? "0"}, ${args[1] ?? "0"})`;
+        default:
+          break;
+      }
     }
     if (tag === "Named") {
       const named = payloadOf(receiverType) as readonly [string, ...unknown[]];
@@ -1809,6 +2459,21 @@ class JavaScriptGenerator {
           case "cancel":
             this.useHelper("taskCancel");
             return `$taskCancel(${target})`;
+          default:
+            break;
+        }
+      }
+      if (named[0] === "Channel") {
+        switch (method) {
+          case "send":
+            this.useHelper("channel");
+            return `$channelSend(${target}, ${args[0] ?? "undefined"})`;
+          case "receive":
+            this.useHelper("channel");
+            return `$channelReceive(${target})`;
+          case "close":
+            this.useHelper("channel");
+            return `$channelClose(${target})`;
           default:
             break;
         }
@@ -2387,6 +3052,339 @@ function spanKey(span: Span): string {
 
 function isSequence(tag: string): boolean {
   return tag === "Array" || tag === "FixedArray" || tag === "Slice" || tag === "Bytes";
+}
+
+function taggedResultType(ok: string, error: string): string {
+  return `{ readonly $result: true; readonly ok: true; readonly value: ${ok} } | { readonly $result: true; readonly ok: false; readonly error: ${error} }`;
+}
+
+/** Walks an AST declaration looking for a reference to a built-in type path. */
+function referencesTypePath(node: unknown, name: string): boolean {
+  if (Array.isArray(node)) {
+    return node.some((child) => referencesTypePath(child, name));
+  }
+  if (node !== null && typeof node === "object") {
+    const path = (node as { readonly Path?: TypePath }).Path;
+    if (path !== undefined && Array.isArray(path.segments)) {
+      if (path.segments[path.segments.length - 1] === name) {
+        return true;
+      }
+    }
+    return Object.values(node as Record<string, unknown>).some((child) =>
+      referencesTypePath(child, name),
+    );
+  }
+  return false;
+}
+
+function astTypeToTs(
+  type: AstType,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+): string {
+  switch (variantOf(type.kind)) {
+    case "Unit":
+      return "void";
+    case "Array":
+    case "Slice":
+      return `${astTypeToTs(payloadOf(type.kind) as AstType, policy)}[]`;
+    case "FixedArray": {
+      const [element] = payloadOf(type.kind) as readonly [AstType, string];
+      return `${astTypeToTs(element, policy)}[]`;
+    }
+    case "Map": {
+      const [key, value] = payloadOf(type.kind) as readonly [AstType, AstType];
+      return `{ readonly $map: Array<[${astTypeToTs(key, policy)}, ${astTypeToTs(value, policy)}]> }`;
+    }
+    case "Tuple": {
+      const values = payloadOf(type.kind) as readonly AstType[];
+      return `[${values.map((value) => astTypeToTs(value, policy)).join(", ")}]`;
+    }
+    case "Function": {
+      const data = payloadOf(type.kind) as {
+        readonly parameters: readonly AstType[];
+        readonly return_type: AstType | null;
+      };
+      const parameters = data.parameters
+        .map((parameter, index) => `arg${index}: ${astTypeToTs(parameter, policy)}`)
+        .join(", ");
+      return `(${parameters}) => ${astTypeToTs(
+        data.return_type ?? { kind: "Unit", span: type.span },
+        policy,
+      )}`;
+    }
+    case "Path": {
+      const path = payloadOf(type.kind) as TypePath;
+      const name = path.segments[path.segments.length - 1] ?? "unknown";
+      const argumentsText = path.arguments.map((argument) =>
+        astTypeToTs(argument, policy),
+      );
+      if (name === "Option" && argumentsText.length === 1) {
+        return `(${argumentsText[0]} | null)`;
+      }
+      if (name === "Result" && argumentsText.length === 2) {
+        return taggedResultType(argumentsText[0] ?? "unknown", argumentsText[1] ?? "unknown");
+      }
+      if ((name === "Array" || name === "Slice") && argumentsText.length === 1) {
+        return `${argumentsText[0]}[]`;
+      }
+      if (name === "Channel" && argumentsText.length === 1) {
+        return `AstraChannel<${argumentsText[0]}>`;
+      }
+      if (name === "Task" && argumentsText.length === 1) {
+        return `AstraTask<${argumentsText[0]}>`;
+      }
+      if (name === "FixedArray" && argumentsText.length === 1) {
+        return `${argumentsText[0]}[]`;
+      }
+      if (name === "Map" && argumentsText.length === 2) {
+        return `{ readonly $map: Array<[${argumentsText[0]}, ${argumentsText[1]}]> }`;
+      }
+      switch (name.toLowerCase()) {
+        case "i8":
+        case "i16":
+        case "i32":
+        case "u8":
+        case "u16":
+        case "u32":
+          return "number";
+        case "i64":
+        case "u64":
+          return "bigint";
+        case "usize":
+        case "isize":
+          return policy === "arbitrary" ? "bigint" : "number";
+        case "f32":
+        case "f64":
+          return "number";
+        case "bool":
+          return "boolean";
+        case "str":
+          return "string";
+        case "bytes":
+          return "Uint8Array";
+        case "unit":
+          return "void";
+        case "never":
+          return "never";
+        case "error":
+        case "unknown":
+          return "unknown";
+        default:
+          return argumentsText.length === 0
+            ? jsName(name)
+            : `${jsName(name)}<${argumentsText.join(", ")}>`;
+      }
+    }
+    default:
+      return "unknown";
+  }
+}
+
+function structDeclarationLines(
+  declaration: StructDecl,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+): readonly string[] {
+  const name = jsName(declaration.name);
+  const fields = declaration.fields;
+  if (variantOf(fields) === "Named") {
+    const named = payloadOf(fields) as readonly {
+      readonly name: string;
+      readonly ty: AstType;
+    }[];
+    const body = named
+      .map(
+        (field) =>
+          `  readonly ${objectKey(field.name)}: ${astTypeToTs(field.ty, policy)};`,
+      )
+      .join("\n");
+    const parameters = named
+      .map((field) => `${objectKey(field.name)}: ${astTypeToTs(field.ty, policy)}`)
+      .join("; ");
+    return [
+      `interface ${name} {`,
+      `  readonly $type: ${JSON.stringify(declaration.name)};`,
+      body,
+      "}",
+      `declare const ${name}: (fields: { ${parameters} }) => ${name};`,
+    ];
+  }
+
+  const tuple = payloadOf(fields) as readonly AstType[];
+  const body = tuple
+    .map((field, index) => `  readonly ${index}: ${astTypeToTs(field, policy)};`)
+    .join("\n");
+  const parameters = tuple
+    .map((field, index) => `value${index}: ${astTypeToTs(field, policy)}`)
+    .join(", ");
+  return [
+    `interface ${name} {`,
+    `  readonly $type: ${JSON.stringify(declaration.name)};`,
+    body,
+    "}",
+    `declare const ${name}: (${parameters}) => ${name};`,
+  ];
+}
+
+function enumDeclarationLines(
+  declaration: EnumDecl,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+): readonly string[] {
+  const name = jsName(declaration.name);
+  const variants = declaration.variants.map((variant) => {
+    const fields = variant.fields ?? [];
+    const payload = fields
+      .map(
+        (field, index) =>
+          `readonly ${index}: ${astTypeToTs(field.ty, policy)};`,
+      )
+      .join(" ");
+    return `{ readonly $enum: ${JSON.stringify(declaration.name)}; readonly $tag: ${JSON.stringify(variant.name)};${payload.length > 0 ? ` ${payload}` : ""} }`;
+  });
+  const members = declaration.variants
+    .map((variant) => {
+      const fields = variant.fields ?? [];
+      const variantType = variants[declaration.variants.indexOf(variant)];
+      if (fields.length === 0) {
+        return `  readonly ${objectKey(variant.name)}: ${variantType};`;
+      }
+      const parameters = fields
+        .map((field, index) => `value${index}: ${astTypeToTs(field.ty, policy)}`)
+        .join(", ");
+      return `  readonly ${objectKey(variant.name)}: (${parameters}) => ${variantType};`;
+    })
+    .join("\n");
+  return [
+    `type ${name} = ${variants.length === 0 ? "never" : variants.join(" | ")};`,
+    `declare const ${name}: {`,
+    members,
+    "};",
+  ];
+}
+
+function scriptArtifactPath(modulePath: string, name: string): string {
+  return `${modulePath.replace(/\.ns$/i, "")}.${name}.js`;
+}
+
+function scriptDeclarations(
+  block: ScriptBlockDecl,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+): string {
+  const lines = [
+    `// Generated declarations for ${block.name} (${block.language} script block).`,
+    "",
+  ];
+  for (const exported of block.exports) {
+    const parameters = exported.parameters
+      .map(
+        (parameter) =>
+          `${jsName(parameter.name)}: ${astTypeToTs(parameter.ty, policy)}`,
+      )
+      .join(", ");
+    const returnType = astTypeToTs(
+      exported.return_type ?? { kind: "Unit", span: exported.span },
+      policy,
+    );
+    lines.push(
+      `export declare function ${jsName(exported.name)}(${parameters}): ${returnType};`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function scriptModuleCode(modulePath: string, block: ScriptBlockDecl): string {
+  const header = [
+    `// Generated by Neo Astra from ${modulePath} script '${block.name}'.`,
+    "// Target: JavaScript ESM.",
+  ].join("\n");
+  const body = block.raw_source.endsWith("\n")
+    ? block.raw_source
+    : `${block.raw_source}\n`;
+  return `${header}\n${body}`;
+}
+
+function hasEsmExport(source: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`\\bexport\\s+(?:async\\s+)?function\\s+${escaped}\\b`),
+    new RegExp(`\\bexport\\s+(?:const|let|var)\\s+${escaped}\\b`),
+    new RegExp(`\\bexport\\s*\\{[^}]*\\b${escaped}\\b[^}]*\\}`),
+  ];
+  return patterns.some((pattern) => pattern.test(source));
+}
+
+function astPath(type: AstType): TypePath | undefined {
+  if (variantOf(type.kind) !== "Path") {
+    return undefined;
+  }
+  return payloadOf(type.kind) as TypePath;
+}
+
+function isOptionType(type: AstType | undefined): boolean {
+  if (type === undefined) {
+    return false;
+  }
+  const path = astPath(type);
+  return path?.segments[path.segments.length - 1] === "Option";
+}
+
+function astBoundaryToJavaScript(expression: string, type: AstType): string {
+  if (isOptionType(type)) {
+    return `(${expression}.$option ? ${expression}.value : null)`;
+  }
+  return expression;
+}
+
+function astBoundaryFromJavaScript(
+  expression: string,
+  type: AstType | undefined,
+): string {
+  if (isOptionType(type)) {
+    return `((value) => value === null || value === undefined ? $none : $some(value))(${expression})`;
+  }
+  return expression;
+}
+
+function scriptErrorTypeName(path: TypePath | undefined): string {
+  return path?.segments[path.segments.length - 1] ?? "ScriptError";
+}
+
+function createScriptSourceMap(
+  code: string,
+  sourcePath: string,
+  sourceText: string,
+  bodySpan: Span,
+): string {
+  const headerLines = 2;
+  const bodyStartLine = lineAt(sourceText, bodySpan.start);
+  const sourceLineCount = sourceText.split("\n").length;
+  const generatedLines = code.split("\n");
+  let previousSourceLine = 0;
+  let previousSourceColumn = 0;
+  const mappings = generatedLines.map((_, generatedLine) => {
+    if (generatedLine < headerLines) {
+      return "";
+    }
+    const sourceLine = bodyStartLine + (generatedLine - headerLines);
+    if (sourceLine >= sourceLineCount) {
+      return "";
+    }
+    const segment =
+      encodeVlq(0) +
+      encodeVlq(0) +
+      encodeVlq(sourceLine - previousSourceLine) +
+      encodeVlq(0 - previousSourceColumn);
+    previousSourceLine = sourceLine;
+    previousSourceColumn = 0;
+    return segment;
+  });
+
+  return JSON.stringify({
+    version: 3,
+    sources: [sourcePath],
+    sourcesContent: [sourceText],
+    names: [],
+    mappings: mappings.join(";"),
+  });
 }
 
 function createSourceMap(

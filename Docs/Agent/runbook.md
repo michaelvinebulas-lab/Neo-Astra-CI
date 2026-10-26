@@ -17,7 +17,7 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 | 6 | Nova and NoPM | Executable `.ns` source and reproducible packages | In progress |
 | 7 | JS/TS backend and playground | Browser-runnable output | In progress |
 | 8 | C backend, native, Wasm | Native and Wasm binaries | Not started |
-| 9 | FFI and concurrency | Foreign modules, inline `@script`, and structured tasks | Not started |
+| 9 | FFI and concurrency | Foreign modules, inline `@script`, and structured tasks | In progress: JS script slice done; C slice and concurrency remain |
 | 10 | Hardening | Stable v0.1 | Not started |
 
 ---
@@ -300,9 +300,11 @@ work is production backends, starting with `JS-001`, and conformance coverage.
 
 ## 9. Phase 7 - JavaScript/TypeScript backend and playground
 
-**Status:** In progress. The first `JS-001` single-module slice is implemented;
-project imports, recoverable error effects, tasks, source maps, and `TS-001`
-remain.
+**Status:** `JS-001` complete. The backend emits linked multi-module projects,
+inline `@script:js` ESM modules, recoverable errors, checked and arbitrary
+integer policies, eager tasks, bounded channels, UTF-8 string/byte operations,
+source maps, `.d.ts` artifacts, and the shared `conformance/` suite. External
+package modules, TypeScript-target script emission, and `TS-001` remain.
 
 **Goal:** Produce readable, runnable web output.
 
@@ -325,12 +327,22 @@ remain.
 - `@neo-astra/codegen-js` emits functions, constants, control flow, defer,
   structs, enums, arrays, structural maps, tuples, options, results, match,
   built-ins, and tree-shaken local helpers.
-- `astra build` selects a target, checks the entry module, emits ESM under the
+- `astra build` selects a target, discovers reachable local modules, checks the
+  project graph, emits linked ESM modules plus per-module source maps under the
   target `outDir`, and adds `"type": "module"` when needed.
-- Unsupported imports, error effects, tasks, and manual memory fail with
-  source-located diagnostics instead of changing semantics.
-- Next: project-wide typed modules and import emission, error effects, source
-  maps, checked integer methods, then the TypeScript backend.
+- Recoverable failures, `?`, checked integer methods, eager spawn/tasks, bounded
+  channels (capacity 16; recoverable `ChannelError` on a closed channel;
+  single-threaded deadlock panic instead of blocking), UTF-8 string/byte
+  operations (`char_count`, `bytes`, `chars`, `byte_at`, `char_at`, `slice`
+  with `SliceError`, `bytes.new`, indexed `u8` writes), named/default/namespace
+  imports, and named/namespace/default/star re-exports are implemented.
+  External imports and manual memory fail with source-located diagnostics
+  instead of changing semantics.
+- The backend-neutral `conformance/` suite (runner:
+  `orchestrator/tests/conformance.mjs`) pins shared semantics; `TS-001` must
+  run the same cases.
+- Next: the TypeScript backend (WIP preserved from the retired `js-001`
+  branch).
 
 ### Gate
 
@@ -376,8 +388,9 @@ remain.
 2. Implement manifest FFI mappings.
 3. Implement C ABI bindings.
 4. Implement JS/TS import bindings.
-5. Implement inline `@script` parsing and typed exports after the Phase 7 JS/TS
-   backends; add JS emission, then the C/C++ translation-unit path.
+5. Inline `@script` parsing and typed exports are complete; the JavaScript ESM
+   emission slice is complete. Add TypeScript-target emission after `TS-001`,
+   then the C/C++ translation-unit path.
 6. Implement structured concurrency on native.
 7. Implement Web Worker generation.
 8. Add boundary, inline-script, and concurrency conformance tests.

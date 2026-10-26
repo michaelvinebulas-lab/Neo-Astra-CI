@@ -11,11 +11,11 @@ This is the agent's persistent memory. Update it at the end of every substantial
 | Last updated | 2026-10-26 |
 | Current phase | Phase 5 - Types, Nova, and NoPM / Phase 7 Backends |
 | Current task | `C-001` [~] C17 native backend (managed first slice complete; project linking, GC, concurrency, FFI, and native toolchain verification open) |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, working JavaScript ESM slice on `js-001`, and first C17 managed slice (`astra-codegen-c`) complete with freestanding runtime & `astra build --target c` pipeline; `@script` inline interop frontend complete |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend (merged from `js-interop` at `39437d0`) and first C17 managed slice (`astra-codegen-c`) complete with freestanding runtime & `astra build --target c` pipeline; `@script` inline interop frontend complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
-| Next action | Address the next concrete `C-001` or `JS-001` slice per priority (e.g. multi-module project linking for C, map literals, or toolchain environment) |
+| Next action | Continue `C-001` (e.g. multi-module project linking for C, map literals, or toolchain environment), then start `TS-001` |
 
 ---
 
@@ -948,8 +948,8 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 - Representation: `Option` and `Result` are tagged objects; maps use a structural-key helper so key equality and insertion order match the language contract. Generated code has no framework dependency, no hidden global state, and no source re-parsing.
 - CLI: `astra build [dir] [--target name] [--compiler path] [--json]` selects a target (`--target`, `ASTRA_TARGET`, `build.defaultTarget`), reads `nova.entry`, chooses target/build mode and `math.integers`, calls `compile`, emits one ESM module under `outDir`, and writes `{"type":"module"}` when absent.
 - Diagnostics: backend failures use `NS8001` and `NS8003` with source locations; project imports, error propagation, tasks, arbitrary integers, and manual memory fail before emission.
-- Tests: 9 new end-to-end codegen/build tests compile real `.ns` sources, execute generated ESM, check struct/enum/option/map/tuple/defer/float rendering, named/default exports, verify wrapping and checked overflow behavior, reject unsupported constructs, and run `astra build` output through Node.
-- Verification: 459 Rust tests, 40 TypeScript unit tests, 27 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Tests: 11 new end-to-end codegen/build tests compile real `.ns` sources, execute generated ESM, check struct/enum/option/map/tuple/defer/float/byte-string rendering, named/default exports, verify wrapping and checked overflow behavior, reject unsupported constructs, and run `astra build` output through Node.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 29 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
 - Current boundary: `astra build` emits one module and rejects project imports with `NS8001`; recoverable error effects, `?`, `fail`, spawn/tasks/channels, source maps, `.d.ts`, checked integer methods, `arbitrary`, and full UTF-8 byte slicing remain.
 
 ### 2026-10-26 — C-001 full expression/pattern coverage, byte/string operations, map methods, inline scripts (@script:c/@script:cpp), and native build flags
@@ -980,17 +980,168 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 
 ---
 
+### 2026-10-25 - JS-001 recoverable errors and checked integer methods
+
+- Command: `npm run ci`
+- Result: pass
+- Error effects: fallible functions now return `Ok(...)` for normal completion and a tagged `{ $failure: true, error }` sentinel for `!Error(...)` or a propagated `?`. A function-boundary `try`/`catch` converts a failure signal into the sentinel, `?` unwraps `Ok`, and `match` normalizes a failure sentinel to `Err` before pattern lowering.
+- Failure construction: `!Error(...)` lowers through the existing struct/enum constructors; built-in nominal errors such as `ParseIntError` use the same tagged shape as the collection/string helpers.
+- Checked integers: `checked_add`, `checked_sub`, `checked_mul`, and `checked_div` lower to a tree-shaken `$checkedInteger` helper that returns `Result` and `OverflowError` on overflow. Division by zero remains a panic, matching Nova.
+- Tests: added execution tests for `!Error(...)`, `?` through a call chain, matching a failure sentinel, `to_int()` failure, and checked integer overflow/success. `orchestrator/tests/codegen-js.test.mjs` now has 12 codegen/build tests.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 30 native/Wasm/boundary tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Current boundary: project imports/re-exports, spawn/tasks/channels, source maps, `.d.ts`, the `arbitrary` integer policy, and full UTF-8 byte-slice/index operations remain.
+
+### 2026-10-25 - JS-001 eager spawn and task scope
+
+- Command: `npm run ci`
+- Result: pass
+- Tasks: `spawn || { ... }` now runs the body eagerly through a tree-shaken
+  `$spawn` helper and returns a task value. `Task.join()` returns the task value,
+  re-raises a captured panic, or returns a failure value for a cancelled task;
+  `Task.cancel()` marks the task cancelled.
+- Scope: a function containing spawn enters a task scope and checks unjoined
+  tasks in a `finally` block. A task panic that was never joined fails the
+  function after its side effects, matching Nova's scope-failure behavior for
+  the supported single-scope case.
+- Tests: added execution tests for eager ordering plus `join`, a joined-task
+  panic, and an unjoined task panic failing the function scope. The codegen test
+  file now has 15 tests.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 33 native/Wasm/boundary
+  tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Current boundary: project imports/re-exports, channels and a real scheduler,
+  source maps, `.d.ts`, the `arbitrary` integer policy, and full UTF-8
+  byte-slice/index operations remain.
+
+### 2026-10-26 - JS-001 line-level source maps
+
+- Command: `npm run ci`
+- Result: pass
+- Source maps: `generateJavaScript` accepts optional source text and emits a
+  version-3 map with the module path, embedded `sourcesContent`, and VLQ mappings
+  anchored at each emitted top-level declaration.
+- Build output: `astra build` writes `<module>.js.map`, rewrites `sources` to be
+  relative to the output directory, and appends a `sourceMappingURL` comment to
+  the generated module.
+- Tests: the end-to-end build test now checks the `.map` file, source content,
+  `file` field, non-empty mappings, and the sourceMappingURL comment.
+- Verification: 459 Rust tests, 40 TypeScript unit tests, 33 native/Wasm/boundary
+  tests, `cargo fmt --check`, clippy with warnings denied, and `npm run ci` pass.
+- Current boundary: project imports/re-exports, channels and a real scheduler,
+  the `arbitrary` integer policy, `.d.ts`, and full UTF-8 byte-slice/index
+  operations remain.
+
+### 2026-10-26 - JS-001 linked multi-module projects
+
+- Command: `npm run ci`
+- Result: pass
+- Compiler API: `check_project` now accepts relative and dotted import
+  specifiers, builds a canonical `ModuleGraph`, orders modules dependencies-first,
+  and attaches a `ModuleIr` to each successful module. `integerPolicy` is carried
+  into every module. Existing identity-key imports remain compatible.
+- Core: added `check_module_graph_with_imports`; the original
+  `check_module_graph` continues to treat raw specifiers as module identities.
+- Codegen: emits named, default, and namespace imports plus named, namespace,
+  default, and star re-exports, using caller-supplied output specifiers.
+- CLI: `astra build` discovers local modules recursively from relative imports,
+  calls `check_project`, emits one ESM module per source, rewrites relative
+  specifiers, writes per-module source maps, and still writes the output
+  `package.json`.
+- Tests: a multi-module build test covers a library, a barrel with named/star/
+  namespace re-exports, default import, namespace import, execution, and import
+  rewriting. Compiler API coverage includes relative imports and project IR.
+- Verification: 460 Rust tests, 40 TypeScript unit tests, 34 native/Wasm/boundary
+  tests (16 codegen/build), `cargo fmt --check`, clippy with warnings denied, and
+  `npm run ci` pass.
+- Current boundary: external/package module linking, channels and a scheduler,
+  the `arbitrary` integer policy, `.d.ts`, and full UTF-8 byte-slice/index
+  operations remain.
+
+### 2026-10-26 - INTEROP-001 JavaScript backend slice
+
+- Command: `npm run ci`
+- Result: pass
+- Merged the `INTEROP-001` frontend snapshot (lexer/parser/AST/HIR, checker,
+  resolver, formatter, capabilities, Nova rejection) with the `JS-001` backend
+  work. Temporary script-block guards were replaced by the real frontend.
+- Codegen: `@script:js` blocks emit a separate `*.js` ESM artifact under the
+  output tree. The parent imports the namespace, wraps each declared export,
+  validates `export` names with `NS7008`, converts `Option<T>` to/from
+  `T | null`, and maps declared error effects to `Err` through try/catch.
+- CLI: writes script artifacts and their source maps beside the parent module,
+  rewrites map sources, and rejects output paths that escape `outDir`.
+- Tests: inline script execution (ints, strings, `Option` arguments and returns),
+  missing export diagnostics, exception-to-`Err` mapping, and rejection of
+  `@script:ts` on the JavaScript target.
+- Also implemented the `arbitrary` integer policy with `BigInt` arithmetic for
+  all integer types, `usize`/`isize`, length values, index coercion, and explicit
+  wrapping methods.
+- Added `.d.ts` artifacts for generated modules and inline script modules,
+  covering functions, constants, structs, enums, type aliases, re-exports,
+  `Option`, `Result`, tuples, maps, and integer-policy-aware types.
+- Verification: 485 Rust tests, 40 TypeScript unit tests, 39 native/Wasm/boundary
+  tests (21 codegen/build), `cargo fmt --check`, clippy with warnings denied, and
+  `npm run ci` pass.
+- Current boundary: TypeScript-target script emission waits for `TS-001` or a
+  pinned transpiler; C/C++ scripts wait for the native backend. Channels and a
+  scheduler and full UTF-8 byte operations remain.
+
+### 2026-10-26 - JS-001 complete: channels, UTF-8 string/byte operations, conformance suite
+
+- Command: `npm run ci`
+- Result: pass
+- Checker: added the `Channel` builtin namespace (`Channel.create<T>()` with
+  `send`/`receive` returning recoverable `ChannelError` results and infallible
+  `close`), the `bytes` namespace (`bytes.new(n)`), spec §6 string operations
+  (`char_count`, `bytes`, `chars`, `byte_at`, `char_at`, and `slice` with
+  `SliceError`), `bytes` indexing by `usize` yielding `u8`, and the
+  `ChannelError`/`SliceError` builtin error sets. Lvalue checks now annotate
+  target types, so indexed writes (`array[i] = x`, `buffer[i] = u8`, including
+  nested sequences) type-check and emit bounds-checked writes.
+- Codegen: new tree-shaken helpers (`$channel*`, `$charCount`, `$strBytes`,
+  `$strChars`, `$byteAt`, `$charAt`, `$strSlice`, `$bytesNew`, `$indexSet`);
+  sequence-tagged index assignments lower to `$indexSet`; void fallible
+  functions without an explicit `return` now end with `return $ok(undefined)`
+  so callers can `match` them; `.d.ts` artifacts declare `AstraChannel<T>`
+  (and `AstraTask<T>`) runtime shapes and map `Channel<T>`/`Task<T>`
+  signatures to them.
+- Semantics: channels are bounded (capacity 16) plain records; `send`/`receive`
+  fail recoverably on a closed channel; because spawn stays eager in the V1
+  single-threaded runtime, a full-channel send or empty-channel receive raises
+  a structured deadlock panic instead of blocking. `len` on `str` remains the
+  UTF-8 byte length; `slice` takes byte offsets and rejects out-of-range or
+  scalar-splitting ranges.
+- Conformance: new `conformance/` suite (`hello`, `strings_utf8`,
+  `bytes_buffer`, `channels` with `.expected` stdout) plus
+  `orchestrator/tests/conformance.mjs`; `codegen-js.test.mjs` runs every case
+  and `TS-001` will reuse the same runner.
+- Tests: 8 new checker unit tests, 5 new codegen execution tests (UTF-8 ops,
+  bounded channels with closed errors, the deadlock panic, bytes buffers with
+  an out-of-bounds panic, and `AstraChannel` declarations), and the shared
+  conformance test.
+- Housekeeping: the deprecated `js-001` branch and worktree were deleted after
+  verifying full containment; their uncommitted TS-001 groundwork (codegen-ts
+  emission work and `codegen-ts.test.mjs`) was preserved in this branch and is
+  green here.
+- Verification: 493 Rust tests, 41 TypeScript unit tests, 45 native/Wasm/boundary
+  tests (27 codegen/build), `cargo fmt --check`, clippy with warnings denied,
+  and `npm run ci` pass.
+- Current boundary: TypeScript-target script emission waits for `TS-001`; C/C++
+  scripts wait for the native backend. Channels are single-threaded in V1:
+  blocking operations panic rather than yield.
+
+---
+
 ## Handoff
 
 ```markdown
 ### Handoff
 - Phase: 7 - Backends / C-001
-- Task: C-001 expression/pattern coverage, byte/string operations, map methods, inline scripts (@script:c/@script:cpp), and native build flags complete
+- Task: JS-001 completed and merged from `js-interop` (39437d0); C-001 expression/pattern coverage, byte/string operations, map methods, inline scripts (@script:c/@script:cpp), and native build flags complete
 - Status: Ready
-- Files changed: `crates/astra-codegen-c/src/{emit,runtime,lib,ty}.rs`, `crates/astra-codegen-c/tests/emit_c.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/codegen-js/src/generate.ts`, `orchestrator/tests/codegen-js.test.mjs`, `Docs/Agent/todo.md`, `Docs/Agent/state-log.md`
-- Verification: `cargo test --workspace` (500+ tests green), `cargo clippy --workspace --all-targets -- -D warnings` clean, `npm test` and `node --test orchestrator/tests/codegen-js.test.mjs` green
+- Files changed: `crates/astra-codegen-c/src/{emit,runtime,lib,ty}.rs`, `crates/astra-codegen-c/tests/emit_c.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/codegen-js/src/generate.ts`, `orchestrator/tests/{codegen-js.test.mjs,conformance.mjs}`, `conformance/`, `orchestrator/packages/codegen-ts/src/index.ts` + `orchestrator/tests/codegen-ts.test.mjs` (preserved WIP), `Docs/Agent/{todo,state-log,runbook}.md`
+- Verification: `cargo test --workspace` green, `cargo clippy --workspace --all-targets -- -D warnings` clean, `npm run ci` green (493 Rust, 41 TypeScript unit, 45 native/Wasm/boundary tests on js-interop; master C-backend suites pass)
 - Blockers: none
-- Next action: Multi-module project linking for C and cross-platform native CI gate
+- Next action: multi-module project linking for C and cross-platform native CI gate; then continue TS-001 (WIP present)
 ```
 
 

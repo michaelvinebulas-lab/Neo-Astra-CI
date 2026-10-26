@@ -2,7 +2,16 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { TextDecoder } from "node:util";
 import { pathToFileURL } from "node:url";
 import { generateJavaScript } from "@neo-astra/codegen-js";
@@ -905,6 +914,113 @@ function codegenDiagnostic(
   };
 }
 
+interface ProjectModuleSource {
+  readonly key: string;
+  readonly absolutePath: string;
+  readonly text: string;
+}
+
+function scanImportSpecifiers(source: string): readonly string[] {
+  const specifiers = new Set<string>();
+  const fromPattern = /^[ \t]*(?:import|export)\b[^\n;]*?\bfrom\s*"([^"]+)"/gm;
+  const sideEffectPattern = /^[ \t]*import\s*"([^"]+)"/gm;
+  const pathPattern =
+    /^[ \t]*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)[ \t]*(?:;)?$/gm;
+  for (const pattern of [fromPattern, sideEffectPattern]) {
+    for (const match of source.matchAll(pattern)) {
+      if (match[1] !== undefined) {
+        specifiers.add(match[1]);
+      }
+    }
+  }
+  for (const match of source.matchAll(pathPattern)) {
+    if (match[1] !== undefined) {
+      specifiers.add(match[1]);
+    }
+  }
+  return [...specifiers];
+}
+
+function resolveProjectSpecifier(
+  importerKey: string,
+  specifier: string,
+  root: string,
+): string | undefined {
+  if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    let target = resolve(dirname(join(root, importerKey)), specifier);
+    if (!target.toLowerCase().endsWith(SOURCE_EXTENSION)) {
+      target = `${target}${SOURCE_EXTENSION}`;
+    }
+    const relativeTarget = relative(root, target);
+    if (
+      relativeTarget.length === 0 ||
+      isAbsolute(relativeTarget) ||
+      relativeTarget === ".." ||
+      relativeTarget.startsWith(`..${sep}`)
+    ) {
+      return undefined;
+    }
+    return relativeTarget.split(sep).join("/");
+  }
+
+  if (
+    !specifier.includes("/") &&
+    specifier.includes(".") &&
+    !specifier.toLowerCase().endsWith(SOURCE_EXTENSION)
+  ) {
+    return `${specifier.replaceAll(".", "/")}${SOURCE_EXTENSION}`;
+  }
+
+  return undefined;
+}
+
+function discoverProjectModules(
+  root: string,
+  entryPath: string,
+  entryKey: string,
+  cwd: string,
+): readonly ProjectModuleSource[] {
+  const ordered: ProjectModuleSource[] = [];
+  const visited = new Set<string>();
+
+  const visit = (key: string, absolutePath: string): void => {
+    if (visited.has(key)) {
+      return;
+    }
+    visited.add(key);
+    const file: SourceFile = {
+      path: absolutePath,
+      displayPath: displayPath(absolutePath, cwd),
+      kind: "source",
+    };
+    const text = readSource(file);
+    for (const specifier of scanImportSpecifiers(text)) {
+      const targetKey = resolveProjectSpecifier(key, specifier, root);
+      if (targetKey === undefined || visited.has(targetKey)) {
+        continue;
+      }
+      const targetPath = resolve(root, targetKey);
+      if (!existsSync(targetPath)) {
+        continue;
+      }
+      visit(targetKey, targetPath);
+    }
+    ordered.push({ key, absolutePath, text });
+  };
+
+  visit(entryKey, entryPath);
+  return ordered;
+}
+
+function outputPathForModule(outDir: string, key: string): string {
+  return resolve(outDir, key.replace(/\.ns$/i, ".js"));
+}
+
+function relativeModuleSpecifier(fromOutput: string, targetOutput: string): string {
+  const value = relative(dirname(fromOutput), targetOutput).split(sep).join("/");
+  return value.startsWith(".") ? value : `./${value}`;
+}
+
 function runBuild(args: readonly string[], cwd: string): number {
   if (args.includes("-h") || args.includes("--help")) {
     printHelp();
@@ -1027,7 +1143,10 @@ function runBuild(args: readonly string[], cwd: string): number {
       displayPath: displayPath(entryPath, cwd),
       kind: "source",
     };
-    const source = readSource(sourceFile);
+    const projectSources = discoverProjectModules(root, entryPath, entryKey, cwd);
+    const source =
+      projectSources.find((module) => module.key === entryKey)?.text ??
+      readSource(sourceFile);
 
     const modeValue = targetConfig["mode"] ?? build["defaultMode"];
     if (modeValue !== undefined && !isMode(modeValue)) {
@@ -1055,90 +1174,41 @@ function runBuild(args: readonly string[], cwd: string): number {
         : { binaryPath: options.compilerPath }),
     });
     const compilerTarget = backend === "c" || backend === "native" ? "c" : "js";
-    const result = client.compile({
-      source: { path: entryKey, text: source },
-      target: compilerTarget,
+    const sharedParams = {
       ...(modeValue === undefined ? {} : { mode: modeValue }),
       ...(policyValue === undefined ? {} : { integerPolicy: policyValue }),
-    });
+    };
 
-    const diagnostics = result.diagnostics.map((diagnostic) =>
-      reportDiagnostic(sourceFile, source, diagnostic),
-    );
-    const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
-    if (errors.length > 0) {
-      report = { ...report, target: targetName, backend: String(backend), entry: entryKey, diagnostics };
-      if (options.json) {
-        printBuildReport(report);
-      } else {
-        for (const diagnostic of diagnostics) {
-          printDiagnostic(diagnostic);
-        }
-      }
-      return 1;
-    }
-
-    let outputPath: string;
-    let allDiagnostics = diagnostics;
-
-    if (backend === "js") {
-      if (result.ir === undefined) {
-        throw new CliError(
-          "NS8001",
-          "The compiler returned no typed module for JavaScript generation.",
-          displayPath(entryPath, cwd),
-        );
-      }
-
-      const generated = generateJavaScript({
-        moduleName: entryKey,
-        ir: result.ir,
+    if (compilerTarget === "c") {
+      const cResult = client.compile({
+        source: { path: entryKey, text: source },
+        target: "c",
+        ...sharedParams,
       });
-      const generatedDiagnostics = generated.diagnostics.map((diagnostic) =>
-        codegenDiagnostic(sourceFile, source, diagnostic),
+
+      const diagnostics = cResult.diagnostics.map((diagnostic) =>
+        reportDiagnostic(sourceFile, source, diagnostic),
       );
-      allDiagnostics = [...diagnostics, ...generatedDiagnostics];
-      if (generatedDiagnostics.length > 0) {
+      const errors = diagnostics.filter(
+        (diagnostic) => diagnostic.severity === "error",
+      );
+      if (errors.length > 0) {
         report = {
           ...report,
           target: targetName,
-          backend: "js",
+          backend: String(backend),
           entry: entryKey,
-          diagnostics: allDiagnostics,
+          diagnostics,
         };
         if (options.json) {
           printBuildReport(report);
         } else {
-          for (const diagnostic of allDiagnostics) {
+          for (const diagnostic of diagnostics) {
             printDiagnostic(diagnostic);
           }
         }
         return 1;
       }
-
-      const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
-      const outDir =
-        typeof configuredOutDir === "string"
-          ? resolve(root, configuredOutDir)
-          : resolve(root, "dist", targetName);
-      const outputRelative = entryKey.replace(/\.ns$/i, ".js");
-      outputPath = resolve(outDir, outputRelative);
-
-      try {
-        mkdirSync(dirname(outputPath), { recursive: true });
-        writeFileSync(outputPath, generated.code, "utf8");
-        const packagePath = join(outDir, "package.json");
-        if (!existsSync(packagePath)) {
-          writeFileSync(packagePath, '{ "type": "module" }\n', "utf8");
-        }
-      } catch (error) {
-        throw new CliError(
-          "NS9008",
-          `Unable to write the generated module: ${errorMessage(error)}`,
-          displayPath(outputPath, cwd),
-        );
-      }
-    } else {
       const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
       const outDir =
         typeof configuredOutDir === "string"
@@ -1150,7 +1220,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       const scriptPaths: string[] = [];
       try {
         mkdirSync(outDir, { recursive: true });
-        for (const artifact of result.artifacts) {
+        for (const artifact of cResult.artifacts) {
           if (isRecord(artifact)) {
             const artType = artifact["type"];
             const artName = artifact["name"] ?? artifact["filename"];
@@ -1177,6 +1247,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         );
       }
 
+      let outputPath: string;
       outputPath = mainCPath || outDir;
 
       if (backend === "native") {
@@ -1253,11 +1324,264 @@ function runBuild(args: readonly string[], cwd: string): number {
         }
         outputPath = exePath;
       }
+
+      report = {
+        target: targetName,
+        backend: String(backend),
+        entry: entryKey,
+        output: displayPath(outputPath, cwd),
+        diagnostics,
+      };
+      if (options.json) {
+        printBuildReport(report);
+      } else {
+        for (const diagnostic of diagnostics) {
+          printDiagnostic(diagnostic);
+        }
+        process.stdout.write(
+          `built ${targetName} -> ${displayPath(outputPath, cwd)}\n`,
+        );
+      }
+      return 0;
+    }
+
+    const result = client.checkProject({
+      sources: projectSources.map((module) => ({
+        key: module.key,
+        path: module.key,
+        text: module.text,
+      })),
+      target: "js",
+      ...sharedParams,
+    });
+
+    const moduleSources = new Map(
+      projectSources.map((module) => [module.key, module] as const),
+    );
+    const diagnostics = result.modules.flatMap((module) => {
+      const moduleSource = moduleSources.get(module.key);
+      const file: SourceFile = {
+        path: moduleSource?.absolutePath ?? entryPath,
+        displayPath:
+          moduleSource === undefined
+            ? displayPath(entryPath, cwd)
+            : displayPath(moduleSource.absolutePath, cwd),
+        kind: "source",
+      };
+      return module.diagnostics.map((diagnostic) =>
+        reportDiagnostic(file, moduleSource?.text ?? source, diagnostic),
+      );
+    });
+    const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
+    if (errors.length > 0) {
+      report = { ...report, target: targetName, entry: entryKey, diagnostics };
+      if (options.json) {
+        printBuildReport(report);
+      } else {
+        for (const diagnostic of diagnostics) {
+          printDiagnostic(diagnostic);
+        }
+      }
+      return 1;
+    }
+
+    const missingModule = result.modules.find(
+      (module) => module.ok && module.ir === undefined,
+    );
+    if (missingModule !== undefined) {
+      throw new CliError(
+        "NS8001",
+        `The compiler returned no typed module for '${missingModule.key}'.`,
+        displayPath(entryPath, cwd),
+      );
+    }
+
+    const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
+    const outDir =
+      typeof configuredOutDir === "string"
+        ? resolve(root, configuredOutDir)
+        : resolve(root, "dist", targetName);
+    const outputs = new Map(
+      projectSources.map((module) => [
+        module.key,
+        outputPathForModule(outDir, module.key),
+      ]),
+    );
+
+    const generatedModules = result.modules
+      .filter(
+        (module): module is typeof module & { readonly ir: NonNullable<typeof module.ir> } =>
+          module.ir !== undefined,
+      )
+      .map((module) => {
+        const outputPath = outputs.get(module.key);
+        const moduleSource = moduleSources.get(module.key);
+        if (outputPath === undefined || moduleSource === undefined) {
+          throw new CliError(
+            "NS8001",
+            `No output path was resolved for '${module.key}'.`,
+            displayPath(entryPath, cwd),
+          );
+        }
+        const moduleSpecifiers = Object.fromEntries(
+          projectSources.map((candidate) => [
+            candidate.key,
+            relativeModuleSpecifier(
+              outputPath,
+              outputs.get(candidate.key) ??
+                outputPathForModule(outDir, candidate.key),
+            ),
+          ]),
+        );
+        const generated = generateJavaScript({
+          moduleName: module.key,
+          ir: module.ir,
+          sourceText: moduleSource.text,
+          moduleSpecifiers,
+        });
+        return {
+          module,
+          moduleSource,
+          outputPath,
+          generated,
+        };
+      });
+
+    const generatedDiagnostics = generatedModules.flatMap((entry) =>
+      entry.generated.diagnostics.map((diagnostic) =>
+        codegenDiagnostic(
+          {
+            path: entry.moduleSource.absolutePath,
+            displayPath: displayPath(entry.moduleSource.absolutePath, cwd),
+            kind: "source",
+          },
+          entry.moduleSource.text,
+          diagnostic,
+        ),
+      ),
+    );
+    const allDiagnostics = [...diagnostics, ...generatedDiagnostics];
+    if (generatedDiagnostics.length > 0) {
+      report = {
+        ...report,
+        target: targetName,
+        entry: entryKey,
+        diagnostics: allDiagnostics,
+      };
+      if (options.json) {
+        printBuildReport(report);
+      } else {
+        for (const diagnostic of allDiagnostics) {
+          printDiagnostic(diagnostic);
+        }
+      }
+      return 1;
+    }
+
+    const outputPath = outputs.get(entryKey);
+    if (outputPath === undefined) {
+      throw new CliError(
+        "NS8001",
+        "The entry module was not included in the project output.",
+        displayPath(entryPath, cwd),
+      );
+    }
+
+    try {
+      for (const entry of generatedModules) {
+        mkdirSync(dirname(entry.outputPath), { recursive: true });
+        const mapName = `${basename(entry.outputPath)}.map`;
+        const generatedCode =
+          entry.generated.sourceMap === undefined
+            ? entry.generated.code
+            : `${entry.generated.code}//# sourceMappingURL=${mapName}\n`;
+        writeFileSync(entry.outputPath, generatedCode, "utf8");
+        if (entry.generated.sourceMap !== undefined) {
+          const map = JSON.parse(entry.generated.sourceMap) as Record<string, unknown>;
+          map["file"] = basename(entry.outputPath);
+          map["sources"] = [
+            relative(
+              dirname(entry.outputPath),
+              entry.moduleSource.absolutePath,
+            )
+              .split(sep)
+              .join("/"),
+          ];
+          writeFileSync(
+            `${entry.outputPath}.map`,
+            `${JSON.stringify(map)}\n`,
+            "utf8",
+          );
+        }
+        if (entry.generated.declarations !== undefined) {
+          writeFileSync(
+            entry.outputPath.replace(/\.js$/i, ".d.ts"),
+            entry.generated.declarations,
+            "utf8",
+          );
+        }
+        for (const artifact of entry.generated.artifacts ?? []) {
+          const artifactPath = resolve(outDir, artifact.path);
+          const artifactRelative = relative(outDir, artifactPath);
+          if (
+            artifactRelative === ".." ||
+            artifactRelative.startsWith(`..${sep}`) ||
+            isAbsolute(artifactRelative)
+          ) {
+            throw new CliError(
+              "NS8001",
+              `Script artifact '${artifact.path}' escapes the output directory.`,
+              displayPath(entry.moduleSource.absolutePath, cwd),
+            );
+          }
+          mkdirSync(dirname(artifactPath), { recursive: true });
+          const artifactMapName = `${basename(artifactPath)}.map`;
+          const artifactCode =
+            artifact.sourceMap === undefined
+              ? artifact.code
+              : `${artifact.code}//# sourceMappingURL=${artifactMapName}\n`;
+          writeFileSync(artifactPath, artifactCode, "utf8");
+          if (artifact.sourceMap !== undefined) {
+            const map = JSON.parse(artifact.sourceMap) as Record<string, unknown>;
+            map["file"] = basename(artifactPath);
+            map["sources"] = [
+              relative(
+                dirname(artifactPath),
+                entry.moduleSource.absolutePath,
+              )
+                .split(sep)
+                .join("/"),
+            ];
+            writeFileSync(
+              `${artifactPath}.map`,
+              `${JSON.stringify(map)}\n`,
+              "utf8",
+            );
+          }
+          if (artifact.declarations !== undefined) {
+            writeFileSync(
+              artifactPath.replace(/\.js$/i, ".d.ts"),
+              artifact.declarations,
+              "utf8",
+            );
+          }
+        }
+      }
+      const packagePath = join(outDir, "package.json");
+      if (!existsSync(packagePath)) {
+        writeFileSync(packagePath, '{ "type": "module" }\n', "utf8");
+      }
+    } catch (error) {
+      throw new CliError(
+        "NS9008",
+        `Unable to write the generated module: ${errorMessage(error)}`,
+        displayPath(outputPath, cwd),
+      );
     }
 
     report = {
       target: targetName,
-      backend: String(backend),
+      backend: "js",
       entry: entryKey,
       output: displayPath(outputPath, cwd),
       diagnostics: allDiagnostics,
