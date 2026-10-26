@@ -155,7 +155,12 @@ pub fn to_type(ast_type: &ast::Type) -> Type {
         } => Type::Function(astra_core::types::FunctionType {
             type_parameters: Vec::new(),
             parameters: parameters.iter().map(to_type).collect(),
-            return_type: Box::new(return_type.as_ref().map(|t| to_type(t)).unwrap_or(Type::Unit)),
+            return_type: Box::new(
+                return_type
+                    .as_ref()
+                    .map(|t| to_type(t))
+                    .unwrap_or(Type::Unit),
+            ),
             errors: error_set.iter().map(path_to_type).collect(),
         }),
         TypeKind::Unit => Type::Unit,
@@ -165,18 +170,19 @@ pub fn to_type(ast_type: &ast::Type) -> Type {
 /// Converts a dotted type path to its checked semantic type.
 pub fn path_to_type(path: &ast::TypePath) -> Type {
     let name = path.segments.last().map(String::as_str).unwrap_or("");
-    if path.arguments.is_empty() {
-        if let Some(primitive) = primitive_type(name) {
-            return primitive;
-        }
+    if path.arguments.is_empty()
+        && let Some(primitive) = primitive_type(name)
+    {
+        return primitive;
     }
     match name {
         "Option" if path.arguments.len() == 1 => {
             Type::Option(Box::new(to_type(&path.arguments[0])))
         }
-        "Result" if path.arguments.len() == 2 => {
-            Type::Result(Box::new(to_type(&path.arguments[0])), Box::new(to_type(&path.arguments[1])))
-        }
+        "Result" if path.arguments.len() == 2 => Type::Result(
+            Box::new(to_type(&path.arguments[0])),
+            Box::new(to_type(&path.arguments[1])),
+        ),
         _ => Type::Named(
             path.segments.join("."),
             path.arguments.iter().map(to_type).collect(),
@@ -338,14 +344,7 @@ impl TyCtxt {
             Type::F64 => "double".into(),
             Type::Bool => "bool".into(),
             Type::Str => "NS_Str".into(),
-            Type::Bytes => {
-                self.rejects.push(Reject {
-                    code: "NS8014",
-                    message: "bytes literals are not supported by the C backend first slice"
-                        .into(),
-                });
-                "NS_Str".into()
-            }
+            Type::Bytes => "NS_Bytes".into(),
             Type::Unit => "NS_Unit".into(),
             Type::Never => {
                 self.rejects.push(Reject {
@@ -358,18 +357,20 @@ impl TyCtxt {
             Type::Option(inner) => {
                 let value = self.c_type(inner);
                 let name = format!("NS_Option_{}", self.ident(inner));
-                self.ensure(&name, format!(
-                    "typedef struct {{ bool some; {value} value; }} {name};"
-                ));
+                self.ensure(
+                    &name,
+                    format!("typedef struct {{ bool some; {value} value; }} {name};"),
+                );
                 name
             }
             Type::Result(ok, err) => {
                 let value = self.c_type(ok);
                 let error = self.c_type(err);
                 let name = format!("NS_Result_{}_{}", self.ident(ok), self.ident(err));
-                self.ensure(&name, format!(
-                    "typedef struct {{ bool ok; {value} value; {error} error; }} {name};"
-                ));
+                self.ensure(
+                    &name,
+                    format!("typedef struct {{ bool ok; {value} value; {error} error; }} {name};"),
+                );
                 name
             }
             Type::Array(_) | Type::Slice(_) => "NS_Array".into(),
@@ -381,13 +382,7 @@ impl TyCtxt {
                 });
                 "NS_Array".into()
             }
-            Type::Map(_, _) => {
-                self.rejects.push(Reject {
-                    code: "NS8013",
-                    message: "maps are not supported by the C backend first slice".into(),
-                });
-                "void*".into()
-            }
+            Type::Map(_, _) => "NS_Map".into(),
             Type::Tuple(elements) => {
                 let name = format!("NS_{}", self.ident(ty));
                 let mut fields = String::new();
@@ -485,7 +480,10 @@ impl TyCtxt {
                             let field_c = self.c_type(field_type);
                             inner.push_str(&format!("{field_c} _{index}; "));
                         }
-                        members.push_str(&format!("struct {{ {inner}}} {name}; ", name = variant.name));
+                        members.push_str(&format!(
+                            "struct {{ {inner}}} {name}; ",
+                            name = variant.name
+                        ));
                     }
                 }
                 self.ensure(
@@ -522,6 +520,7 @@ impl Annotations {
     }
 
     /// Returns the checked type at a span.
+    #[allow(dead_code)]
     pub fn at(&self, span: Span) -> Option<&Type> {
         self.by_span.get(&(span.start, span.end))
     }

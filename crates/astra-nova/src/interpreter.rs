@@ -831,20 +831,25 @@ impl Interpreter {
                 ),
                 span: Some(span),
             })),
-            Value::ScriptBlock { name, language, span: script_span } => {
-                Err(Fault::Error(NovaError::ForeignScriptUnsupported {
-                    name,
-                    language,
-                    span: script_span,
-                }))
-            }
-            Value::ScriptFunction { script_name, language, span: script_span, .. } => {
-                Err(Fault::Error(NovaError::ForeignScriptUnsupported {
-                    name: script_name,
-                    language,
-                    span: script_span,
-                }))
-            }
+            Value::ScriptBlock {
+                name,
+                language,
+                span: script_span,
+            } => Err(Fault::Error(NovaError::ForeignScriptUnsupported {
+                name,
+                language,
+                span: script_span,
+            })),
+            Value::ScriptFunction {
+                script_name,
+                language,
+                span: script_span,
+                ..
+            } => Err(Fault::Error(NovaError::ForeignScriptUnsupported {
+                name: script_name,
+                language,
+                span: script_span,
+            })),
             Value::Imported { module, name } => {
                 if !self.modules.contains_key(&module) {
                     return Err(Fault::Error(NovaError::Unsupported {
@@ -1372,7 +1377,11 @@ impl Interpreter {
                 module: module.clone(),
                 name: member.to_owned(),
             }),
-            Value::ScriptBlock { name, language, span } => Ok(Value::ScriptFunction {
+            Value::ScriptBlock {
+                name,
+                language,
+                span,
+            } => Ok(Value::ScriptFunction {
                 script_name: name.clone(),
                 function_name: member.to_owned(),
                 language: language.clone(),

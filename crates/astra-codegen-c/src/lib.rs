@@ -92,8 +92,13 @@ impl BackendError {
 pub struct GeneratedC {
     /// The freestanding-safe generated C17 translation unit.
     pub source: String,
+    /// Public C header (`<module>.h`) with extern prototypes for exported
+    /// symbols. `None` for standalone (single-module) builds.
+    pub header: Option<String>,
     /// The hosted runtime implementation (`astra_host.c`), linked to run.
     pub host_shim: String,
+    /// Individual translation units generated from inline `@script` blocks.
+    pub script_sources: Vec<(String, String)>,
     /// The backend target identifier (`"c"`).
     pub target: String,
 }
@@ -105,4 +110,31 @@ pub struct GeneratedC {
 /// generation instead of producing incorrect C.
 pub fn generate(module: &CModule) -> Result<GeneratedC, BackendError> {
     emit::emit(module)
+}
+
+/// One entry in a project compile graph.
+///
+/// `dep_keys` lists the canonical module keys (as they appear in `import`
+/// statements) that this module directly imports. The caller is responsible for
+/// ordering `ProjectEntry` slices so each dependency appears before any module
+/// that imports it.
+#[derive(Debug, Clone)]
+pub struct ProjectEntry {
+    /// Compiled module payload (AST + HIR + annotations).
+    pub module: CModule,
+    /// Canonical key by which other modules import this module.
+    pub key: String,
+    /// Keys of modules that this module directly imports.
+    pub dep_keys: Vec<String>,
+}
+
+/// Emits C17 source for a multi-module project.
+///
+/// Returns one [`GeneratedC`] per entry (with a `header` containing extern
+/// prototypes for the module's exported functions) plus a shared host shim.
+/// Each `GeneratedC::source` uses `#include "<dep>.h"` instead of inlining
+/// the dependency, so the returned translation units must be compiled and
+/// linked together.
+pub fn generate_project(entries: &[ProjectEntry]) -> Result<Vec<GeneratedC>, BackendError> {
+    emit::emit_project(entries)
 }

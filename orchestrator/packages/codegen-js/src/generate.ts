@@ -6,11 +6,13 @@
 
 import {
   type AstModule,
+  type AstType,
   type Block,
   type EnumDecl,
   type Expr,
   type HirItem,
   type HirModule,
+  type ImportBinding,
   type Literal,
   type MatchArm,
   type ModuleIr,
@@ -38,6 +40,9 @@ export interface CodegenDiagnostic {
 export interface CodegenRequest {
   readonly moduleName: string;
   readonly ir: unknown;
+  readonly sourceText?: string;
+  /** Canonical module key -> ESM specifier from this module. */
+  readonly moduleSpecifiers?: Readonly<Record<string, string>>;
 }
 
 /** Output produced by `generateJavaScript`. */
@@ -112,6 +117,12 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const HELPER_ORDER = [
   "panic",
   "abort",
+  "failure",
+  "fail",
+  "taskScope",
+  "spawn",
+  "taskJoin",
+  "taskCancel",
   "renderFloat",
   "render",
   "renderDebug",
@@ -161,11 +172,15 @@ const HELPER_ORDER = [
   "checked_u32",
   "checked_i64",
   "checked_u64",
+  "checkedInteger",
 ] as const;
 
 type HelperName = (typeof HELPER_ORDER)[number];
 
 const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = {
+  fail: ["failure"],
+  spawn: ["taskScope"],
+  taskJoin: ["failure"],
   render: ["renderFloat"],
   print: ["write", "render"],
   println: ["write", "render"],
@@ -191,6 +206,7 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   checked_u32: ["panic"],
   checked_i64: ["panic"],
   checked_u64: ["panic"],
+  checkedInteger: ["ok", "err", "panic"],
   unwrapResult: ["panic"],
   resultError: ["panic"],
   unwrapOption: ["panic"],
@@ -205,6 +221,60 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   abort: [
     "function $abort(message) {",
     '  throw new Error("abort: " + message);',
+    "}",
+  ],
+  failure: [
+    "function $failure(error) {",
+    "  return { $failure: true, error };",
+    "}",
+  ],
+  fail: [
+    "function $fail(error) {",
+    "  throw $failure(error);",
+    "}",
+  ],
+  taskScope: [
+    "const $taskScopes = [];",
+    "function $enterTaskScope() {",
+    "  const scope = { tasks: [] };",
+    "  $taskScopes.push(scope);",
+    "  return scope;",
+    "}",
+    "function $exitTaskScope(scope) {",
+    "  $taskScopes.pop();",
+    "  for (const task of scope.tasks) {",
+    "    if (!task.joined && task.outcome && task.outcome.panic !== undefined) throw task.outcome.panic;",
+    "  }",
+    "}",
+  ],
+  spawn: [
+    "function $spawn(body) {",
+    "  const task = { $task: true, cancelled: false, joined: false, outcome: undefined };",
+    "  try {",
+    "    task.outcome = { ok: true, value: body() };",
+    "  } catch (error) {",
+    "    if (error && error.$failure) task.outcome = { ok: false, error: error.error };",
+    "    else task.outcome = { panic: error };",
+    "  }",
+    "  if ($taskScopes.length > 0) $taskScopes[$taskScopes.length - 1].tasks.push(task);",
+    "  return task;",
+    "}",
+  ],
+  taskJoin: [
+    "function $taskJoin(task) {",
+    "  task.joined = true;",
+    "  if (task.cancelled) {",
+    '    return $failure({ $type: "TaskError", 0: "task was cancelled" });',
+    "  }",
+    "  if (task.outcome.panic !== undefined) throw task.outcome.panic;",
+    "  if (!task.outcome.ok) return $failure(task.outcome.error);",
+    "  return task.outcome.value;",
+    "}",
+  ],
+  taskCancel: [
+    "function $taskCancel(task) {",
+    "  task.cancelled = true;",
+    "  return undefined;",
     "}",
   ],
   renderFloat: [
@@ -571,6 +641,38 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  return value;",
     "}",
   ],
+  checkedInteger: [
+    "function $checkedInteger(tag, operation, left, right) {",
+    "  const bounds = {",
+    "    i8: [-128, 127],",
+    "    i16: [-32768, 32767],",
+    "    i32: [-2147483648, 2147483647],",
+    "    i64: [-9223372036854775808n, 9223372036854775807n],",
+    "    u8: [0, 255],",
+    "    u16: [0, 65535],",
+    "    u32: [0, 4294967295],",
+    "    u64: [0n, 18446744073709551615n],",
+    "  };",
+    "  const [min, max] = bounds[tag];",
+    "  let value;",
+    "  if (operation === \"div\") {",
+    "    if (right === 0 || right === 0n) $panic(\"division by zero\");",
+    '    value = typeof left === "bigint" ? left / right : Math.trunc(left / right);',
+    '  } else if (operation === "add") {',
+    "    value = left + right;",
+    '  } else if (operation === "sub") {',
+    "    value = left - right;",
+    '  } else if (operation === "mul") {',
+    "    value = left * right;",
+    "  } else {",
+    '    $panic("unsupported checked integer operation");',
+    "  }",
+    "  if (value < min || value > max) {",
+    '    return $err({ $type: "OverflowError", 0: "integer overflow in \'checked_" + operation + "\'" });',
+    "  }",
+    "  return $ok(value);",
+    "}",
+  ],
 };
 
 const INTEGER_TAGS = new Set(["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"]);
@@ -580,15 +682,24 @@ class JavaScriptGenerator {
   private readonly ir: ModuleIr;
   private readonly ast: AstModule;
   private readonly hir: HirModule;
+  private readonly sourceText: string | undefined;
+  private readonly moduleSpecifiers: Readonly<Record<string, string>> | undefined;
   private readonly annotations = new Map<string, SemanticType>();
   private readonly helpers = new Set<HelperName>();
   private readonly diagnostics: CodegenDiagnostic[] = [];
   private readonly reported = new Set<string>();
   private tempIndex = 0;
   private defaultExpression: Expr | undefined;
+  private currentSuccessWrap = false;
 
-  constructor(ir: ModuleIr) {
+  constructor(
+    ir: ModuleIr,
+    sourceText?: string,
+    moduleSpecifiers?: Readonly<Record<string, string>>,
+  ) {
     this.ir = ir;
+    this.sourceText = sourceText;
+    this.moduleSpecifiers = moduleSpecifiers;
     if (!isRecord(ir.ast) || !isRecord(ir.hir)) {
       throw new CodegenRequestError("Typed module AST and HIR must be objects.");
     }
@@ -615,12 +726,6 @@ class JavaScriptGenerator {
   }
 
   generate(): CodegenResult {
-    if (this.hir.imports.length > 0) {
-      this.unsupported(
-        this.hir.imports[0]?.span,
-        "Module imports are not implemented by the JavaScript backend yet.",
-      );
-    }
     for (const scope of this.ir.manualMemoryScopes) {
       this.diagnostic(
         "NS8003",
@@ -629,24 +734,29 @@ class JavaScriptGenerator {
       );
     }
 
-    const body: string[] = [];
+    const bodyParts: { readonly text: string; readonly span: Span }[] = [];
     for (const item of this.hir.items) {
       const generated = this.emitItem(item);
       if (generated.length > 0) {
-        body.push(generated);
+        bodyParts.push({ text: generated, span: item.span });
       }
     }
 
     const exports = this.emitExports();
     if (exports.length > 0) {
-      body.push(exports);
+      bodyParts.push({ text: exports, span: this.hir.items[0]?.span ?? { start: 0, end: 0 } });
     }
+    const body = bodyParts.map((part) => part.text);
 
+    const imports = this.emitImports();
     const helperText = this.emitHelpers();
     const sections: string[] = [
       `// Generated by Neo Astra from ${this.ir.path}.`,
       "// Target: JavaScript ESM.",
     ];
+    if (imports.length > 0) {
+      sections.push("", imports);
+    }
     if (helperText.length > 0) {
       sections.push("", helperText);
     }
@@ -654,10 +764,16 @@ class JavaScriptGenerator {
       sections.push("", body.join("\n\n"));
     }
     sections.push("");
+    const code = sections.join("\n");
+    const sourceMap =
+      this.sourceText === undefined
+        ? undefined
+        : createSourceMap(code, this.ir.path, this.sourceText, bodyParts);
 
     return {
-      code: sections.join("\n"),
+      code,
       diagnostics: this.diagnostics,
+      ...(sourceMap === undefined ? {} : { sourceMap }),
     };
   }
 
@@ -690,11 +806,48 @@ class JavaScriptGenerator {
     readonly name: string;
     readonly parameters: readonly { readonly name: string }[];
     readonly body: Block;
+    readonly return_type?: AstType | null;
+    readonly error_set?: readonly TypePath[];
   }): string {
     const name = jsName(declaration.name);
     const parameters = declaration.parameters.map((parameter) => jsName(parameter.name));
-    const body = this.emitBlock(declaration.body, "statement");
-    return `function ${name}(${parameters.join(", ")}) ${body}`;
+    const fallible = (declaration.error_set?.length ?? 0) > 0;
+    const wrapsSuccess = fallible && !isResultReturnType(declaration.return_type);
+    const previousWrap = this.currentSuccessWrap;
+    this.currentSuccessWrap = wrapsSuccess;
+    let body = this.emitBlock(declaration.body, "statement");
+    if (containsVariant(declaration.body, "Spawn")) {
+      this.useHelper("taskScope");
+      const scope = this.temporary("taskScope");
+      body = [
+        "{",
+        `  const ${scope} = $enterTaskScope();`,
+        `  try ${body}`,
+        "  finally {",
+        `    $exitTaskScope(${scope});`,
+        "  }",
+        "}",
+      ].join("\n");
+    }
+    this.currentSuccessWrap = previousWrap;
+    const signature = `function ${name}(${parameters.join(", ")})`;
+    if (!fallible) {
+      return `${signature} ${body}`;
+    }
+
+    // A recoverable failure unwinds the current function like `?` does in the
+    // language. Convert it to a value at the function boundary so callers can
+    // match the error or propagate it again.
+    const caught = this.temporary("caught");
+    return [
+      `${signature} {`,
+      `  try ${body}`,
+      `  catch (${caught}) {`,
+      `    if (${caught} && ${caught}.$failure) return ${caught};`,
+      `    throw ${caught};`,
+      "  }",
+      "}",
+    ].join("\n");
   }
 
   private emitStruct(declaration: StructDecl): string {
@@ -767,6 +920,71 @@ class JavaScriptGenerator {
     return `const ${jsName(declaration.name)} = ${this.emitExpr(declaration.value)};`;
   }
 
+  private emitImports(): string {
+    const lines: string[] = [];
+    for (const imported of this.hir.imports) {
+      const specifier = this.moduleSpecifier(imported.module, imported.span);
+      if (specifier === undefined) {
+        continue;
+      }
+      const kind = imported.kind;
+      switch (variantOf(kind)) {
+        case "SideEffect":
+          lines.push(`import ${JSON.stringify(specifier)};`);
+          break;
+        case "Namespace": {
+          const data = structPayload<{ alias: string }>(kind, "Namespace");
+          lines.push(
+            `import * as ${jsName(data.alias)} from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "Named": {
+          const data = structPayload<{ bindings: readonly ImportBinding[] }>(
+            kind,
+            "Named",
+          );
+          lines.push(
+            `import { ${formatImportBindings(data.bindings)} } from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "Default": {
+          const data = structPayload<{ local: string }>(kind, "Default");
+          lines.push(`import ${jsName(data.local)} from ${JSON.stringify(specifier)};`);
+          break;
+        }
+        case "DefaultNamed": {
+          const data = structPayload<{
+            default: string;
+            bindings: readonly ImportBinding[];
+          }>(kind, "DefaultNamed");
+          lines.push(
+            `import ${jsName(data.default)}, { ${formatImportBindings(data.bindings)} } from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        default:
+          this.unsupported(imported.span, "Unknown import form.");
+          break;
+      }
+    }
+    return lines.join("\n");
+  }
+
+  private moduleSpecifier(module: string, span: Span): string | undefined {
+    const specifier =
+      this.moduleSpecifiers?.[module] ??
+      (this.moduleSpecifiers === undefined ? module : undefined);
+    if (specifier === undefined) {
+      this.unsupported(
+        span,
+        `No output module specifier was provided for '${module}'.`,
+      );
+    }
+    return specifier;
+  }
+
   private emitExports(): string {
     const lines: string[] = [];
     const surface = this.hir.exports;
@@ -776,24 +994,53 @@ class JavaScriptGenerator {
         continue;
       }
       const target = entry.target;
-      if (variantOf(target) !== "Local") {
-        this.unsupported(
-          entry.span,
-          `Re-export '${exported}' requires project linking, which the JavaScript backend does not implement yet.`,
+      const targetKind = variantOf(target);
+      if (targetKind === "Local") {
+        const local = payloadOf(target);
+        if (typeof local !== "string") {
+          this.unsupported(entry.span, `Invalid local export target for '${exported}'.`);
+          continue;
+        }
+        const localJs = jsName(local);
+        const exportedJs = exportName(exported);
+        lines.push(
+          localJs === exported
+            ? `export { ${localJs} };`
+            : `export { ${localJs} as ${exportedJs} };`,
         );
         continue;
       }
-      const local = payloadOf(target);
-      if (typeof local !== "string") {
-        this.unsupported(entry.span, `Invalid local export target for '${exported}'.`);
+      if (targetKind === "Reexport") {
+        const data = structPayload<{ module: string; name: string }>(
+          target,
+          "Reexport",
+        );
+        const specifier = this.moduleSpecifier(data.module, entry.span);
+        if (specifier === undefined) {
+          continue;
+        }
+        const imported = exportName(data.name);
+        const exportedJs = exportName(exported);
+        lines.push(
+          imported === exportedJs
+            ? `export { ${imported} } from ${JSON.stringify(specifier)};`
+            : `export { ${imported} as ${exportedJs} } from ${JSON.stringify(specifier)};`,
+        );
         continue;
       }
-      const localJs = jsName(local);
-      const exportedJs = exportName(exported);
-      lines.push(
-        localJs === exported
-          ? `export { ${localJs} };`
-          : `export { ${localJs} as ${exportedJs} };`,
+      if (targetKind === "Namespace") {
+        const data = structPayload<{ module: string }>(target, "Namespace");
+        const specifier = this.moduleSpecifier(data.module, entry.span);
+        if (specifier !== undefined) {
+          lines.push(
+            `export * as ${exportName(exported)} from ${JSON.stringify(specifier)};`,
+          );
+        }
+        continue;
+      }
+      this.unsupported(
+        entry.span,
+        `Unsupported export target for '${exported}'.`,
       );
     }
 
@@ -816,6 +1063,19 @@ class JavaScriptGenerator {
         } else {
           lines.push(`export default ${this.emitExpr(this.defaultExpression)};`);
         }
+      } else if (variantOf(target) === "Reexport") {
+        const data = structPayload<{ module: string; name: string }>(
+          target,
+          "Reexport",
+        );
+        const specifier = this.moduleSpecifier(data.module, defaultExport.span);
+        if (specifier !== undefined) {
+          lines.push(
+            data.name === "default"
+              ? `export { default } from ${JSON.stringify(specifier)};`
+              : `export { ${exportName(data.name)} as default } from ${JSON.stringify(specifier)};`,
+          );
+        }
       } else {
         this.unsupported(
           defaultExport.span,
@@ -825,10 +1085,10 @@ class JavaScriptGenerator {
     }
 
     for (const star of surface.stars) {
-      this.unsupported(
-        star.span,
-        "Star re-exports require project linking, which the JavaScript backend does not implement yet.",
-      );
+      const specifier = this.moduleSpecifier(star.module, star.span);
+      if (specifier !== undefined) {
+        lines.push(`export * from ${JSON.stringify(specifier)};`);
+      }
     }
 
     return lines.join("\n");
@@ -919,7 +1179,13 @@ class JavaScriptGenerator {
       }
       case "Return": {
         const data = structPayload<{ value: Expr | null }>(kind, "Return");
-        return data.value === null ? "return;" : `return ${this.emitExpr(data.value)};`;
+        const value =
+          data.value === null ? "undefined" : this.emitExpr(data.value);
+        if (this.currentSuccessWrap) {
+          this.useHelper("ok");
+          return `return $ok(${value});`;
+        }
+        return data.value === null ? "return;" : `return ${value};`;
       }
       case "Break":
         return "break;";
@@ -1031,12 +1297,20 @@ class JavaScriptGenerator {
         return this.emitExpr(
           structPayload<{ target: Expr }>(kind, "TypeArguments").target,
         );
-      case "Propagate":
-        this.unsupported(
-          expression.span,
-          "Error propagation ('?') is not implemented by the JavaScript backend yet.",
-        );
-        return "undefined";
+      case "Propagate": {
+        const inner = payloadOf(kind) as Expr;
+        const value = this.emitExpr(inner);
+        const temporary = this.temporary("propagate");
+        this.useHelper("failure");
+        return [
+          "(() => {",
+          `  const ${temporary} = ${value};`,
+          `  if (${temporary} && ${temporary}.$failure) throw ${temporary};`,
+          `  if (${temporary} && ${temporary}.$result === true && !${temporary}.ok) throw $failure(${temporary}.error);`,
+          `  return ${temporary} && ${temporary}.$result === true ? ${temporary}.value : ${temporary};`,
+          "})()",
+        ].join("\n");
+      }
       case "Array": {
         const values = payloadOf(kind) as readonly Expr[];
         return `[${values.map((value) => this.emitExpr(value)).join(", ")}]`;
@@ -1087,18 +1361,27 @@ class JavaScriptGenerator {
         }>(kind, "Match");
         return this.emitMatchExpression(data.value, data.arms);
       }
-      case "Spawn":
-        this.unsupported(
-          expression.span,
-          "Tasks and spawn blocks are not implemented by the JavaScript backend yet.",
+      case "Spawn": {
+        const block = structPayload<{ body: Block }>(kind, "Spawn").body;
+        const previousWrap = this.currentSuccessWrap;
+        this.currentSuccessWrap = false;
+        const body = this.emitBlock(block, "value");
+        this.currentSuccessWrap = previousWrap;
+        this.useHelper("spawn");
+        return `$spawn(() => ${body})`;
+      }
+      case "Fail": {
+        const data = structPayload<{ error: TypePath; arguments: unknown }>(
+          kind,
+          "Fail",
         );
-        return "undefined";
-      case "Fail":
-        this.unsupported(
+        this.useHelper("fail");
+        return `$fail(${this.emitFailureValue(
+          data.error,
+          data.arguments,
           expression.span,
-          "Fallible error construction is not implemented by the JavaScript backend yet.",
-        );
-        return "undefined";
+        )})`;
+      }
       case "Panic": {
         const message = structPayload<{ message: Expr }>(kind, "Panic").message;
         this.useHelper("panic");
@@ -1152,6 +1435,53 @@ class JavaScriptGenerator {
         this.unsupported(span, "Unknown literal kind.");
         return "undefined";
     }
+  }
+
+  private emitFailureValue(path: TypePath, argumentsValue: unknown, span: Span): string {
+    const name = path.segments[path.segments.length - 1] ?? "";
+    const values =
+      variantOf(argumentsValue) === "Tuple"
+        ? ((payloadOf(argumentsValue) as readonly Expr[]).map((value) =>
+            this.emitExpr(value),
+          ))
+        : ((payloadOf(argumentsValue) as readonly {
+            readonly name: string;
+            readonly value: Expr;
+          }[]).map((field) => this.emitExpr(field.value)));
+
+    const item = this.hir.items.find((candidate) => candidate.name === name);
+    if (item === undefined) {
+      // Built-in nominal errors such as ParseIntError and TaskError use the
+      // same tagged shape that the collection/string helpers produce.
+      const fields = values.map((value, index) => `${index}: ${value}`);
+      return `{ $type: ${JSON.stringify(name)}${fields.length > 0 ? `, ${fields.join(", ")}` : ""} }`;
+    }
+
+    if (item.kind === "Enum") {
+      const declaration = structPayload<EnumDecl>(item.declaration, "Enum");
+      const variant = declaration.variants[0]?.name;
+      if (variant === undefined) {
+        this.unsupported(span, `Failure enum '${name}' has no constructible variant.`);
+        return "undefined";
+      }
+      const constructed = `${jsName(name)}.${objectKey(variant)}`;
+      return values.length === 0 ? constructed : `${constructed}(${values.join(", ")})`;
+    }
+
+    if (variantOf(argumentsValue) === "Struct") {
+      const fields = payloadOf(argumentsValue) as readonly {
+        readonly name: string;
+        readonly value: Expr;
+      }[];
+      const initializers = fields
+        .map(
+          (field) => `    ${objectKey(field.name)}: ${this.emitExpr(field.value)},`,
+        )
+        .join("\n");
+      return `${jsName(name)}({\n${initializers}\n})`;
+    }
+
+    return `${jsName(name)}(${values.join(", ")})`;
   }
 
   private emitIdentifier(name: string, _span: Span): string {
@@ -1469,6 +1799,21 @@ class JavaScriptGenerator {
       this.useHelper("parseInt");
       return `$parseInt(${target})`;
     }
+    if (tag === "Named") {
+      const named = payloadOf(receiverType) as readonly [string, ...unknown[]];
+      if (named[0] === "Task") {
+        switch (method) {
+          case "join":
+            this.useHelper("taskJoin");
+            return `$taskJoin(${target})`;
+          case "cancel":
+            this.useHelper("taskCancel");
+            return `$taskCancel(${target})`;
+          default:
+            break;
+        }
+      }
+    }
     if (tag === "Option") {
       switch (method) {
         case "is_some":
@@ -1530,11 +1875,8 @@ class JavaScriptGenerator {
       return "undefined";
     }
     if (kind === "checked") {
-      this.unsupported(
-        span,
-        "Checked integer methods are not implemented by the JavaScript backend yet.",
-      );
-      return "undefined";
+      this.useHelper("checkedInteger");
+      return `$checkedInteger(${JSON.stringify(tag.toLowerCase())}, ${JSON.stringify(operation)}, ${receiver}, ${argument})`;
     }
     const operator =
       operation === "add" ? "Add" : operation === "sub" ? "Subtract" : operation === "mul" ? "Multiply" : "Divide";
@@ -1660,7 +2002,11 @@ class JavaScriptGenerator {
     }
 
     const temporary = this.temporary("match");
-    const lines = [`const ${temporary} = ${this.emitExpr(value)};`];
+    this.useHelper("err");
+    const lines = [
+      `let ${temporary} = ${this.emitExpr(value)};`,
+      `if (${temporary} && ${temporary}.$failure) ${temporary} = $err(${temporary}.error);`,
+    ];
     let hasCatchAll = false;
 
     for (const arm of arms) {
@@ -2007,7 +2353,11 @@ class JavaScriptGenerator {
 /** Generates readable JavaScript ESM for one typed module. */
 export function generateJavaScript(request: CodegenRequest): CodegenResult {
   const ir = parseModuleIr(request.ir);
-  return new JavaScriptGenerator(ir).generate();
+  return new JavaScriptGenerator(
+    ir,
+    request.sourceText,
+    request.moduleSpecifiers,
+  ).generate();
 }
 
 function parseModuleIr(value: unknown): ModuleIr {
@@ -2039,6 +2389,106 @@ function isSequence(tag: string): boolean {
   return tag === "Array" || tag === "FixedArray" || tag === "Slice" || tag === "Bytes";
 }
 
+function createSourceMap(
+  code: string,
+  sourcePath: string,
+  sourceText: string,
+  anchors: readonly { readonly text: string; readonly span: Span }[],
+): string {
+  const mappedLines = new Map<number, number>();
+  let searchFrom = 0;
+  for (const anchor of anchors) {
+    const index = code.indexOf(anchor.text, searchFrom);
+    if (index < 0) {
+      continue;
+    }
+    searchFrom = index + anchor.text.length;
+    const generatedLine = lineAt(code, index);
+    if (!mappedLines.has(generatedLine)) {
+      mappedLines.set(generatedLine, lineAt(sourceText, anchor.span.start));
+    }
+  }
+
+  const lines = code.split("\n");
+  let previousSource = 0;
+  let previousSourceLine = 0;
+  let previousSourceColumn = 0;
+  const mappings = lines.map((_, generatedLine) => {
+    const sourceLine = mappedLines.get(generatedLine);
+    if (sourceLine === undefined) {
+      return "";
+    }
+    const segment =
+      encodeVlq(0) +
+      encodeVlq(0 - previousSource) +
+      encodeVlq(sourceLine - previousSourceLine) +
+      encodeVlq(0 - previousSourceColumn);
+    previousSource = 0;
+    previousSourceLine = sourceLine;
+    previousSourceColumn = 0;
+    return segment;
+  });
+
+  return JSON.stringify({
+    version: 3,
+    sources: [sourcePath],
+    sourcesContent: [sourceText],
+    names: [],
+    mappings: mappings.join(";"),
+  });
+}
+
+function lineAt(text: string, offset: number): number {
+  let line = 0;
+  for (let index = 0; index < offset && index < text.length; index += 1) {
+    if (text[index] === "\n") {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+const BASE64_VLQ =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function encodeVlq(value: number): string {
+  let remaining = value < 0 ? ((-value) << 1) | 1 : value << 1;
+  let output = "";
+  do {
+    let digit = remaining & 31;
+    remaining >>>= 5;
+    if (remaining > 0) {
+      digit |= 32;
+    }
+    output += BASE64_VLQ[digit] ?? "";
+  } while (remaining > 0);
+  return output;
+}
+
+function containsVariant(value: unknown, variant: string): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsVariant(entry, variant));
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, variant)) {
+    return true;
+  }
+  return Object.values(value).some((entry) => containsVariant(entry, variant));
+}
+
+function isResultReturnType(type: AstType | null | undefined): boolean {
+  if (type === null || type === undefined) {
+    return false;
+  }
+  if (variantOf(type.kind) !== "Path") {
+    return false;
+  }
+  const path = payloadOf(type.kind) as TypePath;
+  return path.segments[path.segments.length - 1] === "Result";
+}
+
 function stripUnderscores(value: string): string {
   return value.replaceAll("_", "");
 }
@@ -2057,6 +2507,16 @@ function jsName(name: string): string {
 
 function exportName(name: string): string {
   return IDENTIFIER.test(name) ? name : JSON.stringify(name);
+}
+
+function formatImportBindings(bindings: readonly ImportBinding[]): string {
+  return bindings
+    .map((binding) =>
+      binding.imported === binding.local
+        ? jsName(binding.local)
+        : `${exportName(binding.imported)} as ${jsName(binding.local)}`,
+    )
+    .join(", ");
 }
 
 function objectKey(name: string): string {

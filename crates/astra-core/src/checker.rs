@@ -1024,7 +1024,9 @@ impl<'a> Checker<'a> {
                     if let Some(target) = self.options.target.as_deref() {
                         let supported = match target {
                             "js" | "ts" => matches!(script.language.as_str(), "js" | "ts"),
-                            "native" | "c" | "llvm" => matches!(script.language.as_str(), "c" | "cpp"),
+                            "native" | "c" | "llvm" => {
+                                matches!(script.language.as_str(), "c" | "cpp")
+                            }
                             _ => false,
                         };
                         if !supported {
@@ -1035,7 +1037,7 @@ impl<'a> Checker<'a> {
                                     script.language
                                 ),
                                 script.span,
-                                &format!("Target '{target}' does not support '{}' script blocks.", script.language),
+                                format!("Target '{target}' does not support '{}' script blocks.", script.language),
                             );
                         }
                     }
@@ -1233,7 +1235,11 @@ impl<'a> Checker<'a> {
                 }
             }
             Type::Result(ok, err) => self.is_boundary_safe(ok) && self.is_boundary_safe(err),
-            Type::Generic(_) | Type::Function(_) | Type::Tuple(_) | Type::Map(_, _) | Type::Never => false,
+            Type::Generic(_)
+            | Type::Function(_)
+            | Type::Tuple(_)
+            | Type::Map(_, _)
+            | Type::Never => false,
             Type::Error | Type::Unknown => true,
         }
     }
@@ -1731,13 +1737,14 @@ impl<'a> Checker<'a> {
             }
             Type::Map(key, _) => (**key).clone(),
             Type::Str => Type::Str,
+            Type::Bytes => Type::U8,
             Type::Unknown | Type::Error => Type::Unknown,
             _ => {
                 self.error(
                     INVALID_OPERANDS,
                     format!("Type '{ty}' is not iterable."),
                     span,
-                    "Iterate over an array, slice, map, or str.",
+                    "Iterate over an array, slice, map, str, or bytes.",
                 );
                 Type::Error
             }
@@ -2069,7 +2076,14 @@ impl<'a> Checker<'a> {
             }
             ast::ExprKind::Index { target, index } => {
                 let base = self.check_lvalue(target);
-                let index_info = self.check_expr(index, None);
+                let expected_index = match &base.ty {
+                    Type::Array(_) | Type::Slice(_) | Type::FixedArray(_, _) | Type::Bytes => {
+                        Some(Type::Usize)
+                    }
+                    Type::Map(key, _) => Some((**key).clone()),
+                    _ => None,
+                };
+                let index_info = self.check_expr(index, expected_index.as_ref());
                 let tuple_index = integer_literal_value(index);
                 let ty = self.index_type(&base.ty, &index_info.ty, tuple_index, expression.span);
                 LValueInfo {
@@ -2259,7 +2273,9 @@ impl<'a> Checker<'a> {
     fn check_index(&mut self, target: &ast::Expr, index: &ast::Expr, span: Span) -> ExprInfo {
         let target_info = self.check_expr(target, None);
         let expected_index = match &target_info.ty {
-            Type::Array(_) | Type::Slice(_) | Type::FixedArray(_, _) => Some(Type::Usize),
+            Type::Array(_) | Type::Slice(_) | Type::FixedArray(_, _) | Type::Bytes => {
+                Some(Type::Usize)
+            }
             Type::Map(key, _) => Some((**key).clone()),
             _ => None,
         };
@@ -2285,6 +2301,12 @@ impl<'a> Checker<'a> {
                     self.type_mismatch(&Type::Usize, index, span);
                 }
                 (**element).clone()
+            }
+            Type::Bytes => {
+                if !index.accepts(&Type::Usize) && !index.is_opaque() {
+                    self.type_mismatch(&Type::Usize, index, span);
+                }
+                Type::U8
             }
             Type::Map(key, value) => {
                 if !key.accepts(index) && !key.is_opaque() {
@@ -2333,22 +2355,22 @@ impl<'a> Checker<'a> {
                 return self.enum_member(name, &enum_def, member, span, expected);
             }
             if let Some(namespace) = self.namespaces.get(name).cloned() {
-                if let Some(&script_mode) = self.script_modes.get(name) {
-                    if !self.mode.allows(script_mode) {
-                        self.error(
-                            MODE_REQUIREMENT,
-                            format!(
-                                "Script block '{name}' requires '{}' mode, but the active mode is '{}'.",
-                                script_mode.as_str(),
-                                self.mode.as_str()
-                            ),
-                            span,
-                            &format!(
-                                "Move the call into a {}-mode function or raise the mode.",
-                                script_mode.as_str()
-                            ),
-                        );
-                    }
+                if let Some(&script_mode) = self.script_modes.get(name)
+                    && !self.mode.allows(script_mode)
+                {
+                    self.error(
+                        MODE_REQUIREMENT,
+                        format!(
+                            "Script block '{name}' requires '{}' mode, but the active mode is '{}'.",
+                            script_mode.as_str(),
+                            self.mode.as_str()
+                        ),
+                        span,
+                        format!(
+                            "Move the call into a {}-mode function or raise the mode.",
+                            script_mode.as_str()
+                        ),
+                    );
                 }
                 if let Some(value) = namespace.members.get(member) {
                     return ExprInfo::value(value.ty.clone());
@@ -3860,11 +3882,38 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                 return_type: Box::new(Type::Usize),
                 errors: Vec::new(),
             },
+            "slice" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: vec![Type::Usize, Type::Usize],
+                return_type: Box::new(Type::Str),
+                errors: Vec::new(),
+            },
             "to_int" => FunctionType {
                 type_parameters: Vec::new(),
                 parameters: Vec::new(),
                 return_type: Box::new(Type::I32),
                 errors: vec![Type::Named("ParseIntError".to_owned(), Vec::new())],
+            },
+            _ => return None,
+        },
+        Type::Bytes => match member {
+            "is_empty" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Bool),
+                errors: Vec::new(),
+            },
+            "len" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Usize),
+                errors: Vec::new(),
+            },
+            "slice" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: vec![Type::Usize, Type::Usize],
+                return_type: Box::new(Type::Bytes),
+                errors: Vec::new(),
             },
             _ => return None,
         },
@@ -3902,6 +3951,12 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                 type_parameters: Vec::new(),
                 parameters: vec![(**key).clone()],
                 return_type: Box::new(Type::Option(value.clone())),
+                errors: Vec::new(),
+            },
+            "contains" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: vec![(**key).clone()],
+                return_type: Box::new(Type::Bool),
                 errors: Vec::new(),
             },
             "insert" => FunctionType {

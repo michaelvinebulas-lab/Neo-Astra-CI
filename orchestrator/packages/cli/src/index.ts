@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { TextDecoder } from "node:util";
@@ -957,8 +958,8 @@ function runBuild(args: readonly string[], cwd: string): number {
       );
     }
 
-    const targetConfig = targets[targetName];
-    if (!isRecord(targetConfig)) {
+    const targetConfig = isRecord(targets[targetName]) ? targets[targetName] : {};
+    if (!isRecord(targets[targetName]) && targetName !== "c" && targetName !== "native") {
       throw new CliError(
         "NS8001",
         `Target '${targetName}' is not declared in the manifest.`,
@@ -966,22 +967,26 @@ function runBuild(args: readonly string[], cwd: string): number {
       );
     }
 
-    const backend = targetConfig["backend"];
-    if (backend !== "js") {
+    const backend =
+      targetConfig["backend"] ??
+      (targetName === "c" || targetName === "native" ? targetName : "js");
+    if (backend !== "js" && backend !== "c" && backend !== "native") {
       throw new CliError(
         "NS8001",
-        `Target '${targetName}' uses backend '${String(backend)}'; astra build currently supports only the 'js' backend.`,
+        `Target '${targetName}' uses backend '${String(backend)}'; astra build currently supports 'js', 'c', and 'native' backends.`,
         displayPath(manifest.file.path, cwd),
       );
     }
 
-    const moduleFormat = targetConfig["module"] ?? "esm";
-    if (moduleFormat !== "esm") {
-      throw new CliError(
-        "NS8001",
-        `Target '${targetName}' requests module format '${String(moduleFormat)}'; only 'esm' is supported.`,
-        displayPath(manifest.file.path, cwd),
-      );
+    if (backend === "js") {
+      const moduleFormat = targetConfig["module"] ?? "esm";
+      if (moduleFormat !== "esm") {
+        throw new CliError(
+          "NS8001",
+          `Target '${targetName}' requests module format '${String(moduleFormat)}'; only 'esm' is supported.`,
+          displayPath(manifest.file.path, cwd),
+        );
+      }
     }
 
     const nova = isRecord(manifest.data["nova"]) ? manifest.data["nova"] : {};
@@ -1049,9 +1054,10 @@ function runBuild(args: readonly string[], cwd: string): number {
         ? {}
         : { binaryPath: options.compilerPath }),
     });
+    const compilerTarget = backend === "c" || backend === "native" ? "c" : "js";
     const result = client.compile({
       source: { path: entryKey, text: source },
-      target: "js",
+      target: compilerTarget,
       ...(modeValue === undefined ? {} : { mode: modeValue }),
       ...(policyValue === undefined ? {} : { integerPolicy: policyValue }),
     });
@@ -1061,7 +1067,7 @@ function runBuild(args: readonly string[], cwd: string): number {
     );
     const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
     if (errors.length > 0) {
-      report = { ...report, target: targetName, entry: entryKey, diagnostics };
+      report = { ...report, target: targetName, backend: String(backend), entry: entryKey, diagnostics };
       if (options.json) {
         printBuildReport(report);
       } else {
@@ -1072,65 +1078,186 @@ function runBuild(args: readonly string[], cwd: string): number {
       return 1;
     }
 
-    if (result.ir === undefined) {
-      throw new CliError(
-        "NS8001",
-        "The compiler returned no typed module for JavaScript generation.",
-        displayPath(entryPath, cwd),
-      );
-    }
+    let outputPath: string;
+    let allDiagnostics = diagnostics;
 
-    const generated = generateJavaScript({
-      moduleName: entryKey,
-      ir: result.ir,
-    });
-    const generatedDiagnostics = generated.diagnostics.map((diagnostic) =>
-      codegenDiagnostic(sourceFile, source, diagnostic),
-    );
-    const allDiagnostics = [...diagnostics, ...generatedDiagnostics];
-    if (generatedDiagnostics.length > 0) {
-      report = {
-        ...report,
-        target: targetName,
-        entry: entryKey,
-        diagnostics: allDiagnostics,
-      };
-      if (options.json) {
-        printBuildReport(report);
-      } else {
-        for (const diagnostic of allDiagnostics) {
-          printDiagnostic(diagnostic);
+    if (backend === "js") {
+      if (result.ir === undefined) {
+        throw new CliError(
+          "NS8001",
+          "The compiler returned no typed module for JavaScript generation.",
+          displayPath(entryPath, cwd),
+        );
+      }
+
+      const generated = generateJavaScript({
+        moduleName: entryKey,
+        ir: result.ir,
+      });
+      const generatedDiagnostics = generated.diagnostics.map((diagnostic) =>
+        codegenDiagnostic(sourceFile, source, diagnostic),
+      );
+      allDiagnostics = [...diagnostics, ...generatedDiagnostics];
+      if (generatedDiagnostics.length > 0) {
+        report = {
+          ...report,
+          target: targetName,
+          backend: "js",
+          entry: entryKey,
+          diagnostics: allDiagnostics,
+        };
+        if (options.json) {
+          printBuildReport(report);
+        } else {
+          for (const diagnostic of allDiagnostics) {
+            printDiagnostic(diagnostic);
+          }
         }
+        return 1;
       }
-      return 1;
-    }
 
-    const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
-    const outDir =
-      typeof configuredOutDir === "string"
-        ? resolve(root, configuredOutDir)
-        : resolve(root, "dist", targetName);
-    const outputRelative = entryKey.replace(/\.ns$/i, ".js");
-    const outputPath = resolve(outDir, outputRelative);
+      const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
+      const outDir =
+        typeof configuredOutDir === "string"
+          ? resolve(root, configuredOutDir)
+          : resolve(root, "dist", targetName);
+      const outputRelative = entryKey.replace(/\.ns$/i, ".js");
+      outputPath = resolve(outDir, outputRelative);
 
-    try {
-      mkdirSync(dirname(outputPath), { recursive: true });
-      writeFileSync(outputPath, generated.code, "utf8");
-      const packagePath = join(outDir, "package.json");
-      if (!existsSync(packagePath)) {
-        writeFileSync(packagePath, '{ "type": "module" }\n', "utf8");
+      try {
+        mkdirSync(dirname(outputPath), { recursive: true });
+        writeFileSync(outputPath, generated.code, "utf8");
+        const packagePath = join(outDir, "package.json");
+        if (!existsSync(packagePath)) {
+          writeFileSync(packagePath, '{ "type": "module" }\n', "utf8");
+        }
+      } catch (error) {
+        throw new CliError(
+          "NS9008",
+          `Unable to write the generated module: ${errorMessage(error)}`,
+          displayPath(outputPath, cwd),
+        );
       }
-    } catch (error) {
-      throw new CliError(
-        "NS9008",
-        `Unable to write the generated module: ${errorMessage(error)}`,
-        displayPath(outputPath, cwd),
-      );
+    } else {
+      const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
+      const outDir =
+        typeof configuredOutDir === "string"
+          ? resolve(root, configuredOutDir)
+          : resolve(root, "dist", targetName);
+
+      let mainCPath = "";
+      let hostCPath = "";
+      const scriptPaths: string[] = [];
+      try {
+        mkdirSync(outDir, { recursive: true });
+        for (const artifact of result.artifacts) {
+          if (isRecord(artifact)) {
+            const artType = artifact["type"];
+            const artName = artifact["name"] ?? artifact["filename"];
+            const artContent = artifact["content"];
+            if (typeof artName === "string" && typeof artContent === "string") {
+              const filePath = resolve(outDir, artName);
+              mkdirSync(dirname(filePath), { recursive: true });
+              writeFileSync(filePath, artContent, "utf8");
+              if (artType === "c-source") {
+                mainCPath = filePath;
+              } else if (artType === "c-host-shim") {
+                hostCPath = filePath;
+              } else if (artType === "c-script") {
+                scriptPaths.push(filePath);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        throw new CliError(
+          "NS9008",
+          `Unable to write generated C artifacts: ${errorMessage(error)}`,
+          displayPath(outDir, cwd),
+        );
+      }
+
+      outputPath = mainCPath || outDir;
+
+      if (backend === "native") {
+        if (!mainCPath || !hostCPath) {
+          throw new CliError(
+            "NS8001",
+            "Compiler did not produce the expected C artifacts for native compilation.",
+            displayPath(outDir, cwd),
+          );
+        }
+        const exeName = process.platform === "win32" ? "main.exe" : "main";
+        const exePath = resolve(outDir, exeName);
+        const clangCandidates = [
+          "C:\\Program Files\\LLVM\\bin\\clang.exe",
+          "clang",
+          "gcc",
+          "cc",
+        ];
+        let compilerBin: string | null = null;
+        for (const cand of clangCandidates) {
+          const test = spawnSync(cand, ["--version"], { windowsHide: true });
+          if (test.status === 0) {
+            compilerBin = cand;
+            break;
+          }
+        }
+        if (!compilerBin) {
+          throw new CliError(
+            "NS9008",
+            "No C compiler (clang, gcc, or cc) found on PATH to build native binary.",
+            displayPath(outDir, cwd),
+          );
+        }
+        const cflags: string[] = [];
+        if (Array.isArray(targetConfig["cflags"])) {
+          for (const f of targetConfig["cflags"]) {
+            if (typeof f === "string") cflags.push(f);
+          }
+        }
+        const optLevel = targetConfig["optLevel"] ?? targetConfig["optimization"];
+        if (typeof optLevel === "string" || typeof optLevel === "number") {
+          cflags.push(`-O${String(optLevel).replace(/^-?O?/, "")}`);
+        }
+        const triple = targetConfig["triple"] ?? targetConfig["targetTriple"];
+        if (typeof triple === "string") {
+          cflags.push(`--target=${triple}`);
+        }
+        const hasCpp = scriptPaths.some((p) => p.endsWith(".cpp"));
+        const compileArgs = [
+          "-std=c17",
+          "-Wall",
+          "-Wno-unused-variable",
+          ...cflags,
+          "-o",
+          exePath,
+          mainCPath,
+          hostCPath,
+          ...scriptPaths,
+        ];
+        if (hasCpp) {
+          compileArgs.push("-lstdc++");
+        }
+        const buildProc = spawnSync(
+          compilerBin,
+          compileArgs,
+          { windowsHide: true, encoding: "utf8" },
+        );
+        if (buildProc.status !== 0) {
+          throw new CliError(
+            "NS9008",
+            `Native compilation failed with ${compilerBin}:\n${buildProc.stderr}`,
+            displayPath(outDir, cwd),
+          );
+        }
+        outputPath = exePath;
+      }
     }
 
     report = {
       target: targetName,
-      backend: "js",
+      backend: String(backend),
       entry: entryKey,
       output: displayPath(outputPath, cwd),
       diagnostics: allDiagnostics,

@@ -134,7 +134,8 @@ impl CompileResponse {
 
     /// Creates a failed response.
     #[must_use]
-    pub fn failure(diagnostics: Vec<Diagnostic>) -> Self {        Self {
+    pub fn failure(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
             api_version: API_VERSION.to_owned(),
             program: None,
             ir: None,
@@ -429,6 +430,248 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
     }
 }
 
+// ─── Project (multi-source) compile ─────────────────────────────────────────
+
+/// Parameters for the `compile_project` command (C multi-module linking).
+///
+/// `sources` must be in dependency order: each module before the modules that
+/// import it. The last entry is treated as the root (entry-point) module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCompileRequest {
+    pub api_version: String,
+    /// Ordered module sources, keyed by their canonical import specifier.
+    pub sources: Vec<ProjectSourceUnit>,
+    pub target: String,
+    /// Explicit project mode. When omitted, the compiler infers.
+    #[serde(default)]
+    pub mode: Option<Mode>,
+    /// Integer arithmetic policy. Defaults to wrapping.
+    #[serde(default)]
+    pub integer_policy: IntegerPolicy,
+}
+
+/// Per-module artifact in a `ProjectCompileResponse`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleCompileArtifact {
+    pub key: String,
+    pub path: String,
+    /// Emitted C source filename.
+    pub c_filename: String,
+    /// Emitted C header filename.
+    pub h_filename: String,
+    pub c_source: String,
+    pub h_source: String,
+    /// Script translation units (`@script:c` / `@script:cpp`) from this module.
+    pub script_sources: Vec<(String, String)>,
+}
+
+/// Response for the `compile_project` command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCompileResponse {
+    pub api_version: String,
+    pub ok: bool,
+    pub modules: Vec<ModuleCompileArtifact>,
+    /// Single shared host shim (`astra_host.c`).
+    pub host_shim: String,
+    pub diagnostics: Vec<Diagnostic>,
+    pub metadata: Value,
+}
+
+/// Checks and compiles a multi-module project to C, returning one translation
+/// unit + one header per source module.
+///
+/// Internally runs `check_module_graph` then `astra_codegen_c::generate_project`.
+pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileResponse {
+    if request.api_version != API_VERSION {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: vec![Diagnostic::error(
+                "NS8001",
+                format!(
+                    "Unsupported apiVersion '{}'; expected '{}'.",
+                    request.api_version, API_VERSION
+                ),
+            )],
+            metadata: json!({ "error": "unsupported apiVersion" }),
+        };
+    }
+
+    if request.sources.is_empty() {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: vec![Diagnostic::error(
+                "NS8001",
+                "compile_project requires at least one source unit",
+            )],
+            metadata: json!({}),
+        };
+    }
+
+    // Parse all sources.
+    let mut project_modules: Vec<astra_core::type_surface::ProjectModule> = Vec::new();
+    let mut path_map: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut parse_errors: Vec<Diagnostic> = Vec::new();
+
+    for unit in &request.sources {
+        path_map.insert(unit.key.clone(), unit.path.clone());
+        match astra_core::parser::parse(&unit.text) {
+            Ok(module) => {
+                project_modules.push(astra_core::type_surface::ProjectModule {
+                    key: unit.key.clone(),
+                    source: module,
+                });
+            }
+            Err(diagnostics) => {
+                parse_errors.extend(diagnostics);
+            }
+        }
+    }
+
+    if !parse_errors.is_empty() {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: parse_errors,
+            metadata: json!({}),
+        };
+    }
+
+    // Infer mode.
+    use astra_capabilities::{ModeInference, infer_module_mode_named, infer_project};
+    let inferences: Vec<ModeInference> = project_modules
+        .iter()
+        .map(|m| infer_module_mode_named(&m.source, &m.key))
+        .collect();
+    let project_inference = infer_project(&inferences);
+    let selected_mode = request
+        .mode
+        .unwrap_or_else(|| project_inference.resolved_mode());
+
+    if request.mode.is_none() && !project_inference.is_ok() {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: project_inference.diagnostics.clone(),
+            metadata: json!({}),
+        };
+    }
+
+    // Type-check the graph.
+    let graph = astra_core::type_surface::check_module_graph(
+        &project_modules,
+        astra_core::checker::CheckOptions::new(selected_mode),
+    );
+
+    if !graph.is_ok() {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: graph.all_diagnostics(),
+            metadata: json!({}),
+        };
+    }
+
+    // Build the C project entries.
+    let c_ip = match request.integer_policy {
+        IntegerPolicy::Wrapping => CIntegerPolicy::Wrapping,
+        IntegerPolicy::SafeChecked => CIntegerPolicy::SafeChecked,
+        IntegerPolicy::Arbitrary => CIntegerPolicy::Arbitrary,
+    };
+
+    // For each source module in request order, build a ProjectEntry.
+    // dep_keys = the direct imports of this module (from HIR).
+    let entries: Vec<astra_codegen_c::ProjectEntry> = project_modules
+        .iter()
+        .filter_map(|pm| {
+            let checked = graph.get(&pm.key)?;
+            let dep_keys: Vec<String> = checked
+                .module
+                .imports
+                .iter()
+                .map(|imp| imp.module.clone())
+                .collect();
+            Some(astra_codegen_c::ProjectEntry {
+                module: CModule {
+                    name: checked.module.name.clone(),
+                    ast: pm.source.clone(),
+                    hir: checked.module.clone(),
+                    annotations: checked.annotations.clone(),
+                    manual_memory_scopes: checked.manual_memory_scopes.clone(),
+                    integer_policy: c_ip,
+                },
+                key: pm.key.clone(),
+                dep_keys,
+            })
+        })
+        .collect();
+
+    match astra_codegen_c::generate_project(&entries) {
+        Ok(generated) => {
+            let mut modules = Vec::new();
+            let mut host_shim = String::new();
+            for (entry, gen) in entries.iter().zip(generated.iter()) {
+                let stem = entry.key.replace(['/', '.', '-'], "_");
+                let c_filename = format!("{stem}.c");
+                let h_filename = format!("{stem}.h");
+                modules.push(ModuleCompileArtifact {
+                    key: entry.key.clone(),
+                    path: path_map
+                        .get(&entry.key)
+                        .cloned()
+                        .unwrap_or_else(|| entry.key.clone()),
+                    c_filename,
+                    h_filename,
+                    c_source: gen.source.clone(),
+                    h_source: gen.header.clone().unwrap_or_default(),
+                    script_sources: gen.script_sources.clone(),
+                });
+                if host_shim.is_empty() {
+                    host_shim = gen.host_shim.clone();
+                }
+            }
+            ProjectCompileResponse {
+                api_version: API_VERSION.to_owned(),
+                ok: true,
+                modules,
+                host_shim,
+                diagnostics: Vec::new(),
+                metadata: json!({
+                    "moduleCount": entries.len(),
+                    "mode": selected_mode,
+                    "target": request.target,
+                    "integerPolicy": request.integer_policy,
+                }),
+            }
+        }
+        Err(backend_error) => ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: vec![Diagnostic::error(
+                backend_error.code.clone(),
+                backend_error.message.clone(),
+            )],
+            metadata: json!({}),
+        },
+    }
+}
+
 // ─── Single-source frontend ───────────────────────────────────────────────────
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -514,8 +757,12 @@ impl FrontendCompiler {
                                             manual_memory_scopes: checked.manual_memory_scopes,
                                             integer_policy: match request.integer_policy {
                                                 IntegerPolicy::Wrapping => CIntegerPolicy::Wrapping,
-                                                IntegerPolicy::SafeChecked => CIntegerPolicy::SafeChecked,
-                                                IntegerPolicy::Arbitrary => CIntegerPolicy::Arbitrary,
+                                                IntegerPolicy::SafeChecked => {
+                                                    CIntegerPolicy::SafeChecked
+                                                }
+                                                IntegerPolicy::Arbitrary => {
+                                                    CIntegerPolicy::Arbitrary
+                                                }
                                             },
                                         };
                                         match astra_codegen_c::generate(&c_module) {
@@ -524,14 +771,24 @@ impl FrontendCompiler {
                                                     .with_ir(ir)
                                                     .with_artifact(json!({
                                                         "type": "c-source",
+                                                        "name": format!("{}.c", module_stem(&request.source.path)),
                                                         "filename": format!("{}.c", module_stem(&request.source.path)),
                                                         "content": generated.source,
                                                     }))
                                                     .with_artifact(json!({
                                                         "type": "c-host-shim",
+                                                        "name": "astra_host.c",
                                                         "filename": "astra_host.c",
                                                         "content": generated.host_shim,
                                                     }));
+                                                for (filename, content) in generated.script_sources {
+                                                    response = response.with_artifact(json!({
+                                                        "type": "c-script",
+                                                        "name": filename,
+                                                        "filename": filename,
+                                                        "content": content,
+                                                    }));
+                                                }
                                             }
                                             Err(backend_error) => {
                                                 return CompileResponse::failure(vec![
@@ -642,8 +899,8 @@ pub fn process_json(input: &str) -> String {
             json!({
                 "apiVersion": API_VERSION,
                 "coreVersion": env!("CARGO_PKG_VERSION"),
-                "commands": ["initialize", "check", "check_project", "compile", "ast", "format", "explain", "shutdown"],
-                "features": ["resolver", "type-checker", "project-checker", "typed-ir"],
+                "commands": ["initialize", "check", "check_project", "compile", "compile_project", "ast", "format", "explain", "shutdown"],
+                "features": ["resolver", "type-checker", "project-checker", "typed-ir", "project-compile-c"],
                 "targets": ["js", "ts", "native", "wasm-web", "wasm-wasi"],
             }),
         ),
@@ -667,6 +924,13 @@ pub fn process_json(input: &str) -> String {
             Ok(project_request) => JsonRpcResponse::success(
                 request.id,
                 serde_json::to_value(check_project(&project_request)).unwrap_or(Value::Null),
+            ),
+            Err(message) => JsonRpcResponse::error(request.id, -32602, message),
+        },
+        "compile_project" => match parse_project_compile_request(request.params) {
+            Ok(project_request) => JsonRpcResponse::success(
+                request.id,
+                serde_json::to_value(compile_project(&project_request)).unwrap_or(Value::Null),
             ),
             Err(message) => JsonRpcResponse::error(request.id, -32602, message),
         },
@@ -724,6 +988,25 @@ fn parse_project_check_request(params: Option<Value>) -> Result<ProjectCheckRequ
 
     if request.sources.is_empty() {
         return Err("check_project requires at least one source unit.".to_owned());
+    }
+
+    Ok(request)
+}
+
+fn parse_project_compile_request(params: Option<Value>) -> Result<ProjectCompileRequest, String> {
+    let params = params.ok_or_else(|| "Missing params.".to_owned())?;
+    let request: ProjectCompileRequest =
+        serde_json::from_value(params).map_err(|error| format!("Invalid params: {error}"))?;
+
+    if request.api_version != API_VERSION {
+        return Err(format!(
+            "Unsupported apiVersion '{}'; expected '{}'.",
+            request.api_version, API_VERSION
+        ));
+    }
+
+    if request.sources.is_empty() {
+        return Err("compile_project requires at least one source unit.".to_owned());
     }
 
     Ok(request)

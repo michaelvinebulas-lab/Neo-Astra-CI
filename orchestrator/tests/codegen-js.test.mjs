@@ -296,15 +296,75 @@ test("javascript backend rejects non-local control flow inside expression blocks
   );
 });
 
-test("javascript backend rejects project imports explicitly", () => {
-  const generated = generate('import "./other"\npub fn main() {}\n');
-  assert.ok(
-    generated.diagnostics.some(
-      (diagnostic) =>
-        diagnostic.code === "NS8001" &&
-        diagnostic.message.includes("Module imports"),
-    ),
-  );
+test("javascript backend emits project imports, namespace imports, and re-exports", () => {
+  const generated = generateJavaScript({
+    moduleName: "app.main",
+    ir: {
+      key: "app/main",
+      path: "app/main.ns",
+      ast: {
+        name: ["app", "main"],
+        attributes: [],
+        items: [],
+        header_span: { start: 0, end: 0 },
+        span: { start: 0, end: 0 },
+      },
+      hir: {
+        name: "app.main",
+        items: [],
+        imports: [
+          {
+            module: "./math",
+            kind: {
+              Named: {
+                bindings: [{ imported: "sum", local: "sum", span: { start: 0, end: 0 } }],
+              },
+            },
+            span: { start: 0, end: 0 },
+          },
+          {
+            module: "./ns",
+            kind: { Namespace: { alias: "ns" } },
+            span: { start: 0, end: 0 },
+          },
+          {
+            module: "./side-effect",
+            kind: "SideEffect",
+            span: { start: 0, end: 0 },
+          },
+        ],
+        symbols: { values: {}, types: {}, namespaces: {} },
+        exports: {
+          named: {
+            shared: {
+              name: "shared",
+              kind: "Value",
+              target: { Reexport: { module: "./shared", name: "shared" } },
+              span: { start: 0, end: 0 },
+            },
+          },
+          default: {
+            name: "default",
+            kind: "Value",
+            target: { Reexport: { module: "./defaults", name: "default" } },
+            span: { start: 0, end: 0 },
+          },
+          stars: [{ module: "./barrel", span: { start: 0, end: 0 } }],
+        },
+      },
+      annotations: [],
+      manualMemoryScopes: [],
+      integerPolicy: "wrapping",
+    },
+  });
+
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /import \{ sum \} from "\.\/math";/);
+  assert.match(generated.code, /import \* as ns from "\.\/ns";/);
+  assert.match(generated.code, /import "\.\/side-effect";/);
+  assert.match(generated.code, /export \{ shared \} from "\.\/shared";/);
+  assert.match(generated.code, /export \{ default \} from "\.\/defaults";/);
+  assert.match(generated.code, /export \* from "\.\/barrel";/);
 });
 
 test("javascript backend rejects manual memory explicitly", () => {
@@ -321,23 +381,25 @@ test("javascript backend rejects manual memory explicitly", () => {
   );
 });
 
-test("javascript backend rejects error propagation explicitly", () => {
+test("javascript backend executes recoverable failures and propagation", () => {
   const generated = generate(
     [
-      "fn parse() -> i32 ! ParseIntError {",
-      '    return "1".to_int()!',
+      "struct ParseIntError(str)",
+      "fn parse(input: str) -> i32 ! ParseIntError {",
+      '    return input.to_int()!',
       "}",
-      "pub fn main() -> i32 ! ParseIntError { return parse()! }",
+      "pub fn main() -> i32 {",
+      "    return match parse(\"1\") {",
+      "        Ok(value) => value,",
+      "        Err(_) => 0,",
+      "    }",
+      "}",
       "",
     ].join("\n"),
   );
-  assert.ok(
-    generated.diagnostics.some(
-      (diagnostic) =>
-        diagnostic.code === "NS8001" &&
-        diagnostic.message.includes("Error propagation"),
-    ),
-  );
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "RETURN=1");
 });
 
 test("astra build writes runnable ESM and a module package marker", () => {
@@ -411,3 +473,63 @@ test("astra build writes runnable ESM and a module package marker", () => {
     rmSync(project, { recursive: true, force: true });
   }
 });
+
+test("astra build writes C translation unit and host shim with --target c", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-build-c-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "c", defaultMode: "core" },
+          nova: { entry: "src/main.ns" },
+          targets: {
+            c: { backend: "c", mode: "core", outDir: "dist/c" },
+          },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        "pub fn main() -> i32 {",
+        '    println("hello from c build")',
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "c"],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built c/);
+
+    const cPath = join(project, "dist", "c", "main.c");
+    const hostPath = join(project, "dist", "c", "astra_host.c");
+    assert.ok(existsSync(cPath), `expected ${cPath} to exist`);
+    assert.ok(existsSync(hostPath), `expected ${hostPath} to exist`);
+
+    const cContent = readFileSync(cPath, "utf8");
+    assert.match(cContent, /int main\(void\)/);
+    assert.match(cContent, /ns_main\(\)/);
+
+    const hostContent = readFileSync(hostPath, "utf8");
+    assert.match(hostContent, /astra_panic/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+

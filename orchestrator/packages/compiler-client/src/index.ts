@@ -67,7 +67,7 @@ export interface ModuleIr {
 /** Parameters for `CompilerClient.compile`. */
 export interface CompileRequest {
   readonly source: SourceUnit;
-  readonly target?: "js" | "ts";
+  readonly target?: "js" | "ts" | "c" | string;
   readonly mode?: Mode;
   readonly integerPolicy?: IntegerPolicy;
 }

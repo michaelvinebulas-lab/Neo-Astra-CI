@@ -22,16 +22,57 @@ use astra_core::ast::{
 use astra_core::types::Type;
 
 use crate::runtime::RUNTIME_HEADER;
-use crate::ty::{sanitize, Annotations, Reject, TyCtxt, TypeEnv, path_to_type, to_type};
+use crate::ty::{Annotations, Reject, TyCtxt, TypeEnv, path_to_type, sanitize, to_type};
 use crate::{BackendError, CModule, GeneratedC, IntegerPolicy};
 
 const C_KEYWORDS: &[&str] = &[
-    "auto", "break", "case", "char", "const", "continue", "default", "do", "double", "else",
-    "enum", "extern", "float", "for", "goto", "if", "inline", "int", "long", "register",
-    "restrict", "return", "short", "signed", "size_t", "static", "struct", "switch", "typedef",
-    "union", "unsigned", "void", "volatile", "while", "_Bool", "_Complex", "_Imaginary",
-    "_Alignas", "_Alignof", "_Atomic", "_Generic", "_Noreturn", "_Static_assert", "_Thread_local",
-    "bool", "true", "false",
+    "auto",
+    "break",
+    "case",
+    "char",
+    "const",
+    "continue",
+    "default",
+    "do",
+    "double",
+    "else",
+    "enum",
+    "extern",
+    "float",
+    "for",
+    "goto",
+    "if",
+    "inline",
+    "int",
+    "long",
+    "register",
+    "restrict",
+    "return",
+    "short",
+    "signed",
+    "size_t",
+    "static",
+    "struct",
+    "switch",
+    "typedef",
+    "union",
+    "unsigned",
+    "void",
+    "volatile",
+    "while",
+    "_Bool",
+    "_Complex",
+    "_Imaginary",
+    "_Alignas",
+    "_Alignof",
+    "_Atomic",
+    "_Generic",
+    "_Noreturn",
+    "_Static_assert",
+    "_Thread_local",
+    "bool",
+    "true",
+    "false",
 ];
 
 fn is_c_keyword(name: &str) -> bool {
@@ -62,11 +103,30 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
             "@memory:manual is not supported by the C managed-subset backend; native manual memory is tracked by GC-001",
         ));
     }
-    if module.ast.items.iter().any(|item| matches!(item.kind, ast::ItemKind::Import(_))) {
+    if module
+        .ast
+        .items
+        .iter()
+        .any(|item| matches!(item.kind, ast::ItemKind::Import(_)))
+    {
         return Err(BackendError::new(
             "NS8019",
             "imports are not supported by the C backend first slice; it emits a single self-contained module",
         ));
+    }
+
+    let mut scripts = Vec::new();
+    collect_scripts(&module.ast.items, &mut scripts);
+    for s in &scripts {
+        if s.language != "c" && s.language != "cpp" {
+            return Err(BackendError::new(
+                "NS7002",
+                format!(
+                    "Script language '{}' is not supported by the active target 'c'.",
+                    s.language
+                ),
+            ));
+        }
     }
 
     let env = TypeEnv::collect(&module.ast);
@@ -83,18 +143,126 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         tcx: &mut tcx,
         ann,
         policy: module.integer_policy,
+        scripts: scripts.clone(),
+        linked: false,
         out: String::new(),
         pre: String::new(),
         fresh: 0,
         cur_ret: Type::Unit,
         cur_err: None,
+        defers: Vec::new(),
     };
     e.emit_program();
+    let script_sources = e.emit_scripts();
     Ok(GeneratedC {
         source: e.out,
+        header: None,
         host_shim: crate::runtime::HOST_SHIM.to_string(),
+        script_sources,
         target: "c".to_string(),
     })
+}
+
+/// Emits a multi-module project: one translation unit + public header per entry.
+///
+/// Functions are given external linkage (no `static`). Each module's translation
+/// unit `#include`s the headers of its direct dependencies. The returned vector
+/// is in the same order as the input `entries` slice.
+pub fn emit_project(
+    entries: &[crate::ProjectEntry],
+) -> Result<Vec<GeneratedC>, BackendError> {
+    use std::collections::HashMap;
+    // Build a map key -> header filename so each module can include its deps.
+    let header_map: HashMap<String, String> = entries
+        .iter()
+        .map(|e| {
+            let stem = module_key_stem(&e.key);
+            (e.key.clone(), format!("{stem}.h"))
+        })
+        .collect();
+
+    let mut results = Vec::new();
+    for entry in entries {
+        if !entry.module.manual_memory_scopes.is_empty() {
+            return Err(BackendError::new(
+                "NS8012",
+                format!(
+                    "module '{}': @memory:manual is not supported by the C managed-subset backend",
+                    entry.module.name
+                ),
+            ));
+        }
+
+        let mut scripts = Vec::new();
+        collect_scripts(&entry.module.ast.items, &mut scripts);
+        for s in &scripts {
+            if s.language != "c" && s.language != "cpp" {
+                return Err(BackendError::new(
+                    "NS7002",
+                    format!(
+                        "module '{}': script language '{}' is not supported by target 'c'",
+                        entry.module.name, s.language
+                    ),
+                ));
+            }
+        }
+
+        let env = TypeEnv::collect(&entry.module.ast);
+        let mut tcx = TyCtxt::new(env);
+        prescan(&mut tcx, &entry.module);
+        if tcx.rejected() {
+            let r = tcx.rejects.into_iter().next().expect("non-empty");
+            return Err(BackendError::new(r.code, &r.message));
+        }
+
+        // Collect dep headers: for each key in dep_keys, look up the header filename.
+        let dep_headers: Vec<String> = entry
+            .dep_keys
+            .iter()
+            .filter_map(|k| header_map.get(k).cloned())
+            .collect();
+
+        let ann = Annotations::new(&entry.module.annotations);
+        let mut e = Emitter {
+            module: &entry.module,
+            tcx: &mut tcx,
+            ann,
+            policy: entry.module.integer_policy,
+            scripts: scripts.clone(),
+            linked: true,
+            out: String::new(),
+            pre: String::new(),
+            fresh: 0,
+            cur_ret: Type::Unit,
+            cur_err: None,
+            defers: Vec::new(),
+        };
+        e.emit_program_linked(&dep_headers);
+        if e.tcx.rejected() {
+            let r = e.tcx.rejects.clone().into_iter().next().expect("non-empty");
+            return Err(BackendError::new(r.code, &r.message));
+        }
+        let script_sources = e.emit_scripts();
+        let source = e.out.clone();
+        let header = e.emit_header();
+
+        let stem = module_key_stem(&entry.key);
+        results.push(GeneratedC {
+            source,
+            header: Some(header),
+            host_shim: crate::runtime::HOST_SHIM.to_string(),
+            script_sources,
+            target: "c".to_string(),
+        });
+        let _ = stem; // used in header_map above
+    }
+    Ok(results)
+}
+
+/// Derives a safe C header stem from a module key.
+/// `"app/math"` → `"app_math"`, `"lib"` → `"lib"`.
+fn module_key_stem(key: &str) -> String {
+    key.replace(['/', '.', '-'], "_")
 }
 
 /// Pre-scans declared and annotation types to register every `typedef` and
@@ -133,6 +301,9 @@ fn prescan(tcx: &mut TyCtxt, module: &CModule) {
             ast::ItemKind::ScopedItems(s) => {
                 prescan_items(tcx, &s.items);
             }
+            ast::ItemKind::ScriptBlock(s) => {
+                prescan_script(tcx, s);
+            }
             ast::ItemKind::Export(exp) => {
                 if let ast::ExportForm::DefaultFunction(f) = &exp.form {
                     prescan_fn(tcx, f);
@@ -160,7 +331,32 @@ fn prescan_items(tcx: &mut TyCtxt, items: &[ast::Item]) {
             ast::ItemKind::Constant(c) => {
                 let _ = tcx.c_type(&to_type(&c.ty));
             }
+            ast::ItemKind::ScriptBlock(s) => prescan_script(tcx, s),
             ast::ItemKind::ScopedItems(s) => prescan_items(tcx, &s.items),
+            _ => {}
+        }
+    }
+}
+
+fn prescan_script(tcx: &mut TyCtxt, s: &ast::ScriptBlock) {
+    for exp in &s.exports {
+        for param in &exp.parameters {
+            let _ = tcx.c_type(&to_type(&param.ty));
+        }
+        if let Some(ret) = &exp.return_type {
+            let _ = tcx.c_type(&to_type(ret));
+        }
+        for err in &exp.error_set {
+            let _ = tcx.c_type(&path_to_type(err));
+        }
+    }
+}
+
+fn collect_scripts(items: &[ast::Item], scripts: &mut Vec<ast::ScriptBlock>) {
+    for item in items {
+        match &item.kind {
+            ast::ItemKind::ScriptBlock(s) => scripts.push(s.clone()),
+            ast::ItemKind::ScopedItems(s) => collect_scripts(&s.items, scripts),
             _ => {}
         }
     }
@@ -191,11 +387,16 @@ struct Emitter<'a> {
     tcx: &'a mut TyCtxt,
     ann: Annotations,
     policy: IntegerPolicy,
+    scripts: Vec<ast::ScriptBlock>,
+    /// When `true`, functions are emitted with external linkage (no `static`)
+    /// so they are visible across translation units.
+    linked: bool,
     out: String,
     pre: String,
     fresh: usize,
     cur_ret: Type,
     cur_err: Option<Type>,
+    defers: Vec<Vec<ast::Stmt>>,
 }
 
 impl<'a> Emitter<'a> {
@@ -205,7 +406,8 @@ impl<'a> Emitter<'a> {
         let _ = writeln!(self.out, "/* Neo Astra module: {} */", self.module.name);
         self.out.push('\n');
         if !self.tcx.typedefs.is_empty() {
-            self.out.push_str("/* User and derived type definitions. */\n");
+            self.out
+                .push_str("/* User and derived type definitions. */\n");
             for decl in &self.tcx.typedefs.clone() {
                 self.out.push_str(decl);
                 self.out.push('\n');
@@ -219,6 +421,18 @@ impl<'a> Emitter<'a> {
             self.emit_fn_proto(f);
         }
         self.out.push('\n');
+        if !self.scripts.is_empty() {
+            self.out
+                .push_str("/* Inline script foreign prototypes. */\n");
+            for s in &self.scripts.clone() {
+                let _ = writeln!(self.out, "/* Script: {} ({}) */", s.name, s.language);
+                for exp in &s.exports {
+                    let (ret_c, params_c) = self.script_export_signature(exp);
+                    let _ = writeln!(self.out, "{ret_c} {}({params_c});", sanitize(&exp.name));
+                }
+            }
+            self.out.push('\n');
+        }
         for c in &consts {
             self.emit_constant(c);
         }
@@ -230,6 +444,110 @@ impl<'a> Emitter<'a> {
         if let Some(main) = self.find_main() {
             self.emit_main(&main);
         }
+    }
+
+    /// Like `emit_program` but for multi-module (linked) builds:
+    /// includes the dep headers, skips the import-reject guard (already lifted
+    /// by `emit_project`), and uses external linkage for functions.
+    fn emit_program_linked(&mut self, dep_headers: &[String]) {
+        self.out.push_str(RUNTIME_HEADER);
+        self.out.push('\n');
+        let _ = writeln!(self.out, "/* Neo Astra module: {} */", self.module.name);
+        self.out.push('\n');
+        // Include headers for direct dependencies.
+        for h in dep_headers {
+            let _ = writeln!(self.out, "#include \"{h}\"");
+        }
+        if !dep_headers.is_empty() {
+            self.out.push('\n');
+        }
+        if !self.tcx.typedefs.is_empty() {
+            self.out
+                .push_str("/* User and derived type definitions. */\n");
+            for decl in &self.tcx.typedefs.clone() {
+                self.out.push_str(decl);
+                self.out.push('\n');
+            }
+            self.out.push('\n');
+        }
+
+        let (fns, consts) = self.collect_decls();
+        // Forward declarations (extern linkage in linked mode).
+        for f in &fns {
+            self.emit_fn_proto(f);
+        }
+        self.out.push('\n');
+        if !self.scripts.is_empty() {
+            self.out
+                .push_str("/* Inline script foreign prototypes. */\n");
+            for s in &self.scripts.clone() {
+                let _ = writeln!(self.out, "/* Script: {} ({}) */", s.name, s.language);
+                for exp in &s.exports {
+                    let (ret_c, params_c) = self.script_export_signature(exp);
+                    let _ = writeln!(self.out, "{ret_c} {}({params_c});", sanitize(&exp.name));
+                }
+            }
+            self.out.push('\n');
+        }
+        for c in &consts {
+            self.emit_constant(c);
+        }
+        self.out.push('\n');
+        for f in &fns {
+            self.emit_function(f);
+            self.out.push('\n');
+        }
+        if let Some(main) = self.find_main() {
+            self.emit_main(&main);
+        }
+    }
+
+    /// Emits a C header (`<module>.h`) containing extern prototypes for every
+    /// exported function so that dependent modules can `#include` it.
+    fn emit_header(&mut self) -> String {
+        let mut h = String::new();
+        let guard = format!(
+            "NS_MOD_{}_H",
+            self.module.name.replace(['.', '-', '/'], "_").to_uppercase()
+        );
+        let _ = writeln!(h, "/* Auto-generated by Neo Astra C backend — do not edit. */");
+        let _ = writeln!(h, "#ifndef {guard}");
+        let _ = writeln!(h, "#define {guard}");
+        h.push('\n');
+        h.push_str(RUNTIME_HEADER);
+        h.push('\n');
+        // Typedefs used in exported function signatures.
+        for decl in &self.tcx.typedefs.clone() {
+            h.push_str(decl);
+            h.push('\n');
+        }
+        h.push('\n');
+        // Extern prototypes for exported functions.
+        let (fns, _) = self.collect_decls();
+        let exported_fns: Vec<_> = fns
+            .iter()
+            .filter(|f| {
+                // A function is exported when `pub`/`export` is used on it.
+                self.module
+                    .hir
+                    .items
+                    .iter()
+                    .any(|item| item.name == f.name && item.exported)
+            })
+            .collect();
+        if !exported_fns.is_empty() {
+            h.push_str("/* Exported function prototypes. */\n");
+            for f in exported_fns {
+                if f.type_parameters.is_empty() {
+                    let (ret_c, _) = self.fn_return_c(f);
+                    let params = self.fn_params_c(f);
+                    let _ = writeln!(h, "{ret_c} ns_{}({params});", sanitize(&f.name));
+                }
+            }
+        }
+        h.push('\n');
+        let _ = writeln!(h, "#endif /* {guard} */");
+        h
     }
 
     fn collect_decls(&self) -> (Vec<ast::FunctionDecl>, Vec<ast::ConstantDecl>) {
@@ -262,22 +580,26 @@ impl<'a> Emitter<'a> {
 
     fn find_main(&self) -> Option<ast::FunctionDecl> {
         for item in &self.module.ast.items {
-            if let ast::ItemKind::Function(f) = &item.kind {
-                if f.name == "main" && f.parameters.is_empty() && f.error_set.is_empty() {
-                    let ret = f.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
-                    if ret == Type::Unit {
-                        return Some(f.clone());
-                    }
+            if let ast::ItemKind::Function(f) = &item.kind
+                && f.name == "main"
+                && f.parameters.is_empty()
+                && f.error_set.is_empty()
+            {
+                let ret = f.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
+                if ret == Type::Unit || ret == Type::I32 {
+                    return Some(f.clone());
                 }
             }
             if let ast::ItemKind::ScopedItems(s) = &item.kind {
                 for inner in &s.items {
-                    if let ast::ItemKind::Function(f) = &inner.kind {
-                        if f.name == "main" && f.parameters.is_empty() && f.error_set.is_empty() {
-                            let ret = f.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
-                            if ret == Type::Unit {
-                                return Some(f.clone());
-                            }
+                    if let ast::ItemKind::Function(f) = &inner.kind
+                        && f.name == "main"
+                        && f.parameters.is_empty()
+                        && f.error_set.is_empty()
+                    {
+                        let ret = f.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
+                        if ret == Type::Unit || ret == Type::I32 {
+                            return Some(f.clone());
                         }
                     }
                 }
@@ -296,7 +618,20 @@ impl<'a> Emitter<'a> {
         }
         let (ret_c, _is_fallible) = self.fn_return_c(f);
         let params = self.fn_params_c(f);
-        let _ = writeln!(self.out, "static {ret_c} ns_{}({params});", sanitize(&f.name));
+        if self.linked {
+            // External linkage: forward declaration without `static`.
+            let _ = writeln!(
+                self.out,
+                "{ret_c} ns_{}({params});",
+                sanitize(&f.name)
+            );
+        } else {
+            let _ = writeln!(
+                self.out,
+                "static {ret_c} ns_{}({params});",
+                sanitize(&f.name)
+            );
+        }
     }
 
     fn fn_params_c(&mut self, f: &ast::FunctionDecl) -> String {
@@ -342,13 +677,81 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    fn script_export_signature(&mut self, exp: &ast::ScriptExport) -> (String, String) {
+        let ret = exp.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
+        let errs: Vec<Type> = exp.error_set.iter().map(path_to_type).collect();
+        if errs.len() > 1 {
+            self.tcx.rejects.push(reject(
+                "NS8019",
+                format!(
+                    "script export '{}' has multiple error types, unsupported by the C backend",
+                    exp.name
+                ),
+            ));
+        }
+        let ret_c = if let Some(e) = errs.into_iter().next() {
+            let ty = Type::Result(Box::new(ret), Box::new(e));
+            self.tcx.c_type(&ty)
+        } else if ret == Type::Unit {
+            "void".to_string()
+        } else {
+            self.tcx.c_type(&ret)
+        };
+        let params_c = if exp.parameters.is_empty() {
+            "void".to_string()
+        } else {
+            exp.parameters
+                .iter()
+                .map(|p| {
+                    let t = self.tcx.c_type(&to_type(&p.ty));
+                    format!("{t} {}", sanitize(&p.name))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        (ret_c, params_c)
+    }
+
+    fn emit_scripts(&mut self) -> Vec<(String, String)> {
+        let mut script_sources = Vec::new();
+        for s in &self.scripts.clone() {
+            let ext = if s.language == "cpp" { "cpp" } else { "c" };
+            let filename = format!("script_{}.{ext}", sanitize(&s.name));
+            let mut content = String::new();
+            let _ = writeln!(
+                content,
+                "/* Neo Astra inline script: {} ({}) */",
+                s.name, s.language
+            );
+            content.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n");
+            if s.language == "cpp" {
+                content.push_str("extern \"C\" {\n");
+                for exp in &s.exports {
+                    let (ret_c, params_c) = self.script_export_signature(exp);
+                    let _ = writeln!(content, "{ret_c} {}({params_c});", sanitize(&exp.name));
+                }
+                content.push_str("}\n\n");
+            }
+            content.push_str(&s.raw_source);
+            if !content.ends_with('\n') {
+                content.push('\n');
+            }
+            script_sources.push((filename, content));
+        }
+        script_sources
+    }
+
     fn emit_constant(&mut self, c: &ast::ConstantDecl) {
         let ty = to_type(&c.ty);
         let ty_c = self.tcx.c_type(&ty);
         self.pre.clear();
         let v = self.expr(&c.value);
         self.flush_pre();
-        let _ = writeln!(self.out, "static const {ty_c} const_{} = {v};", sanitize(&c.name));
+        let _ = writeln!(
+            self.out,
+            "static const {ty_c} const_{} = {v};",
+            sanitize(&c.name)
+        );
     }
 
     fn emit_function(&mut self, f: &ast::FunctionDecl) {
@@ -362,17 +765,32 @@ impl<'a> Emitter<'a> {
         self.cur_err = err.clone();
         let (ret_c, is_fallible) = self.fn_return_c(f);
         let params = self.fn_params_c(f);
-        let _ = writeln!(self.out, "static {ret_c} ns_{}({params}) {{", sanitize(&f.name));
+        if self.linked {
+            let _ = writeln!(
+                self.out,
+                "{ret_c} ns_{}({params}) {{",
+                sanitize(&f.name)
+            );
+        } else {
+            let _ = writeln!(
+                self.out,
+                "static {ret_c} ns_{}({params}) {{",
+                sanitize(&f.name)
+            );
+        }
         self.emit_block_body(&f.body, true, is_fallible);
         self.out.push_str("}\n");
     }
 
     fn emit_main(&mut self, main: &ast::FunctionDecl) {
-        self.cur_ret = Type::Unit;
-        self.cur_err = None;
+        let ret = main.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
         self.out.push_str("int main(void) {\n");
-        self.emit_block_body(&main.body, true, false);
-        self.out.push_str("    return 0;\n");
+        if ret == Type::I32 {
+            self.out.push_str("    return (int)ns_main();\n");
+        } else {
+            self.out.push_str("    ns_main();\n");
+            self.out.push_str("    return 0;\n");
+        }
         self.out.push_str("}\n");
     }
 
@@ -381,6 +799,7 @@ impl<'a> Emitter<'a> {
     /// in `Ok` for fallible functions). When `is_fn_body` is false, the block is
     /// a nested scope and its value is discarded.
     fn emit_block_body(&mut self, block: &ast::Block, is_fn_body: bool, is_fallible: bool) {
+        self.defers.push(Vec::new());
         let n = block.statements.len();
         for (i, stmt) in block.statements.iter().enumerate() {
             let is_tail = is_fn_body && i + 1 == n;
@@ -392,10 +811,14 @@ impl<'a> Emitter<'a> {
         }
         if is_fn_body && block.statements.is_empty() {
             self.emit_implicit_tail_return(is_fallible);
+        } else if !is_fn_body {
+            self.emit_scope_defers();
         }
+        self.defers.pop();
     }
 
     fn emit_implicit_tail_return(&mut self, is_fallible: bool) {
+        self.emit_all_defers();
         if is_fallible {
             let ret_c = self.fn_result_c();
             let _ = writeln!(self.out, "    return ({ret_c}){{ .ok = true }};");
@@ -433,11 +856,47 @@ impl<'a> Emitter<'a> {
         self.flush_pre();
         if is_fallible {
             let ret_c = self.fn_result_c();
-            let _ = writeln!(self.out, "    return ({ret_c}){{ .ok = true, .value = {v} }};");
+            self.emit_all_defers();
+            let _ = writeln!(
+                self.out,
+                "    return ({ret_c}){{ .ok = true, .value = {v} }};"
+            );
         } else if self.cur_ret == Type::Unit {
             self.emit_value_stmt(e, v, &ty);
+            self.emit_all_defers();
         } else {
+            self.emit_all_defers();
             let _ = writeln!(self.out, "    return {v};");
+        }
+    }
+
+    fn emit_all_defers(&mut self) {
+        let all: Vec<ast::Stmt> = self
+            .defers
+            .iter()
+            .rev()
+            .flat_map(|scope| scope.iter().rev().cloned())
+            .collect();
+        for d in &all {
+            self.emit_stmt(d);
+        }
+    }
+
+    fn emit_scope_defers(&mut self) {
+        if let Some(scope) = self.defers.last() {
+            let defers: Vec<ast::Stmt> = scope.iter().rev().cloned().collect();
+            for d in &defers {
+                self.emit_stmt(d);
+            }
+        }
+    }
+
+    fn emit_scope_defers_into_pre(&mut self) {
+        if let Some(scope) = self.defers.last() {
+            let defers: Vec<ast::Stmt> = scope.iter().rev().cloned().collect();
+            for d in &defers {
+                self.emit_stmt_into_pre(d);
+            }
         }
     }
 
@@ -445,19 +904,33 @@ impl<'a> Emitter<'a> {
     /// explicit `return` statement (so no temp assignment is needed).
     fn all_branches_return(&self, e: &Expr) -> bool {
         match &e.kind {
-            ExprKind::If { then_branch, else_branch, .. } => {
-                let then_ret = then_branch.statements.last()
-                    .is_some_and(|s| matches!(s.kind, StmtKind::Return { .. }));
+            ExprKind::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                let then_ret = self.block_diverges(then_branch);
                 let else_ret = match else_branch {
-                    Some(ElseBranch::Block(b)) => b.statements.last()
-                        .is_some_and(|s| matches!(s.kind, StmtKind::Return { .. })),
+                    Some(ElseBranch::Block(b)) => self.block_diverges(b),
                     Some(ElseBranch::If(inner)) => self.all_branches_return(inner),
                     None => false,
                 };
                 then_ret && else_ret
             }
-            ExprKind::Block(b) => b.statements.last()
-                .is_some_and(|s| matches!(s.kind, StmtKind::Return { .. })),
+            ExprKind::Block(b) => self.block_diverges(b),
+            _ => false,
+        }
+    }
+
+    /// Returns true if the block always diverges (its last statement is a
+    /// `return`, `fail`, `panic`, or `abort`).
+    fn block_diverges(&self, block: &ast::Block) -> bool {
+        match block.statements.last().map(|s| &s.kind) {
+            Some(StmtKind::Return { .. }) => true,
+            Some(StmtKind::Expr(e)) => matches!(
+                e.kind,
+                ExprKind::Fail { .. } | ExprKind::Panic { .. } | ExprKind::Abort { .. }
+            ),
             _ => false,
         }
     }
@@ -465,7 +938,9 @@ impl<'a> Emitter<'a> {
     fn fn_result_c(&mut self) -> String {
         let ret = self.cur_ret.clone();
         match &self.cur_err {
-            Some(err) => self.tcx.c_type(&Type::Result(Box::new(ret), Box::new(err.clone()))),
+            Some(err) => self
+                .tcx
+                .c_type(&Type::Result(Box::new(ret), Box::new(err.clone()))),
             None => self.tcx.c_type(&ret),
         }
     }
@@ -481,10 +956,11 @@ impl<'a> Emitter<'a> {
             StmtKind::Return { value } => self.emit_return(value.as_ref()),
             StmtKind::Break => self.writeln_s("    break;"),
             StmtKind::Continue => self.writeln_s("    continue;"),
-            StmtKind::Defer(_) => self.tcx.rejects.push(reject(
-                "NS8010",
-                "defer is not supported by the C backend first slice",
-            )),
+            StmtKind::Defer(s) => {
+                if let Some(scope) = self.defers.last_mut() {
+                    scope.push((**s).clone());
+                }
+            }
             StmtKind::While { condition, body } => self.emit_while(condition, body),
             StmtKind::For {
                 binding,
@@ -508,6 +984,7 @@ impl<'a> Emitter<'a> {
             ));
             return;
         }
+        self.defers.push(Vec::new());
         let n = scoped.statements.len();
         for (i, stmt) in scoped.statements.iter().enumerate() {
             let is_tail = i + 1 == n;
@@ -520,6 +997,8 @@ impl<'a> Emitter<'a> {
         if scoped.statements.is_empty() {
             self.emit_implicit_tail_return(self.cur_err.is_some());
         }
+        self.emit_scope_defers();
+        self.defers.pop();
     }
 
     fn emit_let(&mut self, name: &str, ty: Option<&ast::Type>, value: &Expr) {
@@ -535,17 +1014,14 @@ impl<'a> Emitter<'a> {
         let v = self.expr(value);
         self.flush_pre();
         let ty_c = self.tcx.c_type(&val_ty);
-        let _ = writeln!(
-            self.out,
-            "    {ty_c} v_{} = {v};",
-            sanitize(name)
-        );
+        let _ = writeln!(self.out, "    {ty_c} v_{} = {v};", sanitize(name));
     }
 
     fn emit_return(&mut self, value: Option<&Expr>) {
         let is_fallible = self.cur_err.is_some();
         match value {
             None => {
+                self.emit_all_defers();
                 if is_fallible {
                     let ret_c = self.fn_result_c();
                     let _ = writeln!(self.out, "    return ({ret_c}){{ .ok = true }};");
@@ -562,9 +1038,13 @@ impl<'a> Emitter<'a> {
                 self.pre.clear();
                 let v = self.expr(e);
                 self.flush_pre();
+                self.emit_all_defers();
                 if is_fallible {
                     let ret_c = self.fn_result_c();
-                    let _ = writeln!(self.out, "    return ({ret_c}){{ .ok = true, .value = {v} }};");
+                    let _ = writeln!(
+                        self.out,
+                        "    return ({ret_c}){{ .ok = true, .value = {v} }};"
+                    );
                 } else {
                     let _ = writeln!(self.out, "    return {v};");
                 }
@@ -583,12 +1063,19 @@ impl<'a> Emitter<'a> {
 
     fn emit_for(&mut self, binding: &str, iterable: &Expr, body: &ast::Block) {
         let iter_ty = self.type_of(iterable).cloned().unwrap_or(Type::Unit);
-        let elem_ty = match &iter_ty {
-            Type::Array(t) | Type::Slice(t) => (**t).clone(),
+        enum IterKind {
+            Array,
+            Map,
+            Bytes,
+        }
+        let (elem_ty, kind) = match &iter_ty {
+            Type::Array(t) | Type::Slice(t) => ((**t).clone(), IterKind::Array),
+            Type::Map(k, _) => ((**k).clone(), IterKind::Map),
+            Type::Bytes => (Type::U8, IterKind::Bytes),
             _ => {
                 self.tcx.rejects.push(reject(
                     "NS8021",
-                    "for-loop iteration is only supported over arrays in the C backend first slice",
+                    "for-loop iteration is only supported over arrays, maps, and bytes in the C backend first slice",
                 ));
                 return;
             }
@@ -596,19 +1083,52 @@ impl<'a> Emitter<'a> {
         self.pre.clear();
         let iter = self.expr(iterable);
         self.flush_pre();
+        let iter_var = self.fresh_id("it");
+        let iter_c_ty = self.tcx.c_type(&iter_ty);
+        let _ = writeln!(self.out, "    {iter_c_ty} {iter_var} = {iter};");
         let elem_c = self.tcx.c_type(&elem_ty);
         let idx = self.fresh_id("i");
-        let _ = writeln!(self.out, "    for (size_t {idx} = 0; {idx} < ({iter}).len; ++{idx}) {{");
         let _ = writeln!(
             self.out,
-            "        {elem_c} v_{} = *({elem_c}*)astra_array_index(&({iter}), {idx}, sizeof({elem_c}));",
-            sanitize(binding)
+            "    for (size_t {idx} = 0; {idx} < ({iter_var}).len; ++{idx}) {{"
         );
+        match kind {
+            IterKind::Map => {
+                let _ = writeln!(
+                    self.out,
+                    "        {elem_c} v_{} = *({elem_c}*)astra_map_key_at(&({iter_var}), {idx});",
+                    sanitize(binding)
+                );
+            }
+            IterKind::Array => {
+                let _ = writeln!(
+                    self.out,
+                    "        {elem_c} v_{} = *({elem_c}*)astra_array_index(&({iter_var}), {idx}, sizeof({elem_c}));",
+                    sanitize(binding)
+                );
+            }
+            IterKind::Bytes => {
+                let _ = writeln!(
+                    self.out,
+                    "        {elem_c} v_{} = astra_bytes_get({iter_var}, {idx});",
+                    sanitize(binding)
+                );
+            }
+        }
         self.emit_block_body(body, false, false);
         self.writeln_s("    }");
     }
 
     fn emit_expr_stmt(&mut self, e: &Expr) {
+        if let ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } = &e.kind
+        {
+            self.emit_if_stmt(condition, then_branch, else_branch.as_ref());
+            return;
+        }
         let ty = self.type_of(e).cloned();
         if matches!(ty, Some(Type::Never)) {
             self.pre.clear();
@@ -616,38 +1136,60 @@ impl<'a> Emitter<'a> {
             self.flush_pre();
             return;
         }
-        // When an if/else expression has all branches returning, emit it
-        // directly as imperative C instead of routing through the temp pattern.
-        if let ExprKind::If { condition, then_branch, else_branch } = &e.kind {
-            if self.all_branches_return(e) {
-                self.pre.clear();
-                let cond = self.expr(condition);
-                self.flush_pre();
-                let _ = writeln!(self.out, "    if ({cond}) {{");
-                for stmt in &then_branch.statements {
-                    self.emit_stmt(stmt);
-                }
-                match else_branch {
-                    Some(ElseBranch::Block(b)) => {
-                        self.writeln_s("    } else {");
-                        for stmt in &b.statements {
-                            self.emit_stmt(stmt);
-                        }
-                        self.writeln_s("    }");
-                    }
-                    Some(ElseBranch::If(inner)) => {
-                        self.out.push_str("    } else ");
-                        self.emit_expr_stmt(inner);
-                    }
-                    None => self.writeln_s("    }"),
-                }
-                return;
-            }
-        }
         self.pre.clear();
         let v = self.expr(e);
         self.flush_pre();
         self.emit_value_stmt(e, v, &ty);
+    }
+
+    fn emit_if_stmt(
+        &mut self,
+        condition: &Expr,
+        then_branch: &ast::Block,
+        else_branch: Option<&ElseBranch>,
+    ) {
+        self.pre.clear();
+        let cond = self.expr(condition);
+        self.flush_pre();
+        let _ = writeln!(self.out, "    if ({cond}) {{");
+        for stmt in &then_branch.statements {
+            self.emit_stmt(stmt);
+        }
+        self.emit_else_branch(else_branch);
+    }
+
+    fn emit_else_branch(&mut self, else_branch: Option<&ElseBranch>) {
+        match else_branch {
+            Some(ElseBranch::Block(b)) => {
+                self.writeln_s("    } else {");
+                for stmt in &b.statements {
+                    self.emit_stmt(stmt);
+                }
+                self.writeln_s("    }");
+            }
+            Some(ElseBranch::If(inner)) => {
+                if let ExprKind::If {
+                    condition: inner_cond,
+                    then_branch: inner_then,
+                    else_branch: inner_else,
+                } = &inner.kind
+                {
+                    self.pre.clear();
+                    let icond = self.expr(inner_cond);
+                    self.flush_pre();
+                    let _ = writeln!(self.out, "    }} else if ({icond}) {{");
+                    for stmt in &inner_then.statements {
+                        self.emit_stmt(stmt);
+                    }
+                    self.emit_else_branch(inner_else.as_ref());
+                } else {
+                    self.writeln_s("    } else {");
+                    self.emit_expr_stmt(inner);
+                    self.writeln_s("    }");
+                }
+            }
+            None => self.writeln_s("    }"),
+        }
     }
 
     /// Emits an expression-statement value with the right void handling.
@@ -688,11 +1230,21 @@ impl<'a> Emitter<'a> {
         match t {
             Type::Bool => "false".into(),
             Type::F32 | Type::F64 => "0.0".into(),
-            Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::U8 | Type::U16 | Type::U32
-            | Type::U64 | Type::Usize | Type::Isize => "0".into(),
+            Type::I8
+            | Type::I16
+            | Type::I32
+            | Type::I64
+            | Type::U8
+            | Type::U16
+            | Type::U32
+            | Type::U64
+            | Type::Usize
+            | Type::Isize => "0".into(),
             Type::Unit => "(NS_Unit){0}".into(),
             Type::Str => "(NS_Str){0}".into(),
+            Type::Bytes => "(NS_Bytes){0}".into(),
             Type::Array(_) | Type::Slice(_) => "(NS_Array){0}".into(),
+            Type::Map(_, _) => "(NS_Map){0}".into(),
             Type::Option(_) => format!("({}){{ .some = false }}", self.c_type(t)),
             Type::Result(_, _) => format!("({}){{ .ok = true }}", self.c_type(t)),
             _ => format!("(({}){{0}})", self.c_type(t)),
@@ -705,32 +1257,20 @@ impl<'a> Emitter<'a> {
         match &e.kind {
             ExprKind::Literal(lit) => self.literal_c(lit),
             ExprKind::Identifier(name) => self.identifier_c(name, e),
-            ExprKind::Unary {
-                operator,
-                operand,
-            } => self.unary_c(*operator, operand),
+            ExprKind::Unary { operator, operand } => self.unary_c(*operator, operand),
             ExprKind::Binary {
                 operator,
                 left,
                 right,
             } => self.binary_c(*operator, left, right, e),
             ExprKind::Assign { target, value } => self.assign_c(target, value),
-            ExprKind::Call {
-                callee,
-                arguments,
-            } => self.call_c(callee, arguments, e),
+            ExprKind::Call { callee, arguments } => self.call_c(callee, arguments, e),
             ExprKind::Index { target, index } => self.index_c(target, index, e),
             ExprKind::Member { target, member } => self.member_c(target, member, e),
             ExprKind::TypeArguments { target, .. } => self.expr(target),
             ExprKind::Propagate(inner) => self.propagate_c(inner),
             ExprKind::Array(elements) => self.array_literal_c(elements, e),
-            ExprKind::Map(_) => {
-                self.tcx.rejects.push(reject(
-                    "NS8013",
-                    "map literals are not supported by the C backend first slice",
-                ));
-                "(NS_Array){0}".into()
-            }
+            ExprKind::Map(entries) => self.map_literal_c(entries, e),
             ExprKind::Tuple(elements) => self.tuple_c(elements, e),
             ExprKind::StructInit { path, fields } => self.struct_init_c(path, fields),
             ExprKind::Block(block) => self.block_expr_c(block),
@@ -758,23 +1298,23 @@ impl<'a> Emitter<'a> {
             Literal::Integer(raw) => {
                 let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
                 // Strip a trailing `u8` byte-literal suffix if present.
-                let cleaned = cleaned
+
+                cleaned
                     .strip_suffix("u8")
                     .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
                     .unwrap_or(&cleaned)
-                    .to_string();
-                cleaned
+                    .to_string()
             }
             Literal::Float(raw) => raw.chars().filter(|c| *c != '_').collect::<String>(),
             Literal::String(value) => self.c_string_literal(value),
-            Literal::Bytes(_) => {
-                self.tcx.rejects.push(reject(
-                    "NS8014",
-                    "bytes literals are not supported by the C backend first slice",
-                ));
-                "(NS_Str){0}".into()
+            Literal::Bytes(bytes) => self.c_bytes_literal(bytes),
+            Literal::Bool(b) => {
+                if *b {
+                    "true".into()
+                } else {
+                    "false".into()
+                }
             }
-            Literal::Bool(b) => if *b { "true".into() } else { "false".into() },
             Literal::Unit => "(NS_Unit){0}".into(),
         }
     }
@@ -878,13 +1418,26 @@ impl<'a> Emitter<'a> {
         let r = self.expr(right);
         match op {
             BinaryOp::Equal | BinaryOp::NotEqual => {
-                let sym = if op == BinaryOp::Equal { "==" } else { "!=" };
-                if self.eq_supported(left) {
+                let ty = self.type_of(left).cloned();
+                if matches!(ty, Some(Type::Str)) {
+                    if op == BinaryOp::Equal {
+                        format!("astra_str_eq({l}, {r})")
+                    } else {
+                        format!("(!astra_str_eq({l}, {r}))")
+                    }
+                } else if matches!(ty, Some(Type::Bytes)) {
+                    if op == BinaryOp::Equal {
+                        format!("astra_bytes_eq({l}, {r})")
+                    } else {
+                        format!("(!astra_bytes_eq({l}, {r}))")
+                    }
+                } else if self.eq_supported(left) {
+                    let sym = if op == BinaryOp::Equal { "==" } else { "!=" };
                     format!("({l} {sym} {r})")
                 } else {
                     self.tcx.rejects.push(reject(
                         "NS8021",
-                        "equality is only supported for primitive values in the C backend first slice",
+                        "equality is only supported for primitive, str, and bytes values in the C backend first slice",
                     ));
                     "false".into()
                 }
@@ -896,7 +1449,14 @@ impl<'a> Emitter<'a> {
                     BinaryOp::Greater => ">",
                     _ => ">=",
                 };
-                format!("({l} {sym} {r})")
+                let ty = self.type_of(left).cloned();
+                if matches!(ty, Some(Type::Str)) {
+                    format!("(astra_str_cmp({l}, {r}) {sym} 0)")
+                } else if matches!(ty, Some(Type::Bytes)) {
+                    format!("(astra_bytes_cmp({l}, {r}) {sym} 0)")
+                } else {
+                    format!("({l} {sym} {r})")
+                }
             }
             BinaryOp::Add
             | BinaryOp::Subtract
@@ -915,27 +1475,28 @@ impl<'a> Emitter<'a> {
         matches!(
             self.type_of(e),
             Some(
-                Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::U8 | Type::U16 | Type::U32
-                    | Type::U64 | Type::Usize | Type::Isize | Type::F32 | Type::F64 | Type::Bool
+                Type::I8
+                    | Type::I16
+                    | Type::I32
+                    | Type::I64
+                    | Type::U8
+                    | Type::U16
+                    | Type::U32
+                    | Type::U64
+                    | Type::Usize
+                    | Type::Isize
+                    | Type::F32
+                    | Type::F64
+                    | Type::Bool
                     | Type::Unit
             )
         )
     }
 
-    fn arith_c(
-        &mut self,
-        op: BinaryOp,
-        left: &Expr,
-        right: &Expr,
-        l: &str,
-        r: &str,
-    ) -> String {
+    fn arith_c(&mut self, op: BinaryOp, left: &Expr, right: &Expr, l: &str, r: &str) -> String {
         let lt = self.type_of(left).cloned();
         let rt = self.type_of(right).cloned();
-        let numeric = match (&lt, &rt) {
-            (Some(a), Some(b)) if a.is_numeric() && b.is_numeric() => true,
-            _ => false,
-        };
+        let numeric = matches!((&lt, &rt), (Some(a), Some(b)) if a.is_numeric() && b.is_numeric());
         if !numeric {
             self.tcx.rejects.push(reject(
                 "NS8021",
@@ -946,7 +1507,10 @@ impl<'a> Emitter<'a> {
         let ty = lt.unwrap_or(Type::I32);
         let is_wrapping_op = matches!(
             op,
-            BinaryOp::AddWrap | BinaryOp::SubtractWrap | BinaryOp::MultiplyWrap | BinaryOp::DivideWrap
+            BinaryOp::AddWrap
+                | BinaryOp::SubtractWrap
+                | BinaryOp::MultiplyWrap
+                | BinaryOp::DivideWrap
         );
         let policy_wrapping = matches!(self.policy, IntegerPolicy::Wrapping);
         let sym = match op {
@@ -966,16 +1530,16 @@ impl<'a> Emitter<'a> {
         }
         // Signed integer addition/subtraction/multiplication must wrap without
         // invoking C signed-overflow undefined behavior (design §6.2).
-        if is_wrapping_op || policy_wrapping {
-            if let Some(width) = signed_width(&ty) {
-                let helper = match op {
-                    BinaryOp::Add | BinaryOp::AddWrap => format!("astra_add_{width}"),
-                    BinaryOp::Subtract | BinaryOp::SubtractWrap => format!("astra_sub_{width}"),
-                    BinaryOp::Multiply | BinaryOp::MultiplyWrap => format!("astra_mul_{width}"),
-                    _ => unreachable!(),
-                };
-                return format!("{helper}({l}, {r})");
-            }
+        if (is_wrapping_op || policy_wrapping)
+            && let Some(width) = signed_width(&ty)
+        {
+            let helper = match op {
+                BinaryOp::Add | BinaryOp::AddWrap => format!("astra_add_{width}"),
+                BinaryOp::Subtract | BinaryOp::SubtractWrap => format!("astra_sub_{width}"),
+                BinaryOp::Multiply | BinaryOp::MultiplyWrap => format!("astra_mul_{width}"),
+                _ => unreachable!(),
+            };
+            return format!("{helper}({l}, {r})");
         }
         format!("({l} {sym} {r})")
     }
@@ -1039,13 +1603,13 @@ impl<'a> Emitter<'a> {
                     _ => {}
                 }
                 // Tuple struct constructor call: `Pair(1, 2)`.
-                if let Some(shape) = self.tcx.env.struct_of(name).cloned() {
-                    if shape.tuple {
-                        let ty_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
-                        let vals: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
-                        let joined = vals.join(", ");
-                        return format!("({ty_c}){{ {joined} }}");
-                    }
+                if let Some(shape) = self.tcx.env.struct_of(name).cloned()
+                    && shape.tuple
+                {
+                    let ty_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
+                    let vals: Vec<String> = args.iter().map(|a| self.expr(a)).collect();
+                    let joined = vals.join(", ");
+                    return format!("({ty_c}){{ {joined} }}");
                 }
                 // User function call.
                 let arg_c = self.args_c(args);
@@ -1061,6 +1625,11 @@ impl<'a> Emitter<'a> {
                             // Enum variant constructor with payload.
                             if self.tcx.env.enum_of(owner).is_some() {
                                 return self.enum_variant_c(owner, member, args);
+                            }
+                            // Inline script export call: `<script>.<func>(...)`.
+                            if self.scripts.iter().any(|s| s.name == *owner) {
+                                let arg_c = self.args_c(args);
+                                return format!("{}({arg_c})", sanitize(member));
                             }
                         }
                     }
@@ -1086,34 +1655,46 @@ impl<'a> Emitter<'a> {
     }
 
     fn some_c(&mut self, args: &[Expr], e: &Expr) -> String {
-        let ty = self.type_of(e).cloned().unwrap_or(Type::Option(Box::new(Type::I32)));
+        let ty = self
+            .type_of(e)
+            .cloned()
+            .unwrap_or(Type::Option(Box::new(Type::I32)));
         let inner = match &ty {
             Type::Option(t) => (**t).clone(),
             _ => Type::I32,
         };
         let opt_c = self.tcx.c_type(&ty);
-        let val = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "(NS_Unit){0}".into());
+        let val = args
+            .first()
+            .map(|a| self.expr(a))
+            .unwrap_or_else(|| "(NS_Unit){0}".into());
         let _ = self.tcx.c_type(&inner);
         format!("({opt_c}){{ .some = true, .value = {val} }}")
     }
 
     fn ok_c(&mut self, args: &[Expr], e: &Expr) -> String {
-        let ty = self.type_of(e).cloned().unwrap_or(Type::Result(
-            Box::new(Type::Unit),
-            Box::new(Type::Unit),
-        ));
+        let ty = self
+            .type_of(e)
+            .cloned()
+            .unwrap_or(Type::Result(Box::new(Type::Unit), Box::new(Type::Unit)));
         let res_c = self.tcx.c_type(&ty);
-        let val = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "(NS_Unit){0}".into());
+        let val = args
+            .first()
+            .map(|a| self.expr(a))
+            .unwrap_or_else(|| "(NS_Unit){0}".into());
         format!("({res_c}){{ .ok = true, .value = {val} }}")
     }
 
     fn err_c(&mut self, args: &[Expr], e: &Expr) -> String {
-        let ty = self.type_of(e).cloned().unwrap_or(Type::Result(
-            Box::new(Type::Unit),
-            Box::new(Type::Unit),
-        ));
+        let ty = self
+            .type_of(e)
+            .cloned()
+            .unwrap_or(Type::Result(Box::new(Type::Unit), Box::new(Type::Unit)));
         let res_c = self.tcx.c_type(&ty);
-        let val = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "(NS_Unit){0}".into());
+        let val = args
+            .first()
+            .map(|a| self.expr(a))
+            .unwrap_or_else(|| "(NS_Unit){0}".into());
         format!("({res_c}){{ .ok = false, .error = {val} }}")
     }
 
@@ -1128,10 +1709,9 @@ impl<'a> Emitter<'a> {
                 .map(|v| v.fields.clone())
                 .unwrap_or_default(),
             None => {
-                self.tcx.rejects.push(reject(
-                    "NS8020",
-                    format!("enum '{owner}' is not declared"),
-                ));
+                self.tcx
+                    .rejects
+                    .push(reject("NS8020", format!("enum '{owner}' is not declared")));
                 return format!("({enum_c}){{0}}");
             }
         };
@@ -1177,10 +1757,11 @@ impl<'a> Emitter<'a> {
                 let r = self.expr(receiver);
                 let elem_ty = self.elem_type_of(receiver);
                 let elem_c = self.tcx.c_type(&elem_ty);
-                let val = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "0".into());
-                format!(
-                    "astra_array_push(&({r}), sizeof({elem_c}), &({elem_c}){{ {val} }})"
-                )
+                let val = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                format!("astra_array_push(&({r}), sizeof({elem_c}), &({elem_c}){{ {val} }})")
             }
             (Some(Type::Option(_)), "is_some") => {
                 let r = self.expr(receiver);
@@ -1189,6 +1770,107 @@ impl<'a> Emitter<'a> {
             (Some(Type::Option(_)), "is_none") => {
                 let r = self.expr(receiver);
                 format!("(!({r}).some)")
+            }
+            (Some(Type::Str), "slice") => {
+                let r = self.expr(receiver);
+                let start = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "0".into());
+                let len = args.get(1).map(|a| self.expr(a)).unwrap_or_else(|| "0".into());
+                format!("astra_str_slice({r}, {start}, {len})")
+            }
+            (Some(Type::Bytes), "len") => {
+                let r = self.expr(receiver);
+                format!("({r}).len")
+            }
+            (Some(Type::Bytes), "is_empty") => {
+                let r = self.expr(receiver);
+                format!("(({r}).len == 0)")
+            }
+            (Some(Type::Bytes), "slice") => {
+                let r = self.expr(receiver);
+                let start = args.first().map(|a| self.expr(a)).unwrap_or_else(|| "0".into());
+                let len = args.get(1).map(|a| self.expr(a)).unwrap_or_else(|| "0".into());
+                format!("astra_bytes_slice({r}, {start}, {len})")
+            }
+            (Some(Type::Map(key_ty, _)), "len") => {
+                let _ = key_ty; // only need receiver
+                let r = self.expr(receiver);
+                format!("astra_map_len(&({r}))")
+            }
+            (Some(Type::Map(key_ty, val_ty)), "contains") => {
+                let kt = (**key_ty).clone();
+                let key_c = self.tcx.c_type(&kt);
+                let r = self.expr(receiver);
+                let k = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let _ = val_ty;
+                // Hoist key into a temp to avoid &(T){(T){...}} double-wrap
+                let ktmp = self.freshid("mk");
+                let _ = writeln!(self.pre, "    {key_c} {ktmp} = {k};");
+                format!("astra_map_contains(&({r}), &{ktmp})")
+            }
+            (Some(Type::Map(key_ty, val_ty)), "get") => {
+                let kt = (**key_ty).clone();
+                let vt = (**val_ty).clone();
+                let key_c = self.tcx.c_type(&kt);
+                let val_c = self.tcx.c_type(&vt);
+                let r = self.expr(receiver);
+                let k = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                // Hoist key into a temp to avoid &(T){(T){...}} double-wrap
+                let ktmp = self.freshid("mk");
+                let _ = writeln!(self.pre, "    {key_c} {ktmp} = {k};");
+                // Returns Option<V>: wrap the raw pointer result in NS_Option_V
+                let opt_c = self.tcx.c_type(&Type::Option(Box::new(vt.clone())));
+                let tmp = self.freshid("mg");
+                let _ = writeln!(
+                    self.pre,
+                    "    void* {tmp}_ptr = astra_map_get(&({r}), &{ktmp});"
+                );
+                let _ = writeln!(
+                    self.pre,
+                    "    {opt_c} {tmp} = {tmp}_ptr ? ({opt_c}){{ .some = true, .value = *({val_c}*){tmp}_ptr }} : ({opt_c}){{ .some = false }};"
+                );
+                tmp
+            }
+            (Some(Type::Map(key_ty, val_ty)), "insert") => {
+                let kt = (**key_ty).clone();
+                let vt = (**val_ty).clone();
+                let key_c = self.tcx.c_type(&kt);
+                let val_c = self.tcx.c_type(&vt);
+                let r = self.expr(receiver);
+                let k = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let v = args
+                    .get(1)
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let mtmp = self.freshid("mr");
+                let _ = writeln!(self.pre, "    NS_Map* {mtmp} = &({r});");
+                let ktmp = self.freshid("mk");
+                let vtmp = self.freshid("mv");
+                let _ = writeln!(self.pre, "    {key_c} {ktmp} = {k};");
+                let _ = writeln!(self.pre, "    {val_c} {vtmp} = {v};");
+                let opt_c = self.tcx.c_type(&Type::Option(Box::new(vt.clone())));
+                let tmp = self.freshid("mi");
+                let _ = writeln!(
+                    self.pre,
+                    "    void* {tmp}_prev = astra_map_get({mtmp}, &{ktmp});"
+                );
+                let _ = writeln!(
+                    self.pre,
+                    "    {opt_c} {tmp} = {tmp}_prev ? ({opt_c}){{ .some = true, .value = *({val_c}*){tmp}_prev }} : ({opt_c}){{ .some = false }};"
+                );
+                let _ = writeln!(
+                    self.pre,
+                    "    astra_map_set({mtmp}, &{ktmp}, &{vtmp});"
+                );
+                tmp
             }
             _ => {
                 self.tcx.rejects.push(reject(
@@ -1225,6 +1907,7 @@ impl<'a> Emitter<'a> {
             Type::F64 => "f64",
             Type::Bool => "bool",
             Type::Str => "str",
+            Type::Bytes => "bytes",
             Type::Unit => "unit",
             _ => {
                 self.tcx.rejects.push(reject(
@@ -1247,33 +1930,34 @@ impl<'a> Emitter<'a> {
     }
 
     fn index_c(&mut self, target: &Expr, index: &Expr, _e: &Expr) -> String {
-        let elem_ty = self.elem_type_of(target);
-        let elem_c = self.tcx.c_type(&elem_ty);
+        let tt = self.type_of(target).cloned();
         let t = self.expr(target);
         let i = self.expr(index);
-        format!(
-            "(*({elem_c}*)astra_array_index(&({t}), {i}, sizeof({elem_c})))"
-        )
+        if matches!(tt, Some(Type::Bytes)) {
+            return format!("astra_bytes_get({t}, {i})");
+        }
+        let elem_ty = self.elem_type_of(target);
+        let elem_c = self.tcx.c_type(&elem_ty);
+        format!("(*({elem_c}*)astra_array_index(&({t}), {i}, sizeof({elem_c})))")
     }
 
     fn member_c(&mut self, target: &Expr, member: &str, e: &Expr) -> String {
         // Unit enum variant used as a value: `Color::Red`.
-        if let ExprKind::Identifier(owner) = &target.kind {
-            if let Some(shape) = self.tcx.env.enum_of(owner) {
-                if shape.variants.iter().any(|v| v.name == member) {
-                    return self.enum_variant_c(owner, member, &[]);
-                }
-            }
+        if let ExprKind::Identifier(owner) = &target.kind
+            && let Some(shape) = self.tcx.env.enum_of(owner)
+            && shape.variants.iter().any(|v| v.name == member)
+        {
+            return self.enum_variant_c(owner, member, &[]);
         }
         let tt = self.type_of(target).cloned();
         let t = self.expr(target);
         match &tt {
             Some(Type::Named(name, _)) if self.tcx.env.struct_of(name).is_some() => {
                 let shape = self.tcx.env.struct_of(name).cloned();
-                if let Some(s) = &shape {
-                    if s.fields.iter().any(|(f, _)| f == member) {
-                        return format!("({t}).{m}", m = field_c(member));
-                    }
+                if let Some(s) = &shape
+                    && s.fields.iter().any(|(f, _)| f == member)
+                {
+                    return format!("({t}).{m}", m = field_c(member));
                 }
                 self.tcx.rejects.push(reject(
                     "NS8020",
@@ -1296,7 +1980,9 @@ impl<'a> Emitter<'a> {
                 let _ = e;
                 self.tcx.rejects.push(reject(
                     "NS8021",
-                    format!("field access '.{member}' is not supported by the C backend first slice"),
+                    format!(
+                        "field access '.{member}' is not supported by the C backend first slice"
+                    ),
                 ));
                 "0".into()
             }
@@ -1312,9 +1998,52 @@ impl<'a> Emitter<'a> {
         let vals: Vec<String> = elements.iter().map(|el| self.expr(el)).collect();
         let n = vals.len();
         let joined = vals.join(", ");
-        format!(
-            "astra_array_new_lit({n}, sizeof({elem_c}), (const {elem_c}[]){{ {joined} }})"
-        )
+        format!("astra_array_new_lit({n}, sizeof({elem_c}), (const {elem_c}[]){{ {joined} }})")
+    }
+
+    /// Emits a map literal `{ k: v, ... }` into `self.pre` and returns the
+    /// local variable name holding the `NS_Map`.
+    fn map_literal_c(&mut self, entries: &[ast::MapEntry], e: &Expr) -> String {
+        let ty = self
+            .type_of(e)
+            .cloned()
+            .unwrap_or(Type::Map(Box::new(Type::Str), Box::new(Type::I32)));
+        let (key_ty, val_ty) = match &ty {
+            Type::Map(k, v) => ((**k).clone(), (**v).clone()),
+            _ => (Type::Str, Type::I32),
+        };
+        let key_c = self.tcx.c_type(&key_ty);
+        let val_c = self.tcx.c_type(&val_ty);
+        let key_is_str = key_ty == Type::Str;
+        let tmp = self.freshid("map");
+        let _ = writeln!(
+            self.pre,
+            "    NS_Map {tmp} = astra_map_new(sizeof({key_c}), sizeof({val_c}), {key_is_str});"
+        );
+        for entry in entries {
+            let k = self.expr(&entry.key);
+            let v = self.expr(&entry.value);
+            let ktmp = self.freshid("mk");
+            let vtmp = self.freshid("mv");
+            let _ = writeln!(self.pre, "    {key_c} {ktmp} = {k};");
+            let _ = writeln!(self.pre, "    {val_c} {vtmp} = {v};");
+            let _ = writeln!(
+                self.pre,
+                "    astra_map_set(&{tmp}, &{ktmp}, &{vtmp});"
+            );
+        }
+        tmp
+    }
+
+    /// Emits a bytes literal `b"..."` as a static `uint8_t` array and wraps it
+    /// in an `NS_Bytes` compound literal.
+    fn c_bytes_literal(&mut self, bytes: &[u8]) -> String {
+        let len = bytes.len();
+        if len == 0 {
+            return "(NS_Bytes){ .data = (const uint8_t*)\"\", .len = 0 }".into();
+        }
+        let hex: String = bytes.iter().map(|b| format!("0x{b:02X},")).collect();
+        format!("(NS_Bytes){{ .data = (const uint8_t[]){{ {hex} }}, .len = {len} }}")
     }
 
     fn tuple_c(&mut self, elements: &[Expr], _e: &Expr) -> String {
@@ -1342,10 +2071,9 @@ impl<'a> Emitter<'a> {
         let name = path.segments.last().map(String::as_str).unwrap_or("");
         let ty_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
         let Some(shape) = self.tcx.env.struct_of(name).cloned() else {
-            self.tcx.rejects.push(reject(
-                "NS8020",
-                format!("struct '{name}' is not declared"),
-            ));
+            self.tcx
+                .rejects
+                .push(reject("NS8020", format!("struct '{name}' is not declared")));
             return format!("({ty_c}){{0}}");
         };
         if shape.tuple {
@@ -1392,6 +2120,7 @@ impl<'a> Emitter<'a> {
 
     /// Emits a block whose tail value is assigned to `target` (a fresh temp).
     fn emit_block_value(&mut self, block: &ast::Block, target: &str, block_ty: &Type) {
+        self.defers.push(Vec::new());
         let n = block.statements.len();
         for (i, stmt) in block.statements.iter().enumerate() {
             let is_tail = i + 1 == n;
@@ -1401,7 +2130,7 @@ impl<'a> Emitter<'a> {
                 if matches!(&stmt.kind, StmtKind::Return { .. }) {
                     self.emit_stmt_into_pre(stmt);
                 } else {
-                    self.emit_block_tail(stmt, target, block_ty);
+                    self.emit_block_tail_into_pre(stmt, target, block_ty);
                 }
             } else {
                 self.emit_stmt_into_pre(stmt);
@@ -1410,14 +2139,31 @@ impl<'a> Emitter<'a> {
         if block.statements.is_empty() && block_ty == &Type::Unit {
             let _ = writeln!(self.pre, "        {target} = (NS_Unit){{0}};");
         }
+        self.emit_scope_defers_into_pre();
+        self.defers.pop();
     }
 
     fn emit_stmt_into_pre(&mut self, stmt: &Stmt) {
         // Emit a statement into `self.pre` instead of `self.out`.
-        let saved = std::mem::take(&mut self.out);
+        let saved_out = std::mem::take(&mut self.out);
+        let saved_pre = std::mem::take(&mut self.pre);
         self.emit_stmt(stmt);
-        self.pre.push_str(&self.out);
-        self.out = saved;
+        let mut result = saved_pre;
+        result.push_str(&self.out);
+        result.push_str(&self.pre);
+        self.pre = result;
+        self.out = saved_out;
+    }
+
+    fn emit_block_tail_into_pre(&mut self, stmt: &Stmt, target: &str, block_ty: &Type) {
+        let saved_out = std::mem::take(&mut self.out);
+        let saved_pre = std::mem::take(&mut self.pre);
+        self.emit_block_tail(stmt, target, block_ty);
+        let mut result = saved_pre;
+        result.push_str(&self.out);
+        result.push_str(&self.pre);
+        self.pre = result;
+        self.out = saved_out;
     }
 
     fn emit_block_tail(&mut self, stmt: &Stmt, target: &str, block_ty: &Type) {
@@ -1517,8 +2263,8 @@ impl<'a> Emitter<'a> {
                 self.match_struct(scrut, name, arms, target)
             }
             Type::Tuple(_) => self.match_tuple(scrut, scrut_ty, arms, target),
-            ty if ty.is_numeric() || matches!(ty, Type::Bool) => {
-                self.match_literal(scrut, arms, target)
+            ty if ty.is_numeric() || matches!(ty, Type::Bool | Type::Str | Type::Bytes) => {
+                self.match_literal(scrut, scrut_ty, arms, target)
             }
             _ => {
                 self.tcx.rejects.push(reject(
@@ -1543,13 +2289,13 @@ impl<'a> Emitter<'a> {
         };
         let _ = writeln!(self.out, "    if (({scrut}).some) {{");
         for arm in arms {
-            if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind {
-                if path.segments.last().map(String::as_str) == Some("Some") {
-                    if let Some(p) = arguments.first() {
-                        self.bind_pattern(p, &format!("({scrut}).value"), &inner);
-                    }
-                    self.emit_arm_body(&arm.body, target, result_ty);
+            if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind
+                && path.segments.last().map(String::as_str) == Some("Some")
+            {
+                if let Some(p) = arguments.first() {
+                    self.bind_pattern(p, &format!("({scrut}).value"), &inner);
                 }
+                self.emit_arm_body(&arm.body, target, result_ty);
             }
         }
         self.writeln_s("    } else {");
@@ -1581,24 +2327,24 @@ impl<'a> Emitter<'a> {
         };
         let _ = writeln!(self.out, "    if (({scrut}).ok) {{");
         for arm in arms {
-            if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind {
-                if path.segments.last().map(String::as_str) == Some("Ok") {
-                    if let Some(p) = arguments.first() {
-                        self.bind_pattern(p, &format!("({scrut}).value"), &ok_t);
-                    }
-                    self.emit_arm_body(&arm.body, target, result_ty);
+            if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind
+                && path.segments.last().map(String::as_str) == Some("Ok")
+            {
+                if let Some(p) = arguments.first() {
+                    self.bind_pattern(p, &format!("({scrut}).value"), &ok_t);
                 }
+                self.emit_arm_body(&arm.body, target, result_ty);
             }
         }
         self.writeln_s("    } else {");
         for arm in arms {
-            if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind {
-                if path.segments.last().map(String::as_str) == Some("Err") {
-                    if let Some(p) = arguments.first() {
-                        self.bind_pattern(p, &format!("({scrut}).error"), &err_t);
-                    }
-                    self.emit_arm_body(&arm.body, target, result_ty);
+            if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind
+                && path.segments.last().map(String::as_str) == Some("Err")
+            {
+                if let Some(p) = arguments.first() {
+                    self.bind_pattern(p, &format!("({scrut}).error"), &err_t);
                 }
+                self.emit_arm_body(&arm.body, target, result_ty);
             }
         }
         self.writeln_s("    }");
@@ -1609,7 +2355,11 @@ impl<'a> Emitter<'a> {
         let mut default_arm: Option<usize> = None;
         for (i, arm) in arms.iter().enumerate() {
             match &arm.pattern.kind {
-                PatternKind::Variant { path, variant, arguments } => {
+                PatternKind::Variant {
+                    path,
+                    variant,
+                    arguments,
+                } => {
                     let owner = path.segments.last().map(String::as_str).unwrap_or(name);
                     let _ = writeln!(
                         self.out,
@@ -1617,20 +2367,18 @@ impl<'a> Emitter<'a> {
                         sanitize(owner),
                         sanitize(variant)
                     );
-                    if let Some(args) = arguments {
-                        if let Some(shape) = self.tcx.env.enum_of(owner).cloned() {
-                            if let Some(vshape) = shape.variants.iter().find(|v| &v.name == variant)
-                            {
-                                for (j, subpat) in args.iter().enumerate() {
-                                    let field_ty = vshape.fields.get(j).cloned().unwrap_or(Type::Unit);
-                                    let payload = if vshape.fields.len() == 1 {
-                                        format!("({scrut}).payload.{}", field_c(variant))
-                                    } else {
-                                        format!("({scrut}).payload.{}._{j}", field_c(variant))
-                                    };
-                                    self.bind_pattern(subpat, &payload, &field_ty);
-                                }
-                            }
+                    if let Some(args) = arguments
+                        && let Some(shape) = self.tcx.env.enum_of(owner).cloned()
+                        && let Some(vshape) = shape.variants.iter().find(|v| &v.name == variant)
+                    {
+                        for (j, subpat) in args.iter().enumerate() {
+                            let field_ty = vshape.fields.get(j).cloned().unwrap_or(Type::Unit);
+                            let payload = if vshape.fields.len() == 1 {
+                                format!("({scrut}).payload.{}", field_c(variant))
+                            } else {
+                                format!("({scrut}).payload.{}._{j}", field_c(variant))
+                            };
+                            self.bind_pattern(subpat, &payload, &field_ty);
                         }
                     }
                     self.emit_arm_body(&arm.body, target, &Type::Unit);
@@ -1653,7 +2401,11 @@ impl<'a> Emitter<'a> {
             let arm = &arms[i];
             if let PatternKind::Identifier(pat_name) = &arm.pattern.kind {
                 let enum_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
-                let _ = writeln!(self.out, "        {enum_c} v_{} = {scrut};", sanitize(pat_name));
+                let _ = writeln!(
+                    self.out,
+                    "        {enum_c} v_{} = {scrut};",
+                    sanitize(pat_name)
+                );
             }
             self.emit_arm_body(&arm.body, target, &Type::Unit);
             self.writeln_s("        break;");
@@ -1664,22 +2416,25 @@ impl<'a> Emitter<'a> {
 
     fn match_struct(&mut self, scrut: &str, name: &str, arms: &[MatchArm], target: Option<&str>) {
         let Some(shape) = self.tcx.env.struct_of(name).cloned() else {
-            self.tcx.rejects.push(reject(
-                "NS8020",
-                format!("struct '{name}' is not declared"),
-            ));
+            self.tcx
+                .rejects
+                .push(reject("NS8020", format!("struct '{name}' is not declared")));
             return;
         };
         for arm in arms {
-            if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind {
-                if path.segments.last().map(String::as_str) == Some(name) {
-                    for (j, subpat) in arguments.iter().enumerate() {
-                        let (fname, fty) = shape.fields.get(j).cloned().unwrap_or((format!("_{j}"), Type::Unit));
-                        self.bind_pattern(subpat, &format!("({scrut}).{fname}"), &fty);
-                    }
-                    self.emit_arm_body(&arm.body, target, &Type::Unit);
-                    return;
+            if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind
+                && path.segments.last().map(String::as_str) == Some(name)
+            {
+                for (j, subpat) in arguments.iter().enumerate() {
+                    let (fname, fty) = shape
+                        .fields
+                        .get(j)
+                        .cloned()
+                        .unwrap_or((format!("_{j}"), Type::Unit));
+                    self.bind_pattern(subpat, &format!("({scrut}).{fname}"), &fty);
                 }
+                self.emit_arm_body(&arm.body, target, &Type::Unit);
+                return;
             }
             if let PatternKind::Identifier(n) = &arm.pattern.kind {
                 let s_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
@@ -1698,7 +2453,13 @@ impl<'a> Emitter<'a> {
         ));
     }
 
-    fn match_tuple(&mut self, scrut: &str, scrut_ty: &Type, arms: &[MatchArm], target: Option<&str>) {
+    fn match_tuple(
+        &mut self,
+        scrut: &str,
+        scrut_ty: &Type,
+        arms: &[MatchArm],
+        target: Option<&str>,
+    ) {
         let Some(PatternKind::Tuple(subpats)) = arms.first().map(|a| &a.pattern.kind) else {
             self.tcx.rejects.push(reject(
                 "NS8021",
@@ -1719,18 +2480,29 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn match_literal(&mut self, scrut: &str, arms: &[MatchArm], target: Option<&str>) {
+    fn match_literal(
+        &mut self,
+        scrut: &str,
+        scrut_ty: &Type,
+        arms: &[MatchArm],
+        target: Option<&str>,
+    ) {
         let mut first = true;
         let mut fallback: Option<usize> = None;
         for (i, arm) in arms.iter().enumerate() {
             match &arm.pattern.kind {
                 PatternKind::Literal(lit) => {
                     let lit_c = self.literal_c(lit);
+                    let cond = match scrut_ty {
+                        Type::Str => format!("astra_str_eq({scrut}, {lit_c})"),
+                        Type::Bytes => format!("astra_bytes_eq({scrut}, {lit_c})"),
+                        _ => format!("{scrut} == {lit_c}"),
+                    };
                     if first {
-                        let _ = writeln!(self.out, "    if ({scrut} == {lit_c}) {{");
+                        let _ = writeln!(self.out, "    if ({cond}) {{");
                         first = false;
                     } else {
-                        let _ = writeln!(self.out, "    }} else if ({scrut} == {lit_c}) {{");
+                        let _ = writeln!(self.out, "    }} else if ({cond}) {{");
                     }
                     self.emit_arm_body(&arm.body, target, &Type::Unit);
                 }
@@ -1746,11 +2518,14 @@ impl<'a> Emitter<'a> {
             }
         }
         if let Some(i) = fallback {
+            let arm = &arms[i];
             if first {
-                self.emit_arm_body(&arms[i].body, target, &Type::Unit);
+                self.bind_pattern(&arm.pattern, scrut, scrut_ty);
+                self.emit_arm_body(&arm.body, target, &Type::Unit);
             } else {
                 self.writeln_s("    } else {");
-                self.emit_arm_body(&arms[i].body, target, &Type::Unit);
+                self.bind_pattern(&arm.pattern, scrut, scrut_ty);
+                self.emit_arm_body(&arm.body, target, &Type::Unit);
                 self.writeln_s("    }");
             }
         } else if !first {
@@ -1793,10 +2568,12 @@ impl<'a> Emitter<'a> {
                         self.emit_stmt_into_pre(stmt);
                     }
                 }
-                if b.statements.is_empty() && target.is_some() && result_ty == &Type::Unit {
-                    if let Some(t) = target {
-                        let _ = writeln!(self.out, "        {t} = (NS_Unit){{0}};");
-                    }
+                if b.statements.is_empty()
+                    && target.is_some()
+                    && result_ty == &Type::Unit
+                    && let Some(t) = target
+                {
+                    let _ = writeln!(self.out, "        {t} = (NS_Unit){{0}};");
                 }
                 self.writeln_s("        }");
             }
@@ -1857,7 +2634,11 @@ impl<'a> Emitter<'a> {
                 let name = path.segments.last().map(String::as_str).unwrap_or("");
                 if let Some(shape) = self.tcx.env.struct_of(name).cloned() {
                     for (i, subpat) in arguments.iter().enumerate() {
-                        let (_, fty) = shape.fields.get(i).cloned().unwrap_or((format!("_{i}"), Type::Unit));
+                        let (_, fty) = shape
+                            .fields
+                            .get(i)
+                            .cloned()
+                            .unwrap_or((format!("_{i}"), Type::Unit));
                         self.bind_pattern(subpat, &format!("({c_expr})._{i}"), &fty);
                     }
                 } else {
@@ -1880,14 +2661,6 @@ impl<'a> Emitter<'a> {
                 ));
             }
         }
-    }
-
-    fn span_of(&self, _scrut: &str) -> astra_core::span::Span {
-        // The annotations table is keyed by source spans, not C expressions, so
-        // callers pass the scrutinee type directly. This helper exists only to
-        // keep the option/result matchers readable; they fall back to Unit when
-        // the span is unavailable.
-        astra_core::span::Span::default()
     }
 
     fn propagate_c(&mut self, inner: &Expr) -> String {
@@ -1992,7 +2765,10 @@ fn panic_payload(msg_expr: &str) -> String {
 }
 
 fn is_signed_int(ty: &Type) -> bool {
-    matches!(ty, Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize)
+    matches!(
+        ty,
+        Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize
+    )
 }
 
 fn signed_width(ty: &Type) -> Option<&'static str> {
