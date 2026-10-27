@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   basename,
   dirname,
@@ -64,6 +64,7 @@ Options:
 
 build options:
   --target <name>        Select a target from the manifest
+  --emit <kind>          Artifact kind: executable, staticlib, or cdylib
   --compiler <path>      Use a specific astra-compiler binary
   --json                 Print a machine-readable build report
 
@@ -124,6 +125,7 @@ interface FmtOptions {
 interface BuildOptions {
   readonly project: string;
   readonly target: string | undefined;
+  readonly emit: string | undefined;
   readonly json: boolean;
   readonly compilerPath: string | undefined;
 }
@@ -285,6 +287,58 @@ function findNativeCompiler(): string | null {
   return fallback;
 }
 
+/** Collects the manifest's native code-generation flags for one target. */
+function buildCflags(targetConfig: Record<string, unknown>): string[] {
+  const cflags: string[] = [];
+  if (Array.isArray(targetConfig["cflags"])) {
+    for (const flag of targetConfig["cflags"]) {
+      if (typeof flag === "string") {
+        cflags.push(flag);
+      }
+    }
+  }
+  const optLevel = targetConfig["optLevel"] ?? targetConfig["optimization"];
+  if (typeof optLevel === "string" || typeof optLevel === "number") {
+    cflags.push(`-O${String(optLevel).replace(/^-?O?/, "")}`);
+  }
+  const triple = targetConfig["triple"] ?? targetConfig["targetTriple"];
+  if (typeof triple === "string") {
+    cflags.push(`--target=${triple}`);
+  }
+  return cflags;
+}
+
+/**
+ * Finds an archiver compatible with the selected C compiler.
+ *
+ * Uses the compiler's own answer first (`gcc -print-prog-name=ar`) and then the
+ * usual LLVM/GNU tools. Standard `ar` is deliberately preferred over writing
+ * an archive ourselves: it is the format every consumer toolchain already
+ * understands.
+ */
+function findArchiver(compilerBin: string): string | null {
+  const candidates: string[] = [];
+  const printed = spawnSync(compilerBin, ["-print-prog-name=ar"], {
+    windowsHide: true,
+    encoding: "utf8",
+  });
+  if (printed.status === 0) {
+    const value = printed.stdout.trim();
+    if (value.length > 0) {
+      candidates.push(value);
+    }
+  }
+  candidates.push("llvm-ar", "gcc-ar", "ar");
+
+  for (const candidate of candidates) {
+    const probe = spawnSync(candidate, ["--version"], { windowsHide: true });
+    if (probe.status === 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function parseFmtArgs(args: readonly string[], cwd: string): FmtOptions {
   let check = false;
   let json = false;
@@ -346,6 +400,7 @@ function parseFmtArgs(args: readonly string[], cwd: string): FmtOptions {
 function parseBuildArgs(args: readonly string[], cwd: string): BuildOptions {
   let json = false;
   let target: string | undefined;
+  let emit: string | undefined;
   let compilerPath: string | undefined;
   const positional: string[] = [];
 
@@ -365,13 +420,15 @@ function parseBuildArgs(args: readonly string[], cwd: string): BuildOptions {
       continue;
     }
 
-    if (arg === "--target" || arg === "--compiler") {
+    if (arg === "--target" || arg === "--compiler" || arg === "--emit") {
       const value = args[index + 1];
       if (value === undefined || value.startsWith("-")) {
         throw new CliError("NS9000", `The ${arg} option requires a value.`);
       }
       if (arg === "--target") {
         target = value;
+      } else if (arg === "--emit") {
+        emit = value;
       } else {
         compilerPath = value;
       }
@@ -393,6 +450,7 @@ function parseBuildArgs(args: readonly string[], cwd: string): BuildOptions {
   return {
     project: resolve(cwd, positional[0] ?? "."),
     target,
+    emit,
     json,
     compilerPath,
   };
@@ -1163,6 +1221,29 @@ function runBuild(args: readonly string[], cwd: string): number {
       }
     }
 
+    const emitValue = options.emit ?? targetConfig["emit"] ?? "executable";
+    const emitKind =
+      emitValue === "library" || emitValue === "lib" ? "staticlib" : emitValue;
+    if (
+      emitKind !== "executable" &&
+      emitKind !== "staticlib" &&
+      emitKind !== "cdylib"
+    ) {
+      throw new CliError(
+        "NS9000",
+        `Unknown emit kind '${String(emitValue)}'. Use executable, staticlib, cdylib, or library.`,
+        displayPath(manifest.file.path, cwd),
+      );
+    }
+    const libraryMode = emitKind !== "executable";
+    if (libraryMode && backend !== "c" && backend !== "native") {
+      throw new CliError(
+        "NS8001",
+        `Target '${targetName}' uses backend '${String(backend)}'; library emission requires the 'c' or 'native' backend.`,
+        displayPath(manifest.file.path, cwd),
+      );
+    }
+
     const nova = isRecord(manifest.data["nova"]) ? manifest.data["nova"] : {};
     const entryValue = nova["entry"];
     if (typeof entryValue !== "string" || entryValue.length === 0) {
@@ -1254,7 +1335,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       let files: CBuildFile[];
       let diagnostics: ReportedDiagnostic[];
 
-      if (projectSources.length <= 1) {
+      if (projectSources.length <= 1 && !libraryMode) {
         const single = client.compile({
           source: { path: entryKey, text: source },
           target: "c",
@@ -1287,6 +1368,7 @@ function runBuild(args: readonly string[], cwd: string): number {
           })),
           target: "c",
           ...sharedParams,
+          ...(libraryMode ? { library: true } : {}),
         });
         diagnostics = project.diagnostics.map((diagnostic) =>
           reportDiagnostic(sourceFile, source, diagnostic),
@@ -1364,10 +1446,134 @@ function runBuild(args: readonly string[], cwd: string): number {
         );
       }
 
-      let outputPath: string;
-      outputPath = mainCPath || outDir;
+      let outputPath: string = mainCPath || outDir;
 
-      if (backend === "native") {
+      if (libraryMode) {
+        const compilerBin = findNativeCompiler();
+        if (!compilerBin) {
+          throw new CliError(
+            "NS9008",
+            "No C compiler (clang, gcc, or cc) found on PATH to build a library.",
+            displayPath(outDir, cwd),
+          );
+        }
+        if (!mainCPath || !hostCPath) {
+          throw new CliError(
+            "NS8001",
+            "Compiler did not produce the expected C artifacts for library emission.",
+            displayPath(outDir, cwd),
+          );
+        }
+        const cflags = buildCflags(targetConfig);
+        const objDir = resolve(outDir, "obj");
+        try {
+          mkdirSync(objDir, { recursive: true });
+        } catch (error) {
+          throw new CliError(
+            "NS9008",
+            `Unable to create the object directory: ${errorMessage(error)}`,
+            displayPath(objDir, cwd),
+          );
+        }
+
+        const compileObject = (source: string, object: string): void => {
+          const isCpp = source.endsWith(".cpp");
+          const proc = spawnSync(
+            compilerBin,
+            [
+              isCpp ? "-std=c++17" : "-std=c17",
+              "-Wall",
+              "-Wno-unused-variable",
+              ...cflags,
+              "-c",
+              "-o",
+              object,
+              source,
+            ],
+            { windowsHide: true, encoding: "utf8" },
+          );
+          if (proc.status !== 0) {
+            throw new CliError(
+              "NS9008",
+              `Library object compilation failed for ${basename(source)}:\n${proc.stderr}`,
+              displayPath(outDir, cwd),
+            );
+          }
+        };
+
+        const objects: string[] = [];
+        for (const source of [...cSourcePaths, ...scriptPaths]) {
+          const object = resolve(
+            objDir,
+            `${basename(source, extname(source))}.o`,
+          );
+          compileObject(source, object);
+          objects.push(object);
+        }
+
+        const packageName = getPackageName(manifest) ?? targetName;
+        const libStem = `lib${packageName.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
+        const hasCpp = scriptPaths.some((path) => path.endsWith(".cpp"));
+
+        if (emitKind === "staticlib") {
+          // A static archive contains the module objects only. The hosted
+          // runtime stays a separate link input (`astra_host.c`), matching the
+          // ABI contract in `Docs/Design/V1/11-c-abi.md` and avoiding duplicate
+          // runtime symbols when several Astra libraries are linked together.
+          const archiver = findArchiver(compilerBin);
+          if (!archiver) {
+            throw new CliError(
+              "NS9008",
+              "No archiver (ar, llvm-ar, or gcc-ar) found to build a static library.",
+              displayPath(outDir, cwd),
+            );
+          }
+          const archive = resolve(outDir, `${libStem}.a`);
+          rmSync(archive, { force: true });
+          const proc = spawnSync(
+            archiver,
+            ["rcs", archive, ...objects],
+            { windowsHide: true, encoding: "utf8" },
+          );
+          if (proc.status !== 0) {
+            throw new CliError(
+              "NS9008",
+              `Static library creation failed with ${archiver}:\n${proc.stderr}`,
+              displayPath(outDir, cwd),
+            );
+          }
+          outputPath = archive;
+        } else {
+          // A shared library carries the runtime shim so consumers link one
+          // artifact. Windows needs explicit symbol export (MinGW PE).
+          const hostObject = resolve(objDir, "astra_host.o");
+          compileObject(hostCPath, hostObject);
+          const sharedExt = process.platform === "win32" ? ".dll" : ".so";
+          const shared = resolve(outDir, `${libStem}${sharedExt}`);
+          const linkArgs = ["-shared", "-o", shared, ...objects, hostObject];
+          if (process.platform === "win32") {
+            linkArgs.push(
+              "-Wl,--export-all-symbols",
+              `-Wl,--out-implib,${resolve(outDir, `${libStem}.dll.a`)}`,
+            );
+          }
+          if (hasCpp) {
+            linkArgs.push("-lstdc++");
+          }
+          const proc = spawnSync(compilerBin, linkArgs, {
+            windowsHide: true,
+            encoding: "utf8",
+          });
+          if (proc.status !== 0) {
+            throw new CliError(
+              "NS9008",
+              `Shared library link failed with ${compilerBin}:\n${proc.stderr}`,
+              displayPath(outDir, cwd),
+            );
+          }
+          outputPath = shared;
+        }
+      } else if (backend === "native") {
         if (!mainCPath || !hostCPath) {
           throw new CliError(
             "NS8001",
@@ -1385,20 +1591,7 @@ function runBuild(args: readonly string[], cwd: string): number {
             displayPath(outDir, cwd),
           );
         }
-        const cflags: string[] = [];
-        if (Array.isArray(targetConfig["cflags"])) {
-          for (const f of targetConfig["cflags"]) {
-            if (typeof f === "string") cflags.push(f);
-          }
-        }
-        const optLevel = targetConfig["optLevel"] ?? targetConfig["optimization"];
-        if (typeof optLevel === "string" || typeof optLevel === "number") {
-          cflags.push(`-O${String(optLevel).replace(/^-?O?/, "")}`);
-        }
-        const triple = targetConfig["triple"] ?? targetConfig["targetTriple"];
-        if (typeof triple === "string") {
-          cflags.push(`--target=${triple}`);
-        }
+        const cflags = buildCflags(targetConfig);
         const hasCpp = scriptPaths.some((p) => p.endsWith(".cpp"));
         const compileArgs = [
           "-std=c17",

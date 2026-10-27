@@ -502,6 +502,10 @@ pub struct ProjectCompileRequest {
     /// Integer arithmetic policy. Defaults to wrapping.
     #[serde(default)]
     pub integer_policy: IntegerPolicy,
+    /// Emit a library artifact: suppress the `int main(void)` wrapper while
+    /// keeping `pub` functions external. Defaults to an executable.
+    #[serde(default)]
+    pub library: bool,
 }
 
 /// Per-module artifact in a `ProjectCompileResponse`.
@@ -698,7 +702,14 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
         })
         .collect();
 
-    match astra_codegen_c::generate_project(&entries) {
+    match astra_codegen_c::generate_project_with_kind(
+        &entries,
+        if request.library {
+            astra_codegen_c::EmitKind::Library
+        } else {
+            astra_codegen_c::EmitKind::Executable
+        },
+    ) {
         Ok(generated) => {
             let mut modules = Vec::new();
             let mut host_shim = String::new();

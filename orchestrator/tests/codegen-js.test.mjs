@@ -1562,6 +1562,181 @@ test("astra build --target native links an inline @script:c block", (t) => {
   }
 });
 
+test("astra build --emit staticlib produces a linkable C library", (t) => {
+  const compiler = hostedCCompiler();
+  if (compiler === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-staticlib-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "mathlib", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "c", defaultMode: "core" },
+          nova: { entry: "src/lib.ns" },
+          targets: { c: { backend: "c", mode: "core", outDir: "dist/lib" } },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "lib.ns"),
+      [
+        "pub fn add(a: i32, b: i32) -> i32 {",
+        "    return a + b",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const built = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "c", "--emit", "staticlib"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(built.status, 0, built.stderr);
+
+    const outDir = join(project, "dist", "lib");
+    const archive = join(outDir, "libmathlib.a");
+    assert.ok(existsSync(archive), `expected ${archive} to exist`);
+    const header = readFileSync(join(outDir, "src_lib.h"), "utf8");
+    assert.match(header, /ns_src_lib_add/);
+    assert.doesNotMatch(readFileSync(join(outDir, "src_lib.c"), "utf8"), /int main\(void\)/);
+
+    const consumer = join(outDir, "consumer.c");
+    writeFileSync(
+      consumer,
+      [
+        "#include <stdio.h>",
+        '#include "src_lib.h"',
+        "",
+        "int main(void) {",
+        "    printf(\"%d\\n\", ns_src_lib_add(20, 22));",
+        "    return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const exe = join(outDir, "consumer.exe");
+    const linked = spawnSync(
+      compiler,
+      [
+        "-std=c17",
+        consumer,
+        "-I",
+        outDir,
+        archive,
+        join(outDir, "astra_host.c"),
+        "-o",
+        exe,
+      ],
+      { encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(linked.status, 0, linked.stderr);
+    const run = spawnSync(exe, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --emit cdylib produces a runnable shared library", (t) => {
+  const compiler = hostedCCompiler();
+  if (compiler === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-cdylib-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "mathlib", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "c", defaultMode: "core" },
+          nova: { entry: "src/lib.ns" },
+          targets: { c: { backend: "c", mode: "core", outDir: "dist/lib" } },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "lib.ns"),
+      [
+        "pub fn add(a: i32, b: i32) -> i32 {",
+        "    return a + b",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const built = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "c", "--emit", "cdylib"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(built.status, 0, built.stderr);
+
+    const outDir = join(project, "dist", "lib");
+    const shared = join(
+      outDir,
+      process.platform === "win32" ? "libmathlib.dll" : "libmathlib.so",
+    );
+    assert.ok(existsSync(shared), `expected ${shared} to exist`);
+
+    const consumer = join(outDir, "consumer.c");
+    writeFileSync(
+      consumer,
+      [
+        "#include <stdio.h>",
+        '#include "src_lib.h"',
+        "",
+        "int main(void) {",
+        "    printf(\"%d\\n\", ns_src_lib_add(20, 22));",
+        "    return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const exe = join(outDir, "consumer.exe");
+    const linkArgs =
+      process.platform === "win32"
+        ? ["-std=c17", consumer, "-I", outDir, join(outDir, "libmathlib.dll.a"), "-o", exe]
+        : ["-std=c17", consumer, "-I", outDir, "-L", outDir, "-lmathlib", `-Wl,-rpath,${outDir}`, "-o", exe];
+    const linked = spawnSync(compiler, linkArgs, {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    assert.equal(linked.status, 0, linked.stderr);
+    // Run from the library directory so Windows finds the DLL.
+    const run = spawnSync(exe, [], {
+      cwd: outDir,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("astra build --target c emits one qualified translation unit per module", () => {
   const project = mkdtempSync(join(tmpdir(), "astra-build-c-multi-"));
   try {

@@ -16,7 +16,7 @@
 use std::path::PathBuf;
 
 use astra_capabilities::Mode;
-use astra_codegen_c::{CModule, IntegerPolicy, ProjectEntry, generate, generate_project};
+use astra_codegen_c::{CModule, EmitKind, IntegerPolicy, ProjectEntry, generate};
 use astra_core::checker::{CheckOptions, check_resolved};
 use astra_core::parser::parse;
 use astra_core::resolver::resolve_module;
@@ -185,6 +185,14 @@ fn compile_project_and_emit(modules: &[(&str, &str)]) -> Vec<(String, String, Op
 fn try_compile_project(
     modules: &[(&str, &str)],
 ) -> Result<Vec<(String, String, Option<String>)>, astra_codegen_c::BackendError> {
+    try_compile_project_kind(modules, EmitKind::Executable)
+}
+
+/// Project emission for a specific artifact kind.
+fn try_compile_project_kind(
+    modules: &[(&str, &str)],
+    kind: EmitKind,
+) -> Result<Vec<(String, String, Option<String>)>, astra_codegen_c::BackendError> {
     let project: Vec<ProjectModule> = modules
         .iter()
         .map(|(key, source)| ProjectModule {
@@ -224,7 +232,7 @@ fn try_compile_project(
         })
         .collect();
 
-    let generated = generate_project(&entries)?;
+    let generated = astra_codegen_c::generate_project_with_kind(&entries, kind)?;
     Ok(entries
         .iter()
         .zip(generated.iter())
@@ -941,6 +949,68 @@ pub fn main() -> i32 {
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines, vec!["3", "-1", "-1"]);
     }
+}
+
+/// `Array<T>.get(i)` was implemented by the checker but not by the C emitter.
+/// It must return `Option<T>` and stay in bounds instead of using the panicking
+/// index path.
+#[test]
+fn array_get_returns_bounded_option() {
+    let src = r#"
+pub fn main() -> i32 {
+    let xs = [10, 20, 30]
+    println(xs.get(1).unwrap_or(0))
+    println(xs.get(9).unwrap_or(-1))
+    println(xs.get(0).is_some())
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("astra_array_index"),
+        "expected the array runtime helper:\n{out}"
+    );
+    assert!(
+        out.contains("NS_Option_i32"),
+        "expected an Option<i32> result:\n{out}"
+    );
+    assert_clang_ok(&out);
+    if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
+        assert!(ok, "execution failed:\nstderr:\n{stderr}");
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines, vec!["20", "-1", "true"]);
+    }
+}
+
+#[test]
+fn library_emission_omits_main_and_exports_public_functions() {
+    let modules = &[(
+        "src/lib.ns",
+        "module demo.lib\n\npub fn add(a: i32, b: i32) -> i32 { return a + b }\n\npub fn main() -> i32 { return add(20, 22) }\n",
+    )];
+    let executable =
+        try_compile_project_kind(modules, EmitKind::Executable).expect("executable emission");
+    let library = try_compile_project_kind(modules, EmitKind::Library).expect("library emission");
+
+    let exe_src = project_source(&executable, "src/lib.ns");
+    let lib_src = project_source(&library, "src/lib.ns");
+    assert!(
+        exe_src.contains("int main(void)"),
+        "executable emission must keep the entry wrapper:\n{exe_src}"
+    );
+    assert!(
+        !lib_src.contains("int main(void)"),
+        "library emission must not emit an entry wrapper:\n{lib_src}"
+    );
+    assert!(
+        lib_src.contains("ns_src_lib_add"),
+        "library function must stay external:\n{lib_src}"
+    );
+    assert!(
+        project_header(&library, "src/lib.ns").contains("ns_src_lib_add"),
+        "library header must expose the public symbol"
+    );
+    assert_clang_ok(lib_src);
 }
 
 // ─── Map literal emission ─────────────────────────────────────────────────────

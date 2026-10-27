@@ -1,0 +1,159 @@
+# C ABI and library artifacts
+
+**Status:** Provisional V1 implementation contract
+**Depends on:** D1, D6–D10, D21
+**Related:** [`03-runtime-and-memory.md`](./03-runtime-and-memory.md),
+[`04-targets-and-backends.md`](./04-targets-and-backends.md),
+[`05-manifest-and-packages.md`](./05-manifest-and-packages.md)
+
+---
+
+## 1. Scope and stability
+
+This document records the exact contract the C backend emits so a hand-written
+C consumer can link generated code. It is **provisional**: `03-runtime-and-memory.md`
+§3.2 says V1 must not promise unstable layout as a public guarantee. The names,
+layouts, and ownership rules here may change before 1.0; consumers that depend on
+them should pin the compiler version.
+
+Out of scope in this slice: GC, manual memory, structured concurrency, FFI
+ownership metadata, and cross-package module linking.
+
+---
+
+## 2. Artifacts
+
+`astra build` produces one of three artifact kinds, selected by `--emit` or the
+manifest target's `emit` key:
+
+| `--emit` | Artifact | Contents |
+|---|---|---|
+| `executable` (default) | `main.exe` / `main` | All module objects, script objects, and the runtime shim |
+| `staticlib` / `library` | `lib<name>.a` | Module and script objects only |
+| `cdylib` | `lib<name>.so` / `lib<name>.dll` (+ `.dll.a` import library on Windows) | Module/script objects plus the runtime shim |
+
+`<name>` is the manifest package name with characters outside
+`[A-Za-z0-9_.-]` replaced by `_`.
+
+The build also writes the generated sources and per-module headers beside the
+artifact, plus `astra_host.c` and an `obj/` directory.
+
+### 2.1 Linking contract
+
+- **Static library:** the archive does **not** contain the runtime. The consumer
+  links `astra_host.c` (or a prebuilt runtime object) as well. This keeps two
+  Astra static libraries from colliding on `astra_*` symbols.
+- **Shared library:** the runtime shim is linked in, so the consumer needs only
+  the shared library (plus the import library on Windows).
+- `@script:c` / `@script:cpp` objects are included in the same artifact. C++
+  scripts require the C++ runtime (`-lstdc++` is added by `astra build`).
+
+Example consumer for a static library:
+
+```c
+#include <stdio.h>
+#include "src_lib.h"          /* generated per-module header */
+
+int main(void) {
+    printf("%d\n", ns_src_lib_add(20, 22));
+    return 0;
+}
+```
+
+```sh
+cc consumer.c -I dist/lib dist/lib/libmathlib.a dist/lib/astra_host.c -o consumer
+```
+
+---
+
+## 3. Symbol naming
+
+| Declaration | C symbol |
+|---|---|
+| function `f` in module key `src/lib.ns` | `ns_src_lib_f` |
+| struct/enum `T` in module key `src/lib.ns` | `NS_src_lib_T` |
+| exported function list | `<module>.h` |
+
+The stem is the module key with `.ns` stripped and `/`, `.`, and `-` replaced by
+`_`. Standalone single-module builds keep the bare `ns_<name>` symbols and
+`main.c`/no header (unchanged from the first slice).
+
+`pub` functions have external linkage. Non-`pub` functions stay `static`.
+Exported **generic** functions are not exposed in headers and cannot be called
+across the C boundary; each call site inside the project gets its own
+`ns_<fn>_<type args>` specialization.
+
+---
+
+## 4. Value layouts
+
+| Type | C representation |
+|---|---|
+| `i8`–`i64`, `u8`–`u64` | `<stdint.h>` fixed-width integers |
+| `f32` / `f64` | `float` / `double` |
+| `bool` | `bool` (`<stdbool.h>`) |
+| `usize` / `isize` | `size_t` / `intptr_t` |
+| `Unit` | `NS_Unit { char _unit; }` |
+| `str` | `NS_Str { const char* data; size_t len; }` (UTF-8 bytes, not NUL-terminated by contract) |
+| `bytes` | `NS_Bytes { const uint8_t* data; size_t len; }` |
+| `[T]` / arrays | `NS_Array { void* data; size_t len; size_t cap; }` |
+| maps | `NS_Map { void* keys; void* values; size_t len; size_t cap; size_t key_size; size_t val_size; bool key_is_str; }` |
+| `Option<T>` | `NS_Option_<T> { bool some; T value; }` |
+| `Result<T,E>` | `NS_Result_<T>_<E> { bool ok; T value; E error; }` |
+| struct | `NS_<stem>_<Name>` with fields in declaration order |
+| enum | `NS_<stem>_<Name>` with a `tag` plus a payload union; tag values are stable per declaration order |
+
+Built-in error payloads are shared and stem-free: `NS_SliceError`,
+`NS_ParseIntError`, and `NS_OverflowError` each wrap the offending text as
+`{ NS_Str _0; }`.
+
+Alignment follows the platform C ABI. No packing attributes are emitted in this
+slice.
+
+---
+
+## 5. Ownership and memory
+
+This slice runs on the managed-until-exit model: the hosted shim allocates with
+`malloc`/`calloc` through `astra_alloc` and never frees. There is no public free
+API and no GC yet (`GC-001`).
+
+- `str` and `bytes` values are borrowed views. A consumer must not free the
+  `data` pointer, and a view returned from a function stays valid until the
+  process exits (allocated/static data) — not until the next collection, because
+  there is none.
+- Arrays and maps returned across the boundary are owned by the runtime heap and
+  must not be freed by the consumer.
+- A future GC or manual-memory mode will replace this rule; consumers should not
+  encode it as a permanent guarantee.
+
+Boundary conversions are explicit: an empty `str`/`bytes` view has a non-null or
+null `data` pointer with `len == 0`; consumers must branch on `len`, not on
+`data`.
+
+---
+
+## 6. Errors and panics
+
+Recoverable errors use the `Result<T,E>` layout above; the caller checks `ok`
+before reading `value` or `error`. Panics call `astra_panic`, which writes a
+message and terminates the process; there is no C++-style unwinding, and a panic
+must not be caught across the boundary.
+
+Division by zero and out-of-bounds indexing panic in every integer policy.
+
+---
+
+## 7. Verification
+
+The contract is pinned by:
+
+- `crates/astra-codegen-c/tests/emit_c.rs`:
+  `library_emission_omits_main_and_exports_public_functions`,
+  `array_get_returns_bounded_option`, and the hosted execution tests.
+- `orchestrator/tests/codegen-js.test.mjs`:
+  `astra build --emit staticlib produces a linkable C library` and
+  `astra build --emit cdylib produces a runnable shared library`, which build a
+  library from `.ns`, compile a hand-written consumer, and run it.
+- The conformance gate exercises the same runtime layouts for every case whose
+  backend lowering exists.

@@ -128,6 +128,17 @@ pub struct ProjectEntry {
     pub dep_keys: Vec<String>,
 }
 
+/// What kind of artifact a project emission targets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EmitKind {
+    /// A runnable program: the root module emits `int main(void)`.
+    #[default]
+    Executable,
+    /// A library: no `int main(void)`; `pub` functions stay external so a C
+    /// consumer can link them. Header artifacts are unchanged.
+    Library,
+}
+
 /// Emits C17 source for a multi-module project.
 ///
 /// Returns one [`GeneratedC`] per entry (with a `header` containing extern
@@ -136,5 +147,16 @@ pub struct ProjectEntry {
 /// the dependency, so the returned translation units must be compiled and
 /// linked together.
 pub fn generate_project(entries: &[ProjectEntry]) -> Result<Vec<GeneratedC>, BackendError> {
-    emit::emit_project(entries)
+    emit::emit_project(entries, true)
+}
+
+/// Emits a multi-module project for the requested artifact kind.
+///
+/// [`EmitKind::Library`] suppresses the `int main(void)` wrapper so the output
+/// can be archived or linked into a shared library. See `Docs/Design/V1/11-c-abi.md`.
+pub fn generate_project_with_kind(
+    entries: &[ProjectEntry],
+    kind: EmitKind,
+) -> Result<Vec<GeneratedC>, BackendError> {
+    emit::emit_project(entries, kind == EmitKind::Executable)
 }

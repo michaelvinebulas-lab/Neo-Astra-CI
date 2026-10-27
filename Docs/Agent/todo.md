@@ -994,6 +994,19 @@ by a production native target.
 - [x] Native inline scripts: `astra build --target native` links `@script:c`
       (and `.cpp` with `-lstdc++`) translation units and runs the binary
       (INTEROP-001).
+- [x] `Array<T>.get(i) -> Option<T>`: bounds-checked into the option shape
+      (no panic on an out-of-range read), matching the checker's signature.
+- [x] Native library output and stable-ish ABI:
+      - `generate_project_with_kind` / `EmitKind::Library` suppress the
+        `int main(void)` wrapper while keeping `pub` functions external.
+      - `astra build --emit staticlib|cdylib|library` compiles objects and uses
+        the platform toolchain (`ar`/`llvm-ar`/`gcc-ar`, `-shared`) rather than
+        writing artifacts by hand. Static archives contain module/script objects
+        only; shared libraries include the hosted runtime.
+      - `Docs/Design/V1/11-c-abi.md` records symbol naming, value layouts,
+        error/panic behavior, ownership, and the linking contract; a
+        hand-written C consumer links and runs against both artifacts (pinned by
+        boundary tests).
 - [x] Map literals `{ k: v, ... }` emit `astra_map_new` + `astra_map_set`.
 - [x] Map methods `.len()`, `.contains(k)`, `.get(k)`, `.insert(k, v)` emit typed C via
       the `NS_Map` runtime helpers; `.get` and `.insert` return `NS_Option_V`.
@@ -1105,9 +1118,11 @@ by a production native target.
 - [ ] Concurrency. `spawn` and channels are rejected with `NS8011`; no task
       scheduler, channel runtime, cancellation, or thread/worker mapping
       (`CONC-001`).
-- [ ] Native library output and stable ABI. Only an executable via `main` is
-      produced; static/dynamic libraries, exported headers, and a declared C ABI
-      are not implemented.
+- [x] Native library output and stable ABI. `--emit staticlib|cdylib|library`
+      produces `lib<name>.a`, `lib<name>.so`, or `lib<name>.dll` (+ import
+      library), suppresses `main`, and is documented in
+      `Docs/Design/V1/11-c-abi.md`; a hand-written C consumer links and runs
+      against both artifact kinds.
 - [x] Native verification on this Windows host. `astra build --target native`
       compiles, links, and runs through gcc (MSYS2 UCRT64). The earlier "no libc
       headers" failure came from preferring clang without a Windows SDK plus the
@@ -1129,9 +1144,9 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 73 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 75 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
-  arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
+  arrays (`len`/`push`/`get`), structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing (reads and
   bounds-checked writes)/slicing/comparisons,
   `str` slice `Result` lowering (`SliceError`), `str.to_int`/`checked_*`/
@@ -1139,8 +1154,9 @@ by a production native target.
   `char_at`, `bytes`, `chars`, `bytes.new`), `Option`/`Result` accessors,
   generic monomorphization (per-instantiation symbols, generic-to-generic
   calls), `!` propagation of fallible builtin calls, the complete hosted shim
-  translation unit and match-arm branch placement, `@script:c` and
-  `@script:cpp` emission, compiler API artifacts, rejection paths,
+  translation unit and match-arm branch placement, library emission (no `main`,
+  external `pub` symbols), `@script:c` and `@script:cpp` emission, compiler API
+  artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
   imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
@@ -1151,7 +1167,7 @@ by a production native target.
   `astra_host.c`, runs it, and compares stdout plus `RETURN=` with `.expected`:
   18 of 19 cases pass end to end. `channels` (`CONC-001`) sits in an explicit
   `KNOWN_GAPS` ledger that fails when a listed case starts passing.
-- `cargo test --workspace` passes (73 in `astra-codegen-c`, 142 in `astra-core`,
+- `cargo test --workspace` passes (75 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary
@@ -1161,6 +1177,12 @@ by a production native target.
   test `astra build --target native links and runs a hosted binary`. Clang alone
   still cannot build hosted C here without the MSVC/Windows SDK, so the CLI
   probes for hosted capability before selecting a compiler.
+- `astra build --emit staticlib|cdylib` produces a real library with the
+  platform toolchain, and hand-written C consumers link and run against both
+  (`astra build --emit staticlib produces a linkable C library`,
+  `astra build --emit cdylib produces a runnable shared library`).
+- `Docs/Design/V1/11-c-abi.md` documents the artifact, symbol, layout, and
+  linking contract.
 
 **Depends on**
 
@@ -1311,9 +1333,9 @@ These are intentionally high-level. Break them into smaller tasks when their pha
   emission slices done; native C/C++ script linking verified end to end)
 - [ ] `PLAY-001` Browser playground (expanded plan above)
 - [~] `C-001` C backend — managed first slice, multi-module project linking,
-  generics monomorphization, hosted runtime shim, and native compile-and-run
-  verification done; package linking, GC/manual memory, concurrency, native
-  library output/ABI, and a Tier-1 native CI matrix remain
+  generics monomorphization, hosted runtime shim, native compile-and-run
+  verification, `Array.get`, and native library output/ABI done; package
+  linking, GC/manual memory, concurrency, and a Tier-1 native CI matrix remain
 - [ ] `GC-001` Native GC
 - [-] `WASM-001` Wasm target (deliberately deferred until the target ABI and runtime design land)
 - [ ] `FFI-001` Polymorphic FFI

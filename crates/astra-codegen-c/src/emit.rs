@@ -187,8 +187,12 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
 ///
 /// Functions are given external linkage (no `static`). Each module's translation
 /// unit `#include`s the headers of its direct dependencies. The returned vector
-/// is in the same order as the input `entries` slice.
-pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, BackendError> {
+/// is in the same order as the input `entries` slice. When `emit_main` is false
+/// the project is a library: no module emits the `int main(void)` wrapper.
+pub fn emit_project(
+    entries: &[crate::ProjectEntry],
+    emit_main: bool,
+) -> Result<Vec<GeneratedC>, BackendError> {
     use std::collections::HashMap;
     // Build a map key -> header filename so each module can include its deps.
     let header_map: HashMap<String, String> = entries
@@ -276,8 +280,9 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             namespaces,
             default_imports,
             dep_headers: dep_headers.clone(),
-            // Only the entry (last) module emits the `int main(void)` wrapper.
-            emit_main_entry: last_key.as_deref() == Some(entry.key.as_str()),
+            // Only the entry (last) module emits the `int main(void)` wrapper,
+            // and only for executable builds.
+            emit_main_entry: emit_main && last_key.as_deref() == Some(entry.key.as_str()),
             out: String::new(),
             pre: String::new(),
             fresh: 0,
@@ -2274,6 +2279,31 @@ impl<'a> Emitter<'a> {
                     .map(|a| self.expr(a))
                     .unwrap_or_else(|| "0".into());
                 format!("astra_array_push(&({r}), sizeof({elem_c}), &({elem_c}){{ {val} }})")
+            }
+            (Some(Type::Array(_) | Type::Slice(_)), "get") => {
+                // `Array<T>.get(i) -> Option<T>`: bounds-check into the option
+                // shape instead of indexing (which panics on out-of-range).
+                let elem_ty = self.elem_type_of(receiver);
+                let elem_c = self.tcx.c_type(&elem_ty);
+                let arr_ty = self
+                    .type_of(receiver)
+                    .cloned()
+                    .unwrap_or(Type::Array(Box::new(elem_ty.clone())));
+                let arr_c = self.tcx.c_type(&arr_ty);
+                let opt_ty = Type::Option(Box::new(elem_ty));
+                let opt_c = self.tcx.c_type(&opt_ty);
+                let arr = self.fresh_id("arr");
+                let idx = self.fresh_id("idx");
+                let left = self.expr(receiver);
+                let right = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let _ = writeln!(self.pre, "    {arr_c} {arr} = {left};");
+                let _ = writeln!(self.pre, "    size_t {idx} = (size_t)({right});");
+                format!(
+                    "({idx} < ({arr}).len ? ({opt_c}){{ .some = true, .value = *({elem_c}*)astra_array_index(&({arr}), {idx}, sizeof({elem_c})) }} : ({opt_c}){{0}})"
+                )
             }
             (Some(Type::Option(_)), "is_some") => {
                 let r = self.expr(receiver);

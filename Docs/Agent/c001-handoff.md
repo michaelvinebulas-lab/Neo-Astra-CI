@@ -10,11 +10,10 @@
 > `npm run ci` green. The current slice (hosted shim + native conformance
 > execution) is described in section 4.
 >
-> **Next task:** pick the next remainder item — native library output + ABI
-> (section 6.E) or package linking (section 6.B) are the best next slices;
-> `Array.get` is an opportunistic small fix. Cross-platform native verification
-> (6.F) is now complete on this Windows host via gcc; only a Tier-1 CI matrix
-> remains.
+> **Next task:** pick the next remainder item — package linking (section 6.B) is
+> the largest remaining integration slice; GC (6.C) and concurrency (6.D) are
+> language-semantics work and should start from their design docs. Cross-platform
+> native verification (6.F) is complete on this host; a Tier-1 CI matrix remains.
 
 ---
 
@@ -86,11 +85,14 @@ and section 6.A (the generics design) before touching code.
 ## 4. Current snapshot
 
 - `master = d8e4efa`; tree clean; `npm run ci` green.
-- `astra-codegen-c`: **73** emission tests + 1 conformance gate.
+- `astra-codegen-c`: **75** emission tests + 1 conformance gate.
 - Corpus: **19 positive** cases, **11 negative** rejects.
 - C emits, clang-compiles, links, **and runs** **18 of 19** cases when a
   hosted-capable compiler is present. One ledgered gap:
   - `channels` — `CONC-001` (generic `Channel` builtin; spawn/channels rejected).
+- **Library artifacts** `--emit staticlib|cdylib|library` are implemented and
+  verified with hand-written C consumers; the contract is recorded in
+  `Docs/Design/V1/11-c-abi.md` (provisional under design §3.2).
 - Native execution is verified on this Windows host through **gcc**
   (`C:\msys64\ucrt64\bin`): `astra build --target native` links `main.c` +
   `astra_host.c` (+ `@script:c`/`.cpp` TUs) and the binary runs. Clang alone
@@ -148,7 +150,7 @@ scoped blocks, statement-position `if`/`match`.
 | `bytes` | `len`, `is_empty`, `slice`, index read/write; `bytes.new(n)` |
 | `Option` | `is_some`, `is_none`, `unwrap`, `unwrap_or` |
 | `Result` | `is_ok`, `is_err`, `unwrap`, `unwrap_or`, `error` |
-| arrays | `len`, `push` (**`get` missing** — checker has it) |
+| arrays | `len`, `push`, `get` |
 | maps | `len`, `contains`, `get`, `insert` |
 | integers | `checked_add/sub/mul/div`, `wrapping_add/sub/mul/div` |
 
@@ -163,6 +165,13 @@ dependency headers. Default imports are rejected (`NS8019`).
 **Generics.** Local generic functions are monomorphized per call site
 (`ns_<fn>_<type args>`, e.g. `ns_identity_i32`), including generic-to-generic
 calls; see section 6.A for the boundaries.
+
+**Library output.** `astra build --emit staticlib|cdylib|library` (or the target's
+`emit` key) compiles per-module objects and archives/links them with the
+platform toolchain (`ar`/`llvm-ar`/`gcc-ar`, `-shared`). Static archives exclude
+the runtime shim; shared libraries include it. `EmitKind::Library` suppresses
+`int main(void)`. The symbol/layout/ownership contract is in
+`Docs/Design/V1/11-c-abi.md` (provisional).
 
 **Inline scripts.** `@script:c` / `@script:cpp` → one TU per block, C ABI
 prototypes, `extern "C"` for C++, CLI compiles and links script TUs
@@ -321,22 +330,32 @@ without reading the memory design doc and the D-decisions.
 - Acceptance: `channels` flips out of `KNOWN_GAPS`; the C conformance runner (when
   the toolchain lands) executes it.
 
-### 6.E Native library output + stable ABI
+### 6.E Native library output + stable ABI — **DONE (provisional ABI)**
 
-**Today.** Project mode already emits a header per module with `extern`
-prototypes for `pub` functions (skipping generics), and `astra build --target c`
-writes `<stem>.c`/`<stem>.h` + `astra_host.c`. There is **no library mode**
-(no-`main`), no `.a`/`.so`/`.dll` output, and no documented ABI contract.
+**Today.** `astra build --emit staticlib|cdylib|library` produces
+`lib<name>.a`, `lib<name>.so`, or `lib<name>.dll` (+ `.dll.a` on Windows) beside
+the generated sources and headers. `EmitKind::Library` (via
+`generate_project_with_kind`, JSON-RPC `library: true`, and
+`CompilerClient.compileProject`) suppresses `int main(void)` while keeping `pub`
+functions external. A hand-written C consumer links and runs against both
+artifact kinds (boundary tests).
 
-**Design sketch.**
-- CLI: `--emit staticlib|cdylib|lib` (naming TBD) that compiles TUs and archives
-  them; suppress the `main` wrapper.
-- ABI doc (new `Docs/Design/V1/…` or a section in the C docs): symbol naming
-  (`ns_<stem>_<name>`), struct layout = declaration order, enum representation
-  (tag + payload), `NS_Str`/`NS_Bytes`/`NS_Option_*`/`NS_Result_*` layouts, error
-  payload convention (`_0`), ownership rules for returned memory.
-- Acceptance: build a library from a `.ns` module, consume it from a hand-written
-  C file, document and test the ABI (compile/link may be gated on the toolchain).
+**ABI.** `Docs/Design/V1/11-c-abi.md` records:
+
+- symbol naming (`ns_<stem>_<name>`, `NS_<stem>_<Type>`), stem rules, and the
+  exported-generic boundary;
+- layouts for integers, floats, `str`, `bytes`, arrays, maps, `Option`,
+  `Result`, structs, and enums, including the shared builtin error payloads;
+- ownership rules: managed-until-exit runtime allocations, borrowed `str`/
+  `bytes` views, and the static-vs-shared runtime linking contract;
+- error/panic behavior and a consumer example.
+
+**Risks / boundaries.** The ABI is explicitly provisional (design §3.2 says V1
+must not promise unstable layout). Static libraries deliberately exclude
+`astra_host.c` so two Astra archives cannot collide on runtime symbols;
+consumers link the shim. Export lists are implicit (`pub` + external linkage),
+not a generated visibility file. `cdylib` is tested on Windows here; Linux/macOS
+shared linking follows the same `-shared` path but needs the Tier-1 run.
 
 ### 6.F Cross-platform native verification + CI gate — **DONE on this host**
 
@@ -493,7 +512,7 @@ true only for the last entry; standalone keeps bare `ns_<name>` and `main.c`.
 **Fast loop.**
 
 ```powershell
-cargo test -p astra-codegen-c                 # 73 emit tests + conformance (links/runs when a hosted compiler exists)
+cargo test -p astra-codegen-c                 # 75 emit tests + conformance (links/runs when a hosted compiler exists)
 cargo test -p astra-nova --test conformance   # corpus on Nova
 npm run build                                 # tsc -b (needed before JS/TS tests)
 node --test --test-name-pattern "shared conformance" orchestrator/tests/codegen-js.test.mjs
@@ -566,7 +585,6 @@ node --test --test-name-pattern "native" orchestrator/tests/codegen-js.test.mjs
 
 These are unpinned; fix opportunistically or when a case needs them:
 
-- `Array<T>.get(i) -> Option<T>` — checker has it; C does not.
 - Fixed arrays (`[T; N]`) — rejected by `ty.rs`.
 - Map `.keys()` — not in the checker member table today (JS helper unused).
 - Exported generic functions — cannot be exposed in headers (see 6.A).
@@ -576,6 +594,8 @@ These are unpinned; fix opportunistically or when a case needs them:
 - Panic messages for `Result.unwrap`/`error` omit the rendered payload (JS
   includes it); behavior class matches, text does not.
 - Multiple error types in one signature — `NS8019` reject.
+- Library export lists are implicit (`pub` means external). A generated
+  visibility file / version script is not implemented (see 6.E).
 
 ---
 
@@ -585,8 +605,8 @@ These are unpinned; fix opportunistically or when a case needs them:
    per-instantiation header prototypes discovered from exported call sites?
 2. Target naming for Wasm: `wasm32-wasi` vs `wasm32-wasip1` (design doc §7.3
    leaves this open).
-3. Library ABI: do we guarantee the raw `NS_*` structs, or add opaque handles?
-   Decide before shipping 6.E.
+3. Library ABI: the raw `NS_*` structs are recorded as **provisional** in
+   `11-c-abi.md`; opaque handles remain a future option.
 4. Manual memory: scope-based release vs explicit `free` API (see D-decisions).
 5. Concurrency: cooperative single-thread first slice vs pthreads — recommend
    mirroring JS/Nova (cooperative) for parity.
@@ -612,6 +632,10 @@ drift: `emit_program`, `emit_program_linked`, `emit_header`, `collect_decls`,
 struct_shape, enum_shape, enum_tag, ensure, ident, c_type, user_typedef,
 rejected}`, `to_type`, `path_to_type`, `sanitize`, `BUILTIN_NOMINALS`.
 
+**Library emission:** `lib.rs::{EmitKind, generate_project_with_kind}`,
+`emit::emit_project(entries, emit_main)`, CLI `--emit` + `findArchiver`; ABI in
+`Docs/Design/V1/11-c-abi.md`.
+
 **`runtime.rs`:** `RUNTIME_HEADER`, `HOST_SHIM` (body), `host_shim()` (complete
 `astra_host.c`); helpers: `astra_str_*`,
 `astra_bytes_*`, `astra_array_*`, `astra_map_*`, `astra_add/sub/mul_i8..i64`,
@@ -633,3 +657,4 @@ rejected}`, `to_type`, `path_to_type`, `sanitize`, `BUILTIN_NOMINALS`.
 | 2026-10-27 | Created at `47d2598` for the C-001 handoff (generics next). |
 | 2026-10-27 | Generics monomorphization landed (`90cdba1`); snapshot, ledger, and 6.A updated. |
 | 2026-10-27 | Hosted shim fixed (`host_shim()` = runtime header + body), hosted-compiler probing added, C conformance gate now links/runs every non-gap case, match-arm `pre` leak fixed; 6.F marked done on this host. |
+| 2026-10-27 | `Array.get` landed; native library artifacts (`--emit staticlib\|cdylib`) and provisional C ABI (`11-c-abi.md`) added; 6.E marked done. |

@@ -10,12 +10,27 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001` hosted runtime shim fixed and native conformance execution enabled (`d8e4efa`); the C gate now links and runs 18/19 corpus cases (`channels` remains, `CONC-001`) |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime, hosted shim, `astra build --target c/native`, C multi-module project linking, and generic monomorphization, `@script` inline interop frontend complete |
+| Current task | `C-001` native library output + provisional C ABI and `Array.get` landed (`--emit staticlib|cdylib`); native conformance still runs 18/19 and hosted execution is verified |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime, hosted shim, `astra build --target c/native`, C multi-module project linking, generic monomorphization, and native library output/ABI, `@script` inline interop complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, hosted shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64) after the shim fix. Linux/macOS native builds still need their own CI run, and clang alone remains unusable here without the MSVC/Windows SDK |
 | Next action | C-001 remainder, best next slices: native library output + documented ABI (`c001-handoff.md` 6.E), package linking (6.B), or the opportunistic `Array.get` gap; then GC-001, CONC-001, native CI matrix; WASM-001 last |
+
+---
+
+### 2026-10-27 - `C-001` slice: `Array.get`, native library output, and provisional C ABI
+
+- Command: `cargo test -p astra-codegen-c`, `node --test --test-name-pattern "staticlib|cdylib" orchestrator/tests/codegen-js.test.mjs`, `npm run ci`
+- Result: 75/75 emission tests plus the conformance gate; add a staticlib and cdylib to the boundary suite; full CI green
+- What:
+  - **`Array<T>.get(i)`**: the checker already exposed it but the C emitter had no arm, so it fell through the generic method path. It now evaluates the receiver/index once, guards the bounds, and builds `NS_Option_T` (`some`/`value`) instead of using the panicking index path.
+  - **Library emission**: `astra_codegen_c::EmitKind::{Executable, Library}` and `generate_project_with_kind` suppress the `int main(void)` wrapper while keeping `pub` functions external. `ProjectCompileRequest.library` (additive, serde-defaulted) and `CompilerClient.compileProject` carry it; the CLI forces the project path for library builds even with one module.
+  - **Artifacts**: `astra build --emit staticlib|cdylib|library` (or target `emit` config). Objects are compiled per translation unit with the selected compiler; a static library is archived with the compiler's own `ar`/`llvm-ar`/`gcc-ar`; a shared library is linked with `-shared` (plus `--export-all-symbols` and an import library on Windows). No hand-written archive format.
+  - **ABI**: new `Docs/Design/V1/11-c-abi.md` records symbol naming (`ns_<stem>_<name>`), per-type layouts, builtin error payloads, ownership (managed-until-exit, borrowed views), the static-vs-shared runtime linking rule, and a consumer example. It is explicitly provisional under design §3.2.
+- Tests: `array_get_returns_bounded_option` (structure + hosted execution), `library_emission_omits_main_and_exports_public_functions` (no main, external symbol, header), and two CLI boundary tests that build a library, compile a hand-written consumer, and run it (static archive and shared library, self-skipping without a hosted toolchain).
+- Verification: full `npm run ci` green; manual consumers printed `42 42` against both `libmathlib.a` and `libmathlib.dll`.
+- Boundary: static archives exclude the runtime shim by design (consumers link `astra_host.c`); the ABI is provisional; GC/manual memory, concurrency, and package linking remain.
 
 ---
 

@@ -149,6 +149,7 @@ The support matrix must be explicit in the manifest and diagnostics. A target th
 | [`08-nova-and-nopm.md`](./08-nova-and-nopm.md) | Nova development runtime, NoPM universal package manager, registry gateway, manifest extensions |
 | [`09-nova-project-linking.md`](./09-nova-project-linking.md) | Project-wide module loading, canonical module identity, runtime linking, and diagnostics |
 | [`10-inline-script-interop.md`](./10-inline-script-interop.md) | Inline `@script` foreign-language blocks, typed export surfaces, raw capture, and target support |
+| [`11-c-abi.md`](./11-c-abi.md) | C symbol naming, value layouts, library artifacts, linking contract, and ownership |
 
 ---
 
@@ -198,11 +199,12 @@ Do not change a design by editing only one file and leaving the others stale.
 - V1 design: drafted, including Nova, NoPM, and inline `@script` interop
 - Language specification: drafted in `Docs/spec-v0.1.md`
 - Compiler source: lexer, parser, formatter, resolver, type checker, compiler boundary, `astra fmt`, and manifest formatting implemented
-- JavaScript backend: `JS-001` is in progress; the backend consumes typed AST/HIR, emits linked multi-module ESM with imports/re-exports, recoverable errors, checked integers, eager tasks, source maps, and inline `@script:js` artifacts, and is wired into `astra build`
+- JavaScript backend: `JS-001` complete — linked multi-module ESM, inline `@script:js`, errors, integer policies, tasks/channels, UTF-8 operations, source maps, `.d.ts`, and the shared conformance suite
+- TypeScript backend: `TS-001` complete — shared-emitter strict TS, `astra build --target ts`, `.d.ts`, and pinned `@script:ts`
 - Nova: the `NOVA-001` interpreter, `NOVA-002` CLI (`run`, `eval`, `repl`, `watch`, `test`, manifest entry), and `NOVA-003` project module loading/linking are implemented
 - NoPM: complete stack through NOPM-004 - package IDs, descriptors, target/mode filtering, deterministic graph, lockfile model/I/O, content-addressed store, path/Git/npm/Cargo/PyPI/NuGet/OCI adapters, CLI lock/tree/install/search/audit/why/update, and registry gateway with signing/federation
-- Conformance suite: not written
-- Inline script interop: frontend and the JavaScript backend slice are implemented in `10-inline-script-interop.md`; TypeScript-target emission and the C/C++ slice remain
-- Next artifact: finish `JS-001` channels/scheduler and UTF-8 bytes; then `TS-001`, then TypeScript-target interop and the C/C++ slice
+- Conformance suite: 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners are green, and the C runner executes every non-gap case when a hosted compiler is available
+- C backend: managed C17 first slice, multi-module linking, generic monomorphization, hosted execution, inline C/C++ scripts, and native library output with a provisional ABI (`11-c-abi.md`) are implemented
+- Next artifact: package linking, GC/manual memory, structured concurrency, and a Tier-1 native CI matrix for `C-001`
 
 V1 is a design baseline. It is not a claim that all of it is implemented.

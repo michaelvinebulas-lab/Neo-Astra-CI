@@ -635,6 +635,8 @@ export interface ProjectCompileRequest {
   readonly target?: string;
   readonly mode?: Mode;
   readonly integerPolicy?: IntegerPolicy;
+  /** Emit a library (no `int main`) instead of an executable. */
+  readonly library?: boolean;
 }
 
 /** Per-module artifact returned by `compile_project` (C multi-module). */
@@ -891,6 +893,7 @@ CompilerClient.prototype.compileProject = function (
       ...(request.integerPolicy === undefined
         ? {}
         : { integerPolicy: request.integerPolicy }),
+      ...(request.library === true ? { library: true } : {}),
     },
   });
 
