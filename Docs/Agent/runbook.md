@@ -369,6 +369,23 @@ package modules, TypeScript-target script emission, and `TS-001` remain.
 7. Add binary-size checks.
 8. Add native conformance tests.
 
+### Toolchain note (Windows)
+
+The Rust `x86_64-pc-windows-gnu` toolchain needs GNU binutils on `PATH`. Without
+`dlltool.exe`, building crates such as `getrandom` and `windows-sys` fails with
+`error calling dlltool 'dlltool.exe': program not found`.
+
+This host installs binutils and GCC through MSYS2 UCRT64. Put this directory on
+the **user** `PATH` (already applied) and restart terminals and editors:
+
+```text
+C:\msys64\ucrt64\bin
+```
+
+Verified: `dlltool` 2.46.1 and `gcc` 16.1.0, plus a compile/link/run smoke test.
+`make` is not required. LLVM `clang` exists at `C:\Program Files\LLVM\bin` but is
+not on `PATH`; GCC is enough for the C backend's native toolchain discovery.
+
 ### Gate
 
 - Native binaries run the conformance suite.
