@@ -55,7 +55,22 @@ export interface CodegenRequest {
    * declarations, and helper signatures so the output passes `tsc --strict`.
    */
   readonly backend?: "js" | "ts";
+  /**
+   * Transpiles an inline `@script:ts` body to JavaScript with the pinned
+   * TypeScript compiler. The TypeScript backend supplies its own; callers may
+   * override it. Without one, `@script:ts` blocks are a hard error — there is
+   * no best-effort fallback.
+   */
+  readonly transpileTypeScript?: TypeScriptTranspiler;
 }
+
+/** Outcome of transpiling one `@script:ts` body with the pinned compiler. */
+export type TypeScriptTranspileOutcome =
+  | { readonly ok: true; readonly code: string; readonly sourceMap?: string }
+  | { readonly ok: false; readonly message: string };
+
+/** Transpiles a raw `@script:ts` body to JavaScript ESM. */
+export type TypeScriptTranspiler = (source: string) => TypeScriptTranspileOutcome;
 
 /** An additional ESM file emitted for a script block. */
 export interface CodegenArtifact {
@@ -1337,6 +1352,7 @@ class JavaScriptGenerator {
   private readonly backend: "js" | "ts";
   private readonly sourceText: string | undefined;
   private readonly moduleSpecifiers: Readonly<Record<string, string>> | undefined;
+  private readonly transpileTypeScript: TypeScriptTranspiler | undefined;
   private readonly annotations = new Map<string, SemanticType>();
   private readonly helpers = new Set<HelperName>();
   private readonly looseTypes = new Set<LooseTypeName>();
@@ -1354,11 +1370,13 @@ class JavaScriptGenerator {
     sourceText?: string,
     moduleSpecifiers?: Readonly<Record<string, string>>,
     backend: "js" | "ts" = "js",
+    transpileTypeScript?: TypeScriptTranspiler,
   ) {
     this.ir = ir;
     this.sourceText = sourceText;
     this.moduleSpecifiers = moduleSpecifiers;
     this.backend = backend;
+    this.transpileTypeScript = transpileTypeScript;
     if (!isRecord(ir.ast) || !isRecord(ir.hir)) {
       throw new CodegenRequestError("Typed module AST and HIR must be objects.");
     }
@@ -2097,10 +2115,21 @@ class JavaScriptGenerator {
   }
 
   private prepareScriptBlock(block: ScriptBlockDecl): void {
-    if (block.language !== "js") {
+    const transpiling = block.language === "ts";
+    if (block.language !== "js" && !transpiling) {
       this.diagnostic(
         "NS7008",
         `Script language '${block.language}' cannot be emitted by the ${this.backendName} backend yet. Use @script:js or a matching target backend.`,
+        block.header_span,
+      );
+      return;
+    }
+    if (transpiling && (this.backend !== "ts" || this.transpileTypeScript === undefined)) {
+      this.diagnostic(
+        "NS7008",
+        this.backend === "ts"
+          ? `Script block '${block.name}' is TypeScript, but no pinned TypeScript transpiler is available. A missing transpiler is a hard error; there is no best-effort fallback.`
+          : `Script language 'ts' cannot be emitted by the ${this.backendName} backend yet. Use @script:js or a matching target backend.`,
         block.header_span,
       );
       return;
@@ -2114,8 +2143,34 @@ class JavaScriptGenerator {
       return;
     }
 
+    let bodySource = block.raw_source;
+    let transpiledMap: string | undefined;
+    if (transpiling) {
+      // Pad the body with blank lines so the pinned transpiler's source map
+      // reports `.ns`-absolute line numbers instead of body-relative ones.
+      const bodyStartLine =
+        this.sourceText === undefined
+          ? 0
+          : lineAt(this.sourceText, block.body_span.start);
+      const outcome = this.transpileTypeScript!(
+        `${"\n".repeat(bodyStartLine)}${block.raw_source}`,
+      );
+      if (!outcome.ok) {
+        this.diagnostic(
+          "NS7008",
+          `Script block '${block.name}' failed to transpile with the pinned TypeScript compiler: ${outcome.message}`,
+          block.header_span,
+        );
+        return;
+      }
+      // Drop the transpiler's own sourceMappingURL comment; the artifact
+      // carries one composed map instead.
+      bodySource = outcome.code.replace(/\n?\/\/# sourceMappingURL=[^\n]*\n?$/, "\n");
+      transpiledMap = outcome.sourceMap;
+    }
+
     for (const exported of block.exports) {
-      if (!hasEsmExport(block.raw_source, exported.name)) {
+      if (!hasEsmExport(bodySource, exported.name)) {
         this.diagnostic(
           "NS7008",
           `Script block '${block.name}' does not export declared function '${exported.name}'.`,
@@ -2145,16 +2200,22 @@ class JavaScriptGenerator {
         .join("\n"),
     );
 
-    const code = scriptModuleCode(this.ir.path, block);
+    const code = scriptModuleCode(this.ir.path, block, bodySource);
     const sourceMap =
       this.sourceText === undefined
         ? undefined
-        : createScriptSourceMap(
-            code,
-            this.ir.path,
-            this.sourceText,
-            block.body_span,
-          );
+        : transpiling
+          ? composeTranspiledScriptSourceMap(
+              this.ir.path,
+              this.sourceText,
+              transpiledMap,
+            )
+          : createScriptSourceMap(
+              code,
+              this.ir.path,
+              this.sourceText,
+              block.body_span,
+            );
     this.scriptArtifacts.push({
       path: artifactPath,
       code,
@@ -4028,6 +4089,7 @@ export function generateModule(request: CodegenRequest): CodegenResult {
     request.sourceText,
     request.moduleSpecifiers,
     request.backend === "ts" ? "ts" : "js",
+    request.transpileTypeScript,
   ).generate();
 }
 
@@ -4481,14 +4543,16 @@ function scriptDeclarations(
   return `${lines.join("\n")}\n`;
 }
 
-function scriptModuleCode(modulePath: string, block: ScriptBlockDecl): string {
+function scriptModuleCode(
+  modulePath: string,
+  block: ScriptBlockDecl,
+  bodySource: string = block.raw_source,
+): string {
   const header = [
     `// Generated by Neo Astra from ${modulePath} script '${block.name}'.`,
     "// Target: JavaScript ESM.",
   ].join("\n");
-  const body = block.raw_source.endsWith("\n")
-    ? block.raw_source
-    : `${block.raw_source}\n`;
+  const body = bodySource.endsWith("\n") ? bodySource : `${bodySource}\n`;
   return `${header}\n${body}`;
 }
 
@@ -4582,6 +4646,47 @@ function createScriptSourceMap(
     sourcesContent: [sourceText],
     names: [],
     mappings: mappings.join(";"),
+  });
+}
+
+/**
+ * Composes the artifact source map for a transpiled `@script:ts` block.
+ *
+ * The transpiler is handed the body padded with blank lines so its map already
+ * reports `.ns`-absolute line numbers. All that is left is to shift every
+ * mapping down by the two artifact header lines and to point the map at the
+ * `.ns` source with its full text, which is exactly what `sourcesContent` is
+ * for. If the transpiler produced no usable map, the artifact is emitted
+ * without one rather than with an incorrect one.
+ */
+function composeTranspiledScriptSourceMap(
+  sourcePath: string,
+  sourceText: string,
+  transpiledMap: string | undefined,
+): string | undefined {
+  if (transpiledMap === undefined) {
+    return undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(transpiledMap);
+  } catch {
+    return undefined;
+  }
+  if (!isRecord(parsed) || typeof parsed["mappings"] !== "string") {
+    return undefined;
+  }
+  const headerLines = 2;
+  const mappings = `${";".repeat(headerLines)}${parsed["mappings"]}`;
+  const names = Array.isArray(parsed["names"])
+    ? parsed["names"].filter((name): name is string => typeof name === "string")
+    : [];
+  return JSON.stringify({
+    version: 3,
+    sources: [sourcePath],
+    sourcesContent: [sourceText],
+    names,
+    mappings,
   });
 }
 

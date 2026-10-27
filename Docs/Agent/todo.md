@@ -763,8 +763,9 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 
 ## TS-001 - TypeScript ESM backend
 
-**Status:** Not started. Depends on the completed `JS-001` backend and the
-`INTEROP-001` frontend.
+**Status:** Complete. Slices: shared-emitter TS mode + thin `codegen-ts` wrapper
+(`83ec555`), CLI `--target ts` wiring + TS test suite (`6f0e80b`), and
+`@script:ts` pinned-transpiler emission.
 
 **Why**
 
@@ -783,47 +784,50 @@ source maps that compile with ordinary `tsc` and run through Node or a bundler.
 
 **Acceptance**
 
-- [ ] Add a `codegen-ts` package that consumes the same serialized typed module
+- [x] Add a `codegen-ts` package that consumes the same serialized typed module
       as `codegen-js` (AST, HIR, annotations, manual-memory scopes, integer
       policy, and project module keys).
-- [ ] Share JS runtime semantics and tree-shaken helpers with the JavaScript
+- [x] Share JS runtime semantics and tree-shaken helpers with the JavaScript
       backend without forking behavior or duplicating source parsing.
-- [ ] Emit strict TypeScript ESM for the supported language subset: functions,
+- [x] Emit strict TypeScript ESM for the supported language subset: functions,
       constants, locals, control flow, `defer`, calls, assignments, arrays,
       maps, tuples, structs, enums, `Option`, `Result`, `match`, errors, tasks,
       and the supported built-ins.
-- [ ] Emit explicit types for parameters, returns, locals, constants, struct
+- [x] Emit explicit types for parameters, returns, locals, constants, struct
       fields, enum payloads, maps, tuples, and `Option`/`Result` values; do not
       rely on implicit `any` except at an explicitly marked FFI boundary.
-- [ ] Support linked multi-module projects, imports, default/named/namespace
+- [x] Support linked multi-module projects, imports, default/named/namespace
       imports, re-exports, star re-exports, and rewritten relative specifiers
       with parity to `JS-001`.
-- [ ] Emit `.ts`, `.ts.map`, and `.d.ts` artifacts; keep `sourcesContent` and
+- [x] Emit `.ts`, `.ts.map`, and `.d.ts` artifacts; keep `sourcesContent` and
       line-level mappings. Write `package.json` with `"type": "module"` when the
       out directory needs it.
-- [ ] Support `wrapping`, `safe-checked`, and `arbitrary` integer policies with
+- [x] Support `wrapping`, `safe-checked`, and `arbitrary` integer policies with
       the same observable semantics as the JavaScript backend.
-- [ ] Support eager `spawn`/`join`/`cancel` and recoverable error effects with
+- [x] Support eager `spawn`/`join`/`cancel` and recoverable error effects with
       the same boundary behavior as the JavaScript backend.
-- [ ] Implement `@script:ts` emission on the TypeScript target with one pinned
+- [x] Implement `@script:ts` emission on the TypeScript target with one pinned
       TypeScript compiler version. Missing or mismatched transpilers are hard
       errors; no best-effort fallback. `@script:js` remains valid where the
       target permits it.
-- [ ] Extend `astra build` target selection to `backend: "ts"`, including
+- [x] Extend `astra build` target selection to `backend: "ts"`, including
       `--target`, `ASTRA_TARGET`, `build.defaultTarget`, target `outDir`, and
       mode/integer-policy selection.
-- [ ] Report frontend and backend diagnostics with `.ns` source locations, and
+- [x] Report frontend and backend diagnostics with `.ns` source locations, and
       reject unsupported constructs instead of changing semantics.
-- [ ] Add end-to-end tests that build a real project, run `tsc --strict
+- [x] Add end-to-end tests that build a real project, run `tsc --strict
       --noEmit`, execute the emitted JavaScript, and verify linked imports,
       source maps, declarations, error propagation, tasks, and integer policies.
-- [ ] Add conformance cases shared with `JS-001` so both backends execute the
+- [x] Add conformance cases shared with `JS-001` so both backends execute the
       same portable-core programs.
 
 **Current boundary**
 
-- No TypeScript backend exists yet; `astra build` only selects the JavaScript
-  backend. `@script:ts` is rejected by the JavaScript backend.
+- `@script:ts` bodies are transpiled with the pinned `typescript@7.0.2` via the
+  `tsc` CLI (`--noCheck`: the foreign body is opaque to Nova and may use host
+  globals); syntax errors are hard `NS7008` errors. The artifact's source map
+  is composed from the transpiler's map by padding the body so its lines are
+  `.ns`-absolute, then shifting past the artifact header — no VLQ re-encode.
 - The TypeScript target must not emit `any` merely to make checking pass; use
   the typed IR or reject the construct.
 - TypeScript-specific packaging (bundler presets, `.d.ts` library layout, and

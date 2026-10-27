@@ -16,6 +16,7 @@
     "clean": "tsc -b --clean"
   },
   "dependencies": {
-    "@neo-astra/codegen-js": "0.1.0"
+    "@neo-astra/codegen-js": "0.1.0",
+    "typescript": "7.0.2"
   }
 }

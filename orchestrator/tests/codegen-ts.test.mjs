@@ -12,8 +12,8 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateTypeScript } from "../packages/codegen-ts/dist/index.js";
-import { generateJavaScript } from "../packages/codegen-js/dist/index.js";
+import { generateTypeScript, PINNED_TYPESCRIPT_VERSION, pinnedTypeScriptVersionError } from "../packages/codegen-ts/dist/index.js";
+import { generateJavaScript, generateModule } from "../packages/codegen-js/dist/index.js";
 import {
   loadConformanceCases,
   normalizeConformanceText,
@@ -324,6 +324,28 @@ const parityPrograms = [
     ].join("\n"),
   },
   {
+    name: "safe-checked integer policy",
+    integerPolicy: "safe-checked",
+    source: [
+      "pub fn main() -> i32 {",
+      "    let a: i32 = 100",
+      "    let b: i32 = 23",
+      "    let sum: i32 = a + b",
+      "    println(sum)",
+      "    let product: i32 = sum * 2",
+      "    println(product)",
+      "    let difference: i32 = product - 46",
+      "    println(difference)",
+      "    match product.checked_div(7) {",
+      "        Ok(result) => println(result),",
+      '        Err(error) => println("error"),',
+      "    }",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  },
+  {
     name: "inline script block",
     source: [
       "{@script:js as math;",
@@ -604,4 +626,209 @@ test("astra build --target ts writes linked TypeScript that tsc accepts and Node
   } finally {
     rmSync(project, { recursive: true, force: true });
   }
+});
+
+// The same Nova program, once with a TypeScript `@script:ts` body and once with
+// an equivalent JavaScript `@script:js` body. They must produce identical
+// runtime output; only the script body's language and types differ.
+const scriptTsSource = [
+  "{@script:ts as math;",
+  "    @mode(core)",
+  "    @exports {",
+  "        fn add(a: i32, b: i32) -> i32",
+  "        fn label(value: i32) -> str",
+  "    }",
+  "",
+  "    @impl",
+  "    const prefix: string = 'v=';",
+  "    export function add(a: number, b: number): number { return a + b; }",
+  "    export function label(value: number): string { return prefix + String(value); }",
+  "@end",
+  "}",
+  "",
+  "pub fn main() -> i32 {",
+  "    println(math.add(2, 3))",
+  "    println(math.label(7))",
+  "    return 0",
+  "}",
+  "",
+].join("\n");
+
+const scriptJsSource = scriptTsSource
+  .replace("@script:ts", "@script:js")
+  .replace("const prefix: string = 'v=';", "const prefix = 'v=';")
+  .replace(
+    "export function add(a: number, b: number): number { return a + b; }",
+    "export function add(a, b) { return a + b; }",
+  )
+  .replace(
+    "export function label(value: number): string { return prefix + String(value); }",
+    "export function label(value) { return prefix + String(value); }",
+  );
+
+const BASE64_VLQ =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function decodeFirstMappingSegment(mappings) {
+  // Skip the empty generated lines that carry no mappings (the two header
+  // lines), then decode the very first segment of the first mapped line.
+  const lines = mappings.split(";");
+  const index = lines.findIndex((line) => line.length > 0);
+  const first = lines[index].split(",")[0];
+  const values = [];
+  let shift = 0;
+  let value = 0;
+  for (const char of first) {
+    const digit = BASE64_VLQ.indexOf(char);
+    value += (digit & 31) << shift;
+    if ((digit & 32) !== 0) {
+      shift += 5;
+      continue;
+    }
+    const negative = (value & 1) === 1;
+    value >>= 1;
+    values.push(negative ? -value : value);
+    shift = 0;
+    value = 0;
+  }
+  return { generatedLine: index, sourceLine: values[2] };
+}
+
+test("@script:ts transpiles with the pinned compiler, runs, and matches @script:js", () => {
+  const tsGenerated = generateFor("ts", scriptTsSource);
+  const jsGenerated = generateFor("js", scriptJsSource);
+  assert.deepEqual(tsGenerated.diagnostics, [], JSON.stringify(tsGenerated.diagnostics));
+  assert.deepEqual(jsGenerated.diagnostics, [], JSON.stringify(jsGenerated.diagnostics));
+
+  const artifact = (tsGenerated.artifacts ?? [])[0];
+  assert.ok(artifact, "expected a transpiled @script:ts artifact");
+  // The transpiler strips the TypeScript annotations.
+  assert.match(artifact.code, /export function add\(a, b\)/);
+  assert.doesNotMatch(artifact.code, /: number/);
+
+  const directory = mkdtempSync(join(tmpdir(), "astra-ts-script-"));
+  try {
+    writeFileSync(join(directory, "package.json"), JSON.stringify({ type: "module" }), "utf8");
+    writeFileSync(join(directory, "main.ts"), tsGenerated.code, "utf8");
+    writeArtifacts(directory, tsGenerated);
+
+    const check = runTsc(directory, ["--noEmit", "main.ts"]);
+    assert.equal(check.status, 0, `tsc --strict failed:\n${check.errors.join("\n")}`);
+
+    const emit = runTsc(directory, ["--outDir", "dist", "main.ts"]);
+    assert.equal(emit.status, 0, `tsc emit failed:\n${emit.errors.join("\n")}`);
+    writeArtifacts(join(directory, "dist"), tsGenerated);
+    writeFileSync(
+      join(directory, "runner.mjs"),
+      [
+        'import { main } from "./dist/main.js";',
+        'process.stdout.write("RETURN=" + String(main()));',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const tsRun = runNode(directory, "runner.mjs");
+    assert.equal(tsRun.status, 0, tsRun.stderr);
+    assert.equal(tsRun.stdout, "5\nv=7\nRETURN=0");
+
+    writeFileSync(join(directory, "generated.mjs"), jsGenerated.code, "utf8");
+    writeArtifacts(directory, jsGenerated);
+    writeFileSync(
+      join(directory, "js-runner.mjs"),
+      [
+        'import * as module from "./generated.mjs";',
+        'process.stdout.write("RETURN=" + String(module.main()));',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const jsRun = runNode(directory, "js-runner.mjs");
+    assert.equal(jsRun.status, 0, jsRun.stderr);
+
+    assert.equal(
+      tsRun.stdout,
+      jsRun.stdout,
+      "@script:ts output diverged from the equivalent @script:js program",
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("@script:ts artifact carries a source map that points back at the .ns body", () => {
+  const generated = generateFor("ts", scriptTsSource);
+  assert.deepEqual(generated.diagnostics, [], JSON.stringify(generated.diagnostics));
+  const artifact = (generated.artifacts ?? [])[0];
+  assert.ok(artifact);
+  assert.ok(artifact.sourceMap, "expected a composed source map on the transpiled artifact");
+
+  const map = JSON.parse(artifact.sourceMap);
+  assert.equal(map.version, 3);
+  assert.deepEqual(map.sources, ["app/main.ns"]);
+  assert.deepEqual(map.sourcesContent, [scriptTsSource]);
+
+  // The body's first line is `const prefix: string = ...`; find its index in
+  // the .ns source and check the map's first segment points there.
+  const expectedLine = scriptTsSource
+    .split("\n")
+    .findIndex((line) => line.includes("const prefix"));
+  const { generatedLine, sourceLine } = decodeFirstMappingSegment(map.mappings);
+  // Two generated lines of header precede the transpiled body.
+  assert.equal(generatedLine, 2);
+  assert.equal(sourceLine, expectedLine);
+});
+
+test("@script:ts without a pinned transpiler is a hard NS7008 error, not a fallback", () => {
+  const compiled = compileSource(scriptTsSource, { target: "ts" });
+  assert.deepEqual(compiled.diagnostics, [], JSON.stringify(compiled.diagnostics));
+  // Drive the shared emitter directly with backend "ts" but no transpiler
+  // hook, which is what a caller that failed to wire the pinned toolchain
+  // would look like.
+  const generated = generateModule({
+    moduleName: "app.main",
+    ir: compiled.ir,
+    sourceText: scriptTsSource,
+    backend: "ts",
+  });
+  const ns7008 = generated.diagnostics.filter((d) => d.code === "NS7008");
+  assert.equal(ns7008.length, 1, JSON.stringify(generated.diagnostics));
+  assert.match(ns7008[0].message, /no pinned TypeScript transpiler is available/);
+  assert.match(ns7008[0].message, /no best-effort fallback/);
+  assert.equal((generated.artifacts ?? []).length, 0);
+});
+
+test("a syntactically invalid @script:ts body is a hard NS7008 transpile error", () => {
+  const badSource = scriptTsSource.replace(
+    "export function add(a: number, b: number): number { return a + b; }",
+    "export function add(a: number, b: number): number { return a + }",
+  );
+  const compiled = compileSource(badSource, { target: "ts" });
+  // The script body is opaque to the frontend, so this compiles cleanly.
+  assert.deepEqual(compiled.diagnostics, [], JSON.stringify(compiled.diagnostics));
+  const generated = generateTypeScript({
+    moduleName: "app.main",
+    ir: compiled.ir,
+    sourceText: badSource,
+  });
+  const ns7008 = generated.diagnostics.filter((d) => d.code === "NS7008");
+  assert.equal(ns7008.length, 1, JSON.stringify(generated.diagnostics));
+  assert.match(ns7008[0].message, /failed to transpile/);
+  assert.equal((generated.artifacts ?? []).length, 0);
+});
+
+test("the pinned TypeScript version matches the installed compiler exactly", () => {
+  // A mismatch is a hard error, so the pin and the install must agree or the
+  // build would refuse to run.
+  assert.equal(pinnedTypeScriptVersionError(PINNED_TYPESCRIPT_VERSION), undefined);
+  assert.match(pinnedTypeScriptVersionError("6.9.9"), /typescript@7\.0\.2 is required/);
+  assert.match(pinnedTypeScriptVersionError("6.9.9"), /typescript@6\.9\.9 is installed/);
+
+  const installed = JSON.parse(
+    readFileSync(join(root, "node_modules", "typescript", "package.json"), "utf8"),
+  );
+  assert.equal(
+    installed.version,
+    PINNED_TYPESCRIPT_VERSION,
+    "the installed typescript must match the pinned compiler version exactly",
+  );
 });
