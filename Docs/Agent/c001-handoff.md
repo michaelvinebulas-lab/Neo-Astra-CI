@@ -6,11 +6,12 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master = 47d2598` (2026-10-27), working tree clean, full
+> **Snapshot:** `master = 90cdba1` (2026-10-27), working tree clean, full
 > `npm run ci` green.
 >
-> **Next task:** generics monomorphization (section 6.A) — the only remaining
-> non-concurrency conformance gap for C.
+> **Next task:** pick the next remainder item — native library output + ABI
+> (section 6.E) or package linking (section 6.B) are the best next slices;
+> `Array.get` is an opportunistic small fix.
 
 ---
 
@@ -81,12 +82,11 @@ and section 6.A (the generics design) before touching code.
 
 ## 4. Current snapshot
 
-- `master = 47d2598`; tree clean; `npm run ci` green.
-- `astra-codegen-c`: **70** emission tests + 1 static conformance gate.
+- `master = 90cdba1`; tree clean; `npm run ci` green.
+- `astra-codegen-c`: **71** emission tests + 1 static conformance gate.
 - Corpus: **19 positive** cases, **11 negative** rejects.
-- C emits and clang-compiles **17 of 19** cases. Two ledgered gaps:
+- C emits and clang-compiles **18 of 19** cases. One ledgered gap:
   - `channels` — `CONC-001` (generic `Channel` builtin; spawn/channels rejected).
-  - `generics` — this task (no monomorphization yet).
 - Runtime execution of generated C is **not** verified on this host (no libc
   headers for `astra_host.c`); native linking is the open environmental gate.
 
@@ -94,6 +94,8 @@ and section 6.A (the generics design) before touching code.
 
 | Commit | Content |
 |---|---|
+| `90cdba1` | Generic function monomorphization (`ns_<fn>_<types>` per call site) |
+| `8696b07` | C-001 handoff document + host-shim defect finding |
 | `47d2598` | Docs: reconcile INTEROP-001 C/C++ slice status |
 | `7b86025` | Static conformance gate; bytes writes (`astra_bytes_set`); `Option`/`Result` accessors; contextual `None` |
 | `731ec32` | UTF-8 views (`char_count`, `byte_at`, `char_at`, `bytes`, `chars`) and `bytes.new` |
@@ -147,6 +149,10 @@ functions. Division by zero panics in every arithmetic mode.
 struct/enum types; entry module emits `int main(void)`; headers include
 dependency headers. Default imports are rejected (`NS8019`).
 
+**Generics.** Local generic functions are monomorphized per call site
+(`ns_<fn>_<type args>`, e.g. `ns_identity_i32`), including generic-to-generic
+calls; see section 6.A for the boundaries.
+
 **Inline scripts.** `@script:c` / `@script:cpp` → one TU per block, C ABI
 prototypes, `extern "C"` for C++, CLI compiles and links script TUs
 (`-lstdc++` for C++). Native link unverified (toolchain gate).
@@ -164,16 +170,11 @@ type), `NS8021` (unsupported pattern/method), `NS8024` (print type), `NS8099`
 Order below is a recommendation, not a mandate. Each item lists current
 behavior, a design sketch, acceptance, and risks.
 
-### 6.A Generics monomorphization — **next task**
+### 6.A Generics monomorphization — **DONE (`90cdba1`)**
 
-**Today.** `fn identity<T>(value: T) -> T` fails twice:
-- `prescan_fn` maps `T` → `NS8020` "type 'T' is not declared in this module".
-- `emit_fn_proto` rejects generic declarations with `NS8018`
-  ("requires monomorphization").
-- Call sites emit `ns_identity(...)` with no instantiation.
-
-The corpus case `conformance/cases/generics.ns` is in the static gate's
-`KNOWN_GAPS`:
+Local generic functions are monomorphized per call site. The design below is
+kept as the reference for how it works (and for extending it later); the corpus
+case `conformance/cases/generics.ns` now emits and clang-compiles:
 
 ```ns
 fn identity<T>(value: T) -> T { return value }
@@ -231,16 +232,15 @@ Expected: `7`, `ok`, `true`, `RETURN=0`.
    not visible to the importer's TU). Document as a boundary; do not attempt in
    this slice.
 
-**Acceptance.**
-- New `emit_c.rs` test `generic_functions_monomorphize_per_instantiation`:
-  asserts the three mangled symbols, the specialized signatures, and
-  `assert_clang_ok`.
-- Remove `generics` from `KNOWN_GAPS` in `tests/conformance.rs`; the gate now
-  emits 18/19 cases (only `channels` remains).
-- `cargo test -p astra-codegen-c`, then full `npm run ci`.
-- Update `Docs/Agent/todo.md` (C-001 acceptance + evidence counts), append a
-  `state-log.md` entry, update the conformance numbers here and in
-  `conformance/README.md` if it mentions counts.
+**Shipped.**
+- `generic_functions_monomorphize_per_instantiation` pins the `i32`/`Str`/`bool`
+  instantiations, the specialized bodies, and a generic-to-generic forwarded
+  call, and compiles the output with clang.
+- `generics` left `KNOWN_GAPS`; the static gate now emits 18/19 cases (only
+  `channels` remains).
+- Remaining boundaries: exported generic functions are not exposed in headers;
+  cross-module generic calls are not instantiated in the importer; generic
+  bodies that dispatch on `T` beyond type mapping stay out of scope.
 
 **Risks / traps.**
 - Emission order: prototypes must precede bodies, and instantiation bodies are
@@ -609,3 +609,4 @@ rejected}`, `to_type`, `path_to_type`, `sanitize`, `BUILTIN_NOMINALS`.
 | Date | Change |
 |---|---|
 | 2026-10-27 | Created at `47d2598` for the C-001 handoff (generics next). |
+| 2026-10-27 | Generics monomorphization landed (`90cdba1`); snapshot, ledger, and 6.A updated. |

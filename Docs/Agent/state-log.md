@@ -10,12 +10,27 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001` static conformance gate + bytes writes/`Option`/`Result` accessor slice complete, commit follows; `C-001` string/bytes builtin slice (`731ec32`); `C-001` numeric builtins (`c33fcfd`); `C-001` str/bytes slice semantics + fallible-call `match`/`!` materialization (`84ac11d`, `9d1173e`); `C-001` cross-module struct/enum types (`NS8020` closure) (`12bfd86`); `JS-001` statement-position control flow (`c8555c6`); `NOVA-004` Nova gaps closed (`f0a62e6`); `work/conf-001` merged (`78d8920`); `C-001` project-linking slice (`a0dea19`); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`) |
+| Current task | `C-001` generic-function monomorphization complete (`90cdba1`); static conformance gate now 18/19 (`channels` remains, `CONC-001`); prior slices `731ec32`, `c33fcfd`, `9d1173e`, `84ac11d`, `12bfd86`, `c8555c6`, `f0a62e6`, `78d8920`, `a0dea19`, `83ec555`/`6f0e80b`/`df4ffc9`, `49a84c8` |
 | Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, C multi-module project linking (module-qualified symbols, cross-module calls and struct/enum types, `compile_project`), `@script` inline interop frontend complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
-| Next action | Generics monomorphization in the C backend (close the last non-concurrency corpus gap; see `Docs/Agent/c001-handoff.md` 6.A); then package linking, GC/manual memory, concurrency, native library ABI, native CI gate; WASM-001 last |
+| Next action | C-001 remainder, best next slices: native library output + documented ABI (`c001-handoff.md` 6.E), package linking (6.B), or the opportunistic `Array.get` gap; then GC-001, CONC-001, native CI gate; WASM-001 last |
+
+---
+
+### 2026-10-27 - `C-001` slice: generic function monomorphization
+
+- Command: `cargo test -p astra-codegen-c`, `npm run ci`
+- Result: 71/71 emission tests plus the static conformance gate; full CI green
+- What: local generic functions are now monomorphized per call site, closing the last non-concurrency corpus gap for C.
+  - **Substitution** (`ty.rs`): `TyCtxt` holds `subst` (type parameter to concrete type) with `set_subst`/`clear_subst`/`substitute`; `c_type` and `ident` resolve both `Type::Generic(name)` and bare `Type::Named(name, [])` through it. The checker represents type parameters as `Type::Generic`, which the emitter previously rejected with `NS8018`.
+  - **Discovery** (`emit.rs`): a call to a local generic function unifies the declared parameter types with the call's argument types (`bind_type_params`, recursing through `Option`/`Result`/`Array`/`Slice`/`Map`/`Tuple`/named arguments; the active substitution is applied to the argument type first, so generic-to-generic calls work), registers a deduped instantiation in a `BTreeMap`, queues its body, and emits the mangled symbol (`ns_<fn>_<type args>`, e.g. `ns_identity_i32`). Uninferrable calls reject `NS8018`.
+  - **Assembly**: `emit_program`/`emit_program_linked` emit constants, regular bodies, and `main` into a scratch buffer, drain the instantiation queue until no new ones appear, then write the runtime header, complete typedefs, prototypes (regular + instantiations), script prototypes, and the code. `emit_function`/`emit_fn_proto` gained `_named` variants; `collect_decls`/`prescan_fn` skip generic declarations; `mentions_unresolved` treats `Type::Generic` as a placeholder.
+- Corpus: `generics` leaves the `KNOWN_GAPS` ledger in `crates/astra-codegen-c/tests/conformance.rs`; the static gate now emits 18 of 19 cases (`channels` remains, `CONC-001`).
+- Tests: new `generic_functions_monomorphize_per_instantiation` pins the three instantiations (`i32`, `Str`, `bool`), the specialized bodies, and a generic-to-generic forwarded call; clang compiles the output.
+- Verification: full `npm run ci` green immediately before this entry.
+- Boundary: exported generic functions are not exposed in headers; cross-module generic calls are not instantiated in the importer; generic bodies that dispatch on `T` beyond type mapping (method calls on `T`, etc.) remain out of scope.
 
 ---
 

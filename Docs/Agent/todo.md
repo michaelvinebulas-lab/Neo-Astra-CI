@@ -973,7 +973,7 @@ by a production native target.
 - [x] `astra build --target c` writes `main.c` and `astra_host.c`;
       `--target native` discovers `clang`/`gcc`/`cc` and attempts to link a
       host executable.
-- [x] 70 `astra-codegen-c` tests pass, including generated-C checks with the
+- [x] 71 `astra-codegen-c` tests pass, including generated-C checks with the
       available clang toolchain and freestanding object compilation.
 - [x] Map literals `{ k: v, ... }` emit `astra_map_new` + `astra_map_set`.
 - [x] Map methods `.len()`, `.contains(k)`, `.get(k)`, `.insert(k, v)` emit typed C via
@@ -1026,6 +1026,16 @@ by a production native target.
       pass their expected type down and materialize the concrete Option.
       Prescan skips annotation types that still contain checker placeholders,
       which previously rejected valid programs like `find(false).unwrap_or(0)`.
+- [x] Generic functions (`fn f<T>(...)`): monomorphized per call site from the
+      argument types (`Type::Generic` resolved through a `TyCtxt` substitution
+      table). Each distinct type-argument set emits one specialized copy
+      (`ns_<fn>_<types>`, e.g. `ns_identity_i32`) with the substituted signature
+      and body; generic-to-generic calls instantiate the callee with the caller's
+      concrete substitution. Prototypes and bodies are assembled after discovery
+      so declarations precede use. Boundaries: exported generics are not exposed
+      in headers, cross-module generic calls are not instantiated in the
+      importer, and bodies that dispatch on `T` beyond type mapping remain out of
+      scope.
 - [x] `contains` added to the type checker's `Type::Map` member resolution.
 - [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
       byte arrays; empty byte literals use the zero-length sentinel.
@@ -1094,27 +1104,27 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 70 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 71 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing (reads and
   bounds-checked writes)/slicing/comparisons,
   `str` slice `Result` lowering (`SliceError`), `str.to_int`/`checked_*`/
   `wrapping_*` lowering, `str` scalar/sequence views (`char_count`, `byte_at`,
-  `char_at`, `bytes`, `chars`, `bytes.new`), `Option`/`Result` accessors, and
-  `!` propagation of fallible builtin calls, `@script:c` and `@script:cpp`
-  emission, compiler API artifacts, rejection paths,
+  `char_at`, `bytes`, `chars`, `bytes.new`), `Option`/`Result` accessors,
+  generic monomorphization (per-instantiation symbols, generic-to-generic
+  calls), and `!` propagation of fallible builtin calls, `@script:c` and
+  `@script:cpp` emission, compiler API artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
   imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
   and header dependency includes).
 - `crates/astra-codegen-c/tests/conformance.rs`: the static C conformance gate
-  lowers every shared case and clang-compiles the result freestanding. 17 of
-  19 cases emit cleanly; `channels` (`CONC-001`) and `generics` (C-001
-  monomorphization) sit in an explicit `KNOWN_GAPS` ledger that fails when a
-  listed case starts passing. Native execution still waits on the toolchain
-  gate.
-- `cargo test --workspace` passes (70 in `astra-codegen-c`, 142 in `astra-core`,
+  lowers every shared case and clang-compiles the result freestanding. 18 of
+  19 cases emit cleanly; `channels` (`CONC-001`) sits in an explicit
+  `KNOWN_GAPS` ledger that fails when a listed case starts passing. Native
+  execution still waits on the toolchain gate.
+- `cargo test --workspace` passes (71 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary
