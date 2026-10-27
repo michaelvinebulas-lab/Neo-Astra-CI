@@ -130,19 +130,19 @@ extern int32_t astra_mul_i32(int32_t a, int32_t b);
 extern int64_t astra_mul_i64(int64_t a, int64_t b);
 "#;
 
-/// The hosted runtime implementation, written to `astra_host.c` and linked only
-/// when a runnable executable is produced. It implements the `extern` shims
-/// declared in [`RUNTIME_HEADER`] using the C standard library.
-pub const HOST_SHIM: &str = r#"/* Neo Astra C runtime -- hosted implementation (astra_host.c). */
-#include <stdint.h>
-#include <stdbool.h>
-#include <stddef.h>
+/// Body of the hosted runtime implementation.
+///
+/// This is not a complete translation unit: it assumes [`RUNTIME_HEADER`] is in
+/// scope for `NS_*` value types and the `extern` prototypes. [`host_shim`]
+/// returns the complete `astra_host.c` artifact.
+pub const HOST_SHIM: &str = r#"/* Neo Astra C runtime -- hosted implementation (astra_host.c).
+   Shared value types and runtime prototypes come from RUNTIME_HEADER, which
+   `host_shim()` prepends. Only libc headers belong in this file. */
+#include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-typedef struct { const char* data; size_t len; } NS_Str;
-typedef struct { void* data; size_t len; size_t cap; } NS_Array;
 
 static void astra_write_str(NS_Str x) {
     if (x.len > 0) {
@@ -486,3 +486,14 @@ ASTRA_WRAP(astra_mul_i16, int16_t, uint16_t, *)
 ASTRA_WRAP(astra_mul_i32, int32_t, uint32_t, *)
 ASTRA_WRAP(astra_mul_i64, int64_t, uint64_t, *)
 "#;
+
+/// Complete `astra_host.c` translation unit.
+///
+/// The shim is compiled as its own translation unit, so it must see the shared
+/// runtime declarations ([`RUNTIME_HEADER`]) — `NS_Bytes`, `NS_Map`, and the
+/// builtin error payload typedefs are used by the hosted implementation but are
+/// not declared in [`HOST_SHIM`] itself. Prepending the header keeps one
+/// definition of every `NS_*` type instead of duplicating (and drifting) them.
+pub fn host_shim() -> String {
+    format!("{RUNTIME_HEADER}\n{HOST_SHIM}")
+}

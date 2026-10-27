@@ -32,8 +32,9 @@ suite — now merged into `master`. `TS-001` is complete (shared-emitter TS mode
 conformance suite (19 positive + 11 negative cases) runs green on JavaScript,
 TypeScript, and Nova with empty backend gap ledgers. The
 `INTEROP-001` inline-script design is complete in
-`Docs/Design/V1/10-inline-script-interop.md`; the C/C++ emission slice is
-done and waits on the `C-001` toolchain gate for an end-to-end native link.
+`Docs/Design/V1/10-inline-script-interop.md`; the C/C++ emission slice and the
+end-to-end native link are verified (`astra build --target native` runs an
+inline `@script:c` block).
 Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
 ---
@@ -870,8 +871,8 @@ source maps that compile with ordinary `tsc` and run through Node or a bundler.
 
 **Status:** Frontend (Slices A+B), the JavaScript backend slice (C), the
 TypeScript-target slice (pinned-transpiler `@script:ts`), and the C/C++ emission
-slice are complete. End-to-end native script linking is unverified until the
-`C-001` toolchain gate; deferred runtime work remains.
+plus native-link slice are complete: `astra build --target native` links a
+`@script:c` translation unit and runs it. Deferred runtime work remains.
 
 **Why**
 
@@ -912,8 +913,10 @@ export surface.
       freestanding headers, C ABI prototypes in `main.c`, `extern "C"` blocks in
       C++ scripts, and CLI script compilation/linking (`-lstdc++` when C++ is
       used).
-- [ ] Verify a native script link end to end. Blocked by the `C-001` native
-      toolchain gate on this host (no libc/SDK headers for `astra_host.c`).
+- [x] Verify a native script link end to end: `astra build --target native`
+      links `script_<name>.c` (and `.cpp` with `-lstdc++`) and runs the
+      executable on this host, pinned by the boundary test
+      `astra build --target native links an inline @script:c block`.
 - [x] Make Nova reject foreign script calls with `NV0008` before execution.
 - [x] Add conformance and security tests for unsupported target/language pairs,
       malformed terminators, opaque bodies, and mode propagation.
@@ -933,9 +936,10 @@ export surface.
 
 ## C-001 - C17 native backend
 
-**Status:** `[~]` The managed C17 first slice is implemented and tested. The
-production native backend is **not complete**; the current C-001 checkbox in the
-backlog means "first slice", not the full backend.
+**Status:** `[~]` The managed C17 first slice is implemented and tested, and
+native executables now compile, link, and run on this host (gcc). The production
+native backend is **not complete**; the current C-001 checkbox in the backlog
+means "first slice", not the full backend.
 
 > **Handoff:** `Docs/Agent/c001-handoff.md` is the transfer document for this
 > task — architecture, invariants, the remaining work with design sketches, and
@@ -1036,6 +1040,25 @@ by a production native target.
       in headers, cross-module generic calls are not instantiated in the
       importer, and bodies that dispatch on `T` beyond type mapping remain out of
       scope.
+- [x] Hosted runtime shim and native conformance execution (`C-001` native
+      verification slice):
+      - `astra_host.c` is now a complete translation unit:
+        `runtime::host_shim()` prepends the shared `RUNTIME_HEADER`, so the shim
+        sees `NS_Bytes`, `NS_Map`, and the builtin error payload typedefs, and
+        `HOST_SHIM` adds `<inttypes.h>`/`<math.h>` for `PRId*`/`INFINITY`.
+        Previously it failed to compile with 51 gcc errors.
+      - Toolchain selection probes for *hosted* capability (a real
+        `#include <stdio.h>` compile) in both the Rust test helpers and
+        `astra build --target native`: clang without a Windows SDK is skipped in
+        favour of gcc, and the CLI no longer fails just because clang exists.
+      - `crates/astra-codegen-c/tests/conformance.rs` now links every emitted
+        case against the shim, runs it, and compares stdout plus `RETURN=<code>`
+        with the shared `.expected` file whenever a hosted compiler is present.
+      - The runtime gate caught and fixed a match-arm lowering bug: arm block
+        statements were left in the `pre` buffer and flushed into the *next*
+        arm's branch, so `99 => { break }` ran in the wildcard arm and
+        `early_exit` printed `-1` instead of `3`. `emit_arm_body` flushes inside
+        the arm, and non-expression tails flush before assigning the arm value.
 - [x] `contains` added to the type checker's `Type::Map` member resolution.
 - [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
       byte arrays; empty byte literals use the zero-length sentinel.
@@ -1089,22 +1112,20 @@ by a production native target.
 - [ ] Native library output and stable ABI. Only an executable via `main` is
       produced; static/dynamic libraries, exported headers, and a declared C ABI
       are not implemented.
-- [ ] Cross-platform native verification. The first slice has been exercised on
-      this Windows host, but hosted native linking currently fails here because
-      clang lacks MSVC/Windows SDK headers for `astra_host.c` (`stdio.h` not
-      found). `astra build --target c` succeeds; `--target native` needs a
-      complete host toolchain. Linux/macOS natively linked builds are unverified.
-      Known latent defect to fix first: `astra_host.c` is written raw, but the
-      shim uses `NS_Bytes`/`NS_Map` from the runtime header while typedefing only
-      `NS_Str`/`NS_Array` (see `Docs/Agent/c001-handoff.md` 6.F).
-- [ ] Native CI gate. C tests skip hosted execution when no libc/SDK is
-      available; CI must compile and run native binaries on at least one Tier-1
-      host before C-001 can be marked fully done.
+- [ ] Cross-platform native verification. `astra build --target native` now
+      links and runs on this Windows host through gcc (MSYS2 UCRT64); the
+      earlier "no libc headers" failure came from preferring clang without a
+      Windows SDK, plus the shim having no `NS_Bytes`/`NS_Map` declarations.
+      Linux/macOS native builds are still unverified and need a Tier-1 CI run.
+- [ ] Native CI matrix. The C conformance gate now compiles **and runs** every
+      non-gap case whenever a hosted compiler is available, including on CI
+      runners with libc; the remaining work is to provision and record a Tier-1
+      Linux run rather than relying on per-developer toolchains.
 - [ ] Wasm path through C17 (`WASM-001`) remains deferred.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 71 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 73 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing (reads and
@@ -1113,26 +1134,29 @@ by a production native target.
   `wrapping_*` lowering, `str` scalar/sequence views (`char_count`, `byte_at`,
   `char_at`, `bytes`, `chars`, `bytes.new`), `Option`/`Result` accessors,
   generic monomorphization (per-instantiation symbols, generic-to-generic
-  calls), and `!` propagation of fallible builtin calls, `@script:c` and
+  calls), `!` propagation of fallible builtin calls, the complete hosted shim
+  translation unit and match-arm branch placement, `@script:c` and
   `@script:cpp` emission, compiler API artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
   imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
   and header dependency includes).
-- `crates/astra-codegen-c/tests/conformance.rs`: the static C conformance gate
-  lowers every shared case and clang-compiles the result freestanding. 18 of
-  19 cases emit cleanly; `channels` (`CONC-001`) sits in an explicit
-  `KNOWN_GAPS` ledger that fails when a listed case starts passing. Native
-  execution still waits on the toolchain gate.
-- `cargo test --workspace` passes (71 in `astra-codegen-c`, 142 in `astra-core`,
+- `crates/astra-codegen-c/tests/conformance.rs`: the C conformance gate lowers
+  every shared case and clang-compiles the result freestanding. When a
+  hosted-capable compiler is available it additionally links each case against
+  `astra_host.c`, runs it, and compares stdout plus `RETURN=` with `.expected`:
+  18 of 19 cases pass end to end. `channels` (`CONC-001`) sits in an explicit
+  `KNOWN_GAPS` ledger that fails when a listed case starts passing.
+- `cargo test --workspace` passes (73 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary
   tests cover both paths.
-- `astra build --target native` currently fails on this Windows host at host
-  shim compilation because the clang installation has no Windows SDK/libc
-  headers. This is a toolchain/CI gap that must be closed before claiming a
-  working native binary.
+- `astra build --target native` links and runs a hosted executable on this
+  Windows host through gcc (MSYS2 UCRT64), pinned by the self-skipping boundary
+  test `astra build --target native links and runs a hosted binary`. Clang alone
+  still cannot build hosted C here without the MSVC/Windows SDK, so the CLI
+  probes for hosted capability before selecting a compiler.
 
 **Depends on**
 
@@ -1279,16 +1303,18 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `NOPM-004` Later ecosystem adapters
 - [x] `JS-001` JavaScript ESM backend (complete at `39437d0`; merged from `js-interop`)
 - [x] `TS-001` TypeScript backend (complete at `df4ffc9`: shared-emitter TS mode, `astra build --target ts`, pinned `@script:ts` transpiler)
-- [~] `INTEROP-001` Inline `@script` foreign-language blocks (JS, TS, and C/C++
-  emission slices done; end-to-end native script linking waits on the `C-001`
-  toolchain gate)
+- [x] `INTEROP-001` Inline `@script` foreign-language blocks (JS, TS, and C/C++
+  emission slices done; native C/C++ script linking verified end to end)
 - [ ] `PLAY-001` Browser playground (expanded plan above)
-- [~] `C-001` C backend - managed first slice + multi-module project linking (functions and cross-module struct/enum types) done; package linking, GC/manual memory, concurrency, FFI/`@script:c`, full patterns, native target policy, and cross-platform native verification remain
+- [~] `C-001` C backend — managed first slice, multi-module project linking,
+  generics monomorphization, hosted runtime shim, and native compile-and-run
+  verification done; package linking, GC/manual memory, concurrency, native
+  library output/ABI, and a Tier-1 native CI matrix remain
 - [ ] `GC-001` Native GC
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
-- [~] `CONF-001` Conformance suite — 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C backend runner waits on the native toolchain gate
+- [~] `CONF-001` Conformance suite — 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C runner compiles, links, and executes every non-gap case when a hosted compiler is available (`channels` remains ledgered under CONC-001)
 - [ ] `HARD-001` v0.1 hardening
 
 ---

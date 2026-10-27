@@ -44,24 +44,68 @@ fn compile_and_emit(source: &str) -> String {
 /// Returns the path to clang if available, or None.
 fn clang_path() -> Option<PathBuf> {
     // Try the known Windows LLVM install first, then PATH.
-    let candidates = [
+    resolve_tool([
         "C:\\Program Files\\LLVM\\bin\\clang.exe",
         "clang",
         "clang-19",
         "clang-18",
-    ];
-    for c in &candidates {
-        let path = PathBuf::from(c);
-        if path.exists() {
-            return Some(path);
-        }
-        if let Ok(output) = std::process::Command::new(c).arg("--version").output()
-            && output.status.success()
+    ])
+}
+
+fn tool_path(candidate: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(candidate);
+    if path.exists() {
+        return Some(path);
+    }
+    if let Ok(output) = std::process::Command::new(candidate)
+        .arg("--version")
+        .output()
+        && output.status.success()
+    {
+        return Some(PathBuf::from(candidate));
+    }
+    None
+}
+
+fn resolve_tool<const N: usize>(candidates: [&str; N]) -> Option<PathBuf> {
+    candidates.iter().find_map(|candidate| tool_path(candidate))
+}
+
+/// Returns a compiler that can build a *hosted* program (libc headers and a
+/// linker), or None. clang on a Windows host without an SDK cannot do this even
+/// though it can compile freestanding objects, so the probe is a real compile.
+fn hosted_compiler() -> Option<PathBuf> {
+    for candidate in [
+        "C:\\Program Files\\LLVM\\bin\\clang.exe",
+        "clang",
+        "gcc",
+        "cc",
+    ] {
+        if let Some(path) = tool_path(candidate)
+            && hosted_probe(&path)
         {
-            return Some(PathBuf::from(c));
+            return Some(path);
         }
     }
     None
+}
+
+fn hosted_probe(compiler: &std::path::Path) -> bool {
+    let Ok(dir) = tempfile::tempdir() else {
+        return false;
+    };
+    let probe = dir.path().join("probe.c");
+    let obj = dir.path().join("probe.o");
+    if std::fs::write(&probe, "#include <stdio.h>\nint main(void) { return 0; }\n").is_err() {
+        return false;
+    }
+    std::process::Command::new(compiler)
+        .args(["-std=c17", "-c", "-o"])
+        .arg(&obj)
+        .arg(&probe)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Writes the generated C + runtime header to a temp dir, compiles it
@@ -98,48 +142,24 @@ fn assert_clang_ok(c_source: &str) {
     }
 }
 
-fn has_hosted_libc() -> bool {
-    let Some(clang) = clang_path() else {
-        return false;
-    };
-    let Ok(dir) = tempfile::tempdir() else {
-        return false;
-    };
-    let probe = dir.path().join("probe.c");
-    let obj = dir.path().join("probe.o");
-    if std::fs::write(&probe, "#include <stdio.h>\n").is_err() {
-        return false;
-    }
-    std::process::Command::new(clang)
-        .args(["-std=c17", "-c", "-o"])
-        .arg(&obj)
-        .arg(&probe)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// Compiles the generated C + host shim using clang into an executable,
-/// runs it, and returns (success, stdout, stderr).
-/// Returns `None` if clang or a hosted libc is not available.
-fn clang_build_and_run(c_source: &str) -> Option<(bool, String, String)> {
-    if !has_hosted_libc() {
-        return None;
-    }
-    let clang = clang_path()?;
+/// Compiles the generated C + host shim into an executable, runs it, and
+/// returns (success, stdout, stderr).
+/// Returns `None` when no hosted-capable compiler is available.
+fn hosted_build_and_run(c_source: &str) -> Option<(bool, String, String)> {
+    let compiler = hosted_compiler()?;
     let dir = tempfile::tempdir().expect("tempdir");
     let src_path = dir.path().join("module.c");
     let host_path = dir.path().join("astra_host.c");
     let exe_path = dir.path().join("prog.exe");
     std::fs::write(&src_path, c_source).expect("write module.c");
-    std::fs::write(&host_path, astra_codegen_c::runtime::HOST_SHIM).expect("write astra_host.c");
-    let output = std::process::Command::new(&clang)
+    std::fs::write(&host_path, astra_codegen_c::runtime::host_shim()).expect("write astra_host.c");
+    let output = std::process::Command::new(&compiler)
         .args(["-std=c17", "-Wall", "-Wno-unused-variable", "-o"])
         .arg(&exe_path)
         .arg(&src_path)
         .arg(&host_path)
         .output()
-        .expect("clang failed to link");
+        .expect("hosted compiler failed to link");
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         return Some((false, String::new(), stderr));
@@ -715,6 +735,48 @@ fn host_shim_contains_astra_panic() {
     );
 }
 
+/// Regression: `astra_host.c` is its own translation unit, so it must carry the
+/// shared runtime declarations and every libc header it uses. It previously
+/// omitted `NS_Bytes`/`NS_Map` (unknown type names) and `<inttypes.h>`/
+/// `<math.h>` (`PRId8`, `INFINITY`), so every hosted native build failed.
+#[test]
+fn host_shim_is_a_complete_hosted_translation_unit() {
+    let shim = astra_codegen_c::runtime::host_shim();
+    for needle in [
+        "NS_Bytes",
+        "NS_Map",
+        "NS_SliceError",
+        "#include <inttypes.h>",
+        "#include <math.h>",
+        "#include <stdio.h>",
+    ] {
+        assert!(shim.contains(needle), "host shim missing {needle}");
+    }
+    assert!(
+        shim.contains("typedef struct { const uint8_t* data; size_t len; } NS_Bytes;"),
+        "host shim must use the runtime header's NS_Bytes typedef"
+    );
+
+    let Some(compiler) = hosted_compiler() else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let src_path = dir.path().join("astra_host.c");
+    let obj_path = dir.path().join("astra_host.o");
+    std::fs::write(&src_path, &shim).expect("write astra_host.c");
+    let output = std::process::Command::new(&compiler)
+        .args(["-std=c17", "-Wall", "-c", "-o"])
+        .arg(&obj_path)
+        .arg(&src_path)
+        .output()
+        .expect("hosted compiler failed to start");
+    assert!(
+        output.status.success(),
+        "astra_host.c did not compile:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn defer_runs_in_lifo_order() {
     let src = r#"
@@ -737,7 +799,7 @@ pub fn main() {
         pos_start < pos_end && pos_end < pos_def2 && pos_def2 < pos_def1,
         "expected LIFO defer ordering in generated C"
     );
-    if let Some((ok, stdout, stderr)) = clang_build_and_run(&out) {
+    if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
         assert!(ok, "execution failed:\nstderr:\n{stderr}");
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines, vec!["start", "end", "defer-2", "defer-1"]);
@@ -775,7 +837,7 @@ pub fn main() {
         pos_cleanup < pos_ret,
         "expected cleanup before return in generated C"
     );
-    if let Some((ok, stdout, stderr)) = clang_build_and_run(&out) {
+    if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
         assert!(ok, "execution failed:\nstderr:\n{stderr}");
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines, vec!["cleanup", "10"]);
@@ -808,10 +870,76 @@ pub fn main() {
     assert!(out.contains("ns_add_points"), "{out}");
     assert!(out.contains("int main(void)"), "{out}");
     assert_clang_ok(&out);
-    if let Some((ok, stdout, stderr)) = clang_build_and_run(&out) {
+    if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
         assert!(ok, "execution failed:\nstderr:\n{stderr}");
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines, vec!["40", "60"]);
+    }
+}
+
+/// Regression: arm bodies are emitted through the `pre` side buffer. A pending
+/// `pre` flush used to escape the arm it belonged to, so `99 => { break }` ran
+/// in the wildcard branch and the accumulator never updated (the `early_exit`
+/// conformance case printed `-1` instead of `3`).
+#[test]
+fn match_arm_statements_stay_inside_their_branch() {
+    let src = r#"
+fn summarize(values: [i32]) -> i32 {
+    let mut total = 0
+    for value in values {
+        if value < 0 {
+            continue
+        }
+        match value {
+            99 => { break }
+            _ => { total = total + value }
+        }
+    }
+    if total == 0 {
+        return -1
+    }
+    return total
+}
+
+pub fn main() -> i32 {
+    println(summarize([-5, 1, 2, 99, 3]))
+    println(summarize([0]))
+    println(summarize([]))
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+
+    let if_pos = out
+        .find("if (v_value == 99)")
+        .unwrap_or_else(|| panic!("literal arm missing:\n{out}"));
+    let else_pos = if_pos
+        + out[if_pos..]
+            .find("} else {")
+            .unwrap_or_else(|| panic!("wildcard arm missing:\n{out}"));
+    let break_pos = if_pos
+        + out[if_pos..]
+            .find("break;")
+            .unwrap_or_else(|| panic!("break missing:\n{out}"));
+    let add_pos = else_pos
+        + out[else_pos..]
+            .find("v_total = astra_add_i32")
+            .unwrap_or_else(|| panic!("accumulator update missing:\n{out}"));
+
+    assert!(
+        if_pos < break_pos && break_pos < else_pos,
+        "`break` must stay inside the literal arm:\n{out}"
+    );
+    assert!(
+        else_pos < add_pos,
+        "accumulator update must stay inside the wildcard arm:\n{out}"
+    );
+
+    if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
+        assert!(ok, "execution failed:\nstderr:\n{stderr}");
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines, vec!["3", "-1", "-1"]);
     }
 }
 

@@ -177,7 +177,7 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
     Ok(GeneratedC {
         source: e.out,
         header: None,
-        host_shim: crate::runtime::HOST_SHIM.to_string(),
+        host_shim: crate::runtime::host_shim(),
         script_sources,
         target: "c".to_string(),
     })
@@ -301,7 +301,7 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
         results.push(GeneratedC {
             source,
             header: Some(header),
-            host_shim: crate::runtime::HOST_SHIM.to_string(),
+            host_shim: crate::runtime::host_shim(),
             script_sources,
             target: "c".to_string(),
         });
@@ -3470,6 +3470,12 @@ impl<'a> Emitter<'a> {
                     } else {
                         self.emit_stmt_into_pre(stmt);
                     }
+                    // `emit_stmt_into_pre` parks the statement's lines in `pre`
+                    // so expression temporaries stay ordered. Flush them inside
+                    // this arm's braces: leaving them pending lets the *next*
+                    // arm's flush emit them into the wrong branch (the bug that
+                    // made `99 => { break }` run in the wildcard arm).
+                    self.flush_pre();
                 }
                 if b.statements.is_empty()
                     && target.is_some()
@@ -3506,6 +3512,7 @@ impl<'a> Emitter<'a> {
             }
             _ => {
                 self.emit_stmt_into_pre(stmt);
+                self.flush_pre();
                 if let Some(t) = target {
                     let z = self.zero(result_ty);
                     let _ = writeln!(self.out, "        {t} = {z};");

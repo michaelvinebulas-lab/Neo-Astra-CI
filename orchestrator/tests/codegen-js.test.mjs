@@ -27,6 +27,39 @@ const binary = join(
 );
 const cli = join(root, "orchestrator", "packages", "cli", "dist", "index.js");
 
+/**
+ * Returns a compiler that can build a hosted C program, or null.
+ *
+ * `astra build --target native` links `astra_host.c`, which needs libc headers
+ * and a linker. clang on Windows without the MSVC/Windows SDK cannot do that
+ * even though it compiles freestanding objects, so probe instead of assuming.
+ */
+function hostedCCompiler() {
+  for (const candidate of [
+    "C:\\Program Files\\LLVM\\bin\\clang.exe",
+    "clang",
+    "gcc",
+    "cc",
+  ]) {
+    const version = spawnSync(candidate, ["--version"], { windowsHide: true });
+    if (version.status !== 0) {
+      continue;
+    }
+    const probe = spawnSync(
+      candidate,
+      ["-std=c17", "-fsyntax-only", "-x", "c", "-"],
+      {
+        windowsHide: true,
+        input: "#include <stdio.h>\nint main(void) { return 0; }\n",
+      },
+    );
+    if (probe.status === 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 function compileSource(source, { mode = "core", integerPolicy = "wrapping" } = {}) {
   const request = JSON.stringify({
     jsonrpc: "2.0",
@@ -1378,6 +1411,152 @@ test("astra build writes C translation unit and host shim with --target c", () =
 
     const hostContent = readFileSync(hostPath, "utf8");
     assert.match(hostContent, /astra_panic/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --target native links and runs a hosted binary", (t) => {
+  if (hostedCCompiler() === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-native-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "native", defaultMode: "core" },
+          nova: { entry: "src/main.ns" },
+          targets: {
+            native: { backend: "native", mode: "core", outDir: "dist/native" },
+          },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        "pub fn main() -> i32 {",
+        '    println("hello from native build")',
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built native/);
+
+    const exePath = join(
+      project,
+      "dist",
+      "native",
+      process.platform === "win32" ? "main.exe" : "main",
+    );
+    assert.ok(existsSync(exePath), `expected ${exePath} to exist`);
+
+    const run = spawnSync(exePath, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(
+      normalizeConformanceText(run.stdout),
+      "hello from native build",
+    );
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --target native links an inline @script:c block", (t) => {
+  if (hostedCCompiler() === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-native-script-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "native", defaultMode: "system" },
+          nova: { entry: "src/main.ns" },
+          targets: {
+            native: { backend: "native", mode: "system", outDir: "dist/native" },
+          },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        "{@script:c as math;",
+        "    @mode(system)",
+        "    @exports {",
+        "        fn mul(a: i32, b: i32) -> i32",
+        "    }",
+        "",
+        "    @impl",
+        "    int32_t mul(int32_t a, int32_t b) {",
+        "        return a * b;",
+        "    }",
+        "@end",
+        "}",
+        "",
+        "pub fn main() -> i32 {",
+        "    println(math.mul(6, 7))",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built native/);
+
+    const exePath = join(
+      project,
+      "dist",
+      "native",
+      process.platform === "win32" ? "main.exe" : "main",
+    );
+    assert.ok(existsSync(exePath), `expected ${exePath} to exist`);
+    assert.ok(
+      existsSync(join(project, "dist", "native", "script_math.c")),
+      "expected the script translation unit to be written",
+    );
+
+    const run = spawnSync(exePath, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

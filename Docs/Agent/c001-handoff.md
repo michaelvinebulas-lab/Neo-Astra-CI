@@ -6,12 +6,15 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master = 90cdba1` (2026-10-27), working tree clean, full
-> `npm run ci` green.
+> **Snapshot:** `master = a8e41f2` (2026-10-27), working tree clean, full
+> `npm run ci` green. The current slice (hosted shim + native conformance
+> execution) is described in section 4.
 >
 > **Next task:** pick the next remainder item — native library output + ABI
 > (section 6.E) or package linking (section 6.B) are the best next slices;
-> `Array.get` is an opportunistic small fix.
+> `Array.get` is an opportunistic small fix. Cross-platform native verification
+> (6.F) is now complete on this Windows host via gcc; only a Tier-1 CI matrix
+> remains.
 
 ---
 
@@ -82,18 +85,25 @@ and section 6.A (the generics design) before touching code.
 
 ## 4. Current snapshot
 
-- `master = 90cdba1`; tree clean; `npm run ci` green.
-- `astra-codegen-c`: **71** emission tests + 1 static conformance gate.
+- `master = a8e41f2`; tree clean; `npm run ci` green.
+- `astra-codegen-c`: **73** emission tests + 1 conformance gate.
 - Corpus: **19 positive** cases, **11 negative** rejects.
-- C emits and clang-compiles **18 of 19** cases. One ledgered gap:
+- C emits, clang-compiles, links, **and runs** **18 of 19** cases when a
+  hosted-capable compiler is present. One ledgered gap:
   - `channels` — `CONC-001` (generic `Channel` builtin; spawn/channels rejected).
-- Runtime execution of generated C is **not** verified on this host (no libc
-  headers for `astra_host.c`); native linking is the open environmental gate.
+- Native execution is verified on this Windows host through **gcc**
+  (`C:\msys64\ucrt64\bin`): `astra build --target native` links `main.c` +
+  `astra_host.c` (+ `@script:c`/`.cpp` TUs) and the binary runs. Clang alone
+  still cannot build hosted C here (no MSVC/Windows SDK), so both the test
+  harness and the CLI probe for hosted capability instead of preferring clang.
+- Linux/macOS native builds remain unverified (Tier-1 CI matrix is the remaining
+  infrastructure item).
 
 ### Commits that built the current state (newest first)
 
 | Commit | Content |
 |---|---|
+| `a8e41f2` | Docs: record generics monomorphization completion |
 | `90cdba1` | Generic function monomorphization (`ns_<fn>_<types>` per call site) |
 | `8696b07` | C-001 handoff document + host-shim defect finding |
 | `47d2598` | Docs: reconcile INTEROP-001 C/C++ slice status |
@@ -155,7 +165,7 @@ calls; see section 6.A for the boundaries.
 
 **Inline scripts.** `@script:c` / `@script:cpp` → one TU per block, C ABI
 prototypes, `extern "C"` for C++, CLI compiles and links script TUs
-(`-lstdc++` for C++). Native link unverified (toolchain gate).
+(`-lstdc++` for C++). Native link verified end to end on this host.
 
 **Diagnostics currently emitted by the backend.** `NS8011` (spawn/concurrency),
 `NS8012` (manual memory scopes), `NS8017`/`NS8018` (unsupported call/generic),
@@ -327,31 +337,37 @@ writes `<stem>.c`/`<stem>.h` + `astra_host.c`. There is **no library mode**
 - Acceptance: build a library from a `.ns` module, consume it from a hand-written
   C file, document and test the ABI (compile/link may be gated on the toolchain).
 
-### 6.F Cross-platform native verification + CI gate
+### 6.F Cross-platform native verification + CI gate — **DONE on this host**
 
-**Today.** `astra build --target c` works. `--target native` fails on this host
-because clang has no `stdio.h` (no MSVC/Windows SDK). Hosted C tests self-skip
-via a libc probe. Linux/macOS native builds are unverified.
+**What was blocking it (all fixed).**
 
-**Known defect to fix first (found while writing this handoff).** `HOST_SHIM`
-(`runtime.rs`) is written verbatim to `astra_host.c` and compiled as its own
-translation unit, but it only typedefs `NS_Str` and `NS_Array` while using
-`NS_Bytes` (`astra_print_bytes`, `astra_bytes_*`) and `NS_Map`
-(`astra_map_*`), which are declared only in `RUNTIME_HEADER`. The CLI writes the
-shim raw (no `-include`, no prepended header), so a hosted build should fail
-with "unknown type name NS_Bytes" the moment a real toolchain is available.
-Fix options: prepend `RUNTIME_HEADER` when writing `astra_host.c` (identical
-typedef redefinitions are legal in C11+), or make the shim `#include` a
-generated runtime header. This is the first thing to verify on a Tier-1 runner.
+1. `astra_host.c` was written raw and was not a valid translation unit: it used
+   `NS_Bytes`, `NS_Map`, and the builtin error payloads without declaring them,
+   and `PRId*`/`INFINITY` without `<inttypes.h>`/`<math.h>` (51 gcc errors).
+   `runtime::host_shim()` now returns `RUNTIME_HEADER + HOST_SHIM`; `HOST_SHIM`
+   is the body, adds the libc includes, and no longer duplicates the `NS_*`
+   typedefs (duplicating anonymous structs is an incompatible redeclaration).
+2. Compiler discovery preferred clang. This host's clang has no MSVC/Windows
+   SDK, so it compiles freestanding objects but cannot find `<stdio.h>`, while
+   gcc from MSYS2 UCRT64 works. Both the Rust test helpers and
+   `astra build --target native` now select the first candidate that passes a
+   *hosted* probe (a real `#include <stdio.h>` compile/syntax check), falling
+   back to the first responder so its error still reaches the user.
 
-**Plan.**
-- Provision a Tier-1 runner (Linux) with a complete libc + clang; run
-  `astra build --target native` end to end (after the shim fix above).
-- Then extend `crates/astra-codegen-c/tests/conformance.rs`: when `has_hosted_libc()`,
-  compile **and run** each case, comparing stdout + `RETURN=`.
-- Enable the hosted C tests that currently self-skip.
-- This is infrastructure, not codegen — but it is the gate for calling `C-001`
-  fully done and for `CONF-001`'s C runner.
+**Now.**
+
+- `crates/astra-codegen-c/tests/conformance.rs` links each emitted case against
+  the shim, runs it, and compares stdout + `RETURN=` with `.expected` whenever a
+  hosted compiler exists; the freestanding clang compile check still runs
+  unconditionally.
+- `astra build --target native` links `main.c` + `astra_host.c` (+ script TUs)
+  and runs; `@script:c` and `@script:cpp` are verified end to end.
+- Tests self-skip when no hosted compiler is available, so CI on a minimal host
+  stays green while a normal Linux runner exercises execution.
+
+**Remaining.** Provision/record a Tier-1 Linux (and ideally macOS) run of the
+same commands. That is infrastructure, not codegen, and it is the last gate for
+calling `C-001` fully done.
 
 ### 6.G WASM-001 — Wasm target (deliberately deferred)
 
@@ -364,8 +380,8 @@ generated runtime header. This is the first thing to verify on a Tier-1 runner.
   capability policy; GC across the boundary and capability-allowlisted imports
   must be settled first (`Docs/Design/V1/04-targets-and-backends.md` §7).
 - The planned path is "emit C, compile with `clang --target=wasm32`", which needs
-  a wasm-capable clang + wasi-sysroot — the same class of toolchain gate that
-  blocks native linking here.
+  a wasm-capable clang + wasi-sysroot — a different toolchain from the host C
+  compiler that now builds native binaries here.
 - Target table marks `wasm32-*` as Tier 2 ("supported, best effort"); Tier 1
   native is not verified yet.
 
@@ -387,9 +403,10 @@ files and invokes clang.
 
 **Typedef/ordering rules (learned the hard way).**
 1. `RUNTIME_HEADER` is prepended to every generated `.c` and `.h`. `HOST_SHIM`
-   is the hosted implementation (`astra_host.c`) and **needs** the runtime header
-   in scope: it uses `NS_Bytes`/`NS_Map`, which it does not declare itself. The
-   CLI currently writes it raw, which is a latent native-path defect (see 6.F).
+   is only the hosted implementation *body*; `runtime::host_shim()` prepends the
+   header so `astra_host.c` is self-contained (`NS_Bytes`/`NS_Map`/builtin error
+   payloads). Do not duplicate the `NS_*` typedefs in the shim — anonymous-struct
+   typedef redeclarations are incompatible types. See 6.F.
 2. Typedefs are *ensured lazily* while emitting code (`TyCtxt::ensure`), so the
    final layout must be assembled **after** bodies are emitted: runtime header →
    module comment → dep includes → complete typedefs → prototypes → code.
@@ -475,11 +492,12 @@ true only for the last entry; standalone keeps bare `ns_<name>` and `main.c`.
 **Fast loop.**
 
 ```powershell
-cargo test -p astra-codegen-c                 # 70 emit tests + static conformance
+cargo test -p astra-codegen-c                 # 73 emit tests + conformance (links/runs when a hosted compiler exists)
 cargo test -p astra-nova --test conformance   # corpus on Nova
 npm run build                                 # tsc -b (needed before JS/TS tests)
 node --test --test-name-pattern "shared conformance" orchestrator/tests/codegen-js.test.mjs
 node --test --test-name-pattern "shared conformance" orchestrator/tests/codegen-ts.test.mjs
+node --test --test-name-pattern "native" orchestrator/tests/codegen-js.test.mjs
 ```
 
 **Full gate.** `npm run ci` runs: TS build, TS tests, `test:boundary`, `cargo fmt
@@ -535,8 +553,10 @@ node --test --test-name-pattern "shared conformance" orchestrator/tests/codegen-
 
 **Environment.**
 - clang: `C:\Program Files\LLVM\bin\clang.exe` (freestanding `-c` works).
-- Hosted linking blocked: no MSVC/Windows SDK headers (`stdio.h` missing);
-  `C:\msys64\ucrt64\bin` on PATH is insufficient.
+- gcc: `C:\msys64\ucrt64\bin\gcc.exe` (hosted compile/link/run works — this is
+  the compiler the native path selects here). Clang cannot build hosted C on
+  this host without the MSVC/Windows SDK (`stdio.h` missing); both the test
+  harness and `astra build --target native` probe for hosted capability.
 - Temp dir for messages: `C:\Users\Somya\AppData\Local\Temp\opencode`.
 
 ---
@@ -591,7 +611,8 @@ drift: `emit_program`, `emit_program_linked`, `emit_header`, `collect_decls`,
 struct_shape, enum_shape, enum_tag, ensure, ident, c_type, user_typedef,
 rejected}`, `to_type`, `path_to_type`, `sanitize`, `BUILTIN_NOMINALS`.
 
-**`runtime.rs`:** `RUNTIME_HEADER`, `HOST_SHIM`; helpers: `astra_str_*`,
+**`runtime.rs`:** `RUNTIME_HEADER`, `HOST_SHIM` (body), `host_shim()` (complete
+`astra_host.c`); helpers: `astra_str_*`,
 `astra_bytes_*`, `astra_array_*`, `astra_map_*`, `astra_add/sub/mul_i8..i64`,
 `astra_panic`, print/println families, `astra_alloc`.
 
@@ -610,3 +631,4 @@ rejected}`, `to_type`, `path_to_type`, `sanitize`, `BUILTIN_NOMINALS`.
 |---|---|
 | 2026-10-27 | Created at `47d2598` for the C-001 handoff (generics next). |
 | 2026-10-27 | Generics monomorphization landed (`90cdba1`); snapshot, ledger, and 6.A updated. |
+| 2026-10-27 | Hosted shim fixed (`host_shim()` = runtime header + body), hosted-compiler probing added, C conformance gate now links/runs every non-gap case, match-arm `pre` leak fixed; 6.F marked done on this host. |

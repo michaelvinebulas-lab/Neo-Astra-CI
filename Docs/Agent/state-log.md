@@ -10,12 +10,27 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001` generic-function monomorphization complete (`90cdba1`); static conformance gate now 18/19 (`channels` remains, `CONC-001`); prior slices `731ec32`, `c33fcfd`, `9d1173e`, `84ac11d`, `12bfd86`, `c8555c6`, `f0a62e6`, `78d8920`, `a0dea19`, `83ec555`/`6f0e80b`/`df4ffc9`, `49a84c8` |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, C multi-module project linking (module-qualified symbols, cross-module calls and struct/enum types, `compile_project`), `@script` inline interop frontend complete |
-| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
+| Current task | `C-001` hosted runtime shim fixed and native conformance execution enabled; the C gate now links and runs 18/19 corpus cases (`channels` remains, `CONC-001`) |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime, hosted shim, `astra build --target c/native`, C multi-module project linking, and generic monomorphization, `@script` inline interop frontend complete |
+| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, hosted shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
-| Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
-| Next action | C-001 remainder, best next slices: native library output + documented ABI (`c001-handoff.md` 6.E), package linking (6.B), or the opportunistic `Array.get` gap; then GC-001, CONC-001, native CI gate; WASM-001 last |
+| Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64) after the shim fix. Linux/macOS native builds still need their own CI run, and clang alone remains unusable here without the MSVC/Windows SDK |
+| Next action | C-001 remainder, best next slices: native library output + documented ABI (`c001-handoff.md` 6.E), package linking (6.B), or the opportunistic `Array.get` gap; then GC-001, CONC-001, native CI matrix; WASM-001 last |
+
+---
+
+### 2026-10-27 - `C-001` slice: hosted runtime shim fix and native conformance execution
+
+- Command: `cargo test -p astra-codegen-c`, `node --test --test-name-pattern native orchestrator/tests/codegen-js.test.mjs`, `npm run ci`
+- Result: 73/73 emission tests plus the conformance gate; the gate now links and runs all 18 executable cases; full CI green
+- What:
+  - **Shim was not a translation unit**: `astra_host.c` used `NS_Bytes`, `NS_Map`, and the builtin error payloads without declaring them, and used `PRId*`/`INFINITY` without `<inttypes.h>`/`<math.h>` (51 gcc errors). `runtime::host_shim()` now prepends `RUNTIME_HEADER`, `HOST_SHIM` is documented as the body, and `GeneratedC::host_shim` returns the complete unit. Reusing the header's typedefs avoids the incompatible anonymous-struct redeclarations a naive prepend produced.
+  - **Toolchain probing**: clang on this Windows host has no MSVC/SDK headers, so `gcc` (MSYS2 UCRT64) is the working compiler. The Rust helpers and `astra build --target native` now probe each candidate with a real hosted compile/syntax check (clang, clang, gcc, cc) instead of selecting the first binary that answers `--version`.
+  - **Runtime conformance gate**: `crates/astra-codegen-c/tests/conformance.rs` links every emitted case against the shim, runs it, and compares stdout plus `RETURN=<code>` with the corpus `.expected` file, in addition to the existing freestanding compile check.
+  - **Bug caught by the gate**: match-arm block statements were parked in `pre`; the next arm's flush emitted them into the wrong branch, so `99 => { break }` ran in the wildcard arm and `early_exit` printed `-1` instead of `3`. `emit_arm_body` now flushes `pre` inside the arm's braces, and `emit_block_tail_in_arm` flushes before writing the arm value.
+- Tests: new `host_shim_is_a_complete_hosted_translation_unit` (asserts the shared declarations/includes and compiles the shim standalone) and `match_arm_statements_stay_inside_their_branch` (structure plus execution); new boundary test `astra build --target native links and runs a hosted binary` (self-skips when no hosted compiler is present).
+- Verification: `npm run ci` green; manual `astra build --target native` produced `3 / -1 / -1` for the `early_exit` body.
+- Boundary: this host now verifies native execution through gcc; Linux/macOS still need a Tier-1 CI run. Library output/ABI, package linking, GC/manual memory, and concurrency remain open.
 
 ---
 
@@ -1365,12 +1380,12 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 ```markdown
 ### Handoff
 - Phase: 7 - Backends
-- Task: C-001 multi-module project linking slice implemented (module-qualified symbols, cross-module calls, `compile_project` JSON-RPC method, `CompilerClient.compileProject`, `astra build --target c` multi-module path, `NS3012` relative-import fix); TS-001 complete (`83ec555`/`6f0e80b`/`df4ffc9`); TS struct-mutation fix committed (`49a84c8`)
-- Status: Ready (this slice commits next; CI green immediately before commit)
-- Files changed: `crates/astra-codegen-c/src/{emit,ty}.rs` (module qualification, `collect_import_tables`, `module_key_stem` `.ns` strip), `crates/astra-codegen-c/tests/emit_c.rs` (8 project tests), `crates/astra-compiler-api/src/lib.rs` (`compile_project` artifacts, relative-import resolution via `check_module_graph_with_imports`, 3 tests), `orchestrator/packages/compiler-client/src/index.ts` (`compileProject` + parse), `orchestrator/packages/cli/src/index.ts` (multi-module C build path), `orchestrator/tests/codegen-js.test.mjs` (multi-module C e2e), `Docs/Agent/{todo,state-log}.md`
-- Verification: `npm run ci` green: 63 `astra-codegen-c` tests, 31 `astra-compiler-api` tests, TypeScript unit + boundary tests, fmt clean, clippy with warnings denied
-- Blockers: Windows native linking needs MSVC/Windows SDK (`stdio.h`) or a Tier-1 CI host
-- Next action: Nova gaps (bytes builtin, str byte_at/char_at/slice/char_count/chars/bytes, Channel runtime), JS IIFE control-flow (NS8001); then C-001 remainder (GC-001, CONC-001, cross-module types NS8020, native CI gate); later backlog WASM-001, FFI-001, PLAY-001, HARD-001, INTEROP-001 C slice
+- Task: `C-001` hosted runtime shim fixed; native conformance execution enabled (18/19 corpus cases run; `channels` remains CONC-001); `astra build --target native` verified on this host through gcc
+- Status: Ready (commit next; full CI green immediately before commit)
+- Files changed: `crates/astra-codegen-c/src/{runtime,emit}.rs` (complete `host_shim()` TU, match-arm `pre` flush), `crates/astra-codegen-c/tests/{emit_c,conformance}.rs` (hosted compiler discovery, shim and arm regressions, link/run/compare gate), `orchestrator/packages/cli/src/index.ts` (`findNativeCompiler` hosted probe), `orchestrator/tests/codegen-js.test.mjs` (native e2e, self-skipping), `Docs/Agent/{todo,state-log,c001-handoff}.md`, `conformance/README.md`
+- Verification: `npm run ci` green: 73 `astra-codegen-c` tests, conformance gate executes every non-gap case, TypeScript/boundary tests, fmt, clippy with warnings denied
+- Blockers: none locally; Linux/macOS native CI run still outstanding
+- Next action: C-001 remainder: native library output + stable ABI (6.E) or package linking (6.B), plus the opportunistic `Array.get`; then GC-001, CONC-001; later WASM-001, FFI-001, PLAY-001, HARD-001
 ```
 
 

@@ -244,6 +244,47 @@ function displayPath(path: string, cwd: string): string {
   return relativePath.split(sep).join("/");
 }
 
+/**
+ * Picks a C compiler that can build a *hosted* program.
+ *
+ * The generated runtime (`astra_host.c`) needs libc headers and a linker, which
+ * is a different capability from freestanding `-c` compilation: clang on a
+ * Windows host without the MSVC/Windows SDK can compile objects but cannot find
+ * `<stdio.h>`. Probe with a real hosted syntax check instead of preferring the
+ * first binary that answers `--version`, and keep the old first-responder as a
+ * fallback so the compiler's own error still reaches the user.
+ */
+function findNativeCompiler(): string | null {
+  const candidates = [
+    "C:\\Program Files\\LLVM\\bin\\clang.exe",
+    "clang",
+    "gcc",
+    "cc",
+  ];
+  let fallback: string | null = null;
+
+  for (const candidate of candidates) {
+    const version = spawnSync(candidate, ["--version"], { windowsHide: true });
+    if (version.status !== 0) {
+      continue;
+    }
+    fallback ??= candidate;
+    const probe = spawnSync(
+      candidate,
+      ["-std=c17", "-fsyntax-only", "-x", "c", "-"],
+      {
+        windowsHide: true,
+        input: "#include <stdio.h>\nint main(void) { return 0; }\n",
+      },
+    );
+    if (probe.status === 0) {
+      return candidate;
+    }
+  }
+
+  return fallback;
+}
+
 function parseFmtArgs(args: readonly string[], cwd: string): FmtOptions {
   let check = false;
   let json = false;
@@ -1336,20 +1377,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         }
         const exeName = process.platform === "win32" ? "main.exe" : "main";
         const exePath = resolve(outDir, exeName);
-        const clangCandidates = [
-          "C:\\Program Files\\LLVM\\bin\\clang.exe",
-          "clang",
-          "gcc",
-          "cc",
-        ];
-        let compilerBin: string | null = null;
-        for (const cand of clangCandidates) {
-          const test = spawnSync(cand, ["--version"], { windowsHide: true });
-          if (test.status === 0) {
-            compilerBin = cand;
-            break;
-          }
-        }
+        const compilerBin = findNativeCompiler();
         if (!compilerBin) {
           throw new CliError(
             "NS9008",
