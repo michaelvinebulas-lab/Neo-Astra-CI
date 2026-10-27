@@ -32,7 +32,8 @@ suite — now merged into `master`. `TS-001` is complete (shared-emitter TS mode
 conformance suite (19 positive + 11 negative cases) runs green on JavaScript,
 TypeScript, and Nova with empty backend gap ledgers. The
 `INTEROP-001` inline-script design is complete in
-`Docs/Design/V1/10-inline-script-interop.md`; the C/C++ slice is in progress.
+`Docs/Design/V1/10-inline-script-interop.md`; the C/C++ emission slice is
+done and waits on the `C-001` toolchain gate for an end-to-end native link.
 Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
 ---
@@ -867,9 +868,10 @@ source maps that compile with ordinary `tsc` and run through Node or a bundler.
 
 ## INTEROP-001 - Inline `@script` foreign-language blocks
 
-**Status:** Frontend (Slices A+B), the JavaScript backend slice (C), and the
-TypeScript-target slice (pinned-transpiler `@script:ts`) are complete. The
-C/C++ native slice and deferred runtime work remain.
+**Status:** Frontend (Slices A+B), the JavaScript backend slice (C), the
+TypeScript-target slice (pinned-transpiler `@script:ts`), and the C/C++ emission
+slice are complete. End-to-end native script linking is unverified until the
+`C-001` toolchain gate; deferred runtime work remains.
 
 **Why**
 
@@ -906,8 +908,12 @@ export surface.
       bodies are transpiled by the one pinned `typescript@7.0.2` (missing or
       mismatched transpilers are hard `NS7008` errors); the JS backend keeps
       rejecting `@script:ts`.
-- [ ] Implement the C/C++ native slice: one translation unit per block, symbol
-      isolation, wrappers, link failures, and boundary tests.
+- [x] Implement the C/C++ emission slice: one translation unit per block,
+      freestanding headers, C ABI prototypes in `main.c`, `extern "C"` blocks in
+      C++ scripts, and CLI script compilation/linking (`-lstdc++` when C++ is
+      used).
+- [ ] Verify a native script link end to end. Blocked by the `C-001` native
+      toolchain gate on this host (no libc/SDK headers for `astra_host.c`).
 - [x] Make Nova reject foreign script calls with `NV0008` before execution.
 - [x] Add conformance and security tests for unsupported target/language pairs,
       malformed terminators, opaque bodies, and mode propagation.
@@ -918,7 +924,9 @@ export surface.
 
 - `JS-001` for the JavaScript slice (done). `TS-001` for TypeScript-target
   script emission (done: `@script:ts` pinned transpiler).
-- Native C backend work for the second slice.
+- C backend emission for the second slice (done: per-block TUs plus CLI
+  compilation/linking); native link verification waits on the C-001 toolchain
+  gate.
 - NoPM is not required; inline scripts are project source, not packages.
 
 ---
@@ -961,7 +969,7 @@ by a production native target.
 - [x] `astra build --target c` writes `main.c` and `astra_host.c`;
       `--target native` discovers `clang`/`gcc`/`cc` and attempts to link a
       host executable.
-- [x] 50 `astra-codegen-c` tests pass, including generated-C checks with the
+- [x] 70 `astra-codegen-c` tests pass, including generated-C checks with the
       available clang toolchain and freestanding object compilation.
 - [x] Map literals `{ k: v, ... }` emit `astra_map_new` + `astra_map_set`.
 - [x] Map methods `.len()`, `.contains(k)`, `.get(k)`, `.insert(k, v)` emit typed C via
@@ -1254,7 +1262,9 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `NOPM-004` Later ecosystem adapters
 - [x] `JS-001` JavaScript ESM backend (complete at `39437d0`; merged from `js-interop`)
 - [x] `TS-001` TypeScript backend (complete at `df4ffc9`: shared-emitter TS mode, `astra build --target ts`, pinned `@script:ts` transpiler)
-- [~] `INTEROP-001` Inline `@script` foreign-language blocks (JS and TS slices done; C slice remains)
+- [~] `INTEROP-001` Inline `@script` foreign-language blocks (JS, TS, and C/C++
+  emission slices done; end-to-end native script linking waits on the `C-001`
+  toolchain gate)
 - [ ] `PLAY-001` Browser playground (expanded plan above)
 - [~] `C-001` C backend - managed first slice + multi-module project linking (functions and cross-module struct/enum types) done; package linking, GC/manual memory, concurrency, FFI/`@script:c`, full patterns, native target policy, and cross-platform native verification remain
 - [ ] `GC-001` Native GC
