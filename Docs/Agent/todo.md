@@ -1003,6 +1003,17 @@ by a production native target.
       UTF-8-aware runtime helpers; `bytes.new(length)` allocates a zero-filled
       buffer via `astra_bytes_new`. With this the C backend implements the
       whole `str`/`bytes` method table JavaScript and Nova expose.
+- [x] `bytes` writes (`buf[i] = v`) lower to the bounds-checked
+      `astra_bytes_set`; they previously fell through the generic array lvalue
+      path and produced invalid C.
+- [x] `Option`/`Result` accessors: `is_ok`, `is_err`, `unwrap`, `unwrap_or`,
+      and `error` lower to checked reads with panic guards; `unwrap_or` keeps
+      its fallback in the branch so it is only evaluated when needed.
+- [x] Contextual `None`: the checker annotates bare `None` as
+      `Option<Unknown>`, so value positions (`let`, `return`, and match arms)
+      pass their expected type down and materialize the concrete Option.
+      Prescan skips annotation types that still contain checker placeholders,
+      which previously rejected valid programs like `find(false).unwrap_or(0)`.
 - [x] `contains` added to the type checker's `Type::Map` member resolution.
 - [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
       byte arrays; empty byte literals use the zero-length sentinel.
@@ -1068,20 +1079,27 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 69 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 70 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
-  `for` loops (arrays, maps, bytes), byte literals/indexing/slicing/comparisons,
+  `for` loops (arrays, maps, bytes), byte literals/indexing (reads and
+  bounds-checked writes)/slicing/comparisons,
   `str` slice `Result` lowering (`SliceError`), `str.to_int`/`checked_*`/
   `wrapping_*` lowering, `str` scalar/sequence views (`char_count`, `byte_at`,
-  `char_at`, `bytes`, `chars`, `bytes.new`), and `!` propagation of fallible
-  builtin calls, `@script:c` and `@script:cpp`
+  `char_at`, `bytes`, `chars`, `bytes.new`), `Option`/`Result` accessors, and
+  `!` propagation of fallible builtin calls, `@script:c` and `@script:cpp`
   emission, compiler API artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
   imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
   and header dependency includes).
-- `cargo test --workspace` passes (69 in `astra-codegen-c`, 142 in `astra-core`,
+- `crates/astra-codegen-c/tests/conformance.rs`: the static C conformance gate
+  lowers every shared case and clang-compiles the result freestanding. 17 of
+  19 cases emit cleanly; `channels` (`CONC-001`) and `generics` (C-001
+  monomorphization) sit in an explicit `KNOWN_GAPS` ledger that fails when a
+  listed case starts passing. Native execution still waits on the toolchain
+  gate.
+- `cargo test --workspace` passes (70 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary

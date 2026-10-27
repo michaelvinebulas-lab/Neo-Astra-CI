@@ -10,12 +10,27 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001` string/bytes builtin slice (`char_count`, `byte_at`, `char_at`, `bytes`, `chars`, `bytes.new`) complete, commit follows; `C-001` numeric builtins (`to_int`, `checked_*`, `wrapping_*`) (`c33fcfd`); `C-001` str/bytes slice semantics + fallible-call `match`/`!` materialization (`84ac11d`, `9d1173e`); `C-001` cross-module struct/enum types slice (`NS8020` closure) (`12bfd86`); `JS-001` statement-position control-flow slice (`NS8001` closure) (`c8555c6`); `NOVA-004` Nova gaps closed (`f0a62e6`); `work/conf-001` merged into master (`78d8920`); `C-001` project-linking slice (`a0dea19`); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`); TS struct-mutation fix (`49a84c8`) |
+| Current task | `C-001` static conformance gate + bytes writes/`Option`/`Result` accessor slice complete, commit follows; `C-001` string/bytes builtin slice (`731ec32`); `C-001` numeric builtins (`c33fcfd`); `C-001` str/bytes slice semantics + fallible-call `match`/`!` materialization (`84ac11d`, `9d1173e`); `C-001` cross-module struct/enum types (`NS8020` closure) (`12bfd86`); `JS-001` statement-position control flow (`c8555c6`); `NOVA-004` Nova gaps closed (`f0a62e6`); `work/conf-001` merged (`78d8920`); `C-001` project-linking slice (`a0dea19`); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`) |
 | Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, C multi-module project linking (module-qualified symbols, cross-module calls and struct/enum types, `compile_project`), `@script` inline interop frontend complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
 | Next action | C-001 remainder (GC/manual memory, concurrency, package linking, native CI gate); later backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+
+---
+
+### 2026-10-27 - `C-001` slice: static conformance gate, bytes writes, and accessors
+
+- Command: `cargo test -p astra-codegen-c`, `npm run ci`
+- Result: 70/70 emission tests plus the new conformance gate; full CI green
+- What:
+  - **Static gate**: `crates/astra-codegen-c/tests/conformance.rs` lowers every `conformance/cases/*.ns` case and compiles the generated C freestanding with clang, behind an explicit `KNOWN_GAPS` ledger (`channels` -> CONC-001, `generics` -> C-001 monomorphization). On its first run it caught that `bytes_buffer` emitted invalid C and that `collections`/`options` could not be lowered at all.
+  - **Bytes writes**: `buf[i] = v` fell through the generic array lvalue (`astra_array_index` over an `NS_Bytes*`, element size `int32_t`). It now calls the new bounds-checked `astra_bytes_set(&buf, i, (uint8_t)v)`; the guard keys on the indexed value's type (`bytes`), not the index expression's (`u8`).
+  - **Accessors**: `Option::{unwrap, unwrap_or}` and `Result::{is_ok, is_err, unwrap, unwrap_or, error}` lower to one evaluated temporary plus a panic guard, with `unwrap_or`'s fallback kept inside the conditional so it stays lazy.
+  - **Contextual `None`**: bare `None` is annotated `Option<Unknown>`, so `let`, `return`, and match-arm value positions now carry an expected type (`expr_with_expected`) that materializes the concrete Option. The match dispatchers (`match_literal`, `match_enum`, `match_struct`, `match_tuple`) thread the match's result type instead of hardcoding `Unit`. Prescan skips annotation types that still contain `Unknown`/`Never`/`Error`/Function placeholders, which previously rejected valid programs such as `find(false).unwrap_or(0)`.
+- Tests: `test_bytes_indexing_and_methods` pins the write helper and `bytes.new`; the new `option_and_result_accessors_lower_to_checked_reads` compiles every accessor path with clang; the new `conformance.rs` gate emits 17 cases statically with 2 ledgered gaps.
+- Verification: full `npm run ci` green immediately before this entry.
+- Boundary: the new runtime helpers are still unexecuted on this host (native toolchain gate); `generics` is the only non-concurrency corpus gap left for C.
 
 ---
 

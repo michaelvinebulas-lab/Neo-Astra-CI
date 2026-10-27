@@ -56,6 +56,13 @@ Nova runs the same corpus from Rust in
 `crates/astra-nova/tests/conformance.rs`, which is picked up by
 `cargo test --workspace`.
 
+The C backend cannot execute the corpus on a host without libc headers, but
+`crates/astra-codegen-c/tests/conformance.rs` already runs a static gate: it
+lowers every case and compiles the generated C with `clang -std=c17
+-ffreestanding -Wall -c`. Cases the first slice cannot lower yet are listed in
+an explicit `KNOWN_GAPS` ledger (same staleness rule as Nova's), so the corpus
+stays C-ready when the native toolchain gate lands.
+
 Negative cases run from `crates/astra-core/tests/conformance_rejects.rs`, also
 picked up by `cargo test --workspace`.
 

@@ -99,6 +99,8 @@ extern NS_Array astra_str_chars(NS_Str s);
 extern bool astra_bytes_eq(NS_Bytes a, NS_Bytes b);
 extern int astra_bytes_cmp(NS_Bytes a, NS_Bytes b);
 extern uint8_t astra_bytes_get(NS_Bytes b, size_t i);
+/* Bounds-checked byte write (`buf[i] = v`). */
+extern void astra_bytes_set(NS_Bytes* b, size_t i, uint8_t value);
 /* Zero-filled allocation for `bytes.new(length)`. */
 extern NS_Bytes astra_bytes_new(size_t len);
 /* Infallible byte-offset slice for `bytes.slice(start, end)`; bounds-checked,
@@ -383,6 +385,11 @@ int astra_bytes_cmp(NS_Bytes a, NS_Bytes b) {
 uint8_t astra_bytes_get(NS_Bytes b, size_t i) {
     if (i >= b.len) astra_panic("bytes index out of bounds");
     return b.data[i];
+}
+
+void astra_bytes_set(NS_Bytes* b, size_t i, uint8_t value) {
+    if (i >= b->len) astra_panic("byte index out of bounds");
+    ((uint8_t*)b->data)[i] = value;
 }
 
 NS_Bytes astra_bytes_slice(NS_Bytes b, size_t start, size_t end) {

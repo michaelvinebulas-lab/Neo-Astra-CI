@@ -158,6 +158,7 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         fresh: 0,
         cur_ret: Type::Unit,
         cur_err: None,
+        expected: None,
         defers: Vec::new(),
     };
     e.emit_program();
@@ -279,6 +280,7 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             fresh: 0,
             cur_ret: Type::Unit,
             cur_err: None,
+            expected: None,
             defers: Vec::new(),
         };
         e.emit_program_linked(&dep_headers);
@@ -482,14 +484,29 @@ fn prescan(tcx: &mut TyCtxt, module: &CModule) {
         }
     }
     for ann in &module.annotations {
-        // Only prescan concrete stored types, not Function types (which appear
-        // as annotations on call expressions and are never stored values).
-        match &ann.ty {
-            Type::Function(_) | Type::Unknown | Type::Error | Type::Never => {}
-            _ => {
-                let _ = tcx.c_type(&ann.ty);
-            }
+        // Only prescan concrete stored types: `None`/`Ok`/`Err` annotations can
+        // carry `Unknown` or `Never` payloads the checker resolves at the use
+        // site, and Function types appear on call expressions. Prescanning
+        // those would reject valid programs before the emitter sees the
+        // concrete type it actually needs.
+        if !mentions_unresolved(&ann.ty) {
+            let _ = tcx.c_type(&ann.ty);
         }
+    }
+}
+
+/// True when a type still contains a checker placeholder (`Unknown`, `Error`,
+/// `Never`) or a function type — types that are never stored values.
+fn mentions_unresolved(ty: &Type) -> bool {
+    match ty {
+        Type::Unknown | Type::Error | Type::Never | Type::Function(_) => true,
+        Type::Option(inner) | Type::Array(inner) | Type::Slice(inner) => mentions_unresolved(inner),
+        Type::FixedArray(inner, _) => mentions_unresolved(inner),
+        Type::Result(ok, err) => mentions_unresolved(ok) || mentions_unresolved(err),
+        Type::Map(key, value) => mentions_unresolved(key) || mentions_unresolved(value),
+        Type::Tuple(items) => items.iter().any(mentions_unresolved),
+        Type::Named(_, arguments) => arguments.iter().any(mentions_unresolved),
+        _ => false,
     }
 }
 
@@ -586,6 +603,11 @@ struct Emitter<'a> {
     fresh: usize,
     cur_ret: Type,
     cur_err: Option<Type>,
+    /// Expected type at the current value position (a `let` annotation, a
+    /// function's return type, or a match arm's unified type). Bare `None` is
+    /// annotated `Option<Unknown>` by the checker, so it materializes the
+    /// concrete Option the surrounding context expects.
+    expected: Option<Type>,
     defers: Vec<Vec<ast::Stmt>>,
 }
 
@@ -1220,7 +1242,7 @@ impl<'a> Emitter<'a> {
             return;
         }
         self.pre.clear();
-        let v = self.expr(value);
+        let v = self.expr_with_expected(value, &val_ty);
         self.flush_pre();
         let ty_c = self.tcx.c_type(&val_ty);
         let _ = writeln!(self.out, "    {ty_c} v_{} = {v};", sanitize(name));
@@ -1245,7 +1267,8 @@ impl<'a> Emitter<'a> {
                     return;
                 }
                 self.pre.clear();
-                let v = self.expr(e);
+                let expected = self.cur_ret.clone();
+                let v = self.expr_with_expected(e, &expected);
                 self.flush_pre();
                 self.emit_all_defers();
                 if is_fallible {
@@ -1431,6 +1454,24 @@ impl<'a> Emitter<'a> {
         self.ann.type_of(e)
     }
 
+    /// Emits `e` with `expected` as the contextual value type, restoring the
+    /// previous expectation afterwards.
+    fn expr_expecting(&mut self, e: &Expr, expected: &Type) -> String {
+        let previous = self.expected.replace(expected.clone());
+        let out = self.expr(e);
+        self.expected = previous;
+        out
+    }
+
+    /// Emits `e`, passing a contextual type only when it is concrete.
+    fn expr_with_expected(&mut self, e: &Expr, expected: &Type) -> String {
+        if mentions_unresolved(expected) {
+            self.expr(e)
+        } else {
+            self.expr_expecting(e, expected)
+        }
+    }
+
     fn c_type(&mut self, t: &Type) -> String {
         self.tcx.c_type(t)
     }
@@ -1580,6 +1621,15 @@ impl<'a> Emitter<'a> {
     }
 
     fn identifier_c(&mut self, name: &str, _e: &Expr) -> String {
+        // `None` has no payload type of its own (the checker annotates it
+        // `Option<Unknown>`), so materialize the Option the surrounding value
+        // position expects.
+        if name == "None"
+            && let Some(expected @ Type::Option(_)) = self.expected.clone()
+        {
+            let opt_c = self.tcx.c_type(&expected);
+            return format!("({opt_c}){{ .some = false }}");
+        }
         // A bare identifier that resolves to an import is a cross-module value
         // reference (imported constant, struct, or enum). The C backend links
         // cross-module *calls* only, so reject it here instead of emitting a
@@ -1767,6 +1817,22 @@ impl<'a> Emitter<'a> {
     }
 
     fn assign_c(&mut self, target: &Expr, value: &Expr) -> String {
+        // `bytes` writes go through the bounds-checked runtime helper: the
+        // buffer is `NS_Bytes` with `uint8_t` elements, not the generic
+        // `NS_Array` the other index targets use.
+        if let ExprKind::Index {
+            target: buffer,
+            index,
+        } = &target.kind
+            && matches!(self.type_of(buffer), Some(Type::Bytes))
+        {
+            let buffer_c = self.expr(buffer);
+            let index_c = self.expr(index);
+            let value_c = self.expr(value);
+            return format!(
+                "(astra_bytes_set(&({buffer_c}), {index_c}, (uint8_t)({value_c})), (NS_Unit){{0}})"
+            );
+        }
         let lhs = self.lvalue(target);
         let rhs = self.expr(value);
         format!("({lhs} = {rhs})")
@@ -2030,6 +2096,74 @@ impl<'a> Emitter<'a> {
             (Some(Type::Option(_)), "is_none") => {
                 let r = self.expr(receiver);
                 format!("(!({r}).some)")
+            }
+            (Some(Type::Option(inner)), "unwrap") => {
+                let r = self.expr(receiver);
+                let opt_c = self.tcx.c_type(&Type::Option(inner.clone()));
+                let tmp = self.fresh_id("optsome");
+                let _ = writeln!(self.pre, "    {opt_c} {tmp} = {r};");
+                let _ = writeln!(
+                    self.pre,
+                    "    if (!{tmp}.some) astra_panic(\"called unwrap() on None\");"
+                );
+                format!("{tmp}.value")
+            }
+            (Some(Type::Option(inner)), "unwrap_or") => {
+                let r = self.expr(receiver);
+                let fallback = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let opt_c = self.tcx.c_type(&Type::Option(inner.clone()));
+                let tmp = self.fresh_id("optor");
+                let _ = writeln!(self.pre, "    {opt_c} {tmp} = {r};");
+                // The fallback stays inside the conditional's false branch so
+                // it is only evaluated when the option is empty.
+                format!("({tmp}.some ? {tmp}.value : ({fallback}))")
+            }
+            (Some(Type::Result(ok, err)), "is_ok") => {
+                let r = self.expr(receiver);
+                let _ = (ok, err);
+                format!("({r}).ok")
+            }
+            (Some(Type::Result(_, _)), "is_err") => {
+                let r = self.expr(receiver);
+                format!("(!({r}).ok)")
+            }
+            (Some(Type::Result(ok, err)), "unwrap") => {
+                let r = self.expr(receiver);
+                let res_c = self.tcx.c_type(&Type::Result(ok.clone(), err.clone()));
+                let tmp = self.fresh_id("resok");
+                let _ = writeln!(self.pre, "    {res_c} {tmp} = {r};");
+                let _ = writeln!(
+                    self.pre,
+                    "    if (!{tmp}.ok) astra_panic(\"called unwrap() on Err\");"
+                );
+                format!("{tmp}.value")
+            }
+            (Some(Type::Result(ok, err)), "unwrap_or") => {
+                let r = self.expr(receiver);
+                let fallback = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let res_c = self.tcx.c_type(&Type::Result(ok.clone(), err.clone()));
+                let tmp = self.fresh_id("resor");
+                let _ = writeln!(self.pre, "    {res_c} {tmp} = {r};");
+                // The fallback stays inside the conditional's false branch so
+                // it is only evaluated when the result is an error.
+                format!("({tmp}.ok ? {tmp}.value : ({fallback}))")
+            }
+            (Some(Type::Result(ok, err)), "error") => {
+                let r = self.expr(receiver);
+                let res_c = self.tcx.c_type(&Type::Result(ok.clone(), err.clone()));
+                let tmp = self.fresh_id("reserr");
+                let _ = writeln!(self.pre, "    {res_c} {tmp} = {r};");
+                let _ = writeln!(
+                    self.pre,
+                    "    if ({tmp}.ok) astra_panic(\"called error() on Ok\");"
+                );
+                format!("{tmp}.error")
             }
             (Some(Type::Str), "slice") => {
                 // `str.slice(start, end)` is fallible (spec §6.2): byte
@@ -2815,14 +2949,14 @@ impl<'a> Emitter<'a> {
             Type::Option(_) => self.match_option(scrut, scrut_ty, arms, target, result_ty),
             Type::Result(_, _) => self.match_result(scrut, scrut_ty, arms, target, result_ty),
             Type::Named(name, _) if self.tcx.enum_shape(name).is_some() => {
-                self.match_enum(scrut, name, arms, target)
+                self.match_enum(scrut, name, arms, target, result_ty)
             }
             Type::Named(name, _) if self.tcx.struct_shape(name).is_some() => {
-                self.match_struct(scrut, name, arms, target)
+                self.match_struct(scrut, name, arms, target, result_ty)
             }
-            Type::Tuple(_) => self.match_tuple(scrut, scrut_ty, arms, target),
+            Type::Tuple(_) => self.match_tuple(scrut, scrut_ty, arms, target, result_ty),
             ty if ty.is_numeric() || matches!(ty, Type::Bool | Type::Str | Type::Bytes) => {
-                self.match_literal(scrut, scrut_ty, arms, target)
+                self.match_literal(scrut, scrut_ty, arms, target, result_ty)
             }
             _ => {
                 self.tcx.rejects.push(reject(
@@ -2908,7 +3042,14 @@ impl<'a> Emitter<'a> {
         self.writeln_s("    }");
     }
 
-    fn match_enum(&mut self, scrut: &str, name: &str, arms: &[MatchArm], target: Option<&str>) {
+    fn match_enum(
+        &mut self,
+        scrut: &str,
+        name: &str,
+        arms: &[MatchArm],
+        target: Option<&str>,
+        result_ty: &Type,
+    ) {
         let _ = writeln!(self.out, "    switch (({scrut}).tag) {{");
         let mut default_arm: Option<usize> = None;
         for (i, arm) in arms.iter().enumerate() {
@@ -2947,7 +3088,7 @@ impl<'a> Emitter<'a> {
                             self.bind_pattern(subpat, &payload, &field_ty);
                         }
                     }
-                    self.emit_arm_body(&arm.body, target, &Type::Unit);
+                    self.emit_arm_body(&arm.body, target, result_ty);
                     self.writeln_s("        break;");
                     self.writeln_s("    }");
                 }
@@ -2973,14 +3114,21 @@ impl<'a> Emitter<'a> {
                     sanitize(pat_name)
                 );
             }
-            self.emit_arm_body(&arm.body, target, &Type::Unit);
+            self.emit_arm_body(&arm.body, target, result_ty);
             self.writeln_s("        break;");
             self.writeln_s("    }");
         }
         self.writeln_s("    }");
     }
 
-    fn match_struct(&mut self, scrut: &str, name: &str, arms: &[MatchArm], target: Option<&str>) {
+    fn match_struct(
+        &mut self,
+        scrut: &str,
+        name: &str,
+        arms: &[MatchArm],
+        target: Option<&str>,
+        result_ty: &Type,
+    ) {
         let Some(shape) = self.tcx.struct_shape(name) else {
             self.tcx
                 .rejects
@@ -3000,17 +3148,17 @@ impl<'a> Emitter<'a> {
                         .unwrap_or((format!("_{j}"), Type::Unit));
                     self.bind_pattern(subpat, &format!("({scrut}).{fname}"), &fty);
                 }
-                self.emit_arm_body(&arm.body, target, &Type::Unit);
+                self.emit_arm_body(&arm.body, target, result_ty);
                 return;
             }
             if let PatternKind::Identifier(n) = &arm.pattern.kind {
                 let s_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
                 let _ = writeln!(self.out, "    {s_c} v_{} = {scrut};", sanitize(n));
-                self.emit_arm_body(&arm.body, target, &Type::Unit);
+                self.emit_arm_body(&arm.body, target, result_ty);
                 return;
             }
             if let PatternKind::Wildcard = &arm.pattern.kind {
-                self.emit_arm_body(&arm.body, target, &Type::Unit);
+                self.emit_arm_body(&arm.body, target, result_ty);
                 return;
             }
         }
@@ -3026,6 +3174,7 @@ impl<'a> Emitter<'a> {
         scrut_ty: &Type,
         arms: &[MatchArm],
         target: Option<&str>,
+        result_ty: &Type,
     ) {
         let Some(PatternKind::Tuple(subpats)) = arms.first().map(|a| &a.pattern.kind) else {
             self.tcx.rejects.push(reject(
@@ -3043,7 +3192,7 @@ impl<'a> Emitter<'a> {
             self.bind_pattern(subpat, &format!("({scrut})._{i}"), &et);
         }
         if let Some(arm) = arms.first() {
-            self.emit_arm_body(&arm.body, target, &Type::Unit);
+            self.emit_arm_body(&arm.body, target, result_ty);
         }
     }
 
@@ -3053,6 +3202,7 @@ impl<'a> Emitter<'a> {
         scrut_ty: &Type,
         arms: &[MatchArm],
         target: Option<&str>,
+        result_ty: &Type,
     ) {
         let mut first = true;
         let mut fallback: Option<usize> = None;
@@ -3071,7 +3221,7 @@ impl<'a> Emitter<'a> {
                     } else {
                         let _ = writeln!(self.out, "    }} else if ({cond}) {{");
                     }
-                    self.emit_arm_body(&arm.body, target, &Type::Unit);
+                    self.emit_arm_body(&arm.body, target, result_ty);
                 }
                 PatternKind::Identifier(_) | PatternKind::Wildcard => {
                     fallback = Some(i);
@@ -3088,11 +3238,11 @@ impl<'a> Emitter<'a> {
             let arm = &arms[i];
             if first {
                 self.bind_pattern(&arm.pattern, scrut, scrut_ty);
-                self.emit_arm_body(&arm.body, target, &Type::Unit);
+                self.emit_arm_body(&arm.body, target, result_ty);
             } else {
                 self.writeln_s("    } else {");
                 self.bind_pattern(&arm.pattern, scrut, scrut_ty);
-                self.emit_arm_body(&arm.body, target, &Type::Unit);
+                self.emit_arm_body(&arm.body, target, result_ty);
                 self.writeln_s("    }");
             }
         } else if !first {
@@ -3111,7 +3261,7 @@ impl<'a> Emitter<'a> {
                     self.emit_expr_stmt(e);
                     return;
                 }
-                let v = self.expr(e);
+                let v = self.expr_with_expected(e, result_ty);
                 self.flush_pre();
                 match target {
                     Some(t) => {
@@ -3155,7 +3305,7 @@ impl<'a> Emitter<'a> {
                     self.emit_expr_stmt(e);
                     return;
                 }
-                let v = self.expr(e);
+                let v = self.expr_with_expected(e, result_ty);
                 self.flush_pre();
                 match target {
                     Some(t) => {

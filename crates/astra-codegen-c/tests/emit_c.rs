@@ -1023,6 +1023,12 @@ fn process(b: bytes) -> u8 {
     let sub = b.slice(1, 3)
     return b[0]
 }
+
+fn write() -> u8 {
+    let mut buffer = bytes.new(4)
+    buffer[0] = 255
+    return buffer[0]
+}
 "#;
     let out = compile_and_emit(src);
     assert!(
@@ -1034,6 +1040,16 @@ fn process(b: bytes) -> u8 {
     assert!(
         out.contains("astra_bytes_slice(v_b, (size_t)(1), (size_t)(3))"),
         "expected end-offset astra_bytes_slice:\n{out}"
+    );
+    // Writes are bounds-checked through the runtime setter, and `bytes.new`
+    // allocates a zero-filled buffer.
+    assert!(
+        out.contains("astra_bytes_set(&(v_buffer), 0, (uint8_t)(255))"),
+        "expected a bounds-checked byte write:\n{out}"
+    );
+    assert!(
+        out.contains("astra_bytes_new((size_t)(4))"),
+        "expected the bytes allocation helper:\n{out}"
     );
     assert_clang_ok(&out);
 }
@@ -1230,6 +1246,56 @@ fn fresh(n: usize) -> bytes {
     assert!(
         out.contains("astra_bytes_new"),
         "expected the bytes allocation helper:\n{out}"
+    );
+    assert_clang_ok(&out);
+}
+
+#[test]
+fn option_and_result_accessors_lower_to_checked_reads() {
+    // `unwrap`/`unwrap_or`/`error` evaluate the payload once and panic on the
+    // wrong shape; `unwrap_or` keeps its fallback in the branch so it is only
+    // evaluated when needed.
+    let src = r#"
+fn unwrap_option(maybe: Option<i32>) -> i32 {
+    return maybe.unwrap()
+}
+
+fn or_default(maybe: Option<i32>) -> i32 {
+    return maybe.unwrap_or(7)
+}
+
+fn unwrap_result(r: Result<i32, i32>) -> i32 {
+    return r.unwrap()
+}
+
+fn result_error(r: Result<i32, i32>) -> i32 {
+    return r.error()
+}
+
+fn result_or(r: Result<i32, i32>) -> i32 {
+    return r.unwrap_or(3)
+}
+
+fn flags(r: Result<i32, i32>) -> bool {
+    return r.is_ok() && not r.is_err()
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("called unwrap() on None"),
+        "expected the Option unwrap guard:\n{out}"
+    );
+    assert!(
+        out.contains("called unwrap() on Err"),
+        "expected the Result unwrap guard:\n{out}"
+    );
+    assert!(
+        out.contains("called error() on Ok"),
+        "expected the Result error guard:\n{out}"
+    );
+    assert!(
+        out.contains(".some ? ") && out.contains(".ok ? "),
+        "expected the conditional fallbacks:\n{out}"
     );
     assert_clang_ok(&out);
 }
