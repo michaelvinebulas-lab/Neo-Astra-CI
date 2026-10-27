@@ -937,6 +937,10 @@ export surface.
 production native backend is **not complete**; the current C-001 checkbox in the
 backlog means "first slice", not the full backend.
 
+> **Handoff:** `Docs/Agent/c001-handoff.md` is the transfer document for this
+> task — architecture, invariants, the remaining work with design sketches, and
+> the slice workflow. Read it before starting any C-001 sub-task.
+
 **Why**
 
 The C backend is the bootstrap path for native and Wasm targets:
@@ -1080,6 +1084,9 @@ by a production native target.
       clang lacks MSVC/Windows SDK headers for `astra_host.c` (`stdio.h` not
       found). `astra build --target c` succeeds; `--target native` needs a
       complete host toolchain. Linux/macOS natively linked builds are unverified.
+      Known latent defect to fix first: `astra_host.c` is written raw, but the
+      shim uses `NS_Bytes`/`NS_Map` from the runtime header while typedefing only
+      `NS_Str`/`NS_Array` (see `Docs/Agent/c001-handoff.md` 6.F).
 - [ ] Native CI gate. C tests skip hosted execution when no libc/SDK is
       available; CI must compile and run native binaries on at least one Tier-1
       host before C-001 can be marked fully done.

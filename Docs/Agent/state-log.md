@@ -15,7 +15,16 @@ This is the agent's persistent memory. Update it at the end of every substantial
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
-| Next action | C-001 remainder (GC/manual memory, concurrency, package linking, native CI gate); later backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+| Next action | Generics monomorphization in the C backend (close the last non-concurrency corpus gap; see `Docs/Agent/c001-handoff.md` 6.A); then package linking, GC/manual memory, concurrency, native library ABI, native CI gate; WASM-001 last |
+
+---
+
+### 2026-10-27 - Docs: C-001 handoff + host-shim defect recorded
+
+- Command: none (documentation only); tree at `47d2598`
+- What: added `Docs/Agent/c001-handoff.md`, the transfer document for the C-001 workstream: repo orientation, C backend file/function map, the 70-test + static-conformance baseline, a feature inventory, architecture invariants (typedef ordering, `pre` flushing, fallible-call materialization, builtin nominals, cross-module types), per-item plans for everything still open (generics, package linking, GC-001, CONC-001, native library ABI, native verification/CI, WASM-001 with its deferral rationale), the slice workflow, environment quirks, known small gaps, open questions, and a quick index. `todo.md` now points at it from the C-001 section.
+- Finding recorded while writing it: `astra_host.c` is written raw by the CLI, but `HOST_SHIM` uses `NS_Bytes`/`NS_Map` from `RUNTIME_HEADER` while typedefing only `NS_Str`/`NS_Array` — a latent hosted-build compile defect hidden by the missing-toolchain gate. Fix (prepend the runtime header or include a generated header) is the first item to verify on a Tier-1 runner.
+- Next: generics monomorphization (handoff 6.A), per the user's direction; update `todo.md` as each item completes.
 
 ---
 
