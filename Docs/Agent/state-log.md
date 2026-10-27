@@ -8,14 +8,26 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 | Field | Value |
 |---|---|
-| Last updated | 2026-10-26 |
-| Current phase | Phase 5 - Types, Nova, and NoPM / Phase 7 Backends |
-| Current task | `C-001` [~] C17 native backend (managed first slice complete; project linking, GC, concurrency, FFI, and native toolchain verification open) |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend (merged from `js-interop` at `39437d0`) and first C17 managed slice (`astra-codegen-c`) complete with freestanding runtime & `astra build --target c` pipeline; `@script` inline interop frontend complete |
-| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, CLI) |
+| Last updated | 2026-10-27 |
+| Current phase | Phase 7 - Backends |
+| Current task | `TS-001` [x] TypeScript ESM backend complete (3 slices: `83ec555`, `6f0e80b`, `df4ffc9`); `C-001` continuation pending |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, `@script` inline interop frontend complete |
+| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
-| Next action | Continue `C-001` (e.g. multi-module project linking for C, map literals, or toolchain environment), then start `TS-001` |
+| Next action | Continue `C-001` (multi-module project linking for C, cross-platform native CI gate, GC/manual memory, concurrency, FFI, native target policy); then backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+
+---
+
+### 2026-10-27 - TS-001 complete: @script:ts pinned transpiler (slice 3)
+
+- Command: `npm run ci`
+- Result: pass (49 TypeScript unit tests, 46 native/Wasm/boundary tests, 548 Rust tests, fmt and clippy clean)
+- Commit: `df4ffc9` "TS-001 slice 3: @script:ts emission with one pinned transpiler"
+- What: the TypeScript backend now emits `@script:ts` blocks. The shared emitter gained an optional `transpileTypeScript` seam on `CodegenRequest`; in TS mode a `ts` script body is padded with leading blank lines so the pinned transpiler's source map reports `.ns`-absolute lines, transpiled, and emitted as a `.js` artifact plus `.d.ts`. The artifact's source map is composed from the transpiler's map by shifting past the two header lines with `sources`/`sourcesContent` pointing at the `.ns` source — no VLQ re-encode. If the transpiler produces no usable map, the artifact is emitted without one rather than an incorrect one.
+- Pinning: `codegen-ts` pins `typescript` at exactly `7.0.2` (also pinned in the root devDependency so the lockfile cannot drift) and supplies `transpileTypeScriptBody`, which resolves the install, checks the pin via the pure `pinnedTypeScriptVersionError`, and spawns `tsc --ignoreConfig --noCheck --target es2022 --module esnext --moduleResolution bundler --sourceMap`. A missing install, a version mismatch, a non-zero `tsc` exit, or any TS diagnostic is a hard `NS7008` error with no best-effort fallback. The JS backend keeps rejecting `@script:ts`.
+- Tests: `@script:ts` transpiles, type-checks under `tsc --strict`, runs, and matches the equivalent `@script:js` program; the artifact's composed map resolves to the `.ns` body line; a missing transpiler and a syntactically invalid body are hard `NS7008` errors emitting no artifact; the pin matches the installed compiler. The parity suite also gained a `safe-checked` integer policy program (5 parity programs total).
+- TS-001 acceptance: all items complete; `Docs/Agent/todo.md` TS-001 section updated to reflect the three slices (`83ec555` shared-emitter TS mode, `6f0e80b` CLI wiring + test suite, `df4ffc9` `@script:ts`).
 
 ---
 
@@ -1147,13 +1159,13 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 
 ```markdown
 ### Handoff
-- Phase: 7 - Backends / C-001
-- Task: JS-001 completed and merged from `js-interop` (39437d0); C-001 expression/pattern coverage, byte/string operations, map methods, inline scripts (@script:c/@script:cpp), and native build flags complete
+- Phase: 7 - Backends
+- Task: TS-001 completed (3 slices: `83ec555` shared-emitter TS mode + thin codegen-ts wrapper, `6f0e80b` `astra build --target ts` wiring + TS test suite, `df4ffc9` `@script:ts` pinned-transpiler emission); C-001 continuation remains (multi-module project linking, cross-platform native CI gate, GC/manual memory, concurrency, FFI, native target policy)
 - Status: Ready
-- Files changed: `crates/astra-codegen-c/src/{emit,runtime,lib,ty}.rs`, `crates/astra-codegen-c/tests/emit_c.rs`, `crates/astra-core/src/checker.rs`, `crates/astra-compiler-api/src/lib.rs`, `orchestrator/packages/cli/src/index.ts`, `orchestrator/packages/codegen-js/src/generate.ts`, `orchestrator/tests/{codegen-js.test.mjs,conformance.mjs}`, `conformance/`, `orchestrator/packages/codegen-ts/src/index.ts` + `orchestrator/tests/codegen-ts.test.mjs` (preserved WIP), `Docs/Agent/{todo,state-log,runbook}.md`
-- Verification: `npm run ci` green on the merged tree: 548 Rust tests, 41 TypeScript unit tests, 46 native/Wasm/boundary tests (28 codegen/build), fmt clean, clippy with warnings denied
-- Blockers: none
-- Next action: multi-module project linking for C and cross-platform native CI gate; then continue TS-001 (WIP present)
+- Files changed: `orchestrator/packages/codegen-js/src/{generate,index}.ts` (TS emission mode + `transpileTypeScript` seam), `orchestrator/packages/codegen-ts/src/index.ts` (pinned `transpileTypeScriptBody`, `pinnedTypeScriptVersionError`, `PINNED_TYPESCRIPT_VERSION`), `orchestrator/packages/codegen-ts/package.json` (exact `typescript@7.0.2` dep), `orchestrator/packages/cli/src/index.ts` (`--target ts`), `orchestrator/tests/codegen-ts.test.mjs` (9 tests incl. 5-program parity, `@script:ts` transpile/parity/map/hard-error, e2e build), `package.json` + `package-lock.json` (exact pin), `Docs/Agent/{todo,state-log}.md`
+- Verification: `npm run ci` green on `df4ffc9`: 548 Rust tests, 49 TypeScript unit tests, 46 native/Wasm/boundary tests, fmt clean, clippy with warnings denied
+- Blockers: Windows native linking needs MSVC/Windows SDK (`stdio.h`) or a Tier-1 CI host
+- Next action: C-001 continuation — multi-module project linking for the C backend and the cross-platform native CI gate; then backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice
 ```
 
 

@@ -857,9 +857,9 @@ source maps that compile with ordinary `tsc` and run through Node or a bundler.
 
 ## INTEROP-001 - Inline `@script` foreign-language blocks
 
-**Status:** Frontend (Slices A+B) and the JavaScript backend slice (C) are
-complete. The C/C++ native slice, TypeScript-target script emission, and deferred
-runtime work remain.
+**Status:** Frontend (Slices A+B), the JavaScript backend slice (C), and the
+TypeScript-target slice (pinned-transpiler `@script:ts`) are complete. The
+C/C++ native slice and deferred runtime work remain.
 
 **Why**
 
@@ -892,8 +892,10 @@ export surface.
 - [x] Implement the JavaScript backend slice: real ESM modules, export
       validation, source maps, boundary conversion, error mapping, and
       end-to-end tests.
-- [ ] Extend script emission to the TypeScript target after `TS-001`, or bundle a
-      pinned transpiler for `@script:ts`.
+- [x] Extend script emission to the TypeScript target after `TS-001`: `@script:ts`
+      bodies are transpiled by the one pinned `typescript@7.0.2` (missing or
+      mismatched transpilers are hard `NS7008` errors); the JS backend keeps
+      rejecting `@script:ts`.
 - [ ] Implement the C/C++ native slice: one translation unit per block, symbol
       isolation, wrappers, link failures, and boundary tests.
 - [x] Make Nova reject foreign script calls with `NV0008` before execution.
@@ -904,8 +906,8 @@ export surface.
 
 **Depends on**
 
-- `JS-001` for the JavaScript slice (done). `TS-001` is still required for
-  TypeScript-target script emission.
+- `JS-001` for the JavaScript slice (done). `TS-001` for TypeScript-target
+  script emission (done: `@script:ts` pinned transpiler).
 - Native C backend work for the second slice.
 - NoPM is not required; inline scripts are project source, not packages.
 
@@ -1161,8 +1163,8 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `NOPM-003` Universal registry gateway
 - [x] `NOPM-004` Later ecosystem adapters
 - [x] `JS-001` JavaScript ESM backend (complete at `39437d0`; merged from `js-interop`)
-- [ ] `TS-001` TypeScript backend
-- [~] `INTEROP-001` Inline `@script` foreign-language blocks
+- [x] `TS-001` TypeScript backend (complete at `df4ffc9`: shared-emitter TS mode, `astra build --target ts`, pinned `@script:ts` transpiler)
+- [~] `INTEROP-001` Inline `@script` foreign-language blocks (JS and TS slices done; C slice remains)
 - [ ] `PLAY-001` Browser playground (expanded plan above)
 - [~] `C-001` C backend - managed first slice done; project linking, GC/manual memory, concurrency, FFI/`@script:c`, full patterns, native target policy, and cross-platform native verification remain
 - [ ] `GC-001` Native GC

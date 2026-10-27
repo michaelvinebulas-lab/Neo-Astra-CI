@@ -17,7 +17,7 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 | 6 | Nova and NoPM | Executable `.ns` source and reproducible packages | In progress |
 | 7 | JS/TS backend and playground | Browser-runnable output | In progress |
 | 8 | C backend, native, Wasm | Native and Wasm binaries | Not started |
-| 9 | FFI and concurrency | Foreign modules, inline `@script`, and structured tasks | In progress: JS script slice done; C slice and concurrency remain |
+| 9 | FFI and concurrency | Foreign modules, inline `@script`, and structured tasks | In progress: JS and TS script slices done; C slice and concurrency remain |
 | 10 | Hardening | Stable v0.1 | Not started |
 
 ---
@@ -300,11 +300,16 @@ work is production backends, starting with `JS-001`, and conformance coverage.
 
 ## 9. Phase 7 - JavaScript/TypeScript backend and playground
 
-**Status:** `JS-001` complete. The backend emits linked multi-module projects,
-inline `@script:js` ESM modules, recoverable errors, checked and arbitrary
-integer policies, eager tasks, bounded channels, UTF-8 string/byte operations,
-source maps, `.d.ts` artifacts, and the shared `conformance/` suite. External
-package modules, TypeScript-target script emission, and `TS-001` remain.
+**Status:** `JS-001` and `TS-001` complete. The JavaScript backend emits linked
+multi-module projects, inline `@script:js` ESM modules, recoverable errors,
+checked and arbitrary integer policies, eager tasks, bounded channels, UTF-8
+string/byte operations, source maps, `.d.ts` artifacts, and the shared
+`conformance/` suite. The TypeScript backend (`@neo-astra/codegen-ts`) shares
+the emitter pipeline with `backend: "ts"`, adds explicit types and typed
+helpers for `tsc --strict`, wires `astra build --target ts`, and transpiles
+`@script:ts` bodies with one pinned `typescript@7.0.2` (missing/mismatched
+transpilers are hard `NS7008` errors). External package modules and the
+playground remain.
 
 **Goal:** Produce readable, runnable web output.
 
@@ -339,10 +344,17 @@ package modules, TypeScript-target script emission, and `TS-001` remain.
   External imports and manual memory fail with source-located diagnostics
   instead of changing semantics.
 - The backend-neutral `conformance/` suite (runner:
-  `orchestrator/tests/conformance.mjs`) pins shared semantics; `TS-001` must
-  run the same cases.
-- Next: the TypeScript backend (WIP preserved from the retired `js-001`
-  branch).
+  `orchestrator/tests/conformance.mjs`) pins shared semantics; `TS-001` runs
+  the same cases.
+- `@neo-astra/codegen-ts` is a thin wrapper over the shared emitter with
+  `backend: "ts"`: object-form `Option`/`Tuple`, typed helpers, body-level
+  `interface`/`type` declarations, `bigint` for i8–u32 under `arbitrary`, and
+  `.ts`/`.ts.map`/`.d.ts` artifacts. Cross-module specifiers stay `.js`.
+- `@script:ts` bodies are transpiled by the pinned compiler
+  (`PINNED_TYPESCRIPT_VERSION`, currently 7.0.2) via the `tsc` CLI
+  (`--noCheck`: bodies are opaque to Nova); the artifact carries a composed
+  source map that points back at `.ns` line numbers.
+- Next: the browser playground (WASM build of the Rust core).
 
 ### Gate
 
@@ -389,8 +401,8 @@ package modules, TypeScript-target script emission, and `TS-001` remain.
 3. Implement C ABI bindings.
 4. Implement JS/TS import bindings.
 5. Inline `@script` parsing and typed exports are complete; the JavaScript ESM
-   emission slice is complete. Add TypeScript-target emission after `TS-001`,
-   then the C/C++ translation-unit path.
+   and TypeScript-target emission slices are complete (`@script:ts` uses the
+   pinned transpiler). The C/C++ translation-unit path remains.
 6. Implement structured concurrency on native.
 7. Implement Web Worker generation.
 8. Add boundary, inline-script, and concurrency conformance tests.
