@@ -70,18 +70,17 @@ the backend's runner, not by deleting the case:
   (`KNOWN_GAPS`). A ledger entry fails the test if the case starts passing, so
   gaps cannot silently rot into permanent skips.
 
-Current Nova gaps: the `bytes` builtin, the full `str` method set beyond
-`len` (byte/char indexing, slicing, `char_count`, `chars`, `bytes`), and the
-`Channel` runtime. These are tracked by `NOVA-004` and `CONC-001`.
+Current Nova gaps: none. The `bytes` builtin, the full `str` method set, and
+the `Channel` runtime landed with NOVA-004; the `KNOWN_GAPS` ledger stays in
+place, empty, for the next gap a new case uncovers.
 
 Current JavaScript gaps: `break`/`continue` and early `return` inside an
 `if` block are not emitted yet (`NS8001`). Cases therefore use loops with a
 single exit and `match` expressions until the backend closes that gap.
 
-Current TypeScript gap: struct fields are emitted as `readonly`, so mutating a
-field on a `let mut` binding (`user.name = "Neo"`) fails `tsc` with
-`TS2540`. Shared cases construct final values until `TS-001` closes it; a
-mutation case should be added at the same time.
+Current TypeScript gap: none. `TS-001` removed the `readonly` emission that
+failed `tsc` with `TS2540` on `user.name = "Neo"`; the `struct_mutation` case
+pins struct field writes under `tsc --strict` so the bug cannot return.
 
 ## Negative cases
 

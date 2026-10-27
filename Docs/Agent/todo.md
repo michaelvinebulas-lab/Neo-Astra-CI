@@ -20,16 +20,18 @@ Only one item may be `[~]` at a time.
 
 **Phase 5 — Types, Nova, and NoPM**
 
-`FMT-004`, `TYPE-001`-`TYPE-004`, `MODE-001`, `ERR-001`, `NOVA-001`-`NOVA-003`,
+`FMT-004`, `TYPE-001`-`TYPE-004`, `MODE-001`, `ERR-001`, `NOVA-001`-`NOVA-004`,
 and `NOPM-001`-`NOPM-004` are complete. Nova now loads, checks, and links local
 project modules through one interpreter, and cross-module diagnostics and panic
 stacks carry canonical module paths. `JS-001` is complete on the `js-interop`
 branch (commit `39437d0`): linked multi-module ESM, inline `@script:js` blocks,
 recoverable errors, integer policies, eager tasks, bounded channels, UTF-8
 string/byte operations, source maps, `.d.ts`, and the shared `conformance/`
-suite — now merged into `master`. The
-TypeScript target has not started; its groundwork is preserved in the tree.
-The `INTEROP-001` inline-script design is complete in
+suite — now merged into `master`. `TS-001` is complete (shared-emitter TS mode,
+`astra build --target ts`, and the pinned `@script:ts` transpiler), and the
+conformance suite (16 positive + 11 negative cases) runs green on JavaScript,
+TypeScript, and Nova with empty backend gap ledgers. The
+`INTEROP-001` inline-script design is complete in
 `Docs/Design/V1/10-inline-script-interop.md`; the C/C++ slice is in progress.
 Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
@@ -1175,6 +1177,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `NOVA-001` Typed-HIR interpreter
 - [x] `NOVA-002` Nova CLI
 - [x] `NOVA-003` Project module loading and linking
+- [x] `NOVA-004` Nova language gaps — spec §6 `str` methods (`char_count`, `bytes`, `chars`, `byte_at`, `char_at`, `slice` with `SliceError`), the `bytes` builtin (`bytes.new`, bounds-checked index read/write, `len`/`is_empty`/`slice`, `for`-over-bytes), and the bounded Channel runtime (`Channel.create`, fallible `send`/`receive`, `close`, capacity-16 deadlock panics); Nova runs the whole shared conformance corpus with an empty `KNOWN_GAPS` ledger
 - [x] `NOPM-001` Universal package model and resolver
 - [x] `NOPM-002` Path, Git, npm, and Cargo adapters
 - [x] `NOPM-003` Universal registry gateway
@@ -1188,7 +1191,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
-- [~] `CONF-001` Conformance suite — 15 positive + 11 negative cases; JavaScript, Nova, and frontend-reject runners wired; per-backend gap ledgers documented
+- [~] `CONF-001` Conformance suite — 16 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C backend runner waits on the native toolchain gate
 - [ ] `HARD-001` v0.1 hardening
 
 ---

@@ -14,7 +14,7 @@ use astra_core::types::Type;
 use crate::error::{Abort, Fault, Frame, NovaError, Panic};
 use crate::host::Host;
 use crate::value::{
-    BuiltinFunction, Constructor, ConstructorKind, Float, FunctionValue, Integer,
+    BuiltinFunction, ChannelValue, Constructor, ConstructorKind, Float, FunctionValue, Integer,
     StructFieldsValue, Task, TaskFailure, Value, values_equal,
 };
 
@@ -924,7 +924,7 @@ impl Interpreter {
         &mut self,
         kind: ConstructorKind,
         arguments: Vec<Value>,
-        _span: Span,
+        span: Span,
     ) -> Result<Value, Fault> {
         match kind {
             ConstructorKind::Some => {
@@ -950,6 +950,27 @@ impl Interpreter {
                     );
                 };
                 Ok(Value::Result(Err(Box::new(value.clone()))))
+            }
+            ConstructorKind::BytesNew => {
+                expect_arguments("bytes.new", &arguments, 1)?;
+                let Value::Integer(size) = &arguments[0] else {
+                    return Err(self.internal("bytes.new length was not an integer after checking"));
+                };
+                let limit = usize::try_from(isize::MAX).unwrap_or(usize::MAX);
+                let Some(length) = usize::try_from(size.value)
+                    .ok()
+                    .filter(|length| *length <= limit)
+                else {
+                    return Err(self.panic(
+                        format!("byte buffer length '{}' is out of range", size.value),
+                        span,
+                    ));
+                };
+                Ok(Value::Bytes(Rc::new(RefCell::new(vec![0; length]))))
+            }
+            ConstructorKind::ChannelCreate => {
+                expect_arguments("Channel.create", &arguments, 0)?;
+                Ok(Value::Channel(Rc::new(RefCell::new(ChannelValue::new()))))
             }
             ConstructorKind::TupleStruct { name, .. } => Ok(Value::tuple_struct(name, arguments)),
             ConstructorKind::EnumVariant {
@@ -989,6 +1010,98 @@ impl Interpreter {
                         vec![Value::string(value.to_string())],
                     ))))),
                 }
+            }
+            (Value::Str(value), "char_count") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::Integer(Integer::new(
+                    i128::try_from(value.chars().count()).unwrap_or(i128::MAX),
+                    Type::Usize,
+                )))
+            }
+            (Value::Str(value), "bytes") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::array(
+                    value
+                        .as_bytes()
+                        .iter()
+                        .map(|byte| Value::Integer(Integer::new(i128::from(*byte), Type::U8)))
+                        .collect(),
+                ))
+            }
+            (Value::Str(value), "chars") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::array(
+                    value
+                        .chars()
+                        .map(|character| Value::string(character.to_string()))
+                        .collect(),
+                ))
+            }
+            (Value::Str(value), "byte_at") => {
+                let index = expect_argument(name, &arguments, 0)?;
+                let Some(index) = checked_offset(index) else {
+                    return Ok(Value::Option(None));
+                };
+                Ok(Value::Option(value.as_bytes().get(index).copied().map(
+                    |byte| Box::new(Value::Integer(Integer::new(i128::from(byte), Type::U8))),
+                )))
+            }
+            (Value::Str(value), "char_at") => {
+                let index = expect_argument(name, &arguments, 0)?;
+                let Some(index) = checked_offset(index) else {
+                    return Ok(Value::Option(None));
+                };
+                Ok(Value::Option(value.chars().nth(index).map(|character| {
+                    Box::new(Value::string(character.to_string()))
+                })))
+            }
+            (Value::Str(value), "slice") => {
+                let arguments = expect_arguments(name, &arguments, 2)?;
+                let (Some(start), Some(end)) =
+                    (checked_offset(&arguments[0]), checked_offset(&arguments[1]))
+                else {
+                    return Ok(slice_error());
+                };
+                let bytes = value.as_bytes();
+                let boundary = |position: usize| {
+                    position == bytes.len()
+                        || (position < bytes.len() && (bytes[position] & 0xC0) != 0x80)
+                };
+                if start > end || end > bytes.len() || !boundary(start) || !boundary(end) {
+                    return Ok(slice_error());
+                }
+                match std::str::from_utf8(&bytes[start..end]) {
+                    Ok(part) => Ok(Value::Result(Ok(Box::new(Value::string(part))))),
+                    Err(_) => Ok(slice_error()),
+                }
+            }
+            (Value::Bytes(bytes), "len") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::Integer(Integer::new(
+                    i128::try_from(bytes.borrow().len()).unwrap_or(i128::MAX),
+                    Type::Usize,
+                )))
+            }
+            (Value::Bytes(bytes), "is_empty") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::Bool(bytes.borrow().is_empty()))
+            }
+            (Value::Bytes(bytes), "slice") => {
+                let arguments = expect_arguments(name, &arguments, 2)?;
+                let (Some(start), Some(end)) =
+                    (checked_offset(&arguments[0]), checked_offset(&arguments[1]))
+                else {
+                    return Err(self.panic("bytes slice index is out of range", span));
+                };
+                let bytes = bytes.borrow();
+                if start > end || end > bytes.len() {
+                    return Err(
+                        self.panic(format!("bytes slice {start}..{end} is out of bounds"), span)
+                    );
+                }
+                Ok(Value::Bytes(Rc::new(RefCell::new(
+                    bytes[start..end].to_vec(),
+                ))))
             }
             (Value::Array(values), "len") => {
                 expect_arguments(name, &arguments, 0)?;
@@ -1105,6 +1218,43 @@ impl Interpreter {
             (Value::Task(task), "cancel") => {
                 expect_arguments(name, &arguments, 0)?;
                 task.borrow_mut().cancelled = true;
+                Ok(Value::Unit)
+            }
+            (Value::Channel(channel), "send") => {
+                let value = expect_argument(name, &arguments, 0)?.clone();
+                let mut channel = channel.borrow_mut();
+                if channel.closed {
+                    return Ok(channel_error("send on a closed channel"));
+                }
+                if channel.buffer.len() >= channel.capacity {
+                    return Err(self.panic(
+                        "channel deadlock: send on a full bounded channel would block \
+                         (single-threaded runtime)",
+                        span,
+                    ));
+                }
+                channel.buffer.push(value);
+                Ok(Value::Result(Ok(Box::new(Value::Unit))))
+            }
+            (Value::Channel(channel), "receive") => {
+                expect_arguments(name, &arguments, 0)?;
+                let mut channel = channel.borrow_mut();
+                if channel.buffer.is_empty() {
+                    if channel.closed {
+                        return Ok(channel_error("receive on a closed channel"));
+                    }
+                    return Err(self.panic(
+                        "channel deadlock: receive on an empty channel would block \
+                         (single-threaded runtime)",
+                        span,
+                    ));
+                }
+                let value = channel.buffer.remove(0);
+                Ok(Value::Result(Ok(Box::new(value))))
+            }
+            (Value::Channel(channel), "close") => {
+                expect_arguments(name, &arguments, 0)?;
+                channel.borrow_mut().closed = true;
                 Ok(Value::Unit)
             }
             (Value::Integer(integer), method) => {
@@ -1305,6 +1455,29 @@ impl Interpreter {
             if is_local_enum {
                 let declaration = self.current().enums.get(name).cloned().expect("checked");
                 return self.enum_member(self.active.clone(), name, &declaration, member);
+            }
+
+            // Built-in namespace constructors: `bytes.new(length)` and
+            // `Channel.create<T>()`. They resolve only when the name carries
+            // no value of its own, mirroring the checker's shadowing rules.
+            let is_builtin_namespace = {
+                let current = self.current();
+                self.scope_lookup(scope, name).is_none()
+                    && !current.constants.contains_key(name)
+                    && !current.imported_values.contains_key(name)
+                    && !current.imported_namespaces.contains_key(name)
+                    && !current.globals.borrow().values.contains_key(name)
+                    && !current.structs.contains_key(name)
+            };
+            if is_builtin_namespace {
+                let kind = match (name.as_str(), member) {
+                    ("bytes", "new") => Some(ConstructorKind::BytesNew),
+                    ("Channel", "create") => Some(ConstructorKind::ChannelCreate),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    return Ok(Flow::Value(Value::Constructor(Constructor { kind })));
+                }
             }
         }
 
@@ -1558,6 +1731,15 @@ impl Interpreter {
                     self.panic(format!("tuple index {index} is out of bounds"), span)
                 })
             }
+            Value::Bytes(bytes) => {
+                let index = self.index_usize(&index, span)?;
+                bytes
+                    .borrow()
+                    .get(index)
+                    .copied()
+                    .map(|byte| Value::Integer(Integer::new(i128::from(byte), Type::U8)))
+                    .ok_or_else(|| self.panic(format!("byte index {index} is out of bounds"), span))
+            }
             value => Err(self.internal(format!(
                 "indexed non-indexable value after type checking: {value}"
             ))),
@@ -1652,6 +1834,22 @@ impl Interpreter {
                         *element = value;
                         Ok(Flow::Value(Value::Unit))
                     }
+                    Value::Bytes(bytes) => {
+                        let index = self.index_usize(&index, span)?;
+                        let Value::Integer(byte) = value else {
+                            return Err(
+                                self.internal("assigned a non-integer byte after type checking")
+                            );
+                        };
+                        let mut bytes = bytes.borrow_mut();
+                        let Some(slot) = bytes.get_mut(index) else {
+                            return Err(
+                                self.panic(format!("byte index {index} is out of bounds"), span)
+                            );
+                        };
+                        *slot = byte.value as u8;
+                        Ok(Flow::Value(Value::Unit))
+                    }
                     _ => Err(self.internal(
                         "assigned an index of a non-assignable value after type checking",
                     )),
@@ -1672,6 +1870,11 @@ impl Interpreter {
             Value::Str(value) => Ok(value
                 .chars()
                 .map(|character| Value::string(character.to_string()))
+                .collect()),
+            Value::Bytes(bytes) => Ok(bytes
+                .borrow()
+                .iter()
+                .map(|byte| Value::Integer(Integer::new(i128::from(*byte), Type::U8)))
                 .collect()),
             value => Err(self.internal(format!(
                 "iterated a non-iterable value after type checking: {value}"
@@ -2246,6 +2449,33 @@ fn expect_argument<'a>(
 ) -> Result<&'a Value, Fault> {
     expect_arguments(method, arguments, index + 1)?;
     Ok(&arguments[index])
+}
+
+/// Converts an integer argument to a byte or character offset, or `None`
+/// when the value is negative or too large to address.
+fn checked_offset(value: &Value) -> Option<usize> {
+    match value {
+        Value::Integer(integer) => usize::try_from(integer.value).ok(),
+        _ => None,
+    }
+}
+
+/// The shared `str.slice` failure payload from the spec (§6.2).
+fn slice_error() -> Value {
+    Value::Result(Err(Box::new(Value::tuple_struct(
+        "SliceError",
+        vec![Value::string(
+            "slice range is out of bounds or splits a UTF-8 scalar value",
+        )],
+    ))))
+}
+
+/// The shared `ChannelError` payload for closed-channel operations.
+fn channel_error(message: &str) -> Value {
+    Value::Result(Err(Box::new(Value::tuple_struct(
+        "ChannelError",
+        vec![Value::string(message)],
+    ))))
 }
 
 fn map_insert(entries: &mut Vec<(Value, Value)>, key: Value, value: Value) -> Option<Value> {

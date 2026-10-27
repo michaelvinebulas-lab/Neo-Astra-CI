@@ -124,6 +124,8 @@ pub(crate) enum ConstructorKind {
     Some,
     Ok,
     Err,
+    BytesNew,
+    ChannelCreate,
     TupleStruct {
         module: String,
         name: String,
@@ -166,6 +168,27 @@ impl Task {
     }
 }
 
+/// State of a bounded single-threaded channel.
+///
+/// The capacity matches the JavaScript backend's `$channel` helper, so
+/// `send` past the bound deadlocks exactly the same way in both runtimes.
+#[derive(Debug)]
+pub struct ChannelValue {
+    pub(crate) buffer: Vec<Value>,
+    pub(crate) capacity: usize,
+    pub(crate) closed: bool,
+}
+
+impl ChannelValue {
+    pub(crate) fn new() -> Self {
+        Self {
+            buffer: Vec::new(),
+            capacity: 16,
+            closed: false,
+        }
+    }
+}
+
 /// A Nova runtime value.
 #[derive(Clone)]
 pub enum Value {
@@ -191,6 +214,7 @@ pub enum Value {
     },
     Constructor(Constructor),
     Task(Rc<RefCell<Task>>),
+    Channel(Rc<RefCell<ChannelValue>>),
     ForeignModule(String),
     ScriptBlock {
         name: String,
@@ -449,6 +473,7 @@ impl Value {
                 output.push('>');
             }
             Self::Task(_) => output.push_str("<Task>"),
+            Self::Channel(_) => output.push_str("<Channel>"),
             Self::ForeignModule(name) => {
                 output.push_str("<foreign module ");
                 output.push_str(name);
@@ -544,6 +569,8 @@ fn constructor_name(constructor: &ConstructorKind) -> &str {
         ConstructorKind::Some => "Some",
         ConstructorKind::Ok => "Ok",
         ConstructorKind::Err => "Err",
+        ConstructorKind::BytesNew => "bytes.new",
+        ConstructorKind::ChannelCreate => "Channel.create",
         ConstructorKind::TupleStruct { name, .. } => name,
         ConstructorKind::EnumVariant { variant, .. } => variant,
     }
@@ -612,6 +639,7 @@ pub fn values_equal(left: &Value, right: &Value) -> bool {
         ) => left_name == right_name && values_equal(left_receiver, right_receiver),
         (Value::Constructor(left), Value::Constructor(right)) => left == right,
         (Value::Task(left), Value::Task(right)) => Rc::ptr_eq(left, right),
+        (Value::Channel(left), Value::Channel(right)) => Rc::ptr_eq(left, right),
         (Value::ForeignModule(left), Value::ForeignModule(right)) => left == right,
         (
             Value::ScriptBlock {

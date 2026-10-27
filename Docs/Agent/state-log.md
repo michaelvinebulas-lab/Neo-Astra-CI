@@ -10,12 +10,34 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001` multi-module project linking slice implemented (uncommitted); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`); TS struct-mutation fix committed (`49a84c8`) |
+| Current task | `NOVA-004` Nova gaps closed and committed (str methods, `bytes`, Channel); `work/conf-001` merged into master (`78d8920`); `C-001` project-linking slice committed (`a0dea19`); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`); TS struct-mutation fix committed (`49a84c8`) |
 | Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, C multi-module project linking (module-qualified symbols, cross-module calls, `compile_project`), `@script` inline interop frontend complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
-| Next action | Commit `C-001` multi-module slice; then Nova gaps (bytes builtin, str methods, Channel), JS IIFE control-flow (NS8001), then C-001 remainder (GC/manual memory, concurrency, cross-platform native CI gate); later backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+| Next action | JS IIFE control-flow (NS8001), then C-001 remainder (GC/manual memory, concurrency, cross-platform native CI gate); later backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+
+---
+
+### 2026-10-27 — NOVA-004 Nova language gaps closed: str methods, `bytes`, and the Channel runtime
+
+- Command: `cargo test -p astra-nova`, `npm run ci`
+- Result: pass
+- What: Nova now implements the spec §6 string method set beyond `len` — `char_count`, `bytes` (an `Array<u8>`), `chars`, `byte_at`/`char_at` (returning `Option`, `None` on any out-of-range index), and `slice(start, end)` on byte offsets that returns `Err(SliceError)` when the range is out of bounds, is reversed, or would split a UTF-8 scalar value.
+- The `bytes` builtin resolves through `member()` as `bytes.new(length)` when unshadowed (mirroring the checker's guard: no local, constant, import, namespace, or struct owns the name). `bytes.new(n)` allocates a zero-filled buffer; indexed reads return `u8` and indexed writes convert like the JavaScript backend's `Uint8Array` write (`as u8` wrap), both bounds-checked with a `byte index … is out of bounds` panic. `len`, `is_empty`, `slice(start, end)` (panics on out-of-bounds ranges), and `for`-over-bytes (yielding `u8`) round out the builtin.
+- Channels: `Channel.create<T>()` allocates a bounded (capacity 16) `ChannelValue`; `send` and `receive` return `Result` with a `ChannelError` payload (`send on a closed channel`, `receive on a closed channel`) and `close` is explicit. Because spawn stays eager and the runtime is single-threaded, a send to a full buffer or a receive from an empty open channel raises the same structured `channel deadlock: …` panic as the JavaScript backend instead of blocking (spec §9.2 backpressure).
+- Conformance: the three `KNOWN_GAPS` entries (`bytes_buffer`, `channels`, `strings_utf8`) are removed — the ledger in `crates/astra-nova/tests/conformance.rs` is empty and its staleness check stays armed. Nova executes all 16 cases itself.
+- New case: `conformance/cases/struct_mutation.ns` pins the `TS-001` `readonly` fix (`TS2540`) under `tsc --strict`; JavaScript, TypeScript, and Nova all pass it, so `conformance/README.md` now records no Nova and no TypeScript gap (JavaScript keeps the documented `NS8001` case-writing rule).
+- Tests: 8 new Nova unit tests (utf8 string methods, str slice/index failure paths, bytes allocation/mutation/iteration, out-of-bounds write panic, eager channel execution, closed-channel send/receive errors, full/empty deadlock panics) — the Nova lib suite is 59 tests.
+- Boundary: `bytes.slice` semantics are not pinned by the corpus — Nova panics on out-of-bounds ranges (bounds-checked per §6.4), JavaScript's native `Uint8Array.slice` clamps, and C uses `(start, len)` length semantics. Worth a future conformance pin; C's `astra_str_slice` `(start, len)` deviation remains C-backend scope.
+
+---
+
+### 2026-10-27 — `work/conf-001` merged into master
+
+- Command: `git merge --no-edit work/conf-001`, `npm run ci`
+- Result: pass (`[ci] all checks passed` at the merge commit)
+- Merge: `78d8920` brings the expanded conformance corpus (15 positive + 11 negative cases), the Nova `KNOWN_GAPS` runner, the frontend reject runner (`crates/astra-core/tests/conformance_rejects.rs`), the `npm run test:boundary` script, and the conformance ledger docs onto master. The `ort` merge auto-resolved the shared `Docs/Agent/*` files with no conflicts.
 
 ---
 

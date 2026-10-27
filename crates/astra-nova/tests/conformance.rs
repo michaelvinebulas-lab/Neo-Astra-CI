@@ -20,17 +20,10 @@ use astra_nova::{Host, NovaOptions, build_interpreter};
 ///
 /// When a case starts passing, remove it from this table; the test fails on
 /// stale entries so gaps stay visible instead of becoming permanent skips.
-const KNOWN_GAPS: &[(&str, &str)] = &[
-    ("bytes_buffer", "Nova has no `bytes` builtin yet (NOVA-004)"),
-    (
-        "channels",
-        "Nova has no Channel runtime; tracked by CONC-001",
-    ),
-    (
-        "strings_utf8",
-        "Nova implements only `str.len`; byte_at/char_at/slice/char_count/chars/bytes are missing (NOVA-004)",
-    ),
-];
+///
+/// Empty while NOVA-004 (str methods, `bytes`, Channel runtime) is closed:
+/// Nova now runs the whole corpus itself.
+const KNOWN_GAPS: &[(&str, &str)] = &[];
 
 #[derive(Clone)]
 struct CaptureHost {
