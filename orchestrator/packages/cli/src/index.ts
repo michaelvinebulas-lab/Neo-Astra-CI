@@ -15,6 +15,7 @@ import {
 import { TextDecoder } from "node:util";
 import { pathToFileURL } from "node:url";
 import { generateJavaScript } from "@neo-astra/codegen-js";
+import { generateTypeScript } from "@neo-astra/codegen-ts";
 import {
   CompilerClient,
   CompilerClientError,
@@ -1012,8 +1013,12 @@ function discoverProjectModules(
   return ordered;
 }
 
-function outputPathForModule(outDir: string, key: string): string {
-  return resolve(outDir, key.replace(/\.ns$/i, ".js"));
+function outputPathForModule(
+  outDir: string,
+  key: string,
+  extension: "js" | "ts" = "js",
+): string {
+  return resolve(outDir, key.replace(/\.ns$/i, `.${extension}`));
 }
 
 function relativeModuleSpecifier(fromOutput: string, targetOutput: string): string {
@@ -1075,7 +1080,12 @@ function runBuild(args: readonly string[], cwd: string): number {
     }
 
     const targetConfig = isRecord(targets[targetName]) ? targets[targetName] : {};
-    if (!isRecord(targets[targetName]) && targetName !== "c" && targetName !== "native") {
+    if (
+      !isRecord(targets[targetName]) &&
+      targetName !== "c" &&
+      targetName !== "native" &&
+      targetName !== "ts"
+    ) {
       throw new CliError(
         "NS8001",
         `Target '${targetName}' is not declared in the manifest.`,
@@ -1085,16 +1095,23 @@ function runBuild(args: readonly string[], cwd: string): number {
 
     const backend =
       targetConfig["backend"] ??
-      (targetName === "c" || targetName === "native" ? targetName : "js");
-    if (backend !== "js" && backend !== "c" && backend !== "native") {
+      (targetName === "c" || targetName === "native" || targetName === "ts"
+        ? targetName
+        : "js");
+    if (
+      backend !== "js" &&
+      backend !== "ts" &&
+      backend !== "c" &&
+      backend !== "native"
+    ) {
       throw new CliError(
         "NS8001",
-        `Target '${targetName}' uses backend '${String(backend)}'; astra build currently supports 'js', 'c', and 'native' backends.`,
+        `Target '${targetName}' uses backend '${String(backend)}'; astra build currently supports 'js', 'ts', 'c', and 'native' backends.`,
         displayPath(manifest.file.path, cwd),
       );
     }
 
-    if (backend === "js") {
+    if (backend === "js" || backend === "ts") {
       const moduleFormat = targetConfig["module"] ?? "esm";
       if (moduleFormat !== "esm") {
         throw new CliError(
@@ -1173,7 +1190,8 @@ function runBuild(args: readonly string[], cwd: string): number {
         ? {}
         : { binaryPath: options.compilerPath }),
     });
-    const compilerTarget = backend === "c" || backend === "native" ? "c" : "js";
+    const compilerTarget =
+      backend === "c" || backend === "native" ? "c" : backend === "ts" ? "ts" : "js";
     const sharedParams = {
       ...(modeValue === undefined ? {} : { mode: modeValue }),
       ...(policyValue === undefined ? {} : { integerPolicy: policyValue }),
@@ -1351,7 +1369,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         path: module.key,
         text: module.text,
       })),
-      target: "js",
+      target: compilerTarget,
       ...sharedParams,
     });
 
@@ -1401,10 +1419,21 @@ function runBuild(args: readonly string[], cwd: string): number {
       typeof configuredOutDir === "string"
         ? resolve(root, configuredOutDir)
         : resolve(root, "dist", targetName);
+    // TypeScript targets write `.ts` sources, but ESM import specifiers stay
+    // `.js` for both backends: under `moduleResolution: nodenext`, tsc maps a
+    // `./util.js` specifier onto `util.ts` at type-check time and onto the
+    // tsc-emitted `util.js` at runtime.
+    const outputExtension: "js" | "ts" = compilerTarget === "ts" ? "ts" : "js";
     const outputs = new Map(
       projectSources.map((module) => [
         module.key,
-        outputPathForModule(outDir, module.key),
+        outputPathForModule(outDir, module.key, outputExtension),
+      ]),
+    );
+    const specifierPaths = new Map(
+      projectSources.map((module) => [
+        module.key,
+        outputPathForModule(outDir, module.key, "js"),
       ]),
     );
 
@@ -1427,18 +1456,26 @@ function runBuild(args: readonly string[], cwd: string): number {
           projectSources.map((candidate) => [
             candidate.key,
             relativeModuleSpecifier(
-              outputPath,
-              outputs.get(candidate.key) ??
-                outputPathForModule(outDir, candidate.key),
+              specifierPaths.get(module.key) ?? outputPath,
+              specifierPaths.get(candidate.key) ??
+                outputPathForModule(outDir, candidate.key, "js"),
             ),
           ]),
         );
-        const generated = generateJavaScript({
-          moduleName: module.key,
-          ir: module.ir,
-          sourceText: moduleSource.text,
-          moduleSpecifiers,
-        });
+        const generated =
+          compilerTarget === "ts"
+            ? generateTypeScript({
+                moduleName: module.key,
+                ir: module.ir,
+                sourceText: moduleSource.text,
+                moduleSpecifiers,
+              })
+            : generateJavaScript({
+                moduleName: module.key,
+                ir: module.ir,
+                sourceText: moduleSource.text,
+                moduleSpecifiers,
+              });
         return {
           module,
           moduleSource,
@@ -1515,7 +1552,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         }
         if (entry.generated.declarations !== undefined) {
           writeFileSync(
-            entry.outputPath.replace(/\.js$/i, ".d.ts"),
+            entry.outputPath.replace(/\.(js|ts)$/i, ".d.ts"),
             entry.generated.declarations,
             "utf8",
           );
@@ -1560,7 +1597,7 @@ function runBuild(args: readonly string[], cwd: string): number {
           }
           if (artifact.declarations !== undefined) {
             writeFileSync(
-              artifactPath.replace(/\.js$/i, ".d.ts"),
+              artifactPath.replace(/\.(js|ts)$/i, ".d.ts"),
               artifact.declarations,
               "utf8",
             );
@@ -1581,7 +1618,7 @@ function runBuild(args: readonly string[], cwd: string): number {
 
     report = {
       target: targetName,
-      backend: "js",
+      backend: String(backend),
       entry: entryKey,
       output: displayPath(outputPath, cwd),
       diagnostics: allDiagnostics,

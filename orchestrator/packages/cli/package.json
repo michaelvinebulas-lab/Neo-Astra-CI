@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@neo-astra/codegen-js": "0.1.0",
+    "@neo-astra/codegen-ts": "0.1.0",
     "@neo-astra/compiler-client": "0.1.0",
     "@neo-astra/manifest": "0.1.0"
   }
