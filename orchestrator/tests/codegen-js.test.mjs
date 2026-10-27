@@ -1229,6 +1229,57 @@ test("javascript backend implements bytes buffers with bounds-checked writes", (
   assert.match(failed.stderr, /index out of bounds/);
 });
 
+test("javascript backend bounds-checks bytes slices instead of clamping", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let buffer = b"abcdef"',
+      "    let part = buffer.slice(1, 3)",
+      "    println(part.len())",
+      "    println(part[0])",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /\$byteSlice\(/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, ["2", "98", "RETURN=0"].join("\n"));
+
+  // Out-of-range and reversed ranges panic instead of clamping to a shorter
+  // (or empty) view the way the native Uint8Array.slice did.
+  const outOfRange = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let buffer = b"abc"',
+      "    let part = buffer.slice(1, 99)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const failed = runGenerated(outOfRange.code);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /bytes slice/);
+
+  const reversed = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let buffer = b"abc"',
+      "    let part = buffer.slice(2, 1)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const reversedFailed = runGenerated(reversed.code);
+  assert.notEqual(reversedFailed.status, 0);
+  assert.match(reversedFailed.stderr, /bytes slice/);
+});
+
 test("javascript backend declares channel runtime shapes in TypeScript output", () => {
   const generated = generate(
     [

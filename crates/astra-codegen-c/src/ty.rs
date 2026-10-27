@@ -12,6 +12,20 @@ use astra_core::ast::{self, EnumDecl, StructDecl, StructFields, TypeKind};
 use astra_core::span::Span;
 use astra_core::types::Type;
 
+/// Built-in nominal error payloads declared by the runtime header rather than
+/// by any module. Their C names carry no module stem, so every translation
+/// unit — and every module — shares one type (`NS_SliceError`).
+const BUILTIN_NOMINALS: &[&str] = &["SliceError"];
+
+/// Resolves a built-in nominal name (as written in source) to its shared C
+/// identifier fragment, if it is one.
+fn builtin_nominal(name: &str) -> Option<&'static str> {
+    BUILTIN_NOMINALS
+        .iter()
+        .copied()
+        .find(|builtin| *builtin == name)
+}
+
 /// A declared nominal type's shape.
 #[derive(Debug, Clone)]
 pub enum DeclShape {
@@ -410,7 +424,11 @@ impl TyCtxt {
                 // dependency itself generates when values cross modules.
                 let base = match self.nominal(name) {
                     Some(nominal) => format!("{}{}", nominal.prefix, sanitize(&nominal.source)),
-                    None => format!("{}{}", self.type_prefix, sanitize(name)),
+                    // Built-in error payloads are stem-free by design.
+                    None => match builtin_nominal(name) {
+                        Some(builtin) => builtin.to_string(),
+                        None => format!("{}{}", self.type_prefix, sanitize(name)),
+                    },
                 };
                 if args.is_empty() {
                     base
@@ -549,6 +567,11 @@ impl TyCtxt {
         // `self.env` before `self.c_type` mutably borrows `self`.
         let owned = match self.env.shape(name) {
             None => {
+                // Built-in error payloads (`SliceError`) are declared once in
+                // the runtime header, not in any module.
+                if let Some(builtin) = builtin_nominal(name) {
+                    return format!("NS_{builtin}");
+                }
                 self.rejects.push(Reject {
                     code: "NS8020",
                     message: format!("type '{name}' is not declared in this module"),

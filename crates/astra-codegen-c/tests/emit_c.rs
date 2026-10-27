@@ -1020,7 +1020,7 @@ module test.bytes_ops
 fn process(b: bytes) -> u8 {
     let l = b.len()
     let empty = b.is_empty()
-    let sub = b.slice(0, 1)
+    let sub = b.slice(1, 3)
     return b[0]
 }
 "#;
@@ -1029,9 +1029,61 @@ fn process(b: bytes) -> u8 {
         out.contains("astra_bytes_get"),
         "expected astra_bytes_get:\n{out}"
     );
+    // `slice(start, end)` lowers to the end-offset runtime helper, not a
+    // length: `1, 3` selects bytes [1, 3).
     assert!(
-        out.contains("astra_bytes_slice"),
-        "expected astra_bytes_slice:\n{out}"
+        out.contains("astra_bytes_slice(v_b, (size_t)(1), (size_t)(3))"),
+        "expected end-offset astra_bytes_slice:\n{out}"
+    );
+    assert_clang_ok(&out);
+}
+
+#[test]
+fn str_slice_lowers_to_result_with_bounds_check() {
+    // `str.slice` is fallible (spec §6.2): it lowers to the bounds-checking
+    // runtime helper and a `Result<str, SliceError>` built at the call site —
+    // never a bare substring and never a rejected `SliceError` type.
+    let src = r#"
+fn take(s: str) -> bool {
+    return match s.slice(1, 3) {
+        Ok(piece) => piece == "é",
+        Err(_) => false,
+    }
+}
+
+fn failure(s: str) -> bool {
+    return match s.slice(0, 99) {
+        Ok(_) => false,
+        Err(error) => true,
+    }
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("NS_Result_Str_SliceError"),
+        "expected the shared Result typedef name:\n{out}"
+    );
+    assert!(
+        out.contains("astra_str_slice_try(v_s, (size_t)(1), (size_t)(3)"),
+        "expected the bounds-checking helper with end offsets:\n{out}"
+    );
+    assert!(
+        out.contains(".ok = true, .value ="),
+        "expected a constructed ok Result:\n{out}"
+    );
+    assert!(
+        out.contains("(NS_SliceError)"),
+        "expected the shared SliceError payload:\n{out}"
+    );
+    assert!(
+        !out.contains("astra_str_slice("),
+        "the old infallible helper must be gone:\n{out}"
+    );
+    // The canonical consumption is a Result match: the scrutinee is the
+    // constructed Result and the arms dispatch on its `ok` tag.
+    assert!(
+        out.contains(".ok) {"),
+        "expected a Result match over the slice result:\n{out}"
     );
     assert_clang_ok(&out);
 }

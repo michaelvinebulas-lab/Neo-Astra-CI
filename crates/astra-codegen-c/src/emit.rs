@@ -161,6 +161,14 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         defers: Vec::new(),
     };
     e.emit_program();
+    // Emission can reject constructs that only surface inside a body (an
+    // unsupported pattern shape, a callee the first slice cannot lower) after
+    // the prescan pass, so re-check before handing back C that would silently
+    // omit behavior.
+    if e.tcx.rejected() {
+        let r = e.tcx.rejects.clone().into_iter().next().expect("non-empty");
+        return Err(BackendError::new(r.code, &r.message));
+    }
     let script_sources = e.emit_scripts();
     Ok(GeneratedC {
         source: e.out,
@@ -587,20 +595,12 @@ impl<'a> Emitter<'a> {
         format!("ns_{}{}", self.prefix, sanitize(name))
     }
     fn emit_program(&mut self) {
-        self.out.push_str(RUNTIME_HEADER);
-        self.out.push('\n');
-        let _ = writeln!(self.out, "/* Neo Astra module: {} */", self.module.name);
-        self.out.push('\n');
-        if !self.tcx.typedefs.is_empty() {
-            self.out
-                .push_str("/* User and derived type definitions. */\n");
-            for decl in &self.tcx.typedefs.clone() {
-                self.out.push_str(decl);
-                self.out.push('\n');
-            }
-            self.out.push('\n');
-        }
-
+        // The runtime header and typedefs are written *after* the code is
+        // emitted (at the end of this function): expression emission can
+        // ensure derived typedefs (`Result<str, SliceError>` for
+        // `str.slice`) that must precede their use, and `prescan` only
+        // sees signatures and recorded annotations — not types that
+        // materialize inside a body.
         let (fns, consts) = self.collect_decls();
         // Forward declarations so call order does not matter.
         for f in &fns {
@@ -630,23 +630,11 @@ impl<'a> Emitter<'a> {
         if let Some(main) = self.find_main() {
             self.emit_main(&main);
         }
-    }
-
-    /// Like `emit_program` but for multi-module (linked) builds:
-    /// includes the dep headers, skips the import-reject guard (already lifted
-    /// by `emit_project`), and uses external linkage for functions.
-    fn emit_program_linked(&mut self, dep_headers: &[String]) {
+        let code = std::mem::take(&mut self.out);
         self.out.push_str(RUNTIME_HEADER);
         self.out.push('\n');
         let _ = writeln!(self.out, "/* Neo Astra module: {} */", self.module.name);
         self.out.push('\n');
-        // Include headers for direct dependencies.
-        for h in dep_headers {
-            let _ = writeln!(self.out, "#include \"{h}\"");
-        }
-        if !dep_headers.is_empty() {
-            self.out.push('\n');
-        }
         if !self.tcx.typedefs.is_empty() {
             self.out
                 .push_str("/* User and derived type definitions. */\n");
@@ -656,7 +644,17 @@ impl<'a> Emitter<'a> {
             }
             self.out.push('\n');
         }
+        self.out.push_str(&code);
+    }
 
+    /// Like `emit_program` but for multi-module (linked) builds:
+    /// includes the dep headers, skips the import-reject guard (already lifted
+    /// by `emit_project`), and uses external linkage for functions.
+    fn emit_program_linked(&mut self, dep_headers: &[String]) {
+        // As with `emit_program`: the runtime header, dependency includes,
+        // and typedefs are written after the code is emitted so that any
+        // derived typedef ensured during expression emission precedes its
+        // use.
         let (fns, consts) = self.collect_decls();
         // Forward declarations (extern linkage in linked mode).
         for f in &fns {
@@ -688,6 +686,28 @@ impl<'a> Emitter<'a> {
         {
             self.emit_main(&main);
         }
+        let code = std::mem::take(&mut self.out);
+        self.out.push_str(RUNTIME_HEADER);
+        self.out.push('\n');
+        let _ = writeln!(self.out, "/* Neo Astra module: {} */", self.module.name);
+        self.out.push('\n');
+        // Include headers for direct dependencies.
+        for h in dep_headers {
+            let _ = writeln!(self.out, "#include \"{h}\"");
+        }
+        if !dep_headers.is_empty() {
+            self.out.push('\n');
+        }
+        if !self.tcx.typedefs.is_empty() {
+            self.out
+                .push_str("/* User and derived type definitions. */\n");
+            for decl in &self.tcx.typedefs.clone() {
+                self.out.push_str(decl);
+                self.out.push('\n');
+            }
+            self.out.push('\n');
+        }
+        self.out.push_str(&code);
     }
 
     /// Emits a C header (`<module>.h`) containing extern prototypes for every
@@ -2004,16 +2024,38 @@ impl<'a> Emitter<'a> {
                 format!("(!({r}).some)")
             }
             (Some(Type::Str), "slice") => {
+                // `str.slice(start, end)` is fallible (spec §6.2): byte
+                // offsets, `Err(SliceError)` when the range is reversed, out
+                // of bounds, or splits a UTF-8 scalar value. Evaluate the
+                // receiver and each operand once into statement temporaries,
+                // then build the Result from the runtime's verdict.
                 let r = self.expr(receiver);
                 let start = args
                     .first()
                     .map(|a| self.expr(a))
                     .unwrap_or_else(|| "0".into());
-                let len = args
+                let end = args
                     .get(1)
                     .map(|a| self.expr(a))
                     .unwrap_or_else(|| "0".into());
-                format!("astra_str_slice({r}, {start}, {len})")
+                let res_ty = Type::Result(
+                    Box::new(Type::Str),
+                    Box::new(Type::Named("SliceError".to_owned(), Vec::new())),
+                );
+                let res_c = self.tcx.c_type(&res_ty);
+                let part = self.fresh_id("slicepart");
+                let ok = self.fresh_id("slicek");
+                let res = self.fresh_id("sliceres");
+                let _ = writeln!(self.pre, "    NS_Str {part};");
+                let _ = writeln!(
+                    self.pre,
+                    "    bool {ok} = astra_str_slice_try({r}, (size_t)({start}), (size_t)({end}), &{part});"
+                );
+                let _ = writeln!(
+                    self.pre,
+                    "    {res_c} {res} = {ok} ? ({res_c}){{ .ok = true, .value = {part} }} : ({res_c}){{ .ok = false, .error = (NS_SliceError){{ \"slice range is out of bounds or splits a UTF-8 scalar value\" }} }};"
+                );
+                res
             }
             (Some(Type::Bytes), "len") => {
                 let r = self.expr(receiver);
@@ -2024,16 +2066,18 @@ impl<'a> Emitter<'a> {
                 format!("(({r}).len == 0)")
             }
             (Some(Type::Bytes), "slice") => {
+                // `bytes.slice(start, end)` is infallible and bounds-checked:
+                // a reversed or out-of-range panics (mirrors Nova).
                 let r = self.expr(receiver);
                 let start = args
                     .first()
                     .map(|a| self.expr(a))
                     .unwrap_or_else(|| "0".into());
-                let len = args
+                let end = args
                     .get(1)
                     .map(|a| self.expr(a))
                     .unwrap_or_else(|| "0".into());
-                format!("astra_bytes_slice({r}, {start}, {len})")
+                format!("astra_bytes_slice({r}, (size_t)({start}), (size_t)({end}))")
             }
             (Some(Type::Map(key_ty, _)), "len") => {
                 let _ = key_ty; // only need receiver
@@ -2478,11 +2522,52 @@ impl<'a> Emitter<'a> {
         };
         let zero = self.zero(&ty);
         let _ = writeln!(self.pre, "    {ty_c} {tmp} = {zero};");
-        let scrut_ty = self.type_of(value).cloned().unwrap_or(Type::Unit);
+        // The checker annotates a fallible call with its base type alone and
+        // tracks the error effect separately, so a `match` over such a call
+        // must materialize `Result<base, E>` exactly as the checker does for
+        // exhaustiveness — otherwise the Ok/Err arms have nothing to dispatch
+        // on and bind against the wrong payload types.
+        let scrut_ty = match self.type_of(value).cloned() {
+            None => Type::Unit,
+            Some(ty @ Type::Result(_, _)) => ty,
+            Some(base) => match self.effect_error_type(value) {
+                Some(error) => Type::Result(Box::new(base), Box::new(error)),
+                None => base,
+            },
+        };
         let scrut = self.expr(value);
         self.flush_pre();
         self.emit_match_dispatch(&scrut, &scrut_ty, arms, Some(&tmp), &ty);
         tmp
+    }
+
+    /// The error payload an effectful call carries, when this backend can see
+    /// it: a built-in fallible member or a local function declared with an
+    /// error set (`fn f() -> T ! E`). Used to materialize the `Result` that a
+    /// `match` over the call dispatches on.
+    fn effect_error_type(&self, value: &Expr) -> Option<Type> {
+        let ExprKind::Call { callee, .. } = &value.kind else {
+            return None;
+        };
+        match &callee.kind {
+            ExprKind::Member { target, member } => match (self.type_of(target)?, member.as_str()) {
+                (Type::Str, "slice") => Some(Type::Named("SliceError".to_owned(), Vec::new())),
+                _ => None,
+            },
+            ExprKind::Identifier(name) => {
+                let item = self
+                    .module
+                    .hir
+                    .items
+                    .iter()
+                    .find(|item| item.name == *name)?;
+                let astra_core::hir::Declaration::Function(decl) = &item.declaration else {
+                    return None;
+                };
+                Some(path_to_type(decl.error_set.first()?))
+            }
+            _ => None,
+        }
     }
 
     fn emit_match_dispatch(

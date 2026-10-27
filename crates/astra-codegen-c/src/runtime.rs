@@ -23,6 +23,9 @@ typedef struct { const uint8_t* data; size_t len; } NS_Bytes;
 typedef struct { void* data; size_t len; size_t cap; } NS_Array;
 typedef struct { void* keys; void* values; size_t len; size_t cap; size_t key_size; size_t val_size; bool key_is_str; } NS_Map;
 typedef struct { char _unit; } NS_Unit;
+/* Built-in nominal error payload for `str.slice` (spec §6.2). Declared here
+   rather than per module so every translation unit shares one stem-free type. */
+typedef struct { NS_Str _0; } NS_SliceError;
 
 /* Console builtins. Each `print`/`println` is typed by its argument type. */
 extern void astra_print_i8(int8_t x);
@@ -75,13 +78,17 @@ extern size_t astra_str_len(NS_Str s);
 extern bool astra_str_is_empty(NS_Str s);
 extern bool astra_str_eq(NS_Str a, NS_Str b);
 extern int astra_str_cmp(NS_Str a, NS_Str b);
-extern NS_Str astra_str_slice(NS_Str s, size_t start, size_t len);
+/* Fallible byte-offset slice for `str.slice(start, end)` (spec §6.2): returns
+   false when the range is reversed, out of bounds, or splits a UTF-8 scalar. */
+extern bool astra_str_slice_try(NS_Str s, size_t start, size_t end, NS_Str* out);
 
 /* Bytes helpers. */
 extern bool astra_bytes_eq(NS_Bytes a, NS_Bytes b);
 extern int astra_bytes_cmp(NS_Bytes a, NS_Bytes b);
 extern uint8_t astra_bytes_get(NS_Bytes b, size_t i);
-extern NS_Bytes astra_bytes_slice(NS_Bytes b, size_t start, size_t len);
+/* Infallible byte-offset slice for `bytes.slice(start, end)`; bounds-checked,
+   so a reversed or out-of-range panics. */
+extern NS_Bytes astra_bytes_slice(NS_Bytes b, size_t start, size_t end);
 
 /* Map helpers. */
 extern NS_Map astra_map_new(size_t key_size, size_t val_size, bool key_is_str);
@@ -231,13 +238,19 @@ int astra_str_cmp(NS_Str a, NS_Str b) {
     return a.len < b.len ? -1 : (a.len > b.len ? 1 : 0);
 }
 
-NS_Str astra_str_slice(NS_Str s, size_t start, size_t len) {
-    if (start > s.len) astra_panic("string slice start out of bounds");
-    if (start + len > s.len) astra_panic("string slice length out of bounds");
-    NS_Str res;
-    res.data = s.data + start;
-    res.len = len;
-    return res;
+static bool astra_utf8_boundary(const char* data, size_t pos, size_t len) {
+    if (pos == len) return true;
+    if (pos > len) return false;
+    return ((unsigned char)data[pos] & 0xC0) != 0x80;
+}
+
+bool astra_str_slice_try(NS_Str s, size_t start, size_t end, NS_Str* out) {
+    if (start > end || end > s.len) return false;
+    if (!astra_utf8_boundary(s.data, start, s.len)) return false;
+    if (!astra_utf8_boundary(s.data, end, s.len)) return false;
+    out->data = s.data + start;
+    out->len = end - start;
+    return true;
 }
 
 bool astra_bytes_eq(NS_Bytes a, NS_Bytes b) {
@@ -260,12 +273,11 @@ uint8_t astra_bytes_get(NS_Bytes b, size_t i) {
     return b.data[i];
 }
 
-NS_Bytes astra_bytes_slice(NS_Bytes b, size_t start, size_t len) {
-    if (start > b.len) astra_panic("bytes slice start out of bounds");
-    if (start + len > b.len) astra_panic("bytes slice length out of bounds");
+NS_Bytes astra_bytes_slice(NS_Bytes b, size_t start, size_t end) {
+    if (start > end || end > b.len) astra_panic("bytes slice is out of bounds");
     NS_Bytes res;
     res.data = b.data + start;
-    res.len = len;
+    res.len = end - start;
     return res;
 }
 

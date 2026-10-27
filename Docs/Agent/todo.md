@@ -29,7 +29,7 @@ recoverable errors, integer policies, eager tasks, bounded channels, UTF-8
 string/byte operations, source maps, `.d.ts`, and the shared `conformance/`
 suite — now merged into `master`. `TS-001` is complete (shared-emitter TS mode,
 `astra build --target ts`, and the pinned `@script:ts` transpiler), and the
-conformance suite (17 positive + 11 negative cases) runs green on JavaScript,
+conformance suite (18 positive + 11 negative cases) runs green on JavaScript,
 TypeScript, and Nova with empty backend gap ledgers. The
 `INTEROP-001` inline-script design is complete in
 `Docs/Design/V1/10-inline-script-interop.md`; the C/C++ slice is in progress.
@@ -972,6 +972,20 @@ by a production native target.
       comparisons (`==`, `!=`, `<`, `<=`, `>`, `>=` via `astra_bytes_eq`,
       `astra_bytes_cmp`, `astra_str_eq`, `astra_str_cmp`), and methods (`.len()`,
       `.is_empty()`, `.slice()`).
+- [x] Slice semantics (spec §6.2/§6.4): `str.slice(start, end)` takes byte
+      offsets and is fallible — the call site builds `Result<str, SliceError>`
+      from `astra_str_slice_try`, which returns the failure payload when the
+      range is reversed, out of bounds, or splits a UTF-8 scalar value.
+      `bytes.slice(start, end)` is infallible and bounds-checked (reversed or
+      out-of-range panics, mirroring Nova). Both runtime helpers take end
+      offsets; the earlier lowering passed the `end` argument as a length, so
+      non-zero starts returned the wrong range and a bare `NS_Str` where the
+      checker expects a `Result`. `SliceError` is a shared, stem-free runtime
+      typedef, and `match` over a fallible call now materializes the checker's
+      `Result<base, E>` so `Ok`/`Err` arms dispatch and bind correctly instead
+      of falling through a literal match. Body-time rejects (previously
+      ignored by the standalone emitter) now fail generation instead of
+      emitting code that silently omits behavior.
 - [x] `contains` added to the type checker's `Type::Map` member resolution.
 - [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
       byte arrays; empty byte literals use the zero-length sentinel.
@@ -1037,16 +1051,17 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 65 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 66 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing/slicing/comparisons,
-  `@script:c` and `@script:cpp` emission, compiler API artifacts, rejection paths,
+  `str` slice `Result` lowering (`SliceError`), `@script:c` and `@script:cpp`
+  emission, compiler API artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
   imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
   and header dependency includes).
-- `cargo test --workspace` passes (65 in `astra-codegen-c`, 142 in `astra-core`,
+- `cargo test --workspace` passes (66 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary
@@ -1208,7 +1223,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
-- [~] `CONF-001` Conformance suite — 17 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C backend runner waits on the native toolchain gate
+- [~] `CONF-001` Conformance suite — 18 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C backend runner waits on the native toolchain gate
 - [ ] `HARD-001` v0.1 hardening
 
 ---

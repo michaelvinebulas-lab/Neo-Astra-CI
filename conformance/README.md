@@ -78,10 +78,17 @@ Current JavaScript gaps: none — every case runs. Statement-position `if` and
 `match` now lower to real JavaScript statements, so `break`, `continue`, and
 early `return` work inside them (pinned by the `early_exit` case and the test
 `javascript backend emits statement-position if and match control flow`).
-Control flow inside a *value-position* expression — `let x = match ... { _ => {
-return 0 } }` and similar IIFE-lowered `if`/`match`/block expressions — is still
+Control flow inside a *value-position* expression - `let x = match ... { _ => {
+return 0 } }` and similar IIFE-lowered `if`/`match`/block expressions - is still
 rejected with `NS8001`; that boundary is pinned by the test `javascript backend
 rejects control flow inside value-position expressions`.
+
+`bytes.slice` no longer clamps like the native `Uint8Array.slice`: it is
+bounds-checked and panics on reversed or out-of-range ranges (like Nova),
+pinned by the test `javascript backend bounds-checks bytes slices instead of
+clamping`. The `slice_bounds` case pins `str`/`bytes` end-offset semantics
+(byte offsets, `Err(SliceError)` for reversed/out-of-bounds/UTF-8-splitting
+`str` ranges) for every executing backend.
 
 Current TypeScript gap: none. `TS-001` removed the `readonly` emission that
 failed `tsc` with `TS2540` on `user.name = "Neo"`; the `struct_mutation` case

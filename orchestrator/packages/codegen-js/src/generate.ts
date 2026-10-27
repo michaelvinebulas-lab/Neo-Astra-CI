@@ -182,6 +182,7 @@ const HELPER_ORDER = [
   "charAt",
   "strSlice",
   "bytesNew",
+  "byteSlice",
   "index",
   "indexSet",
   "getArray",
@@ -239,6 +240,7 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   byteAt: ["some", "none"],
   charAt: ["some", "none"],
   strSlice: ["ok", "err"],
+  byteSlice: ["panic"],
   indexSet: ["panic"],
   channel: ["ok", "err", "panic"],
   lenBig: ["panic"],
@@ -549,6 +551,14 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   bytesNew: [
     "function $bytesNew(length) {",
     "  return new Uint8Array(Number(length));",
+    "}",
+  ],
+  byteSlice: [
+    "function $byteSlice(value, start, end) {",
+    "  const from = Number(start);",
+    "  const to = Number(end);",
+    "  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > value.length) $panic(`bytes slice ${from}..${to} is out of bounds`);",
+    "  return value.slice(from, to);",
     "}",
   ],
   index: [
@@ -962,6 +972,7 @@ const TS_HELPER_SIGNATURES: Partial<Record<HelperName, string>> = {
   charAt: "function $charAt(value: string, index: number | bigint): { readonly $option: true; readonly value: string } | { readonly $option: false } {",
   strSlice: "function $strSlice(value: string, start: number | bigint, end: number | bigint): { readonly $result: true; readonly ok: true; readonly value: string } | { readonly $result: true; readonly ok: false; readonly error: SliceError } {",
   bytesNew: "function $bytesNew(length: number | bigint): Uint8Array {",
+  byteSlice: "function $byteSlice(value: Uint8Array, start: number | bigint, end: number | bigint): Uint8Array {",
   index: "function $index<T>(value: readonly T[] | ArrayLike<T>, index: number | bigint): T {",
   indexSet: "function $indexSet<T>(value: T[] | { length: number; [n: number]: T }, index: number | bigint, item: T): T {",
   getArray: "function $getArray<T>(value: readonly T[], index: number | bigint): { readonly $option: true; readonly value: T } | { readonly $option: false } {",
@@ -3295,6 +3306,12 @@ class JavaScriptGenerator {
       }
       this.useHelper("parseInt");
       return `$parseInt(${target})`;
+    }
+    if (tag === "Bytes" && method === "slice") {
+      // Bounds-checked byte offsets: out-of-range or reversed ranges panic
+      // instead of clamping like the native Uint8Array.slice would.
+      this.useHelper("byteSlice");
+      return `$byteSlice(${target}, ${args[0] ?? "0"}, ${args[1] ?? "0"})`;
     }
     if (tag === "Str") {
       switch (method) {
