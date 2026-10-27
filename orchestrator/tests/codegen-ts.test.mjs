@@ -375,6 +375,29 @@ const parityPrograms = [
       "",
     ].join("\n"),
   },
+  {
+    name: "struct field mutation",
+    source: [
+      "struct User {",
+      "    name: str,",
+      "    age: i32,",
+      "}",
+      "struct Pair(i32, i32)",
+      "",
+      "pub fn main() -> i32 {",
+      '    let mut user = User { name: "Nova", age: 1 }',
+      '    user.name = "Neo"',
+      "    user.age = user.age + 41",
+      "    println(user.name)",
+      "    println(user.age)",
+      "    let mut pair = Pair(2, 3)",
+      "    pair.0 = pair.0 + pair.1",
+      "    println(pair.0)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  },
 ];
 
 test("emitted TypeScript passes tsc --strict, runs, and matches the JavaScript backend", () => {

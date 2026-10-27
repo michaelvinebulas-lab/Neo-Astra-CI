@@ -4426,7 +4426,7 @@ function structDeclarationLines(
     const body = named
       .map(
         (field) =>
-          `  readonly ${objectKey(field.name)}: ${astTypeToTs(field.ty, policy, optionStyle)};`,
+          `  ${objectKey(field.name)}: ${astTypeToTs(field.ty, policy, optionStyle)};`,
       )
       .join("\n");
     const parameters = named
@@ -4448,7 +4448,7 @@ function structDeclarationLines(
   const body = tuple
     .map(
       (field, index) =>
-        `  readonly ${index}: ${astTypeToTs(field, policy, optionStyle)};`,
+        `  ${index}: ${astTypeToTs(field, policy, optionStyle)};`,
     )
     .join("\n");
   const parameters = tuple
