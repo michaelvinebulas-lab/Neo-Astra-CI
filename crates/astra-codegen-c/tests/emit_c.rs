@@ -1172,6 +1172,69 @@ fn wrap(a: i8, b: i8) -> i8 {
 }
 
 #[test]
+fn str_scalar_and_sequence_methods_lower_to_runtime_helpers() {
+    // Spec §6.2: byte/scalar indexing, scalar counting, and the byte/char
+    // sequence views all lower to the UTF-8-aware runtime helpers.
+    let src = r#"
+fn inspect(text: str) -> bool {
+    let first = match text.byte_at(1) {
+        Some(byte) => byte == 195,
+        None => false,
+    }
+    let second = match text.char_at(1) {
+        Some(character) => character == "é",
+        None => false,
+    }
+    let count = text.char_count()
+    let raw = text.bytes()
+    let parts = text.chars()
+    return first && second && count == 5 && raw.len() == 6 && parts.len() == 5
+}
+
+fn missing(text: str) -> i32 {
+    return match text.byte_at(9) {
+        Some(_) => 1,
+        None => 0,
+    }
+}
+
+fn fresh(n: usize) -> bytes {
+    return bytes.new(n)
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("astra_str_char_at"),
+        "expected the scalar indexing helper:\n{out}"
+    );
+    assert!(
+        out.contains("astra_str_char_count"),
+        "expected the scalar counting helper:\n{out}"
+    );
+    assert!(
+        out.contains("astra_str_bytes"),
+        "expected the byte-view helper:\n{out}"
+    );
+    assert!(
+        out.contains("astra_str_chars"),
+        "expected the char-view helper:\n{out}"
+    );
+    assert!(
+        out.contains("NS_Option_u8"),
+        "expected the byte Option type:\n{out}"
+    );
+    assert!(
+        out.contains("NS_Option_Str"),
+        "expected the scalar Option type:\n{out}"
+    );
+    assert!(
+        out.contains("astra_bytes_new"),
+        "expected the bytes allocation helper:\n{out}"
+    );
+    assert_clang_ok(&out);
+}
+
+#[test]
 fn test_bytes_and_str_comparison() {
     let src = r#"
 module test.comparisons

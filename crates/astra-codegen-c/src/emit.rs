@@ -2090,6 +2090,74 @@ impl<'a> Emitter<'a> {
                 );
                 res
             }
+            (Some(Type::Str), "byte_at") => {
+                // `byte_at(i)`: the i-th UTF-8 byte (not scalar) as `Option<u8>`.
+                let r = self.expr(receiver);
+                let index = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let opt_c = self.tcx.c_type(&Type::Option(Box::new(Type::U8)));
+                let source = self.fresh_id("bytesrc");
+                let at = self.fresh_id("byteidx");
+                let res = self.fresh_id("byteopt");
+                let _ = writeln!(self.pre, "    NS_Str {source} = {r};");
+                let _ = writeln!(self.pre, "    size_t {at} = (size_t)({index});");
+                let _ = writeln!(
+                    self.pre,
+                    "    {opt_c} {res} = {at} < {source}.len ? ({opt_c}){{ .some = true, .value = (uint8_t){source}.data[{at}] }} : ({opt_c}){{ .some = false }};"
+                );
+                res
+            }
+            (Some(Type::Str), "char_at") => {
+                // `char_at(i)`: the i-th UTF-8 scalar as `Option<str>`.
+                let r = self.expr(receiver);
+                let index = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let opt_c = self.tcx.c_type(&Type::Option(Box::new(Type::Str)));
+                let source = self.fresh_id("charsrc");
+                let at = self.fresh_id("charidx");
+                let part = self.fresh_id("charpart");
+                let ok = self.fresh_id("charok");
+                let res = self.fresh_id("charopt");
+                let _ = writeln!(self.pre, "    NS_Str {source} = {r};");
+                let _ = writeln!(self.pre, "    size_t {at} = (size_t)({index});");
+                let _ = writeln!(self.pre, "    NS_Str {part};");
+                let _ = writeln!(
+                    self.pre,
+                    "    bool {ok} = astra_str_char_at({source}, {at}, &{part});"
+                );
+                let _ = writeln!(
+                    self.pre,
+                    "    {opt_c} {res} = {ok} ? ({opt_c}){{ .some = true, .value = {part} }} : ({opt_c}){{ .some = false }};"
+                );
+                res
+            }
+            (Some(Type::Str), "char_count") => {
+                let r = self.expr(receiver);
+                format!("astra_str_char_count({r})")
+            }
+            (Some(Type::Str), "bytes") => {
+                let r = self.expr(receiver);
+                format!("astra_str_bytes({r})")
+            }
+            (Some(Type::Str), "chars") => {
+                let r = self.expr(receiver);
+                format!("astra_str_chars({r})")
+            }
+            (None, "new") if matches!(&receiver.kind, ExprKind::Identifier(name) if name == "bytes") =>
+            {
+                // `bytes.new(length)`: the unshadowed builtin namespace. A
+                // local or imported `bytes` carries a type annotation and
+                // therefore never reaches this arm.
+                let length = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                format!("astra_bytes_new((size_t)({length}))")
+            }
             (Some(Type::Bytes), "len") => {
                 let r = self.expr(receiver);
                 format!("({r}).len")

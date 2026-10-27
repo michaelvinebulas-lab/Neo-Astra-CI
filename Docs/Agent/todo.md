@@ -997,6 +997,12 @@ by a production native target.
       signed runtime wrap helpers and C's defined unsigned wrap-around.
       `ParseIntError`/`OverflowError` are shared stem-free runtime typedefs,
       and their fallible calls materialize in `match`/`!` like `str.slice`.
+- [x] String views and indexing (spec §6.2): `char_count`, `byte_at`
+      (`Option<u8>` at a byte index), `char_at` (`Option<str>` at a scalar
+      index), `bytes()` (`Array<u8>`), and `chars()` (`Array<str>`) lower to
+      UTF-8-aware runtime helpers; `bytes.new(length)` allocates a zero-filled
+      buffer via `astra_bytes_new`. With this the C backend implements the
+      whole `str`/`bytes` method table JavaScript and Nova expose.
 - [x] `contains` added to the type checker's `Type::Map` member resolution.
 - [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
       byte arrays; empty byte literals use the zero-length sentinel.
@@ -1062,19 +1068,20 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 68 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 69 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing/slicing/comparisons,
   `str` slice `Result` lowering (`SliceError`), `str.to_int`/`checked_*`/
-  `wrapping_*` lowering and `!` propagation of fallible builtin calls,
-  `@script:c` and `@script:cpp`
+  `wrapping_*` lowering, `str` scalar/sequence views (`char_count`, `byte_at`,
+  `char_at`, `bytes`, `chars`, `bytes.new`), and `!` propagation of fallible
+  builtin calls, `@script:c` and `@script:cpp`
   emission, compiler API artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
   imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
   and header dependency includes).
-- `cargo test --workspace` passes (68 in `astra-codegen-c`, 142 in `astra-core`,
+- `cargo test --workspace` passes (69 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary

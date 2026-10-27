@@ -89,11 +89,18 @@ extern bool astra_str_slice_try(NS_Str s, size_t start, size_t end, NS_Str* out)
 /* Strict decimal parse for `str.to_int()` (spec §6.2): false unless the whole
    string is an optional sign plus decimal digits that fit `int32_t`. */
 extern bool astra_str_to_int_try(NS_Str s, int32_t* out);
+/* UTF-8 scalar helpers for `str.char_count`, `char_at`, `bytes`, and `chars`. */
+extern size_t astra_str_char_count(NS_Str s);
+extern bool astra_str_char_at(NS_Str s, size_t index, NS_Str* out);
+extern NS_Array astra_str_bytes(NS_Str s);
+extern NS_Array astra_str_chars(NS_Str s);
 
 /* Bytes helpers. */
 extern bool astra_bytes_eq(NS_Bytes a, NS_Bytes b);
 extern int astra_bytes_cmp(NS_Bytes a, NS_Bytes b);
 extern uint8_t astra_bytes_get(NS_Bytes b, size_t i);
+/* Zero-filled allocation for `bytes.new(length)`. */
+extern NS_Bytes astra_bytes_new(size_t len);
 /* Infallible byte-offset slice for `bytes.slice(start, end)`; bounds-checked,
    so a reversed or out-of-range panics. */
 extern NS_Bytes astra_bytes_slice(NS_Bytes b, size_t start, size_t end);
@@ -282,6 +289,80 @@ bool astra_str_to_int_try(NS_Str s, int32_t* out) {
     if (value < -2147483648LL || value > 2147483647LL) return false;
     *out = (int32_t)value;
     return true;
+}
+
+/* Width in bytes of the UTF-8 scalar that starts at `data`, or 0 when the
+   leading byte is not a scalar start or the sequence is truncated. */
+static size_t astra_utf8_width(const char* data, size_t len) {
+    unsigned char lead = (unsigned char)data[0];
+    if (lead < 0x80) return 1;
+    size_t width = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 0;
+    if (width == 0 || width > len) return 0;
+    return width;
+}
+
+size_t astra_str_char_count(NS_Str s) {
+    size_t count = 0;
+    size_t i = 0;
+    while (i < s.len) {
+        size_t width = astra_utf8_width(s.data + i, s.len - i);
+        if (width == 0) width = 1;
+        count += 1;
+        i += width;
+    }
+    return count;
+}
+
+bool astra_str_char_at(NS_Str s, size_t index, NS_Str* out) {
+    size_t count = 0;
+    size_t i = 0;
+    while (i < s.len) {
+        size_t width = astra_utf8_width(s.data + i, s.len - i);
+        if (width == 0) width = 1;
+        if (count == index) {
+            out->data = s.data + i;
+            out->len = width;
+            return true;
+        }
+        count += 1;
+        i += width;
+    }
+    return false;
+}
+
+NS_Array astra_str_bytes(NS_Str s) {
+    NS_Array arr;
+    arr.data = astra_alloc(s.len == 0 ? 1 : s.len);
+    arr.len = s.len;
+    arr.cap = s.len;
+    if (s.len > 0) memcpy(arr.data, s.data, s.len);
+    return arr;
+}
+
+NS_Array astra_str_chars(NS_Str s) {
+    NS_Array arr;
+    arr.data = NULL;
+    arr.len = 0;
+    arr.cap = 0;
+    size_t i = 0;
+    while (i < s.len) {
+        size_t width = astra_utf8_width(s.data + i, s.len - i);
+        if (width == 0) width = 1;
+        NS_Str part;
+        part.data = s.data + i;
+        part.len = width;
+        astra_array_push(&arr, sizeof(NS_Str), &part);
+        i += width;
+    }
+    return arr;
+}
+
+NS_Bytes astra_bytes_new(size_t len) {
+    NS_Bytes b;
+    b.data = calloc(len == 0 ? 1 : len, 1);
+    if (b.data == NULL) astra_panic("out of memory");
+    b.len = len;
+    return b;
 }
 
 bool astra_bytes_eq(NS_Bytes a, NS_Bytes b) {
