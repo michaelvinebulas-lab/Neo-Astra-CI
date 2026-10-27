@@ -15,7 +15,12 @@ use astra_core::types::Type;
 /// Built-in nominal error payloads declared by the runtime header rather than
 /// by any module. Their C names carry no module stem, so every translation
 /// unit — and every module — shares one type (`NS_SliceError`).
-const BUILTIN_NOMINALS: &[&str] = &["SliceError", "ParseIntError", "OverflowError"];
+const BUILTIN_NOMINALS: &[&str] = &[
+    "SliceError",
+    "ParseIntError",
+    "OverflowError",
+    "ChannelError",
+];
 
 /// Resolves a built-in nominal name (as written in source) to its shared C
 /// identifier fragment, if it is one.
@@ -603,6 +608,17 @@ impl TyCtxt {
                         .into(),
                 });
                 "void*".into()
+            }
+            Type::Named(name, _) if name == "Channel" => "NS_Channel*".into(),
+            Type::Named(name, args) if name == "Task" => {
+                let inner = args.first().cloned().unwrap_or(Type::Unit);
+                let value = self.c_type(&inner);
+                let name = format!("NS_Task_{}", self.ident(&inner));
+                self.ensure(
+                    &name,
+                    format!("typedef struct {{ {value} value; bool canceled; }} {name};"),
+                );
+                name
             }
             Type::Named(name, args) => {
                 if !args.is_empty() {

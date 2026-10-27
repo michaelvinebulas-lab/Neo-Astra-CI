@@ -31,6 +31,10 @@ typedef struct { NS_Str _0; } NS_SliceError;
    checker and the other backends use. */
 typedef struct { NS_Str _0; } NS_ParseIntError;
 typedef struct { NS_Str _0; } NS_OverflowError;
+/* Built-in `Channel` runtime (single-threaded V1 slice). `Channel<T>` maps to
+   `NS_Channel*`; messages are copied by value using `elem_size`. */
+typedef struct { char _unit; } NS_ChannelError;
+typedef struct { void* data; size_t len; size_t cap; size_t elem_size; bool closed; } NS_Channel;
 
 /* Console builtins. Each `print`/`println` is typed by its argument type. */
 extern void astra_print_i8(int8_t x);
@@ -114,6 +118,15 @@ extern void* astra_map_get(const NS_Map* m, const void* key);
 extern bool astra_map_contains(const NS_Map* m, const void* key);
 extern size_t astra_map_len(const NS_Map* m);
 extern void* astra_map_key_at(const NS_Map* m, size_t i);
+
+/* Bounded single-threaded channels (CONC-001 first slice). `send` fails on a
+   closed channel and panics on a full open channel; `receive` fails on a closed
+   and empty channel and panics on an empty open channel (the JS/Nova deadlock
+   rule). Buffered messages remain readable after `close`. */
+extern NS_Channel* astra_channel_new(size_t elem_size);
+extern bool astra_channel_send(NS_Channel* c, const void* value);
+extern bool astra_channel_receive(NS_Channel* c, void* out);
+extern void astra_channel_close(NS_Channel* c);
 
 /* Integer overflow helpers (signed wrapping via unsigned round-trip). */
 extern int8_t  astra_add_i8(int8_t a, int8_t b);
@@ -466,6 +479,44 @@ size_t astra_map_len(const NS_Map* m) {
 void* astra_map_key_at(const NS_Map* m, size_t i) {
     if (!m || i >= m->len) astra_panic("map key index out of bounds");
     return (char*)m->keys + (i * m->key_size);
+}
+
+/* Bounded single-threaded channels (CONC-001 first slice). The V1 portable
+   runtime is cooperative, so blocking is a structured deadlock panic. */
+#define ASTRA_CHANNEL_CAP 16
+
+NS_Channel* astra_channel_new(size_t elem_size) {
+    NS_Channel* c = (NS_Channel*)astra_alloc(sizeof(NS_Channel));
+    c->data = astra_alloc(elem_size * ASTRA_CHANNEL_CAP);
+    c->len = 0;
+    c->cap = ASTRA_CHANNEL_CAP;
+    c->elem_size = elem_size;
+    c->closed = false;
+    return c;
+}
+
+bool astra_channel_send(NS_Channel* c, const void* value) {
+    if (!c || c->closed) return false;
+    if (c->len >= c->cap) astra_panic("channel deadlock: send on a full channel");
+    memcpy((char*)c->data + (c->len * c->elem_size), value, c->elem_size);
+    c->len++;
+    return true;
+}
+
+bool astra_channel_receive(NS_Channel* c, void* out) {
+    if (!c) return false;
+    if (c->len == 0) {
+        if (c->closed) return false;
+        astra_panic("channel deadlock: receive on an empty channel");
+    }
+    memcpy(out, c->data, c->elem_size);
+    memmove(c->data, (char*)c->data + c->elem_size, (c->len - 1) * c->elem_size);
+    c->len--;
+    return true;
+}
+
+void astra_channel_close(NS_Channel* c) {
+    if (c) c->closed = true;
 }
 
 /* Signed wrapping arithmetic through unsigned round-trips to avoid C

@@ -10,12 +10,27 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001` native library output + provisional C ABI and `Array.get` landed (`--emit staticlib|cdylib`); native conformance still runs 18/19 and hosted execution is verified |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime, hosted shim, `astra build --target c/native`, C multi-module project linking, generic monomorphization, and native library output/ABI, `@script` inline interop complete |
+| Current task | `C-001`/`CONC-001` single-threaded concurrency slice landed: eager `spawn`/`Task`, bounded `Channel<T>`, `ChannelError`; the C conformance ledger is empty and all 19 cases execute |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend, first C17 managed slice with hosted runtime, multi-module linking, generics, native libraries/ABI, single-threaded concurrency, and a full C conformance runner; `@script` inline interop complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, hosted shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64) after the shim fix. Linux/macOS native builds still need their own CI run, and clang alone remains unusable here without the MSVC/Windows SDK |
 | Next action | C-001 remainder, best next slices: native library output + documented ABI (`c001-handoff.md` 6.E), package linking (6.B), or the opportunistic `Array.get` gap; then GC-001, CONC-001, native CI matrix; WASM-001 last |
+
+---
+
+### 2026-10-27 - `C-001`/`CONC-001` slice: single-threaded concurrency and a full C conformance ledger
+
+- Command: `cargo test -p astra-codegen-c`, `npm run ci`
+- Result: 77/77 emission tests; all 19 corpus cases now lower, link, and run; full CI green
+- What:
+  - **Channel runtime**: `Channel<T>` maps to a bounded `NS_Channel*` (capacity 16) with value-copy messages, `astra_channel_new/send/receive/close`, and a shared `NS_ChannelError` payload. `send`/`receive` return `Result<_, ChannelError>` (`send` fails when closed, `receive` fails on a closed+empty channel); a full open channel or empty open channel panics with the JS/Nova deadlock message, and buffered messages stay receivable after `close`.
+  - **Eager spawn/Task**: `spawn || { ... }` runs the block immediately (the V1 portable runtime is single-threaded) and stores its value in `NS_Task_<T>`; `Task.join()` returns the value and `Task.cancel()` marks it. Typedefs are emitted on demand like `Option`/`Result`.
+  - **Typing/emission plumbing**: `ty.rs` special-cases `Named("Channel")`/`Named("Task")` before the generic-type reject, `call_c` unwraps the `TypeArguments` callee wrapper so `Channel.create<str>()` can use the call's own `Channel<str>` annotation, and `effect_error_type` recognizes channel `send`/`receive` so `!`/match materialize `ChannelError`.
+  - **Corpus**: `channels` leaves `KNOWN_GAPS`; the C ledger is empty and `CONF-001`'s C runner now executes the whole suite.
+- Tests: `channels_and_eager_spawn_run_the_corpus_semantics` (structure + hosted execution) and `spawn_returns_an_eager_task_that_joins`; the conformance test asserts every emitted case runs when a hosted compiler is present.
+- Verification: full `npm run ci` green; `channels` output matches `sent / hello / world / closed send`.
+- Boundary: no OS-thread scheduler, cancellation safepoints, task-local heaps, or cross-task transfer yet; the deadlock rule panics instead of yielding, matching the V1 single-threaded JS/Nova model.
 
 ---
 

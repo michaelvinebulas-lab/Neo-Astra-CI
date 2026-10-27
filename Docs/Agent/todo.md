@@ -994,6 +994,13 @@ by a production native target.
 - [x] Native inline scripts: `astra build --target native` links `@script:c`
       (and `.cpp` with `-lstdc++`) translation units and runs the binary
       (INTEROP-001).
+- [x] Single-threaded concurrency (`CONC-001` first slice): `Channel<T>` maps
+      to a bounded `NS_Channel*` (capacity 16, value copies, `send`/`receive`
+      returning `Result<_, ChannelError>`, `close`, deadlock panics on a full or
+      empty open channel). `spawn` runs eagerly and returns `Task<T>`
+      (`join`/`cancel`); `ChannelError` is a shared runtime payload. The
+      `channels` corpus case leaves `KNOWN_GAPS`, so the C ledger is empty and
+      all 19 cases run end to end.
 - [x] `Array<T>.get(i) -> Option<T>`: bounds-checked into the option shape
       (no panic on an out-of-range read), matching the checker's signature.
 - [x] Native library output and stable-ish ABI:
@@ -1115,9 +1122,10 @@ by a production native target.
 - [ ] Manual memory and GC. `@memory:manual` is rejected with `NS8012`; native
       allocation, ownership, roots, and finalization are not implemented
       (`GC-001`).
-- [ ] Concurrency. `spawn` and channels are rejected with `NS8011`; no task
-      scheduler, channel runtime, cancellation, or thread/worker mapping
-      (`CONC-001`).
+- [ ] Full structured concurrency. The single-threaded eager slice (`spawn`/
+      `Task`, bounded `Channel`, `ChannelError`) is implemented; OS-thread or
+      worker scheduling, cancellation safepoints, task-local heaps, and
+      cross-task transfer remain (`CONC-001`).
 - [x] Native library output and stable ABI. `--emit staticlib|cdylib|library`
       produces `lib<name>.a`, `lib<name>.so`, or `lib<name>.dll` (+ import
       library), suppresses `main`, and is documented in
@@ -1144,7 +1152,7 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 75 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 77 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays (`len`/`push`/`get`), structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing (reads and
@@ -1165,9 +1173,9 @@ by a production native target.
   every shared case and clang-compiles the result freestanding. When a
   hosted-capable compiler is available it additionally links each case against
   `astra_host.c`, runs it, and compares stdout plus `RETURN=` with `.expected`:
-  18 of 19 cases pass end to end. `channels` (`CONC-001`) sits in an explicit
-  `KNOWN_GAPS` ledger that fails when a listed case starts passing.
-- `cargo test --workspace` passes (75 in `astra-codegen-c`, 142 in `astra-core`,
+  all 19 cases pass end to end, including `channels`. `KNOWN_GAPS` is empty and
+  fails if a listed case starts passing (or a listed case disappears).
+- `cargo test --workspace` passes (77 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary
@@ -1334,13 +1342,14 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [ ] `PLAY-001` Browser playground (expanded plan above)
 - [~] `C-001` C backend — managed first slice, multi-module project linking,
   generics monomorphization, hosted runtime shim, native compile-and-run
-  verification, `Array.get`, and native library output/ABI done; package
-  linking, GC/manual memory, concurrency, and a Tier-1 native CI matrix remain
+  verification, `Array.get`, native library output/ABI, and the single-threaded
+  concurrency slice done; package linking, GC/manual memory, full structured
+  concurrency, and a Tier-1 native CI matrix remain
 - [ ] `GC-001` Native GC
 - [-] `WASM-001` Wasm target (deliberately deferred until the target ABI and runtime design land)
 - [ ] `FFI-001` Polymorphic FFI
-- [ ] `CONC-001` Structured concurrency runtime
-- [~] `CONF-001` Conformance suite — 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C runner compiles, links, and executes every non-gap case when a hosted compiler is available (`channels` remains ledgered under CONC-001)
+- [~] `CONC-001` Structured concurrency runtime — single-threaded eager `spawn`/`Task<T>`, bounded `Channel<T>` with `ChannelError`, close, and deadlock panics are done and the `channels` corpus case passes on C, JS, TS, and Nova; OS-thread scheduling, cancellation safepoints, and task-local heaps remain
+- [x] `CONF-001` Conformance suite — 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, frontend-reject, and C runners are wired and green with empty gap ledgers (C executes every case when a hosted compiler is available)
 - [ ] `HARD-001` v0.1 hardening
 
 ---

@@ -10,10 +10,10 @@
 > `npm run ci` green. The current slice (hosted shim + native conformance
 > execution) is described in section 4.
 >
-> **Next task:** pick the next remainder item — package linking (section 6.B) is
-> the largest remaining integration slice; GC (6.C) and concurrency (6.D) are
-> language-semantics work and should start from their design docs. Cross-platform
-> native verification (6.F) is complete on this host; a Tier-1 CI matrix remains.
+> **Next task:** package linking (section 6.B) is the largest remaining
+> integration slice; GC (6.C) is the remaining language-semantics item and
+> should start from `03-runtime-and-memory.md`. Full structured concurrency
+> (6.D) now has a working single-threaded base. A Tier-1 CI matrix remains.
 
 ---
 
@@ -85,19 +85,21 @@ and section 6.A (the generics design) before touching code.
 ## 4. Current snapshot
 
 - `master = d8e4efa`; tree clean; `npm run ci` green.
-- `astra-codegen-c`: **75** emission tests + 1 conformance gate.
+- `astra-codegen-c`: **77** emission tests + 1 conformance gate.
 - Corpus: **19 positive** cases, **11 negative** rejects.
-- C emits, clang-compiles, links, **and runs** **18 of 19** cases when a
-  hosted-capable compiler is present. One ledgered gap:
-  - `channels` — `CONC-001` (generic `Channel` builtin; spawn/channels rejected).
-- **Library artifacts** `--emit staticlib|cdylib|library` are implemented and
-  verified with hand-written C consumers; the contract is recorded in
-  `Docs/Design/V1/11-c-abi.md` (provisional under design §3.2).
+- C emits, compiles, links, **and runs** **all 19** cases when a hosted-capable
+  compiler is present; the C `KNOWN_GAPS` ledger is empty.
 - Native execution is verified on this Windows host through **gcc**
   (`C:\msys64\ucrt64\bin`): `astra build --target native` links `main.c` +
   `astra_host.c` (+ `@script:c`/`.cpp` TUs) and the binary runs. Clang alone
   still cannot build hosted C here (no MSVC/Windows SDK), so both the test
   harness and the CLI probe for hosted capability instead of preferring clang.
+- **Library artifacts** `--emit staticlib|cdylib|library` are implemented and
+  verified with hand-written C consumers; the contract is recorded in
+  `Docs/Design/V1/11-c-abi.md` (provisional under design §3.2).
+- **Concurrency (first slice):** eager `spawn`/`Task<T>`, bounded
+  `Channel<T>` (capacity 16), `ChannelError`, and deadlock panics ship and run
+  the `channels` case. No OS-thread scheduler or task-local heaps yet.
 - Linux/macOS native builds remain unverified (Tier-1 CI matrix is the remaining
   infrastructure item).
 
@@ -136,7 +138,7 @@ writes), calls (local, imported named, namespace `alias.fn`, enum variant
 constructors, script exports, builtins), indexing (arrays/bytes), member access
 (struct fields, enum variants, module functions), `expr!` propagation, array /
 map / tuple literals, struct init, block expressions, value-position `if` and
-`match`, `fail`, `panic`, `abort`. `spawn` rejects with `NS8011`.
+`match`, `fail`, `panic`, `abort`, and eager `spawn`.
 
 **Statements.** `let` (typed/untyped), expression statements, `if`/`else`,
 `while`, `for` over arrays / maps / bytes, `return`, `break`/`continue`, `defer`,
@@ -153,6 +155,8 @@ scoped blocks, statement-position `if`/`match`.
 | arrays | `len`, `push`, `get` |
 | maps | `len`, `contains`, `get`, `insert` |
 | integers | `checked_add/sub/mul/div`, `wrapping_add/sub/mul/div` |
+| `Channel<T>` | `send`, `receive`, `close` (bounded, capacity 16) |
+| `Task<T>` | `join`, `cancel` |
 
 **Failible model.** `str.slice`, `str.to_int`, `checked_*`, user error-set
 functions. Division by zero panics in every arithmetic mode.
@@ -166,6 +170,13 @@ dependency headers. Default imports are rejected (`NS8019`).
 (`ns_<fn>_<type args>`, e.g. `ns_identity_i32`), including generic-to-generic
 calls; see section 6.A for the boundaries.
 
+**Concurrency (first slice).** `spawn || { ... }` is eager: it runs the block
+immediately and stores the result in `NS_Task_<T>`; `join()` returns it and
+`cancel()` marks it. `Channel<T>` maps to `NS_Channel*` (capacity 16, value
+copies); `send`/`receive` return `Result<_, ChannelError>`, `close` is
+infallible, and a full/empty open channel panics with a deadlock message.
+No OS-thread scheduler, task-local heaps, or cancellation safepoints yet.
+
 **Library output.** `astra build --emit staticlib|cdylib|library` (or the target's
 `emit` key) compiles per-module objects and archives/links them with the
 platform toolchain (`ar`/`llvm-ar`/`gcc-ar`, `-shared`). Static archives exclude
@@ -177,11 +188,11 @@ the runtime shim; shared libraries include it. `EmitKind::Library` suppresses
 prototypes, `extern "C"` for C++, CLI compiles and links script TUs
 (`-lstdc++` for C++). Native link verified end to end on this host.
 
-**Diagnostics currently emitted by the backend.** `NS8011` (spawn/concurrency),
-`NS8012` (manual memory scopes), `NS8017`/`NS8018` (unsupported call/generic),
-`NS8019` (default imports, multi-error signatures), `NS8020` (unknown nominal
-type), `NS8021` (unsupported pattern/method), `NS8024` (print type), `NS8099`
-(unresolved type). All rejects abort generation (`generate` returns `Err`).
+**Diagnostics currently emitted by the backend.** `NS8012` (manual memory
+scopes), `NS8017`/`NS8018` (unsupported call/generic), `NS8019` (default
+imports, multi-error signatures), `NS8020` (unknown nominal type), `NS8021`
+(unsupported pattern/method), `NS8024` (print type), `NS8099` (unresolved type).
+All rejects abort generation (`generate` returns `Err`).
 
 ---
 
@@ -316,19 +327,31 @@ never frees; there is no ownership model.
 **Risk.** This is a language-semantics change, not just codegen — do not start
 without reading the memory design doc and the D-decisions.
 
-### 6.D CONC-001 — structured concurrency
+### 6.D CONC-001 — structured concurrency — **FIRST SLICE DONE**
 
-**Today.** `spawn` and channels are rejected (`NS8011`; `Channel` is generic →
-`NS8018`). Nova/JS implement eager tasks and a bounded (capacity 16) channel with
-`send`/`receive` returning `Result<_, ChannelError>` and deadlock panics.
+**Today.** The single-threaded cooperative slice mirrors JS/Nova and is done:
 
-**Design sketch.**
-- Single-threaded cooperative first slice mirroring JS/Nova: eager `spawn`
-  (run the block immediately, store the result), `Task.join`, bounded channel
-  buffer with deadlock panic.
-- Requires generics (Channel<T>) — do this after 6.A.
-- Acceptance: `channels` flips out of `KNOWN_GAPS`; the C conformance runner (when
-  the toolchain lands) executes it.
+- `spawn || { ... }` runs eagerly and yields `NS_Task_<T>`; `join()` returns the
+  stored value, `cancel()` marks the task.
+- `Channel<T>` maps to a bounded `NS_Channel*` (capacity 16, value-copy
+  messages). `send`/`receive` return `Result<_, ChannelError>`; `close` is
+  infallible. Sending to a full open channel or receiving from an empty open
+  channel panics with the structured deadlock message; buffered messages remain
+  readable after `close`.
+- `NS_ChannelError` is a shared, stem-free runtime payload; `!` and `match`
+  materialize it through the normal fallible-call path.
+- `channels` left `KNOWN_GAPS`; the C conformance ledger is empty and all 19
+  cases run.
+
+**Remaining (full CONC-001).**
+- OS-thread or worker scheduling; the current runtime is single-threaded and
+  eager, so blocking operations panic instead of yielding.
+- Task-local heaps and message transfer rules (design §4.2).
+- Cancellation safepoints and parent-scope join/failure propagation.
+- Thread-pool sizing/policy and Web Worker mapping (Wasm path).
+- Adoption note: use the platform thread API (`pthreads`/C11 threads/Web
+  Workers) rather than hand-rolled primitives; the channel buffer and scheduler
+  policy stay language-owned to preserve scoped-task semantics.
 
 ### 6.E Native library output + stable ABI — **DONE (provisional ABI)**
 
@@ -512,7 +535,7 @@ true only for the last entry; standalone keeps bare `ns_<name>` and `main.c`.
 **Fast loop.**
 
 ```powershell
-cargo test -p astra-codegen-c                 # 75 emit tests + conformance (links/runs when a hosted compiler exists)
+cargo test -p astra-codegen-c                 # 77 emit tests + conformance (links/runs when a hosted compiler exists)
 cargo test -p astra-nova --test conformance   # corpus on Nova
 npm run build                                 # tsc -b (needed before JS/TS tests)
 node --test --test-name-pattern "shared conformance" orchestrator/tests/codegen-js.test.mjs
@@ -658,3 +681,4 @@ rejected}`, `to_type`, `path_to_type`, `sanitize`, `BUILTIN_NOMINALS`.
 | 2026-10-27 | Generics monomorphization landed (`90cdba1`); snapshot, ledger, and 6.A updated. |
 | 2026-10-27 | Hosted shim fixed (`host_shim()` = runtime header + body), hosted-compiler probing added, C conformance gate now links/runs every non-gap case, match-arm `pre` leak fixed; 6.F marked done on this host. |
 | 2026-10-27 | `Array.get` landed; native library artifacts (`--emit staticlib\|cdylib`) and provisional C ABI (`11-c-abi.md`) added; 6.E marked done. |
+| 2026-10-27 | Single-threaded `CONC-001` slice (eager spawn/Task, bounded Channel, ChannelError) landed; `channels` left the ledger and 6.D marked first-slice-done. |

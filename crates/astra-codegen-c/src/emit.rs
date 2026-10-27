@@ -1713,12 +1713,21 @@ impl<'a> Emitter<'a> {
                 else_branch,
             } => self.if_expr_c(condition, then_branch, else_branch.as_ref(), e),
             ExprKind::Match { value, arms } => self.match_expr_c(value, arms, e),
-            ExprKind::Spawn { .. } => {
-                self.tcx.rejects.push(reject(
-                    "NS8011",
-                    "spawn is not supported by the C backend first slice (see CONC-001)",
-                ));
-                "(NS_Unit){0}".into()
+            ExprKind::Spawn { body } => {
+                // V1 portable runtime is single-threaded and eager, matching
+                // JS/Nova: run the block now and store its value in a Task.
+                let task_ty = self
+                    .type_of(e)
+                    .cloned()
+                    .unwrap_or_else(|| Type::Named("Task".to_owned(), vec![Type::Unit]));
+                let task_c = self.tcx.c_type(&task_ty);
+                let value = self.block_expr_c(body);
+                let task = self.fresh_id("task");
+                let _ = writeln!(
+                    self.pre,
+                    "    {task_c} {task} = ({task_c}){{ .value = {value} }};"
+                );
+                task
             }
             ExprKind::Fail { error, arguments } => self.fail_c(error, arguments),
             ExprKind::Panic { message } => self.panic_c(message),
@@ -2055,6 +2064,13 @@ impl<'a> Emitter<'a> {
     }
 
     fn call_c(&mut self, callee: &Expr, args: &[Expr], e: &Expr) -> String {
+        // `Channel.create<str>()` parses as a type-argument wrapper around the
+        // member callee. Unwrap it here (not by recursing) so the call's own
+        // annotation — `Channel<str>` — is still available to the constructor.
+        let callee = match &callee.kind {
+            ExprKind::TypeArguments { target, .. } => target.as_ref(),
+            _ => callee,
+        };
         match &callee.kind {
             ExprKind::Identifier(name) => {
                 match name.as_str() {
@@ -2117,6 +2133,19 @@ impl<'a> Emitter<'a> {
                         ("Option", "Some") => return self.some_c(args, e),
                         ("Result", "Ok") => return self.ok_c(args, e),
                         ("Result", "Err") => return self.err_c(args, e),
+                        ("Channel", "create") => {
+                            let channel_ty = self.type_of(e).cloned().unwrap_or_else(|| {
+                                Type::Named("Channel".to_owned(), vec![Type::Unit])
+                            });
+                            let element = match &channel_ty {
+                                Type::Named(_, arguments) => {
+                                    arguments.first().cloned().unwrap_or(Type::Unit)
+                                }
+                                _ => Type::Unit,
+                            };
+                            let elem_c = self.tcx.c_type(&element);
+                            return format!("astra_channel_new(sizeof({elem_c}))");
+                        }
                         _ => {
                             // Namespace-import call: `alias.fn(...)`.
                             if let Some(dep_key) = self.namespaces.get(owner).cloned() {
@@ -2258,6 +2287,73 @@ impl<'a> Emitter<'a> {
             return result;
         }
         match (&rt, name) {
+            (Some(Type::Named(type_name, _)), "send") if type_name == "Channel" => {
+                let receiver_c = self.expr(receiver);
+                let value = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "(NS_Unit){0}".into());
+                let value_ty = args
+                    .first()
+                    .and_then(|a| self.type_of(a).cloned())
+                    .unwrap_or(Type::Unit);
+                let value_c = self.tcx.c_type(&value_ty);
+                let result_ty = Type::Result(
+                    Box::new(Type::Unit),
+                    Box::new(Type::Named("ChannelError".to_owned(), Vec::new())),
+                );
+                let result_c = self.tcx.c_type(&result_ty);
+                let channel = self.fresh_id("chan");
+                let value_tmp = self.fresh_id("cval");
+                let result = self.fresh_id("cres");
+                let _ = writeln!(self.pre, "    NS_Channel* {channel} = {receiver_c};");
+                let _ = writeln!(self.pre, "    {value_c} {value_tmp} = {value};");
+                let _ = writeln!(
+                    self.pre,
+                    "    {result_c} {result} = astra_channel_send({channel}, &{value_tmp}) ? ({result_c}){{ .ok = true, .value = (NS_Unit){{0}} }} : ({result_c}){{ .ok = false, .error = (NS_ChannelError){{0}} }};"
+                );
+                result
+            }
+            (Some(Type::Named(type_name, arguments)), "receive") if type_name == "Channel" => {
+                let element = arguments.first().cloned().unwrap_or(Type::Unit);
+                let element_c = self.tcx.c_type(&element);
+                let zero = self.zero(&element);
+                let result_ty = Type::Result(
+                    Box::new(element),
+                    Box::new(Type::Named("ChannelError".to_owned(), Vec::new())),
+                );
+                let result_c = self.tcx.c_type(&result_ty);
+                let receiver_c = self.expr(receiver);
+                let channel = self.fresh_id("chan");
+                let value = self.fresh_id("cval");
+                let result = self.fresh_id("cres");
+                let _ = writeln!(self.pre, "    NS_Channel* {channel} = {receiver_c};");
+                let _ = writeln!(self.pre, "    {element_c} {value} = {zero};");
+                let _ = writeln!(self.pre, "    {result_c} {result} = ({result_c}){{0}};");
+                let _ = writeln!(
+                    self.pre,
+                    "    if (astra_channel_receive({channel}, &{value})) {{ {result}.ok = true; {result}.value = {value}; }} else {{ {result}.error = (NS_ChannelError){{0}}; }}"
+                );
+                result
+            }
+            (Some(Type::Named(type_name, _)), "close") if type_name == "Channel" => {
+                let receiver_c = self.expr(receiver);
+                let _ = writeln!(self.pre, "    astra_channel_close({receiver_c});");
+                "(NS_Unit){0}".into()
+            }
+            (Some(Type::Named(type_name, _)), "join") if type_name == "Task" => {
+                let receiver_c = self.expr(receiver);
+                format!("({receiver_c}).value")
+            }
+            (Some(Type::Named(type_name, _)), "cancel") if type_name == "Task" => {
+                let receiver_c = self.expr(receiver);
+                let task_ty = self.type_of(receiver).cloned().unwrap_or(Type::Unit);
+                let task_c = self.tcx.c_type(&task_ty);
+                let task = self.fresh_id("task");
+                let _ = writeln!(self.pre, "    {task_c} {task} = {receiver_c};");
+                let _ = writeln!(self.pre, "    {task}.canceled = true;");
+                "(NS_Unit){0}".into()
+            }
             (Some(Type::Str), "len") => {
                 let r = self.expr(receiver);
                 format!("({r}).len")
@@ -3021,6 +3117,9 @@ impl<'a> Emitter<'a> {
                         if receiver.is_integer() =>
                     {
                         "OverflowError"
+                    }
+                    "send" | "receive" if matches!(receiver, Type::Named(name, _) if name == "Channel") => {
+                        "ChannelError"
                     }
                     _ => return None,
                 };

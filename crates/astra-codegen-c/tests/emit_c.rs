@@ -1013,6 +1013,76 @@ fn library_emission_omits_main_and_exports_public_functions() {
     assert_clang_ok(lib_src);
 }
 
+/// CONC-001 first slice: bounded single-threaded channels and eager `spawn`.
+#[test]
+fn channels_and_eager_spawn_run_the_corpus_semantics() {
+    let src = r#"
+fn produce(channel: Channel<str>) -> () ! ChannelError {
+    channel.send("hello")!
+    channel.send("world")!
+}
+
+pub fn main() -> i32 {
+    let channel = Channel.create<str>()
+    spawn || {
+        match produce(channel) {
+            Ok(value) => println("sent"),
+            Err(error) => println("send failed"),
+        }
+    }
+    match channel.receive() {
+        Ok(message) => println(message),
+        Err(error) => println("closed"),
+    }
+    match channel.receive() {
+        Ok(message) => println(message),
+        Err(error) => println("closed"),
+    }
+    channel.close()
+    match channel.send("late") {
+        Ok(value) => println("sent late"),
+        Err(error) => println("closed send"),
+    }
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    for needle in [
+        "astra_channel_new",
+        "astra_channel_send",
+        "astra_channel_receive",
+        "astra_channel_close",
+        "NS_ChannelError",
+        "NS_Task_Unit",
+    ] {
+        assert!(out.contains(needle), "missing {needle}:\n{out}");
+    }
+    assert_clang_ok(&out);
+    if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
+        assert!(ok, "execution failed:\nstderr:\n{stderr}");
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(lines, vec!["sent", "hello", "world", "closed send"]);
+    }
+}
+
+#[test]
+fn spawn_returns_an_eager_task_that_joins() {
+    let src = r#"
+pub fn main() {
+    let task = spawn || { 21 + 21 }
+    println(task.join())
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(out.contains("NS_Task_i32"), "{out}");
+    assert!(out.contains(".value"), "{out}");
+    assert_clang_ok(&out);
+    if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
+        assert!(ok, "execution failed:\nstderr:\n{stderr}");
+        assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["42"]);
+    }
+}
+
 // ─── Map literal emission ─────────────────────────────────────────────────────
 
 #[test]

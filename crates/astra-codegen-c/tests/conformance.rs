@@ -25,10 +25,7 @@ use astra_core::resolver::resolve_module;
 ///
 /// When a case starts emitting, remove it from this table; the test fails on
 /// stale entries so gaps stay visible instead of becoming permanent skips.
-const KNOWN_GAPS: &[(&str, &str)] = &[(
-    "channels",
-    "CONC-001: `Channel` is a generic builtin; the C first slice rejects spawn and channels",
-)];
+const KNOWN_GAPS: &[(&str, &str)] = &[];
 
 fn cases_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../conformance/cases")
@@ -285,17 +282,17 @@ fn c_backend_emits_every_conformance_case() {
         "no conformance case was emitted; every case is in KNOWN_GAPS"
     );
 
-    if hosted.is_some() {
-        assert_eq!(
-            executed, emitted,
-            "every emitted case must run when a hosted compiler is available"
-        );
-    }
-
     assert!(
         failures.is_empty(),
         "{} conformance problem(s):\n\n{}",
         failures.len(),
         failures.join("\n\n")
     );
+
+    if hosted.is_some() {
+        assert_eq!(
+            executed, emitted,
+            "every emitted case must run when a hosted compiler is available"
+        );
+    }
 }
