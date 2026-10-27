@@ -19,6 +19,16 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-27 — CONF-001 floats, booleans, and generics
+
+- Command: `cargo test -p astra-nova --test conformance`, `node --test orchestrator/tests/codegen-js.test.mjs`
+- Result: pass
+- Added three positive cases: `floats` (arithmetic, comparison, and default formatting), `booleans` (`not`, `&&`, `||`, comparisons), and `generics` (generic function instantiated at `i32`, `str`, and `bool`).
+- Pinned behavior: both Nova and JavaScript print whole-valued floats as `6.0`, not `6`. The case records `6.0` so neither backend drifts to JavaScript's default number formatting.
+- Note: boolean negation is `not`; `!` is the error/propagation marker and is a parse error in expression position. The case documents that split.
+
+---
+
 ### 2026-10-27 — CONF-001 negative conformance corpus
 
 - Command: `cargo test -p astra-core --test conformance_rejects`, `cargo test -p astra-nova --test conformance`, `node --test orchestrator/tests/codegen-js.test.mjs`
