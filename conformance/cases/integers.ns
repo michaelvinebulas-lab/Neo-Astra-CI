@@ -1,0 +1,9 @@
+pub fn main() -> i32 {
+    println(255u8 +% 1)
+    match 255u8.checked_add(1) {
+        Ok(value) => println(value)
+        Err(error) => println("overflow")
+    }
+    println(255u8.wrapping_add(1))
+    return 0
+}

@@ -1,0 +1,7 @@
+pub fn wrong() -> i32 {
+    return "not a number"
+}
+
+pub fn main() -> i32 {
+    return wrong()
+}

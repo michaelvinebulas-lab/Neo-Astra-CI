@@ -1,0 +1,6 @@
+@requires(system)
+module app.main
+
+pub fn main() -> i32 {
+    return 0
+}

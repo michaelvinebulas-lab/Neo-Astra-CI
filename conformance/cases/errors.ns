@@ -1,0 +1,15 @@
+fn parse(input: str) -> i32 ! ParseIntError {
+    return input.to_int()!
+}
+
+pub fn main() -> i32 {
+    match parse("42") {
+        Ok(age) => println(age)
+        Err(error) => println("bad")
+    }
+    match parse("not a number") {
+        Ok(age) => println(age)
+        Err(error) => println("bad")
+    }
+    return 0
+}

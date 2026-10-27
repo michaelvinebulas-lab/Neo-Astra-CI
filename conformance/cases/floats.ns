@@ -1,0 +1,8 @@
+pub fn main() -> i32 {
+    println(1.5 + 2.25)
+    println(1.0 / 2.0)
+    println(3.0 * 2.0)
+    println(1.5 < 2.0)
+    println(2.5 >= 2.5)
+    return 0
+}
