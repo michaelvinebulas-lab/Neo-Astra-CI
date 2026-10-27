@@ -1,0 +1,8 @@
+fn parse() -> i32 ! ParseIntError {
+    return "x".to_int()!
+}
+
+pub fn main() -> i32 {
+    let value = parse()
+    return value
+}

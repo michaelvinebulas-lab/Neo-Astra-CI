@@ -19,6 +19,16 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-27 — CONF-001 negative conformance corpus
+
+- Command: `cargo test -p astra-core --test conformance_rejects`, `cargo test -p astra-nova --test conformance`, `node --test orchestrator/tests/codegen-js.test.mjs`
+- Result: pass
+- Added `conformance/rejects/` with 11 rejection cases and matching `.codes` files: parse failure (`NS2001`), private export (`NS3001`), conflicting visibility (`NS3002`), duplicate export (`NS3003`), unknown export (`NS3005`), private type leak (`NS3010`), duplicate declaration (`NS3011`), type mismatch (`NS4001`), unknown name (`NS4002`), unhandled effect (`NS4011`), and mode requirement (`NS5001`).
+- Runner: `crates/astra-core/tests/conformance_rejects.rs` runs parse → resolve → check and matches codes as a documented subset, so richer diagnostics remain allowed while every required code must appear. Orphan `.codes` files fail the test.
+- Rationale: rejection happens before code generation, so one frontend runner pins the diagnostic contract for every backend, including the ones still in progress.
+
+---
+
 ### 2026-10-27 — CONF-001 expanded on branch `work/conf-001`
 
 - Command: `cargo test -p astra-nova --test conformance`, `node --test orchestrator/tests/codegen-js.test.mjs`
