@@ -1992,6 +1992,14 @@ impl<'a> Emitter<'a> {
 
     fn method_c(&mut self, receiver: &Expr, name: &str, args: &[Expr]) -> String {
         let rt = self.type_of(receiver).cloned();
+        // Integer member methods (`checked_*`/`wrapping_*`) are generated per
+        // receiver width, so they lower before the type-directed dispatch.
+        if let Some(ty) = &rt
+            && ty.is_integer()
+            && let Some(result) = self.integer_method_c(ty, name, receiver, args)
+        {
+            return result;
+        }
         match (&rt, name) {
             (Some(Type::Str), "len") => {
                 let r = self.expr(receiver);
@@ -2054,6 +2062,31 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(
                     self.pre,
                     "    {res_c} {res} = {ok} ? ({res_c}){{ .ok = true, .value = {part} }} : ({res_c}){{ .ok = false, .error = (NS_SliceError){{ \"slice range is out of bounds or splits a UTF-8 scalar value\" }} }};"
+                );
+                res
+            }
+            (Some(Type::Str), "to_int") => {
+                // `str.to_int()` is fallible (spec §6.2): a strict decimal
+                // parse to `i32`, with the original text as the error payload.
+                let r = self.expr(receiver);
+                let source = self.fresh_id("intsrc");
+                let value = self.fresh_id("intval");
+                let ok = self.fresh_id("intok");
+                let res = self.fresh_id("intres");
+                let res_ty = Type::Result(
+                    Box::new(Type::I32),
+                    Box::new(Type::Named("ParseIntError".to_owned(), Vec::new())),
+                );
+                let res_c = self.tcx.c_type(&res_ty);
+                let _ = writeln!(self.pre, "    NS_Str {source} = {r};");
+                let _ = writeln!(self.pre, "    int32_t {value} = 0;");
+                let _ = writeln!(
+                    self.pre,
+                    "    bool {ok} = astra_str_to_int_try({source}, &{value});"
+                );
+                let _ = writeln!(
+                    self.pre,
+                    "    {res_c} {res} = {ok} ? ({res_c}){{ .ok = true, .value = {value} }} : ({res_c}){{ .ok = false, .error = (NS_ParseIntError){{ {source} }} }};"
                 );
                 res
             }
@@ -2561,10 +2594,20 @@ impl<'a> Emitter<'a> {
             return None;
         };
         match &callee.kind {
-            ExprKind::Member { target, member } => match (self.type_of(target)?, member.as_str()) {
-                (Type::Str, "slice") => Some(Type::Named("SliceError".to_owned(), Vec::new())),
-                _ => None,
-            },
+            ExprKind::Member { target, member } => {
+                let receiver = self.type_of(target)?;
+                let error = match member.as_str() {
+                    "slice" if matches!(receiver, Type::Str) => "SliceError",
+                    "to_int" if matches!(receiver, Type::Str) => "ParseIntError",
+                    "checked_add" | "checked_sub" | "checked_mul" | "checked_div"
+                        if receiver.is_integer() =>
+                    {
+                        "OverflowError"
+                    }
+                    _ => return None,
+                };
+                Some(Type::Named(error.to_owned(), Vec::new()))
+            }
             ExprKind::Identifier(name) => {
                 let item = self
                     .module
@@ -2579,6 +2622,117 @@ impl<'a> Emitter<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Lowers the spec §6.1 integer member methods (`checked_*` and
+    /// `wrapping_*`) for one integer receiver type. Checked operations build a
+    /// fallible `Result<T, OverflowError>` (division by zero still panics, as
+    /// in Nova and the JavaScript backend); wrapping operations reuse the
+    /// runtime's signed wrap helpers and C's defined unsigned wrap-around.
+    fn integer_method_c(
+        &mut self,
+        ty: &Type,
+        method: &str,
+        receiver: &Expr,
+        args: &[Expr],
+    ) -> Option<String> {
+        let (checked, op) = match method {
+            "checked_add" => (true, "add"),
+            "checked_sub" => (true, "sub"),
+            "checked_mul" => (true, "mul"),
+            "checked_div" => (true, "div"),
+            "wrapping_add" => (false, "add"),
+            "wrapping_sub" => (false, "sub"),
+            "wrapping_mul" => (false, "mul"),
+            "wrapping_div" => (false, "div"),
+            _ => return None,
+        };
+        let argument = args.first()?;
+        let ty_c = self.tcx.c_type(ty);
+        let left = self.expr(receiver);
+        let right = self.expr(argument);
+        let signed = is_signed_int(ty);
+        // Infallible non-division arithmetic is a single expression.
+        if !checked && op != "div" {
+            return Some(match (signed, signed_width(ty)) {
+                (true, Some(width)) => format!("astra_{op}_{width}(({left}), ({right}))"),
+                _ => {
+                    let symbol = match op {
+                        "add" => "+",
+                        "sub" => "-",
+                        _ => "*",
+                    };
+                    format!("({ty_c})(({left}) {symbol} ({right}))")
+                }
+            });
+        }
+        let min = int_min_literal(ty);
+        if signed && min.is_none() {
+            // No `<stdint.h>` minimum for this width: leave it to the generic
+            // rejection path rather than emitting an unsound check.
+            return None;
+        }
+        let lhs = self.fresh_id("il");
+        let rhs = self.fresh_id("ir");
+        let out = self.fresh_id("io");
+        let _ = writeln!(self.pre, "    {ty_c} {lhs} = {left};");
+        let _ = writeln!(self.pre, "    {ty_c} {rhs} = {right};");
+        if checked {
+            let ok = self.fresh_id("iok");
+            let res = self.fresh_id("ires");
+            let res_ty = Type::Result(
+                Box::new(ty.clone()),
+                Box::new(Type::Named("OverflowError".to_owned(), Vec::new())),
+            );
+            let res_c = self.tcx.c_type(&res_ty);
+            let _ = writeln!(self.pre, "    {ty_c} {out} = 0;");
+            if op == "div" {
+                let _ = writeln!(
+                    self.pre,
+                    "    if ({rhs} == 0) astra_panic(\"division by zero\");"
+                );
+                match min {
+                    Some(min) => {
+                        let _ = writeln!(
+                            self.pre,
+                            "    bool {ok} = !({lhs} == {min} && {rhs} == -1);"
+                        );
+                    }
+                    None => {
+                        let _ = writeln!(self.pre, "    bool {ok} = true;");
+                    }
+                }
+                let _ = writeln!(self.pre, "    if ({ok}) {{ {out} = {lhs} / {rhs}; }}");
+            } else {
+                let _ = writeln!(
+                    self.pre,
+                    "    bool {ok} = !__builtin_{op}_overflow({lhs}, {rhs}, &{out});"
+                );
+            }
+            let _ = writeln!(
+                self.pre,
+                "    {res_c} {res} = {ok} ? ({res_c}){{ .ok = true, .value = {out} }} : ({res_c}){{ .ok = false, .error = (NS_OverflowError){{ \"integer overflow in '{method}'\" }} }};"
+            );
+            return Some(res);
+        }
+        // Wrapping division: zero panics; `MIN / -1` wraps to `MIN` instead of
+        // invoking C's undefined signed-overflow behavior.
+        let _ = writeln!(
+            self.pre,
+            "    if ({rhs} == 0) astra_panic(\"division by zero\");"
+        );
+        match min {
+            Some(min) => {
+                let _ = writeln!(
+                    self.pre,
+                    "    {ty_c} {out} = ({lhs} == {min} && {rhs} == -1) ? {min} : ({lhs} / {rhs});"
+                );
+            }
+            None => {
+                let _ = writeln!(self.pre, "    {ty_c} {out} = {lhs} / {rhs};");
+            }
+        }
+        Some(out)
     }
 
     fn emit_match_dispatch(
@@ -3126,6 +3280,18 @@ fn signed_width(ty: &Type) -> Option<&'static str> {
         Type::I16 => Some("i16"),
         Type::I32 => Some("i32"),
         Type::I64 => Some("i64"),
+        _ => None,
+    }
+}
+
+/// The `<stdint.h>` minimum constant for a signed integer type, used by the
+/// checked/wrapping division overflow guards.
+fn int_min_literal(ty: &Type) -> Option<&'static str> {
+    match ty {
+        Type::I8 => Some("INT8_MIN"),
+        Type::I16 => Some("INT16_MIN"),
+        Type::I32 => Some("INT32_MIN"),
+        Type::I64 => Some("INT64_MIN"),
         _ => None,
     }
 }

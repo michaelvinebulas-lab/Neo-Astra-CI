@@ -1113,6 +1113,65 @@ fn count(s: str) -> i32 ! SliceError {
 }
 
 #[test]
+fn str_to_int_and_integer_checked_arithmetic_lower_to_results() {
+    // Spec §6.2 `to_int` and §6.1 `checked_*`: fallible builtins lower to a
+    // Result at the call site (strict decimal parse / overflow verdicts), and
+    // wrapping arithmetic stays infallible.
+    let src = r#"
+fn parse(s: str) -> i32 {
+    return match s.to_int() {
+        Ok(value) => value,
+        Err(_) => 0,
+    }
+}
+
+fn add(a: i32, b: i32) -> i32 {
+    return match a.checked_add(b) {
+        Ok(value) => value,
+        Err(_) => 0,
+    }
+}
+
+fn divide(a: i32, b: i32) -> i32 {
+    return match a.checked_div(b) {
+        Ok(value) => value,
+        Err(_) => 0,
+    }
+}
+
+fn wrap(a: i8, b: i8) -> i8 {
+    return a.wrapping_add(b)
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("astra_str_to_int_try"),
+        "expected the strict decimal parser:\n{out}"
+    );
+    assert!(
+        out.contains("NS_Result_i32_ParseIntError"),
+        "expected the ParseIntError Result:\n{out}"
+    );
+    assert!(
+        out.contains("NS_Result_i32_OverflowError"),
+        "expected the OverflowError Result:\n{out}"
+    );
+    assert!(
+        out.contains("__builtin_add_overflow"),
+        "expected the checked addition builtin:\n{out}"
+    );
+    assert!(
+        out.contains("INT32_MIN") && out.contains("division by zero"),
+        "expected the division guards:\n{out}"
+    );
+    assert!(
+        out.contains("astra_add_i8"),
+        "expected the signed wrap helper:\n{out}"
+    );
+    assert_clang_ok(&out);
+}
+
+#[test]
 fn test_bytes_and_str_comparison() {
     let src = r#"
 module test.comparisons

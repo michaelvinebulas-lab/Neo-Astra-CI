@@ -26,6 +26,11 @@ typedef struct { char _unit; } NS_Unit;
 /* Built-in nominal error payload for `str.slice` (spec §6.2). Declared here
    rather than per module so every translation unit shares one stem-free type. */
 typedef struct { NS_Str _0; } NS_SliceError;
+/* Built-in fallible `str.to_int` and integer overflow payloads. The `_0`
+   field carries the offending text, matching the tuple-struct shapes the
+   checker and the other backends use. */
+typedef struct { NS_Str _0; } NS_ParseIntError;
+typedef struct { NS_Str _0; } NS_OverflowError;
 
 /* Console builtins. Each `print`/`println` is typed by its argument type. */
 extern void astra_print_i8(int8_t x);
@@ -81,6 +86,9 @@ extern int astra_str_cmp(NS_Str a, NS_Str b);
 /* Fallible byte-offset slice for `str.slice(start, end)` (spec §6.2): returns
    false when the range is reversed, out of bounds, or splits a UTF-8 scalar. */
 extern bool astra_str_slice_try(NS_Str s, size_t start, size_t end, NS_Str* out);
+/* Strict decimal parse for `str.to_int()` (spec §6.2): false unless the whole
+   string is an optional sign plus decimal digits that fit `int32_t`. */
+extern bool astra_str_to_int_try(NS_Str s, int32_t* out);
 
 /* Bytes helpers. */
 extern bool astra_bytes_eq(NS_Bytes a, NS_Bytes b);
@@ -250,6 +258,29 @@ bool astra_str_slice_try(NS_Str s, size_t start, size_t end, NS_Str* out) {
     if (!astra_utf8_boundary(s.data, end, s.len)) return false;
     out->data = s.data + start;
     out->len = end - start;
+    return true;
+}
+
+bool astra_str_to_int_try(NS_Str s, int32_t* out) {
+    size_t i = 0;
+    bool negative = false;
+    if (i < s.len && (s.data[i] == '+' || s.data[i] == '-')) {
+        negative = s.data[i] == '-';
+        i += 1;
+    }
+    if (i >= s.len) return false;
+    int64_t value = 0;
+    for (; i < s.len; i += 1) {
+        unsigned char digit = (unsigned char)s.data[i];
+        if (digit < '0' || digit > '9') return false;
+        value = value * 10 + (int64_t)(digit - '0');
+        /* One past INT32_MAX leaves headroom for INT32_MIN after negation and
+           keeps the accumulator far from int64 overflow. */
+        if (value > 2147483648LL) return false;
+    }
+    if (negative) value = -value;
+    if (value < -2147483648LL || value > 2147483647LL) return false;
+    *out = (int32_t)value;
     return true;
 }
 

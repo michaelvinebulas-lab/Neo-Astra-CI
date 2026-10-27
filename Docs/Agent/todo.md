@@ -29,7 +29,7 @@ recoverable errors, integer policies, eager tasks, bounded channels, UTF-8
 string/byte operations, source maps, `.d.ts`, and the shared `conformance/`
 suite — now merged into `master`. `TS-001` is complete (shared-emitter TS mode,
 `astra build --target ts`, and the pinned `@script:ts` transpiler), and the
-conformance suite (18 positive + 11 negative cases) runs green on JavaScript,
+conformance suite (19 positive + 11 negative cases) runs green on JavaScript,
 TypeScript, and Nova with empty backend gap ledgers. The
 `INTEROP-001` inline-script design is complete in
 `Docs/Design/V1/10-inline-script-interop.md`; the C/C++ slice is in progress.
@@ -987,6 +987,16 @@ by a production native target.
       enclosing function's) instead of falling through a literal match. Body-time
       rejects (previously ignored by the standalone emitter) now fail generation
       instead of emitting code that silently omits behavior.
+- [x] Numeric fallible builtins (spec §6.1/§6.2): `str.to_int()` parses a
+      strict decimal `i32` via `astra_str_to_int_try` and builds
+      `Result<i32, ParseIntError>` with the original text as the payload;
+      `checked_add`/`checked_sub`/`checked_mul`/`checked_div` build
+      `Result<T, OverflowError>` from `__builtin_*_overflow` (division by zero
+      panics, signed `MIN / -1` fails checked and wraps for `wrapping_div`);
+      `wrapping_add`/`wrapping_sub`/`wrapping_mul`/`wrapping_div` reuse the
+      signed runtime wrap helpers and C's defined unsigned wrap-around.
+      `ParseIntError`/`OverflowError` are shared stem-free runtime typedefs,
+      and their fallible calls materialize in `match`/`!` like `str.slice`.
 - [x] `contains` added to the type checker's `Type::Map` member resolution.
 - [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
       byte arrays; empty byte literals use the zero-length sentinel.
@@ -1052,18 +1062,19 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 67 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 68 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing/slicing/comparisons,
-  `str` slice `Result` lowering (`SliceError`) and `!` propagation of fallible
-  builtin calls, `@script:c` and `@script:cpp`
+  `str` slice `Result` lowering (`SliceError`), `str.to_int`/`checked_*`/
+  `wrapping_*` lowering and `!` propagation of fallible builtin calls,
+  `@script:c` and `@script:cpp`
   emission, compiler API artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
   imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
   and header dependency includes).
-- `cargo test --workspace` passes (67 in `astra-codegen-c`, 142 in `astra-core`,
+- `cargo test --workspace` passes (68 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary
@@ -1225,7 +1236,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
-- [~] `CONF-001` Conformance suite — 18 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C backend runner waits on the native toolchain gate
+- [~] `CONF-001` Conformance suite — 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C backend runner waits on the native toolchain gate
 - [ ] `HARD-001` v0.1 hardening
 
 ---

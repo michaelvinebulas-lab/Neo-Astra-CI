@@ -15,7 +15,7 @@ use astra_core::types::Type;
 /// Built-in nominal error payloads declared by the runtime header rather than
 /// by any module. Their C names carry no module stem, so every translation
 /// unit — and every module — shares one type (`NS_SliceError`).
-const BUILTIN_NOMINALS: &[&str] = &["SliceError"];
+const BUILTIN_NOMINALS: &[&str] = &["SliceError", "ParseIntError", "OverflowError"];
 
 /// Resolves a built-in nominal name (as written in source) to its shared C
 /// identifier fragment, if it is one.
