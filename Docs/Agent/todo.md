@@ -1165,7 +1165,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
-- [~] `CONF-001` Conformance suite (shared JS cases live in `conformance/`)
+- [~] `CONF-001` Conformance suite — 12 shared cases; JavaScript and Nova runners wired; per-backend gap ledgers documented
 - [ ] `HARD-001` v0.1 hardening
 
 ---

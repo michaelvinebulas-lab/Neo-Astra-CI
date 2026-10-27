@@ -1,11 +1,11 @@
 # Neo Astra conformance suite
 
-Backend-neutral expected-behavior cases. Every language target (JavaScript,
-TypeScript once TS-001 lands, and future backends) compiles and runs each
-case and must reproduce its recorded output exactly. The cases pin down
-shared semantics from `Docs/spec-v0.1.md` — currently §6 UTF-8 string/byte
-operations and §9 channels — so backends cannot drift from the spec or from
-each other.
+Backend-neutral expected-behavior cases. Every language target (Nova, the
+JavaScript backend, TypeScript once TS-001 lands, and future backends) compiles
+and runs each case and must reproduce its recorded output exactly. The cases pin
+down shared semantics from `Docs/spec-v0.1.md` — strings and bytes (§6), modes
+(§4), errors (§8), and channels (§9) — so backends cannot drift from the spec or
+from each other.
 
 ## Layout
 
@@ -34,7 +34,7 @@ by backend unit tests such as `orchestrator/tests/codegen-js.test.mjs`.
 
 ## Running
 
-The runner module is `orchestrator/tests/conformance.mjs`:
+The JavaScript loader is `orchestrator/tests/conformance.mjs`:
 
 ```js
 import { loadConformanceCases } from "./conformance.mjs";
@@ -47,7 +47,30 @@ for (const conformanceCase of loadConformanceCases()) {
 
 `orchestrator/tests/codegen-js.test.mjs` runs the suite for the JavaScript
 backend in the test `javascript backend passes the shared conformance
-suite`. New backends must add the same loop over `loadConformanceCases()`.
+suite`. That file is part of `npm run test:boundary`, so CI enforces it.
+
+Nova runs the same corpus from Rust in
+`crates/astra-nova/tests/conformance.rs`, which is picked up by
+`cargo test --workspace`.
+
+New backends must add the same loop over the corpus and run it in CI.
+
+## Known backend gaps
+
+A case may be temporarily unreachable for one backend. Gaps are recorded in
+the backend's runner, not by deleting the case:
+
+- Nova keeps an explicit ledger in `crates/astra-nova/tests/conformance.rs`
+  (`KNOWN_GAPS`). A ledger entry fails the test if the case starts passing, so
+  gaps cannot silently rot into permanent skips.
+
+Current Nova gaps: the `bytes` builtin, the full `str` method set beyond
+`len` (byte/char indexing, slicing, `char_count`, `chars`, `bytes`), and the
+`Channel` runtime. These are tracked by `NOVA-004` and `CONC-001`.
+
+Current JavaScript gaps: `break`/`continue` and early `return` inside an
+`if` block are not emitted yet (`NS8001`). Cases therefore use loops with a
+single exit and `match` expressions until the backend closes that gap.
 
 ## Adding a case
 
@@ -56,4 +79,7 @@ suite`. New backends must add the same loop over `loadConformanceCases()`.
    beyond `println`).
 2. Record `cases/<name>.expected` by running the program on a known-good
    backend and pasting its output, ending with `RETURN=<code>`.
-3. Run the JavaScript backend test to confirm the case passes.
+3. Run both `npm run test:boundary` and
+   `cargo test -p astra-nova --test conformance` to confirm every backend
+   passes. If a backend cannot run the case yet, add it to that backend's
+   documented gap ledger with an owning task.

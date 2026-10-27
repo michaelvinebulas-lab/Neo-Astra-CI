@@ -1,0 +1,25 @@
+struct User {
+    id: u64
+    name: str
+}
+
+enum Status {
+    Pending
+    Active(reason: str)
+}
+
+fn describe(status: Status) -> str {
+    return match status {
+        Status.Pending => "pending"
+        Status.Active(reason) => reason
+    }
+}
+
+pub fn main() -> i32 {
+    let mut user = User { id: 1, name: "Astra" }
+    user.name = "Neo"
+    println(user.name)
+    println(describe(Status.Pending))
+    println(describe(Status.Active("ready")))
+    return 0
+}

@@ -19,6 +19,18 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-27 — CONF-001 expanded on branch `work/conf-001`
+
+- Command: `cargo test -p astra-nova --test conformance`, `node --test orchestrator/tests/codegen-js.test.mjs`
+- Result: pass
+- Corpus: 4 → 12 cases. Added `control_flow`, `integers`, `defer_order`, `collections`, `structs_enums`, `options`, `errors`, and `functions`.
+- Nova runner: `crates/astra-nova/tests/conformance.rs` executes the corpus through `build_interpreter`, compares stdout plus `RETURN=<code>`, and keeps an explicit `KNOWN_GAPS` ledger (bytes builtin, full `str` methods, channels). A ledger entry that starts passing fails the test, so gaps cannot rot into silent skips.
+- Finding: the suite was effectively JavaScript-only. Nova failed 3 of the 4 existing cases, and the JavaScript backend rejects `break`/`continue` and early `return` inside an `if` with `NS8001`. Cases now use single-exit loops and `match` expressions, and both gaps are documented in `conformance/README.md`.
+- Verification: Nova conformance test green (9 cases executed, 3 ledgered gaps); JavaScript conformance test green; `npm run build` and the compiler binary build succeed on the branch.
+- Not done: C backend runner (waits on `C-001` project linking), negative/diagnostic cases, and CI wiring for the Nova runner beyond `cargo test --workspace`.
+
+---
+
 ### 2026-10-26 - js-interop merged into master: JS-001 complete
 
 - Command: `npm run ci`
