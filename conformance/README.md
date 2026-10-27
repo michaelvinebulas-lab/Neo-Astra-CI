@@ -1,11 +1,11 @@
 # Neo Astra conformance suite
 
 Backend-neutral expected-behavior cases. Every language target (Nova, the
-JavaScript backend, TypeScript once TS-001 lands, and future backends) compiles
-and runs each case and must reproduce its recorded output exactly. The cases pin
-down shared semantics from `Docs/spec-v0.1.md` — strings and bytes (§6), modes
-(§4), errors (§8), and channels (§9) — so backends cannot drift from the spec or
-from each other.
+JavaScript and TypeScript backends, and future backends) compiles and runs each
+case and must reproduce its recorded output exactly. The cases pin down shared
+semantics from `Docs/spec-v0.1.md` — strings and bytes (§6), modes (§4), errors
+(§8), and channels (§9) — so backends cannot drift from the spec or from each
+other.
 
 ## Layout
 
@@ -77,6 +77,11 @@ Current Nova gaps: the `bytes` builtin, the full `str` method set beyond
 Current JavaScript gaps: `break`/`continue` and early `return` inside an
 `if` block are not emitted yet (`NS8001`). Cases therefore use loops with a
 single exit and `match` expressions until the backend closes that gap.
+
+Current TypeScript gap: struct fields are emitted as `readonly`, so mutating a
+field on a `let mut` binding (`user.name = "Neo"`) fails `tsc` with
+`TS2540`. Shared cases construct final values until `TS-001` closes it; a
+mutation case should be added at the same time.
 
 ## Negative cases
 

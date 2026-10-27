@@ -19,6 +19,16 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-27 — CONF-001 full gate run and backend findings
+
+- Command: `npm run ci`, then `cargo test --workspace` with `C:\msys64\ucrt64\bin` on `PATH`
+- Result: pass after the PATH fix
+- CI failure: `npm run ci` stopped in Rust tests because the GNU toolchain could not find `dlltool.exe` for `getrandom`/`windows-sys`. The binary exists at `C:\msys64\ucrt64\bin\dlltool.exe` but that directory is not on `PATH`. With it prepended, the full workspace suite passes. This is a host toolchain gap, not a language defect; the runbook should record the requirement.
+- TypeScript finding: the TS backend runs the shared corpus from `orchestrator/tests/codegen-ts.test.mjs`. The original `structs_enums` case failed `tsc` with `TS2540: Cannot assign to 'name' because it is a read-only property` — emitted struct fields are `readonly` even for `let mut` bindings. The shared case now constructs final values, and the gap is recorded in `conformance/README.md` for `TS-001`.
+- Coverage: 15 positive cases pass on Nova, JavaScript, and TypeScript; 11 negative cases pass the frontend runner.
+
+---
+
 ### 2026-10-27 — CONF-001 floats, booleans, and generics
 
 - Command: `cargo test -p astra-nova --test conformance`, `node --test orchestrator/tests/codegen-js.test.mjs`

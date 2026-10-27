@@ -16,8 +16,7 @@ fn describe(status: Status) -> str {
 }
 
 pub fn main() -> i32 {
-    let mut user = User { id: 1, name: "Astra" }
-    user.name = "Neo"
+    let user = User { id: 1, name: "Neo" }
     println(user.name)
     println(describe(Status.Pending))
     println(describe(Status.Active("ready")))
