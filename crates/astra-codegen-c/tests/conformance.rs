@@ -24,16 +24,10 @@ use astra_core::resolver::resolve_module;
 ///
 /// When a case starts emitting, remove it from this table; the test fails on
 /// stale entries so gaps stay visible instead of becoming permanent skips.
-const KNOWN_GAPS: &[(&str, &str)] = &[
-    (
-        "channels",
-        "CONC-001: `Channel` is a generic builtin; the C first slice rejects spawn and channels",
-    ),
-    (
-        "generics",
-        "C-001: generic functions need monomorphization, which the first slice does not implement",
-    ),
-];
+const KNOWN_GAPS: &[(&str, &str)] = &[(
+    "channels",
+    "CONC-001: `Channel` is a generic builtin; the C first slice rejects spawn and channels",
+)];
 
 fn cases_directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../conformance/cases")

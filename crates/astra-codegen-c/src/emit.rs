@@ -13,7 +13,7 @@
 //! panic/abort. Anything beyond that slice is rejected with a stable `NS80xx`
 //! diagnostic instead of emitting incorrect C.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::Write as _;
 
 use astra_core::ast::{
@@ -159,6 +159,9 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         cur_ret: Type::Unit,
         cur_err: None,
         expected: None,
+        instantiations: BTreeMap::new(),
+        pending_instantiations: VecDeque::new(),
+        emitted_instantiations: HashSet::new(),
         defers: Vec::new(),
     };
     e.emit_program();
@@ -281,6 +284,9 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             cur_ret: Type::Unit,
             cur_err: None,
             expected: None,
+            instantiations: BTreeMap::new(),
+            pending_instantiations: VecDeque::new(),
+            emitted_instantiations: HashSet::new(),
             defers: Vec::new(),
         };
         e.emit_program_linked(&dep_headers);
@@ -496,10 +502,11 @@ fn prescan(tcx: &mut TyCtxt, module: &CModule) {
 }
 
 /// True when a type still contains a checker placeholder (`Unknown`, `Error`,
-/// `Never`) or a function type — types that are never stored values.
+/// `Never`), a function type, or an unresolved generic parameter — none of
+/// which are storable C values until an instantiation substitutes them.
 fn mentions_unresolved(ty: &Type) -> bool {
     match ty {
-        Type::Unknown | Type::Error | Type::Never | Type::Function(_) => true,
+        Type::Unknown | Type::Error | Type::Never | Type::Function(_) | Type::Generic(_) => true,
         Type::Option(inner) | Type::Array(inner) | Type::Slice(inner) => mentions_unresolved(inner),
         Type::FixedArray(inner, _) => mentions_unresolved(inner),
         Type::Result(ok, err) => mentions_unresolved(ok) || mentions_unresolved(err),
@@ -549,6 +556,12 @@ fn collect_scripts(items: &[ast::Item], scripts: &mut Vec<ast::ScriptBlock>) {
 }
 
 fn prescan_fn(tcx: &mut TyCtxt, f: &ast::FunctionDecl) {
+    // Generic functions are monomorphized per call site; their type parameters
+    // have no C type until an instantiation substitutes them. Their signatures
+    // are registered when each specialization is emitted.
+    if !f.type_parameters.is_empty() {
+        return;
+    }
     for param in &f.parameters {
         let _ = tcx.c_type(&to_type(&param.ty));
     }
@@ -608,7 +621,22 @@ struct Emitter<'a> {
     /// annotated `Option<Unknown>` by the checker, so it materializes the
     /// concrete Option the surrounding context expects.
     expected: Option<Type>,
+    /// Generic instantiations discovered at call sites, keyed by mangled
+    /// symbol (`ns_identity_i32`).
+    instantiations: BTreeMap<String, Instantiation>,
+    /// Symbols whose specialized bodies still need to be emitted.
+    pending_instantiations: VecDeque<String>,
+    /// Instantiations whose bodies have been emitted (dedupe).
+    emitted_instantiations: HashSet<String>,
     defers: Vec<Vec<ast::Stmt>>,
+}
+
+/// One monomorphized generic function: the declaration plus the concrete type
+/// arguments its body is emitted with.
+#[derive(Clone)]
+struct Instantiation {
+    decl: ast::FunctionDecl,
+    subst: BTreeMap<String, Type>,
 }
 
 impl<'a> Emitter<'a> {
@@ -616,31 +644,136 @@ impl<'a> Emitter<'a> {
     fn fn_symbol(&self, name: &str) -> String {
         format!("ns_{}{}", self.prefix, sanitize(name))
     }
-    fn emit_program(&mut self) {
-        // The runtime header and typedefs are written *after* the code is
-        // emitted (at the end of this function): expression emission can
-        // ensure derived typedefs (`Result<str, SliceError>` for
-        // `str.slice`) that must precede their use, and `prescan` only
-        // sees signatures and recorded annotations — not types that
-        // materialize inside a body.
-        let (fns, consts) = self.collect_decls();
-        // Forward declarations so call order does not matter.
-        for f in &fns {
-            self.emit_fn_proto(f);
-        }
-        self.out.push('\n');
-        if !self.scripts.is_empty() {
-            self.out
-                .push_str("/* Inline script foreign prototypes. */\n");
-            for s in &self.scripts.clone() {
-                let _ = writeln!(self.out, "/* Script: {} ({}) */", s.name, s.language);
-                for exp in &s.exports {
-                    let (ret_c, params_c) = self.script_export_signature(exp);
-                    let _ = writeln!(self.out, "{ret_c} {}({params_c});", sanitize(&exp.name));
+
+    /// Finds a local generic function declaration by name.
+    fn generic_fn(&self, name: &str) -> Option<ast::FunctionDecl> {
+        fn find(items: &[ast::Item], name: &str) -> Option<ast::FunctionDecl> {
+            for item in items {
+                match &item.kind {
+                    ast::ItemKind::Function(f)
+                        if f.name == name && !f.type_parameters.is_empty() =>
+                    {
+                        return Some(f.clone());
+                    }
+                    ast::ItemKind::ScopedItems(s) => {
+                        if let Some(found) = find(&s.items, name) {
+                            return Some(found);
+                        }
+                    }
+                    _ => {}
                 }
             }
+            None
+        }
+        find(&self.module.ast.items, name)
+    }
+
+    /// Infers the type arguments for one call to a generic function from the
+    /// argument types (substituting the active instantiation's parameters first,
+    /// so generic-to-generic calls resolve).
+    fn infer_subst(
+        &self,
+        decl: &ast::FunctionDecl,
+        args: &[Expr],
+    ) -> Option<BTreeMap<String, Type>> {
+        let mut subst = BTreeMap::new();
+        for (parameter, argument) in decl.parameters.iter().zip(args) {
+            let pattern = to_type(&parameter.ty);
+            let concrete = self.tcx.substitute(self.type_of(argument)?);
+            bind_type_params(&pattern, &concrete, &decl.type_parameters, &mut subst)?;
+        }
+        if decl
+            .type_parameters
+            .iter()
+            .any(|parameter| !subst.contains_key(parameter))
+        {
+            return None;
+        }
+        Some(subst)
+    }
+
+    /// `ns_<fn>_<type args…>` — one symbol per distinct instantiation.
+    fn instantiation_symbol(
+        &self,
+        decl: &ast::FunctionDecl,
+        subst: &BTreeMap<String, Type>,
+    ) -> String {
+        let mut symbol = self.fn_symbol(&decl.name);
+        for parameter in &decl.type_parameters {
+            symbol.push('_');
+            symbol.push_str(&self.tcx.ident(&subst[parameter]));
+        }
+        symbol
+    }
+
+    /// Resolves a call to a generic function: registers the instantiation (and
+    /// queues its body) and returns the mangled symbol plus rendered arguments.
+    fn instantiate_call(
+        &mut self,
+        decl: &ast::FunctionDecl,
+        args: &[Expr],
+    ) -> Option<(String, String)> {
+        let Some(subst) = self.infer_subst(decl, args) else {
+            self.tcx.rejects.push(reject(
+                "NS8018",
+                format!(
+                    "cannot infer type arguments for generic function '{}'",
+                    decl.name
+                ),
+            ));
+            return None;
+        };
+        let symbol = self.instantiation_symbol(decl, &subst);
+        if !self.instantiations.contains_key(&symbol) {
+            self.instantiations.insert(
+                symbol.clone(),
+                Instantiation {
+                    decl: decl.clone(),
+                    subst,
+                },
+            );
+            self.pending_instantiations.push_back(symbol.clone());
+        }
+        let arguments = self.args_c(args);
+        Some((symbol, arguments))
+    }
+
+    /// Emits the specialized bodies queued by call sites until no new
+    /// instantiations appear (a generic body may call another generic
+    /// function).
+    fn emit_instantiations(&mut self) {
+        while let Some(symbol) = self.pending_instantiations.pop_front() {
+            if !self.emitted_instantiations.insert(symbol.clone()) {
+                continue;
+            }
+            let Some(instantiation) = self.instantiations.get(&symbol).cloned() else {
+                continue;
+            };
+            self.tcx.set_subst(instantiation.subst);
+            self.emit_function_named(&instantiation.decl, &symbol);
+            self.tcx.clear_subst();
             self.out.push('\n');
         }
+    }
+
+    /// Emits prototypes for every instantiation discovered so far.
+    fn emit_instantiation_protos(&mut self) {
+        let instantiations = self.instantiations.clone();
+        for (symbol, instantiation) in instantiations {
+            self.tcx.set_subst(instantiation.subst);
+            self.emit_fn_proto_named(&instantiation.decl, &symbol);
+            self.tcx.clear_subst();
+        }
+    }
+    fn emit_program(&mut self) {
+        // The runtime header, typedefs, and prototypes are written *after* the
+        // code is emitted: expression emission can ensure derived typedefs
+        // (`Result<str, SliceError>` for `str.slice`) and discover generic
+        // instantiations, both of which must precede their use.
+        let (fns, consts) = self.collect_decls();
+
+        // Phase 1: constants, regular bodies, and `main`, collecting every
+        // generic instantiation reached from a call site.
         for c in &consts {
             self.emit_constant(c);
         }
@@ -652,7 +785,13 @@ impl<'a> Emitter<'a> {
         if let Some(main) = self.find_main() {
             self.emit_main(&main);
         }
+        // Phase 2: specialized bodies (a generic body may call another generic
+        // function, so keep draining until the queue is empty).
+        self.emit_instantiations();
+
         let code = std::mem::take(&mut self.out);
+        // Phase 3: runtime header, complete typedefs, then prototypes, then the
+        // code itself.
         self.out.push_str(RUNTIME_HEADER);
         self.out.push('\n');
         let _ = writeln!(self.out, "/* Neo Astra module: {} */", self.module.name);
@@ -666,22 +805,11 @@ impl<'a> Emitter<'a> {
             }
             self.out.push('\n');
         }
-        self.out.push_str(&code);
-    }
-
-    /// Like `emit_program` but for multi-module (linked) builds:
-    /// includes the dep headers, skips the import-reject guard (already lifted
-    /// by `emit_project`), and uses external linkage for functions.
-    fn emit_program_linked(&mut self, dep_headers: &[String]) {
-        // As with `emit_program`: the runtime header, dependency includes,
-        // and typedefs are written after the code is emitted so that any
-        // derived typedef ensured during expression emission precedes its
-        // use.
-        let (fns, consts) = self.collect_decls();
-        // Forward declarations (extern linkage in linked mode).
+        // Forward declarations so call order does not matter.
         for f in &fns {
             self.emit_fn_proto(f);
         }
+        self.emit_instantiation_protos();
         self.out.push('\n');
         if !self.scripts.is_empty() {
             self.out
@@ -695,6 +823,19 @@ impl<'a> Emitter<'a> {
             }
             self.out.push('\n');
         }
+        self.out.push_str(&code);
+    }
+
+    /// Like `emit_program` but for multi-module (linked) builds:
+    /// includes the dep headers, skips the import-reject guard (already lifted
+    /// by `emit_project`), and uses external linkage for functions.
+    fn emit_program_linked(&mut self, dep_headers: &[String]) {
+        // As with `emit_program`: the runtime header, dependency includes,
+        // typedefs, and prototypes are written after the code is emitted so
+        // that derived typedefs and generic instantiations precede their use.
+        let (fns, consts) = self.collect_decls();
+
+        // Phase 1: constants, regular bodies, and `main`.
         for c in &consts {
             self.emit_constant(c);
         }
@@ -708,7 +849,11 @@ impl<'a> Emitter<'a> {
         {
             self.emit_main(&main);
         }
+        // Phase 2: specialized bodies.
+        self.emit_instantiations();
+
         let code = std::mem::take(&mut self.out);
+        // Phase 3: header, dep includes, typedefs, prototypes, then code.
         self.out.push_str(RUNTIME_HEADER);
         self.out.push('\n');
         let _ = writeln!(self.out, "/* Neo Astra module: {} */", self.module.name);
@@ -726,6 +871,24 @@ impl<'a> Emitter<'a> {
             for decl in &self.tcx.typedefs.clone() {
                 self.out.push_str(decl);
                 self.out.push('\n');
+            }
+            self.out.push('\n');
+        }
+        // Forward declarations (extern linkage in linked mode).
+        for f in &fns {
+            self.emit_fn_proto(f);
+        }
+        self.emit_instantiation_protos();
+        self.out.push('\n');
+        if !self.scripts.is_empty() {
+            self.out
+                .push_str("/* Inline script foreign prototypes. */\n");
+            for s in &self.scripts.clone() {
+                let _ = writeln!(self.out, "/* Script: {} ({}) */", s.name, s.language);
+                for exp in &s.exports {
+                    let (ret_c, params_c) = self.script_export_signature(exp);
+                    let _ = writeln!(self.out, "{ret_c} {}({params_c});", sanitize(&exp.name));
+                }
             }
             self.out.push('\n');
         }
@@ -809,11 +972,19 @@ impl<'a> Emitter<'a> {
     ) {
         for item in items {
             match &item.kind {
-                ast::ItemKind::Function(f) => fns.push(f.clone()),
+                ast::ItemKind::Function(f) => {
+                    // Generic declarations never emit under their bare name;
+                    // each call site materializes a specialized copy.
+                    if f.type_parameters.is_empty() {
+                        fns.push(f.clone());
+                    }
+                }
                 ast::ItemKind::Constant(c) => consts.push(c.clone()),
                 ast::ItemKind::ScopedItems(s) => self.collect_items(&s.items, fns, consts),
                 ast::ItemKind::Export(exp) => {
-                    if let ast::ExportForm::DefaultFunction(f) = &exp.form {
+                    if let ast::ExportForm::DefaultFunction(f) = &exp.form
+                        && f.type_parameters.is_empty()
+                    {
                         fns.push(f.clone());
                     }
                 }
@@ -854,15 +1025,19 @@ impl<'a> Emitter<'a> {
 
     fn emit_fn_proto(&mut self, f: &ast::FunctionDecl) {
         if !f.type_parameters.is_empty() {
-            self.tcx.rejects.push(reject(
-                "NS8018",
-                format!("generic function '{}' requires monomorphization", f.name),
-            ));
+            // Generic declarations are emitted per instantiation; a bare
+            // prototype would name types that do not exist.
             return;
         }
+        let sym = self.fn_symbol(&f.name);
+        self.emit_fn_proto_named(f, &sym);
+    }
+
+    /// Emits a prototype under an explicit symbol (generic instantiations carry
+    /// a mangled name and must be rendered with their substitution active).
+    fn emit_fn_proto_named(&mut self, f: &ast::FunctionDecl, sym: &str) {
         let (ret_c, _is_fallible) = self.fn_return_c(f);
         let params = self.fn_params_c(f);
-        let sym = self.fn_symbol(&f.name);
         if self.linked {
             // External linkage: forward declaration without `static`.
             let _ = writeln!(self.out, "{ret_c} {sym}({params});");
@@ -992,9 +1167,13 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_function(&mut self, f: &ast::FunctionDecl) {
-        if !f.type_parameters.is_empty() {
-            return;
-        }
+        let sym = self.fn_symbol(&f.name);
+        self.emit_function_named(f, &sym);
+    }
+
+    /// Emits a function under an explicit symbol (used for generic
+    /// instantiations, whose body must be rendered with the substitution set).
+    fn emit_function_named(&mut self, f: &ast::FunctionDecl, sym: &str) {
         let ret = f.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
         let errs: Vec<Type> = f.error_set.iter().map(path_to_type).collect();
         let err = errs.into_iter().next();
@@ -1002,7 +1181,6 @@ impl<'a> Emitter<'a> {
         self.cur_err = err.clone();
         let (ret_c, is_fallible) = self.fn_return_c(f);
         let params = self.fn_params_c(f);
-        let sym = self.fn_symbol(&f.name);
         if self.linked {
             let _ = writeln!(self.out, "{ret_c} {sym}({params}) {{");
         } else {
@@ -1915,6 +2093,14 @@ impl<'a> Emitter<'a> {
                         ),
                     ));
                     return "(NS_Unit){0}".into();
+                }
+                // Generic local function: emit the monomorphized instantiation
+                // (`ns_identity_i32`) and queue its body.
+                if let Some(decl) = self.generic_fn(name) {
+                    if let Some((symbol, arguments)) = self.instantiate_call(&decl, args) {
+                        return format!("{symbol}({arguments})");
+                    }
+                    return "0 /* generic arguments could not be inferred */".into();
                 }
                 // Local user function call.
                 let arg_c = self.args_c(args);
@@ -3490,6 +3676,67 @@ fn is_signed_int(ty: &Type) -> bool {
         ty,
         Type::I8 | Type::I16 | Type::I32 | Type::I64 | Type::Isize
     )
+}
+
+/// Unifies a declared parameter type with a call-site argument type, binding
+/// the function's type parameters. Concrete-only patterns are ignored (the
+/// checker already proved compatibility); inconsistent bindings fail.
+fn bind_type_params(
+    pattern: &Type,
+    concrete: &Type,
+    parameters: &[String],
+    subst: &mut BTreeMap<String, Type>,
+) -> Option<()> {
+    let bound = match pattern {
+        Type::Generic(name) if parameters.iter().any(|parameter| parameter == name) => Some(name),
+        Type::Named(name, arguments)
+            if arguments.is_empty() && parameters.iter().any(|parameter| parameter == name) =>
+        {
+            Some(name)
+        }
+        _ => None,
+    };
+    if let Some(name) = bound {
+        return match subst.get(name) {
+            Some(existing) if existing != concrete => None,
+            Some(_) => Some(()),
+            None => {
+                subst.insert(name.clone(), concrete.clone());
+                Some(())
+            }
+        };
+    }
+    match (pattern, concrete) {
+        (Type::Option(a), Type::Option(b))
+        | (Type::Array(a), Type::Array(b))
+        | (Type::Slice(a), Type::Slice(b)) => bind_type_params(a, b, parameters, subst),
+        (Type::FixedArray(a, _), Type::FixedArray(b, _)) => {
+            bind_type_params(a, b, parameters, subst)
+        }
+        (Type::Result(a_ok, a_err), Type::Result(b_ok, b_err)) => {
+            bind_type_params(a_ok, b_ok, parameters, subst)?;
+            bind_type_params(a_err, b_err, parameters, subst)
+        }
+        (Type::Map(a_key, a_value), Type::Map(b_key, b_value)) => {
+            bind_type_params(a_key, b_key, parameters, subst)?;
+            bind_type_params(a_value, b_value, parameters, subst)
+        }
+        (Type::Tuple(a), Type::Tuple(b)) if a.len() == b.len() => {
+            for (x, y) in a.iter().zip(b) {
+                bind_type_params(x, y, parameters, subst)?;
+            }
+            Some(())
+        }
+        (Type::Named(a_name, a_args), Type::Named(b_name, b_args))
+            if a_name == b_name && a_args.len() == b_args.len() =>
+        {
+            for (x, y) in a_args.iter().zip(b_args) {
+                bind_type_params(x, y, parameters, subst)?;
+            }
+            Some(())
+        }
+        _ => Some(()),
+    }
 }
 
 fn signed_width(ty: &Type) -> Option<&'static str> {

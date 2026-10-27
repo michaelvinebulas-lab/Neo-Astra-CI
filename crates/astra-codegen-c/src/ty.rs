@@ -280,6 +280,9 @@ pub struct TyCtxt {
     /// Nominal types declared by dependency modules, keyed by the name as
     /// written in this module (imported name, rename, or `alias.Type` path).
     foreign: BTreeMap<String, ForeignDecl>,
+    /// Active type-parameter substitution while emitting a generic
+    /// instantiation (`T` → `i32`, …). Empty outside specialization bodies.
+    subst: BTreeMap<String, Type>,
 }
 
 impl TyCtxt {
@@ -292,6 +295,62 @@ impl TyCtxt {
             rejects: Vec::new(),
             type_prefix: String::new(),
             foreign: BTreeMap::new(),
+            subst: BTreeMap::new(),
+        }
+    }
+
+    /// Installs the type-parameter substitution for one generic instantiation.
+    pub fn set_subst(&mut self, subst: BTreeMap<String, Type>) {
+        self.subst = subst;
+    }
+
+    /// Clears the active type-parameter substitution.
+    pub fn clear_subst(&mut self) {
+        self.subst.clear();
+    }
+
+    /// Returns `ty` with the active type-parameter substitutions applied.
+    pub fn substitute(&self, ty: &Type) -> Type {
+        if self.subst.is_empty() {
+            return ty.clone();
+        }
+        match ty {
+            Type::Generic(name) => match self.subst.get(name) {
+                Some(concrete) => concrete.clone(),
+                None => ty.clone(),
+            },
+            Type::Named(name, arguments) if arguments.is_empty() => match self.subst.get(name) {
+                Some(concrete) => concrete.clone(),
+                None => ty.clone(),
+            },
+            Type::Option(inner) => Type::Option(Box::new(self.substitute(inner))),
+            Type::Array(inner) => Type::Array(Box::new(self.substitute(inner))),
+            Type::Slice(inner) => Type::Slice(Box::new(self.substitute(inner))),
+            Type::FixedArray(inner, length) => {
+                Type::FixedArray(Box::new(self.substitute(inner)), *length)
+            }
+            Type::Result(ok, error) => Type::Result(
+                Box::new(self.substitute(ok)),
+                Box::new(self.substitute(error)),
+            ),
+            Type::Map(key, value) => Type::Map(
+                Box::new(self.substitute(key)),
+                Box::new(self.substitute(value)),
+            ),
+            Type::Tuple(elements) => Type::Tuple(
+                elements
+                    .iter()
+                    .map(|element| self.substitute(element))
+                    .collect(),
+            ),
+            Type::Named(name, arguments) => Type::Named(
+                name.clone(),
+                arguments
+                    .iter()
+                    .map(|argument| self.substitute(argument))
+                    .collect(),
+            ),
+            _ => ty.clone(),
         }
     }
 
@@ -380,6 +439,17 @@ impl TyCtxt {
     /// A stable identifier for a type, used to build nested typedef names. Does
     /// not register any declaration.
     pub fn ident(&self, ty: &Type) -> String {
+        if let Type::Generic(name) = ty
+            && let Some(concrete) = self.subst.get(name)
+        {
+            return self.ident(concrete);
+        }
+        if let Type::Named(name, arguments) = ty
+            && arguments.is_empty()
+            && let Some(concrete) = self.subst.get(name)
+        {
+            return self.ident(concrete);
+        }
         match ty {
             Type::I8 => "i8".into(),
             Type::I16 => "i16".into(),
@@ -450,6 +520,18 @@ impl TyCtxt {
     /// Maps a type to its C type name, registering any `typedef` it needs. May
     /// push a [`Reject`] for types the first slice does not support.
     pub fn c_type(&mut self, ty: &Type) -> String {
+        if let Type::Generic(name) = ty
+            && let Some(concrete) = self.subst.get(name).cloned()
+        {
+            return self.c_type(&concrete);
+        }
+        if let Type::Named(name, arguments) = ty
+            && arguments.is_empty()
+            && let Some(concrete) = self.subst.get(name).cloned()
+            && concrete != *ty
+        {
+            return self.c_type(&concrete);
+        }
         match ty {
             Type::I8 => "int8_t".into(),
             Type::I16 => "int16_t".into(),

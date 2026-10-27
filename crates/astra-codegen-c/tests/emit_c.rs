@@ -1301,6 +1301,54 @@ fn flags(r: Result<i32, i32>) -> bool {
 }
 
 #[test]
+fn generic_functions_monomorphize_per_instantiation() {
+    // One specialized copy per distinct type-argument set, with the mangled
+    // symbol and substituted signature; call sites refer to the copy.
+    let src = r#"
+fn identity<T>(value: T) -> T {
+    return value
+}
+
+fn forward<T>(value: T) -> T {
+    return identity(value)
+}
+
+pub fn main() -> i32 {
+    println(identity(7))
+    println(identity("ok"))
+    println(identity(true))
+    println(forward(9))
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("ns_identity_i32"),
+        "expected the i32 instantiation:\n{out}"
+    );
+    assert!(
+        out.contains("ns_identity_Str"),
+        "expected the str instantiation:\n{out}"
+    );
+    assert!(
+        out.contains("ns_identity_bool"),
+        "expected the bool instantiation:\n{out}"
+    );
+    // A generic-to-generic call instantiates the callee with the caller's
+    // concrete substitution.
+    assert!(
+        out.contains("ns_forward_i32") && out.contains("ns_identity_i32(v_value)"),
+        "expected the forwarded instantiation to call the i32 copy:\n{out}"
+    );
+    // Specialized bodies (not just prototypes) must be emitted.
+    assert!(
+        out.contains("ns_identity_i32(int32_t v_value) {"),
+        "expected the i32 body:\n{out}"
+    );
+    assert_clang_ok(&out);
+}
+
+#[test]
 fn test_bytes_and_str_comparison() {
     let src = r#"
 module test.comparisons
