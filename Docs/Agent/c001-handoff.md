@@ -6,7 +6,7 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master = a8e41f2` (2026-10-27), working tree clean, full
+> **Snapshot:** `master = d8e4efa` (2026-10-27), working tree clean, full
 > `npm run ci` green. The current slice (hosted shim + native conformance
 > execution) is described in section 4.
 >
@@ -85,7 +85,7 @@ and section 6.A (the generics design) before touching code.
 
 ## 4. Current snapshot
 
-- `master = a8e41f2`; tree clean; `npm run ci` green.
+- `master = d8e4efa`; tree clean; `npm run ci` green.
 - `astra-codegen-c`: **73** emission tests + 1 conformance gate.
 - Corpus: **19 positive** cases, **11 negative** rejects.
 - C emits, clang-compiles, links, **and runs** **18 of 19** cases when a
@@ -103,6 +103,7 @@ and section 6.A (the generics design) before touching code.
 
 | Commit | Content |
 |---|---|
+| `d8e4efa` | Hosted shim fix (`host_shim()` TU), hosted-compiler probing, native conformance execution, match-arm `pre` fix |
 | `a8e41f2` | Docs: record generics monomorphization completion |
 | `90cdba1` | Generic function monomorphization (`ns_<fn>_<types>` per call site) |
 | `8696b07` | C-001 handoff document + host-shim defect finding |
