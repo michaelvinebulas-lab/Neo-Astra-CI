@@ -920,8 +920,8 @@ export surface.
 - [x] Make Nova reject foreign script calls with `NV0008` before execution.
 - [x] Add conformance and security tests for unsupported target/language pairs,
       malformed terminators, opaque bodies, and mode propagation.
-- [ ] Defer Python, Wasm script embedding, Java, and Nova host adapters to
-      post-V1 design work.
+- [-] Deferred to post-V1 design work: Python, Wasm script embedding, Java, and
+      Nova host adapters.
 
 **Depends on**
 
@@ -975,10 +975,25 @@ by a production native target.
       and `NS8011`-`NS8025` diagnostics for unsupported constructs.
 - [x] Compiler API `c` target returns `c-source` and `astra_host.c` artifacts.
 - [x] `astra build --target c` writes `main.c` and `astra_host.c`;
-      `--target native` discovers `clang`/`gcc`/`cc` and attempts to link a
-      host executable.
-- [x] 71 `astra-codegen-c` tests pass, including generated-C checks with the
-      available clang toolchain and freestanding object compilation.
+      `--target native` probes for a *hosted-capable* compiler (clang, gcc, cc),
+      links a host executable, and runs it; verified end to end through gcc.
+- [x] 73 `astra-codegen-c` tests pass, including generated-C checks with the
+      available clang toolchain, freestanding object compilation, and hosted
+      compile/link/run checks.
+- [x] Hosted runtime shim is a complete translation unit:
+      `runtime::host_shim()` prepends `RUNTIME_HEADER` to `HOST_SHIM` (which adds
+      `<inttypes.h>`/`<math.h>`), so `astra_host.c` sees `NS_Bytes`, `NS_Map`,
+      and the builtin error payload typedefs. It previously failed to compile
+      with 51 gcc errors.
+- [x] C conformance gate executes the corpus: when a hosted-capable compiler is
+      available it links each case against `astra_host.c`, runs it, and compares
+      stdout plus `RETURN=` with `.expected` (18/19; `channels` is the CONC-001
+      gap). A real miscompile was caught and fixed this way: match-arm block
+      statements leaked into the next arm's branch (`early_exit` printed `-1`
+      instead of `3`).
+- [x] Native inline scripts: `astra build --target native` links `@script:c`
+      (and `.cpp` with `-lstdc++`) translation units and runs the binary
+      (INTEROP-001).
 - [x] Map literals `{ k: v, ... }` emit `astra_map_new` + `astra_map_set`.
 - [x] Map methods `.len()`, `.contains(k)`, `.get(k)`, `.insert(k, v)` emit typed C via
       the `NS_Map` runtime helpers; `.get` and `.insert` return `NS_Option_V`.
@@ -1040,25 +1055,6 @@ by a production native target.
       in headers, cross-module generic calls are not instantiated in the
       importer, and bodies that dispatch on `T` beyond type mapping remain out of
       scope.
-- [x] Hosted runtime shim and native conformance execution (`C-001` native
-      verification slice):
-      - `astra_host.c` is now a complete translation unit:
-        `runtime::host_shim()` prepends the shared `RUNTIME_HEADER`, so the shim
-        sees `NS_Bytes`, `NS_Map`, and the builtin error payload typedefs, and
-        `HOST_SHIM` adds `<inttypes.h>`/`<math.h>` for `PRId*`/`INFINITY`.
-        Previously it failed to compile with 51 gcc errors.
-      - Toolchain selection probes for *hosted* capability (a real
-        `#include <stdio.h>` compile) in both the Rust test helpers and
-        `astra build --target native`: clang without a Windows SDK is skipped in
-        favour of gcc, and the CLI no longer fails just because clang exists.
-      - `crates/astra-codegen-c/tests/conformance.rs` now links every emitted
-        case against the shim, runs it, and compares stdout plus `RETURN=<code>`
-        with the shared `.expected` file whenever a hosted compiler is present.
-      - The runtime gate caught and fixed a match-arm lowering bug: arm block
-        statements were left in the `pre` buffer and flushed into the *next*
-        arm's branch, so `99 => { break }` ran in the wildcard arm and
-        `early_exit` printed `-1` instead of `3`. `emit_arm_body` flushes inside
-        the arm, and non-expression tails flush before assigning the arm value.
 - [x] `contains` added to the type checker's `Type::Map` member resolution.
 - [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
       byte arrays; empty byte literals use the zero-length sentinel.
@@ -1112,16 +1108,24 @@ by a production native target.
 - [ ] Native library output and stable ABI. Only an executable via `main` is
       produced; static/dynamic libraries, exported headers, and a declared C ABI
       are not implemented.
-- [ ] Cross-platform native verification. `astra build --target native` now
-      links and runs on this Windows host through gcc (MSYS2 UCRT64); the
-      earlier "no libc headers" failure came from preferring clang without a
-      Windows SDK, plus the shim having no `NS_Bytes`/`NS_Map` declarations.
-      Linux/macOS native builds are still unverified and need a Tier-1 CI run.
-- [ ] Native CI matrix. The C conformance gate now compiles **and runs** every
-      non-gap case whenever a hosted compiler is available, including on CI
-      runners with libc; the remaining work is to provision and record a Tier-1
-      Linux run rather than relying on per-developer toolchains.
-- [ ] Wasm path through C17 (`WASM-001`) remains deferred.
+- [x] Native verification on this Windows host. `astra build --target native`
+      compiles, links, and runs through gcc (MSYS2 UCRT64). The earlier "no libc
+      headers" failure came from preferring clang without a Windows SDK plus the
+      shim missing `NS_Bytes`/`NS_Map`; both are fixed, and the native execution
+      path is pinned by `astra build --target native links and runs a hosted
+      binary`.
+- [ ] Native verification on Linux and macOS. Those platforms have not run the
+      native build yet; the conformance gate will exercise them automatically
+      when a hosted compiler is present.
+- [x] Native CI gate in the test suite. `cargo test -p astra-codegen-c` runs
+      every non-gap conformance case end to end whenever a hosted compiler is
+      available (and self-skips otherwise), so a normal Linux runner already
+      exercises native execution.
+- [ ] Tier-1 CI matrix provisioning and recorded evidence. The gate exists; the
+      remaining work is to provision/record Linux (and ideally macOS) CI runs
+      rather than relying on per-developer toolchains.
+- [-] Wasm path through C17 (`WASM-001`) is deferred until the target ABI and
+      runtime design land.
 
 **Evidence**
 
@@ -1311,7 +1315,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
   verification done; package linking, GC/manual memory, concurrency, native
   library output/ABI, and a Tier-1 native CI matrix remain
 - [ ] `GC-001` Native GC
-- [ ] `WASM-001` Wasm target
+- [-] `WASM-001` Wasm target (deliberately deferred until the target ABI and runtime design land)
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
 - [~] `CONF-001` Conformance suite — 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C runner compiles, links, and executes every non-gap case when a hosted compiler is available (`channels` remains ledgered under CONC-001)
