@@ -6,9 +6,9 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master = d8e4efa` (2026-10-27), working tree clean, full
-> `npm run ci` green. The current slice (hosted shim + native conformance
-> execution) is described in section 4.
+> **Snapshot:** `master = 483caae` (2026-10-27), working tree clean, full
+> `npm run ci` green. The current slice (single-threaded concurrency, empty C
+> conformance ledger) is described in section 4.
 >
 > **Next task:** package linking (section 6.B) is the largest remaining
 > integration slice; GC (6.C) is the remaining language-semantics item and
@@ -84,7 +84,7 @@ and section 6.A (the generics design) before touching code.
 
 ## 4. Current snapshot
 
-- `master = d8e4efa`; tree clean; `npm run ci` green.
+- `master = 483caae`; tree clean; `npm run ci` green.
 - `astra-codegen-c`: **77** emission tests + 1 conformance gate.
 - Corpus: **19 positive** cases, **11 negative** rejects.
 - C emits, compiles, links, **and runs** **all 19** cases when a hosted-capable
@@ -107,6 +107,8 @@ and section 6.A (the generics design) before touching code.
 
 | Commit | Content |
 |---|---|
+| `483caae` | Single-threaded concurrency (eager spawn/Task, bounded Channel, ChannelError); C corpus runs 19/19 |
+| `16afbcd` | `Array.get`, native library artifacts (`--emit staticlib\|cdylib`), provisional C ABI |
 | `d8e4efa` | Hosted shim fix (`host_shim()` TU), hosted-compiler probing, native conformance execution, match-arm `pre` fix |
 | `a8e41f2` | Docs: record generics monomorphization completion |
 | `90cdba1` | Generic function monomorphization (`ns_<fn>_<types>` per call site) |

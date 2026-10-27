@@ -10,12 +10,12 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001`/`CONC-001` single-threaded concurrency slice landed: eager `spawn`/`Task`, bounded `Channel<T>`, `ChannelError`; the C conformance ledger is empty and all 19 cases execute |
+| Current task | `C-001`/`CONC-001` single-threaded concurrency slice landed (`483caae`): eager `spawn`/`Task`, bounded `Channel<T>`, `ChannelError`; the C conformance ledger is empty and all 19 cases execute |
 | Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend, first C17 managed slice with hosted runtime, multi-module linking, generics, native libraries/ABI, single-threaded concurrency, and a full C conformance runner; `@script` inline interop complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, hosted shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64) after the shim fix. Linux/macOS native builds still need their own CI run, and clang alone remains unusable here without the MSVC/Windows SDK |
-| Next action | C-001 remainder, best next slices: native library output + documented ABI (`c001-handoff.md` 6.E), package linking (6.B), or the opportunistic `Array.get` gap; then GC-001, CONC-001, native CI matrix; WASM-001 last |
+| Next action | C-001 remainder, best next slices: package linking (6.B) reusing NoPM's resolver; GC/manual memory (6.C) starting from `03-runtime-and-memory.md`; full structured concurrency (OS-thread scheduler, task-local heaps); then the Tier-1 native CI matrix; WASM-001 last |
 
 ---
 
@@ -1410,12 +1410,12 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 ```markdown
 ### Handoff
 - Phase: 7 - Backends
-- Task: `C-001` hosted runtime shim fixed; native conformance execution enabled (18/19 corpus cases run; `channels` remains CONC-001); `astra build --target native` verified on this host through gcc
-- Status: Ready (commit next; full CI green immediately before commit)
-- Files changed: `crates/astra-codegen-c/src/{runtime,emit}.rs` (complete `host_shim()` TU, match-arm `pre` flush), `crates/astra-codegen-c/tests/{emit_c,conformance}.rs` (hosted compiler discovery, shim and arm regressions, link/run/compare gate), `orchestrator/packages/cli/src/index.ts` (`findNativeCompiler` hosted probe), `orchestrator/tests/codegen-js.test.mjs` (native e2e, self-skipping), `Docs/Agent/{todo,state-log,c001-handoff}.md`, `conformance/README.md`
-- Verification: `npm run ci` green: 73 `astra-codegen-c` tests, conformance gate executes every non-gap case, TypeScript/boundary tests, fmt, clippy with warnings denied
+- Task: `C-001` slices landed: `Array.get`; native library artifacts (`--emit staticlib|cdylib|library`) + provisional C ABI (`11-c-abi.md`); single-threaded `CONC-001` (eager spawn/Task, bounded Channel, ChannelError). C conformance ledger is empty (19/19 run).
+- Status: Ready (commits `16afbcd` and `483caae`; full CI green immediately before each commit)
+- Files changed: `crates/astra-codegen-c/src/{emit,ty,runtime,lib}.rs`, `crates/astra-codegen-c/tests/{emit_c,conformance}.rs`, `crates/astra-compiler-api/src/lib.rs` (`library` flag), `orchestrator/packages/compiler-client/src/index.ts`, `orchestrator/packages/cli/src/index.ts` (`--emit`, archiver discovery), `orchestrator/tests/codegen-js.test.mjs` (staticlib/cdylib consumer tests), `Docs/Design/V1/{11-c-abi.md,README.md}`, `conformance/README.md`, `Docs/Agent/{todo,state-log,c001-handoff}.md`
+- Verification: `npm run ci` green: 77 `astra-codegen-c` tests, all 19 corpus cases link and run, TypeScript/boundary tests, fmt, clippy with warnings denied
 - Blockers: none locally; Linux/macOS native CI run still outstanding
-- Next action: C-001 remainder: native library output + stable ABI (6.E) or package linking (6.B), plus the opportunistic `Array.get`; then GC-001, CONC-001; later WASM-001, FFI-001, PLAY-001, HARD-001
+- Next action: package linking (6.B) reusing NoPM's resolver; GC/manual memory (6.C) from the memory design; full structured concurrency; Tier-1 native CI matrix; later WASM-001, FFI-001, PLAY-001, HARD-001
 ```
 
 
