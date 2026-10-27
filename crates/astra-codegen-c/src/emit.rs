@@ -2527,18 +2527,29 @@ impl<'a> Emitter<'a> {
         // must materialize `Result<base, E>` exactly as the checker does for
         // exhaustiveness — otherwise the Ok/Err arms have nothing to dispatch
         // on and bind against the wrong payload types.
-        let scrut_ty = match self.type_of(value).cloned() {
-            None => Type::Unit,
-            Some(ty @ Type::Result(_, _)) => ty,
-            Some(base) => match self.effect_error_type(value) {
-                Some(error) => Type::Result(Box::new(base), Box::new(error)),
-                None => base,
-            },
-        };
+        let scrut_ty = self
+            .materialized_result_type(value)
+            .or_else(|| self.type_of(value).cloned())
+            .unwrap_or(Type::Unit);
         let scrut = self.expr(value);
         self.flush_pre();
         self.emit_match_dispatch(&scrut, &scrut_ty, arms, Some(&tmp), &ty);
         tmp
+    }
+
+    /// The `Result` type a fallible expression materializes to, when this
+    /// backend can see it: `Some(Result<base, E>)` for a fallible call,
+    /// `None` for a plain value. The checker records only the base type of a
+    /// fallible call (the error effect travels separately), so consumers that
+    /// need the runtime `Result` shape — `match` scrutinees and `expr!`
+    /// propagation — ask for it here instead of guessing.
+    fn materialized_result_type(&self, value: &Expr) -> Option<Type> {
+        match self.type_of(value).cloned()? {
+            ty @ Type::Result(_, _) => Some(ty),
+            base => self
+                .effect_error_type(value)
+                .map(|error| Type::Result(Box::new(base), Box::new(error))),
+        }
     }
 
     /// The error payload an effectful call carries, when this backend can see
@@ -3001,10 +3012,12 @@ impl<'a> Emitter<'a> {
         // `expr!`: evaluate the fallible inner, and if it failed, return the
         // error from the enclosing function.
         let inner_c = self.expr(inner);
-        let inner_ty = self.type_of(inner).cloned();
-        let result_c = match &inner_ty {
-            Some(t @ Type::Result(_, _)) => self.tcx.c_type(t),
-            _ => self.fn_result_c(),
+        // A fallible call is annotated with its base type only, so the
+        // propagation temp must materialize `Result<base, E>` — the enclosing
+        // function's Result may wrap a different base type.
+        let result_c = match self.materialized_result_type(inner) {
+            Some(ty) => self.tcx.c_type(&ty),
+            None => self.fn_result_c(),
         };
         let tmp = self.freshid("p");
         let _ = writeln!(self.pre, "    {result_c} {tmp} = {inner_c};");

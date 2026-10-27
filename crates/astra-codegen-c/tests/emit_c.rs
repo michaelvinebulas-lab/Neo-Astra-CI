@@ -1089,6 +1089,30 @@ fn failure(s: str) -> bool {
 }
 
 #[test]
+fn propagate_materializes_fallible_builtin_results() {
+    // `expr!` on a fallible builtin call: the checker annotates the call with
+    // its base type, so propagation must materialize `Result<base, E>` before
+    // reading `.ok`/`.error` — including when the enclosing function's own
+    // Result wraps a different base type.
+    let src = r#"
+fn count(s: str) -> i32 ! SliceError {
+    let part = s.slice(0, 1)!
+    return 1
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("NS_Result_Str_SliceError"),
+        "expected the inner Result materialized with the slice error:\n{out}"
+    );
+    assert!(
+        out.contains("if (!"),
+        "expected a propagation early return:\n{out}"
+    );
+    assert_clang_ok(&out);
+}
+
+#[test]
 fn test_bytes_and_str_comparison() {
     let src = r#"
 module test.comparisons

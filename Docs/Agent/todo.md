@@ -981,11 +981,12 @@ by a production native target.
       offsets; the earlier lowering passed the `end` argument as a length, so
       non-zero starts returned the wrong range and a bare `NS_Str` where the
       checker expects a `Result`. `SliceError` is a shared, stem-free runtime
-      typedef, and `match` over a fallible call now materializes the checker's
-      `Result<base, E>` so `Ok`/`Err` arms dispatch and bind correctly instead
-      of falling through a literal match. Body-time rejects (previously
-      ignored by the standalone emitter) now fail generation instead of
-      emitting code that silently omits behavior.
+      typedef, and `match`/`!` consumers of a fallible call now materialize the
+      checker's `Result<base, E>` so Ok/Err arms dispatch and bind correctly
+      (and propagation types its temp with the call's own Result, not the
+      enclosing function's) instead of falling through a literal match. Body-time
+      rejects (previously ignored by the standalone emitter) now fail generation
+      instead of emitting code that silently omits behavior.
 - [x] `contains` added to the type checker's `Type::Map` member resolution.
 - [x] Byte literals `b"..."` emit `NS_Bytes` compound literals with hex-encoded
       byte arrays; empty byte literals use the zero-length sentinel.
@@ -1051,17 +1052,18 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 66 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 67 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing/slicing/comparisons,
-  `str` slice `Result` lowering (`SliceError`), `@script:c` and `@script:cpp`
+  `str` slice `Result` lowering (`SliceError`) and `!` propagation of fallible
+  builtin calls, `@script:c` and `@script:cpp`
   emission, compiler API artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
   imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
   and header dependency includes).
-- `cargo test --workspace` passes (66 in `astra-codegen-c`, 142 in `astra-core`,
+- `cargo test --workspace` passes (67 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary

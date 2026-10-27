@@ -10,12 +10,24 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001` str/bytes slice semantics slice (`§6.2`/`§6.4` end offsets, fallible-call match materialization) complete, commit follows; `C-001` cross-module struct/enum types slice (`NS8020` closure) (`12bfd86`); `JS-001` statement-position control-flow slice (`NS8001` closure) (`c8555c6`); `NOVA-004` Nova gaps closed (`f0a62e6`); `work/conf-001` merged into master (`78d8920`); `C-001` project-linking slice (`a0dea19`); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`); TS struct-mutation fix (`49a84c8`) |
+| Current task | `C-001` str/bytes slice semantics slice (`§6.2`/`§6.4` end offsets, fallible-call `match`/`!` materialization) complete, commit follows; `C-001` cross-module struct/enum types slice (`NS8020` closure) (`12bfd86`); `JS-001` statement-position control-flow slice (`NS8001` closure) (`c8555c6`); `NOVA-004` Nova gaps closed (`f0a62e6`); `work/conf-001` merged into master (`78d8920`); `C-001` project-linking slice (`a0dea19`); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`); TS struct-mutation fix (`49a84c8`) |
 | Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, C multi-module project linking (module-qualified symbols, cross-module calls and struct/enum types, `compile_project`), `@script` inline interop frontend complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
 | Next action | C-001 remainder (GC/manual memory, concurrency, package linking, native CI gate); later backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+
+---
+
+### 2026-10-27 - `C-001` follow-up: `expr!` propagation materializes fallible builtins
+
+- Command: `cargo test -p astra-codegen-c`, `npm run ci`
+- Result: 67/67 in `astra-codegen-c`; full CI green
+- What: `propagate_c` typed its statement temporary from the enclosing function's Result when the inner expression had no `Result` annotation — which is always true for a fallible builtin call (annotated with its base type). `let part = s.slice(0, 1)!` inside `fn f(s: str) -> i32 ! SliceError` therefore declared the temp as `NS_Result_i32_SliceError` and assigned an `NS_Result_Str_SliceError`, which clang rejects.
+- Fix: the materialization logic from `match_expr_c` is extracted as `materialized_result_type` (used by both `match` scrutinees and `!`), so propagation types the temp with the call's own `Result<base, E>`; the error early-return still uses the enclosing function's Result and the payload types agree because `!` propagates the effect into the function's error set.
+- Tests: new `propagate_materializes_fallible_builtin_results` pins `NS_Result_Str_SliceError` in the emitted C and compiles it with clang.
+- Verification: full `npm run ci` green immediately before this entry.
+- Boundary: C's native runner still waits on the toolchain gate; cross-module fallible calls in `match`/`!` remain limited to local functions.
 
 ---
 
