@@ -221,6 +221,17 @@ fn project_source<'a>(emitted: &'a [(String, String, Option<String>)], key: &str
         .1
 }
 
+/// Returns the emitted public header for module `key`.
+fn project_header<'a>(emitted: &'a [(String, String, Option<String>)], key: &str) -> &'a str {
+    emitted
+        .iter()
+        .find(|(k, _, _)| k == key)
+        .unwrap_or_else(|| panic!("module '{key}' not emitted"))
+        .2
+        .as_deref()
+        .expect("module has no header")
+}
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1423,23 +1434,91 @@ fn project_rejects_cross_module_value_reference() {
 }
 
 #[test]
-fn project_rejects_cross_module_struct_type() {
-    // A cross-module struct type used in a signature cannot be lowered in this
-    // slice (its typedef lives in the defining module). It must be rejected,
-    // not silently mis-typed.
-    let err = try_compile_project(&[
+fn project_emits_cross_module_struct_types() {
+    // A struct imported from a dependency lowers to the dependency's qualified
+    // typedef (`NS_lib_Point`). The typedef stays in the dependency — its
+    // translation unit and header — and this module includes that header.
+    let emitted = compile_project_and_emit(&[
         ("lib", "pub struct Point { x: i32, y: i32 }\n"),
         (
             "app/main",
-            "import { Point } from \"lib\"\npub fn take(p: Point) -> i32 { return p.x }\n",
+            "import { Point } from \"lib\"\npub fn take(p: Point) -> i32 { return p.x }\npub fn origin() -> Point { return Point { x: 0, y: 0 } }\n",
         ),
-    ])
-    .expect_err("cross-module struct type should be rejected");
-    assert_eq!(err.code, "NS8020");
+    ]);
+    let main = project_source(&emitted, "app/main");
+    let lib = project_source(&emitted, "lib");
     assert!(
-        err.message.contains("Point"),
-        "diagnostic should name the type: {}",
-        err.message
+        lib.contains("typedef struct { int32_t x; int32_t y; } NS_lib_Point;"),
+        "dependency declares its own typedef:\n{lib}"
+    );
+    assert!(
+        main.contains("#include \"lib.h\""),
+        "missing dep header:\n{main}"
+    );
+    assert!(
+        main.contains("NS_lib_Point v_p"),
+        "signature not lowered to the dependency's typedef:\n{main}"
+    );
+    assert!(
+        main.contains("(NS_lib_Point){ .x = 0, .y = 0"),
+        "literal not constructed with the dependency's type:\n{main}"
+    );
+    assert!(
+        !main.contains("typedef struct { int32_t x; int32_t y; } NS_lib_Point"),
+        "the dependency's typedef must not be re-emitted:\n{main}"
+    );
+    let header = project_header(&emitted, "app/main");
+    assert!(
+        header.contains("#include \"lib.h\""),
+        "header must include dependencies so its signatures resolve:\n{header}"
+    );
+}
+
+#[test]
+fn project_emits_cross_module_enum_construction_and_match() {
+    // Constructing and matching an imported enum must use the dependency's tag
+    // constants (`NS_lib_Status_TAG_*`) — the exact names its own translation
+    // unit declares — and its qualified enum type.
+    let emitted = compile_project_and_emit(&[
+        ("lib", "pub enum Status { Active, Idle }\n"),
+        (
+            "app/main",
+            "import { Status } from \"lib\"\npub fn main() -> i32 {\n    let s = Status.Active\n    return match s {\n        Status.Active => 1\n        _ => 2\n    }\n}\n",
+        ),
+    ]);
+    let main = project_source(&emitted, "app/main");
+    let lib = project_source(&emitted, "lib");
+    assert!(
+        lib.contains("NS_lib_Status_TAG_Active = 0"),
+        "dependency declares tags with its own stem:\n{lib}"
+    );
+    assert!(
+        main.contains("case NS_lib_Status_TAG_Active:"),
+        "match case must use the dependency's tag:\n{main}"
+    );
+    assert!(
+        main.contains("(NS_lib_Status){ .tag = NS_lib_Status_TAG_Active }"),
+        "unit construction must use the dependency's type and tag:\n{main}"
+    );
+}
+
+#[test]
+fn project_emits_cross_module_tuple_struct_types() {
+    let emitted = compile_project_and_emit(&[
+        ("lib", "pub struct Pair(i32, i32)\n"),
+        (
+            "app/main",
+            "import { Pair } from \"lib\"\npub fn make() -> Pair { return Pair(1, 2) }\n",
+        ),
+    ]);
+    let main = project_source(&emitted, "app/main");
+    assert!(
+        main.contains("(NS_lib_Pair){ 1, 2 }"),
+        "tuple construction not lowered to the dependency's type:\n{main}"
+    );
+    assert!(
+        main.contains("NS_lib_Pair ns_app_main_make"),
+        "signature not lowered to the dependency's typedef:\n{main}"
     );
 }
 

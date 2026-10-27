@@ -1000,14 +1000,22 @@ by a production native target.
         against the importer key before type-checking (mirrors `check_project`).
       - `CompilerClient.compileProject` and `astra build --target c` wire the
         multi-module path (single-module builds keep the standalone emitter).
-      - Honest boundary: default-import calls are rejected with `NS8019` and
-        cross-module struct/enum types with `NS8020`.
+      - Cross-module struct/enum types (`NS8020` slice): imported, renamed, and
+        namespace-dotted type names resolve to the dependency's qualified
+        typedef (`NS_<dep stem>_<Type>`), which stays in the dependency —
+        signatures, literals, tuple constructors, field access, enum
+        construction, tag constants, and match cases all lower with the
+        declaring module's prefix, and public headers include dependency
+        headers so exported signatures resolve. Bare names inferred without an
+        explicit type import resolve to the declaring dependency (first by
+        sorted key; local declarations always win).
+      - Honest boundary: default-import calls are rejected with `NS8019`.
 
 **Actually left**
 
-- [ ] Multi-module/project linking remainder: Cargo/npm/native package linking and
-      cross-module struct/enum types (`NS8020`) remain unimplemented; only
-      function-level cross-module imports link today.
+- [ ] Multi-module/project linking remainder: Cargo/npm/native package linking
+      remains unimplemented; function-level and type-level cross-module imports
+      link today.
 - [ ] Manual memory and GC. `@memory:manual` is rejected with `NS8012`; native
       allocation, ownership, roots, and finalization are not implemented
       (`GC-001`).
@@ -1029,15 +1037,16 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 63 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 65 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing/slicing/comparisons,
   `@script:c` and `@script:cpp` emission, compiler API artifacts, rejection paths,
   and multi-module project emission (cross-module call resolution, symbol
   collision avoidance, qualified header prototypes, entry-only `main`, namespace
-  imports, `NS8019`/`NS8020` rejections).
-- `cargo test --workspace` passes (63 in `astra-codegen-c`, 142 in `astra-core`,
+  imports, cross-module struct/enum/tuple-struct types, the `NS8019` rejection,
+  and header dependency includes).
+- `cargo test --workspace` passes (65 in `astra-codegen-c`, 142 in `astra-core`,
   31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
 - `astra build --target c` emits `main.c` (single module) or one qualified
   `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary
@@ -1194,7 +1203,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `TS-001` TypeScript backend (complete at `df4ffc9`: shared-emitter TS mode, `astra build --target ts`, pinned `@script:ts` transpiler)
 - [~] `INTEROP-001` Inline `@script` foreign-language blocks (JS and TS slices done; C slice remains)
 - [ ] `PLAY-001` Browser playground (expanded plan above)
-- [~] `C-001` C backend - managed first slice + multi-module function-level project linking done; cross-module types (`NS8020`), package linking, GC/manual memory, concurrency, FFI/`@script:c`, full patterns, native target policy, and cross-platform native verification remain
+- [~] `C-001` C backend - managed first slice + multi-module project linking (functions and cross-module struct/enum types) done; package linking, GC/manual memory, concurrency, FFI/`@script:c`, full patterns, native target policy, and cross-platform native verification remain
 - [ ] `GC-001` Native GC
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI

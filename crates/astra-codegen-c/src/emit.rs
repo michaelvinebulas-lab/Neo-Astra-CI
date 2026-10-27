@@ -13,7 +13,7 @@
 //! panic/abort. Anything beyond that slice is rejected with a stable `NS80xx`
 //! diagnostic instead of emitting incorrect C.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use astra_core::ast::{
@@ -151,6 +151,7 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         imports: HashMap::new(),
         namespaces: HashMap::new(),
         default_imports: HashSet::new(),
+        dep_headers: Vec::new(),
         emit_main_entry: true,
         out: String::new(),
         pre: String::new(),
@@ -188,6 +189,12 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
 
     let mut results = Vec::new();
     let last_key = entries.last().map(|e| e.key.clone());
+    // Declared type shapes per module key, used to resolve imported type names
+    // to the dependency that declares them (cross-module struct/enum types).
+    let envs_by_key: std::collections::BTreeMap<String, TypeEnv> = entries
+        .iter()
+        .map(|e| (e.key.clone(), TypeEnv::collect(&e.module.ast)))
+        .collect();
     for entry in entries {
         if !entry.module.manual_memory_scopes.is_empty() {
             return Err(BackendError::new(
@@ -220,6 +227,17 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
         // each declare `struct Point` emit distinct typedefs and their headers
         // cannot collide when a dependent includes both.
         tcx.set_type_prefix(&stem);
+
+        // Resolve this module's imports into call-site lookup tables. A named
+        // or namespace import resolves to the dependency's qualified symbol;
+        // a default import cannot be mapped to a C symbol and is rejected at
+        // the call site.
+        let (imports, namespaces, default_imports) = collect_import_tables(&entry.module.hir);
+        // Register imported types before the prescan so signatures naming a
+        // dependency's struct or enum lower to that module's qualified typedef
+        // instead of being rejected with `NS8020`.
+        install_foreign_types(&mut tcx, &imports, &namespaces, &envs_by_key);
+
         prescan(&mut tcx, &entry.module);
         if tcx.rejected() {
             let r = tcx.rejects.into_iter().next().expect("non-empty");
@@ -233,12 +251,6 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             .filter_map(|k| header_map.get(k).cloned())
             .collect();
 
-        // Resolve this module's imports into call-site lookup tables. A named
-        // or namespace import resolves to the dependency's qualified symbol;
-        // a default import cannot be mapped to a C symbol and is rejected at
-        // the call site.
-        let (imports, namespaces, default_imports) = collect_import_tables(&entry.module.hir);
-
         let ann = Annotations::new(&entry.module.annotations);
         let mut e = Emitter {
             module: &entry.module,
@@ -251,6 +263,7 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             imports,
             namespaces,
             default_imports,
+            dep_headers: dep_headers.clone(),
             // Only the entry (last) module emits the `int main(void)` wrapper.
             emit_main_entry: last_key.as_deref() == Some(entry.key.as_str()),
             out: String::new(),
@@ -340,6 +353,77 @@ fn module_key_stem(key: &str) -> String {
     key.strip_suffix(".ns")
         .unwrap_or(key)
         .replace(['/', '.', '-'], "_")
+}
+
+/// Registers every type declared by a dependency as the using module sees it —
+/// imported by name, renamed, or namespace-dotted (`alias.Type`) — so
+/// cross-module signatures, constructors, and patterns resolve to the
+/// dependency's qualified typedef instead of failing with `NS8020`.
+///
+/// Named imports take precedence over bare names discovered by scanning
+/// dependencies, and every phase iterates in sorted order so the result is
+/// deterministic.
+fn install_foreign_types(
+    tcx: &mut TyCtxt,
+    imports: &HashMap<String, (String, String)>,
+    namespaces: &HashMap<String, String>,
+    envs: &BTreeMap<String, TypeEnv>,
+) {
+    let mut table: BTreeMap<String, crate::ty::ForeignDecl> = BTreeMap::new();
+    // 1. Named imports: the written name (and the dependency's own name when
+    //    the import renames it) resolve to the declaring dependency.
+    let mut named: Vec<_> = imports.iter().collect();
+    named.sort();
+    for (written, (dep_key, imported)) in named {
+        let Some(env) = envs.get(dep_key) else {
+            continue;
+        };
+        let Some(shape) = env.shape(imported).cloned() else {
+            continue; // functions and constants have no nominal shape
+        };
+        let decl = crate::ty::ForeignDecl {
+            stem: module_key_stem(dep_key),
+            local: imported.clone(),
+            shape,
+        };
+        table.insert(written.clone(), decl.clone());
+        table.insert(imported.clone(), decl);
+    }
+    // 2. Namespace imports: `alias.Type` for every declared type, plus the
+    //    bare name when no named import already claimed it.
+    let mut namespace_list: Vec<_> = namespaces.iter().collect();
+    namespace_list.sort();
+    for (alias, dep_key) in namespace_list {
+        let Some(env) = envs.get(dep_key) else {
+            continue;
+        };
+        let stem = module_key_stem(dep_key);
+        for (name, shape) in &env.decls {
+            let decl = crate::ty::ForeignDecl {
+                stem: stem.clone(),
+                local: name.clone(),
+                shape: shape.clone(),
+            };
+            table.insert(format!("{alias}.{name}"), decl.clone());
+            table.entry(name.clone()).or_insert(decl);
+        }
+    }
+    // 3. Bare names checker annotations can carry without an explicit type
+    //    import (e.g. `let p = make_point()`): first declaring dependency in
+    //    sorted key order wins. Local declarations always win in `nominal`.
+    for (dep_key, env) in envs {
+        let stem = module_key_stem(dep_key);
+        for (name, shape) in &env.decls {
+            table.entry(name.clone()).or_insert(crate::ty::ForeignDecl {
+                stem: stem.clone(),
+                local: name.clone(),
+                shape: shape.clone(),
+            });
+        }
+    }
+    for (name, decl) in table {
+        tcx.add_foreign(name, decl);
+    }
 }
 
 /// Pre-scans declared and annotation types to register every `typedef` and
@@ -481,6 +565,11 @@ struct Emitter<'a> {
     /// Local names bound by a default import (`import foo from "lib"`), which
     /// the C backend cannot resolve to a symbol and rejects at the call site.
     default_imports: HashSet<String>,
+    /// Header filenames of direct dependencies. The translation unit includes
+    /// them for code, and the public header includes them so exported
+    /// signatures that reference imported types (`NS_lib_Point`) resolve for
+    /// consumers of the header alone.
+    dep_headers: Vec<String>,
     /// When `false`, the module's `main` wrapper is suppressed (linked builds
     /// emit `int main(void)` only for the entry module).
     emit_main_entry: bool,
@@ -621,6 +710,14 @@ impl<'a> Emitter<'a> {
         h.push('\n');
         h.push_str(RUNTIME_HEADER);
         h.push('\n');
+        // Dependency headers: exported signatures may reference imported types
+        // (`NS_lib_Point`), so consumers of this header alone still see them.
+        for dep in &self.dep_headers {
+            let _ = writeln!(h, "#include \"{dep}\"");
+        }
+        if !self.dep_headers.is_empty() {
+            h.push('\n');
+        }
         // Typedefs used in exported function signatures.
         for decl in &self.tcx.typedefs.clone() {
             h.push_str(decl);
@@ -1708,7 +1805,7 @@ impl<'a> Emitter<'a> {
                     _ => {}
                 }
                 // Tuple struct constructor call: `Pair(1, 2)`.
-                if let Some(shape) = self.tcx.env.struct_of(name).cloned()
+                if let Some(shape) = self.tcx.struct_shape(name)
                     && shape.tuple
                 {
                     let ty_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
@@ -1751,7 +1848,7 @@ impl<'a> Emitter<'a> {
                                 return format!("ns_{dep_stem}_{}({arg_c})", sanitize(member));
                             }
                             // Enum variant constructor with payload.
-                            if self.tcx.env.enum_of(owner).is_some() {
+                            if self.tcx.enum_shape(owner).is_some() {
                                 return self.enum_variant_c(owner, member, args);
                             }
                             // Inline script export call: `<script>.<func>(...)`.
@@ -1828,8 +1925,15 @@ impl<'a> Emitter<'a> {
 
     fn enum_variant_c(&mut self, owner: &str, variant: &str, args: &[Expr]) -> String {
         let enum_c = self.tcx.c_type(&Type::Named(owner.to_string(), Vec::new()));
-        let tag = format!("NS_{}_TAG_{}", sanitize(owner), sanitize(variant));
-        let fields: Vec<Type> = match self.tcx.env.enum_of(owner) {
+        // The tag constant is declared with the owning module's prefix — the
+        // local stem for local enums, the dependency's stem for imported ones.
+        let Some(tag) = self.tcx.enum_tag(owner, variant) else {
+            self.tcx
+                .rejects
+                .push(reject("NS8020", format!("enum '{owner}' is not declared")));
+            return format!("({enum_c}){{0}}");
+        };
+        let fields: Vec<Type> = match self.tcx.enum_shape(owner) {
             Some(shape) => shape
                 .variants
                 .iter()
@@ -2081,7 +2185,7 @@ impl<'a> Emitter<'a> {
     fn member_c(&mut self, target: &Expr, member: &str, e: &Expr) -> String {
         // Unit enum variant used as a value: `Color::Red`.
         if let ExprKind::Identifier(owner) = &target.kind
-            && let Some(shape) = self.tcx.env.enum_of(owner)
+            && let Some(shape) = self.tcx.enum_shape(owner)
             && shape.variants.iter().any(|v| v.name == member)
         {
             return self.enum_variant_c(owner, member, &[]);
@@ -2089,8 +2193,8 @@ impl<'a> Emitter<'a> {
         let tt = self.type_of(target).cloned();
         let t = self.expr(target);
         match &tt {
-            Some(Type::Named(name, _)) if self.tcx.env.struct_of(name).is_some() => {
-                let shape = self.tcx.env.struct_of(name).cloned();
+            Some(Type::Named(name, _)) if self.tcx.struct_shape(name).is_some() => {
+                let shape = self.tcx.struct_shape(name);
                 if let Some(s) = &shape
                     && s.fields.iter().any(|(f, _)| f == member)
                 {
@@ -2202,9 +2306,11 @@ impl<'a> Emitter<'a> {
     }
 
     fn struct_init_c(&mut self, path: &ast::TypePath, fields: &[ast::FieldInit]) -> String {
-        let name = path.segments.last().map(String::as_str).unwrap_or("");
-        let ty_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
-        let Some(shape) = self.tcx.env.struct_of(name).cloned() else {
+        // The full path: a namespace-qualified literal (`lib.Point { .. }`)
+        // resolves through the foreign type table, a bare path locally.
+        let name = path.segments.join(".");
+        let ty_c = self.tcx.c_type(&Type::Named(name.clone(), Vec::new()));
+        let Some(shape) = self.tcx.struct_shape(&name) else {
             self.tcx
                 .rejects
                 .push(reject("NS8020", format!("struct '{name}' is not declared")));
@@ -2390,10 +2496,10 @@ impl<'a> Emitter<'a> {
         match scrut_ty {
             Type::Option(_) => self.match_option(scrut, scrut_ty, arms, target, result_ty),
             Type::Result(_, _) => self.match_result(scrut, scrut_ty, arms, target, result_ty),
-            Type::Named(name, _) if self.tcx.env.enum_of(name).is_some() => {
+            Type::Named(name, _) if self.tcx.enum_shape(name).is_some() => {
                 self.match_enum(scrut, name, arms, target)
             }
-            Type::Named(name, _) if self.tcx.env.struct_of(name).is_some() => {
+            Type::Named(name, _) if self.tcx.struct_shape(name).is_some() => {
                 self.match_struct(scrut, name, arms, target)
             }
             Type::Tuple(_) => self.match_tuple(scrut, scrut_ty, arms, target),
@@ -2494,15 +2600,23 @@ impl<'a> Emitter<'a> {
                     variant,
                     arguments,
                 } => {
-                    let owner = path.segments.last().map(String::as_str).unwrap_or(name);
-                    let _ = writeln!(
-                        self.out,
-                        "    case NS_{}_TAG_{}: {{",
-                        sanitize(owner),
-                        sanitize(variant)
-                    );
+                    // Full owner path: `lib.Status` resolves through the
+                    // foreign type table, `Status` locally (or through the
+                    // stem prefix recorded with it).
+                    let owner = if path.segments.is_empty() {
+                        name.to_string()
+                    } else {
+                        path.segments.join(".")
+                    };
+                    let Some(tag) = self.tcx.enum_tag(&owner, variant) else {
+                        self.tcx
+                            .rejects
+                            .push(reject("NS8020", format!("enum '{owner}' is not declared")));
+                        continue;
+                    };
+                    let _ = writeln!(self.out, "    case {tag}: {{");
                     if let Some(args) = arguments
-                        && let Some(shape) = self.tcx.env.enum_of(owner).cloned()
+                        && let Some(shape) = self.tcx.enum_shape(&owner)
                         && let Some(vshape) = shape.variants.iter().find(|v| &v.name == variant)
                     {
                         for (j, subpat) in args.iter().enumerate() {
@@ -2549,7 +2663,7 @@ impl<'a> Emitter<'a> {
     }
 
     fn match_struct(&mut self, scrut: &str, name: &str, arms: &[MatchArm], target: Option<&str>) {
-        let Some(shape) = self.tcx.env.struct_of(name).cloned() else {
+        let Some(shape) = self.tcx.struct_shape(name) else {
             self.tcx
                 .rejects
                 .push(reject("NS8020", format!("struct '{name}' is not declared")));
@@ -2557,7 +2671,8 @@ impl<'a> Emitter<'a> {
         };
         for arm in arms {
             if let PatternKind::Constructor { path, arguments } = &arm.pattern.kind
-                && path.segments.last().map(String::as_str) == Some(name)
+                && (path.segments.join(".") == name
+                    || path.segments.last().map(String::as_str) == Some(name))
             {
                 for (j, subpat) in arguments.iter().enumerate() {
                     let (fname, fty) = shape
@@ -2765,8 +2880,8 @@ impl<'a> Emitter<'a> {
                 }
             }
             PatternKind::Constructor { path, arguments } => {
-                let name = path.segments.last().map(String::as_str).unwrap_or("");
-                if let Some(shape) = self.tcx.env.struct_of(name).cloned() {
+                let name = path.segments.join(".");
+                if let Some(shape) = self.tcx.struct_shape(&name) {
                     for (i, subpat) in arguments.iter().enumerate() {
                         let (_, fty) = shape
                             .fields
@@ -2826,8 +2941,10 @@ impl<'a> Emitter<'a> {
         // `Never`, so no value is ever consumed from this expression. Write the
         // return directly to `self.out` so it is emitted in the right place
         // regardless of whether we are inside a `pre` accumulation.
-        let name = error.segments.last().map(String::as_str).unwrap_or("");
-        let err_val = self.construct_error(name, arguments);
+        // Full path so an imported error type (`lib.MyError`) resolves to the
+        // declaring dependency instead of being rejected.
+        let name = error.segments.join(".");
+        let err_val = self.construct_error(&name, arguments);
         let fn_result_c = self.fn_result_c();
         let _ = writeln!(
             self.out,
@@ -2840,7 +2957,7 @@ impl<'a> Emitter<'a> {
         let err_c = self.tcx.c_type(&Type::Named(name.to_string(), Vec::new()));
         match arguments {
             FailArguments::Tuple(args) => {
-                let Some(shape) = self.tcx.env.struct_of(name).cloned() else {
+                let Some(shape) = self.tcx.struct_shape(name) else {
                     self.tcx.rejects.push(reject(
                         "NS8020",
                         format!("error type '{name}' is not declared"),

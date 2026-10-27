@@ -72,28 +72,41 @@ impl TypeEnv {
         Self { decls }
     }
 
-    /// Returns the struct shape for a nominal name, if any.
-    pub fn struct_of(&self, name: &str) -> Option<&StructShape> {
-        if let Some(DeclShape::Struct(s)) = self.decls.get(name) {
-            Some(s)
-        } else {
-            None
-        }
-    }
-
-    /// Returns the enum shape for a nominal name, if any.
-    pub fn enum_of(&self, name: &str) -> Option<&EnumShape> {
-        if let Some(DeclShape::Enum(e)) = self.decls.get(name) {
-            Some(e)
-        } else {
-            None
-        }
-    }
-
     /// Returns the shape for a nominal name, if any.
     pub fn shape(&self, name: &str) -> Option<&DeclShape> {
         self.decls.get(name)
     }
+}
+
+/// A nominal type declared in a dependency module.
+///
+/// [`TyCtxt`] keys these by the name as written in the *using* module — the
+/// imported name, a rename, or a namespace-dotted path — so signatures,
+/// constructors, and patterns lower to the dependency's qualified typedef
+/// (`NS_<dep stem>_<Type>`) instead of being rejected with `NS8020`.
+#[derive(Debug, Clone)]
+pub struct ForeignDecl {
+    /// The dependency module's C stem; it is that module's type prefix.
+    pub stem: String,
+    /// The type's own name inside the declaring module (differs from the
+    /// written name for rename imports).
+    pub local: String,
+    pub shape: DeclShape,
+}
+
+/// How a nominal type name resolves: which module declares it, its C prefix,
+/// and its shape.
+#[derive(Debug, Clone)]
+pub struct Nominal {
+    /// Prefix including the trailing `_`; empty for this module in standalone
+    /// builds, `<stem>_` in linked builds.
+    pub prefix: String,
+    /// The type's own name in the declaring module.
+    pub source: String,
+    pub shape: DeclShape,
+    /// True when the declaring module is a dependency. Its translation unit
+    /// (and header) own the typedef, so the user must never re-emit it.
+    pub foreign: bool,
 }
 
 fn struct_shape(decl: &StructDecl) -> StructShape {
@@ -250,6 +263,9 @@ pub struct TyCtxt {
     /// modules that each declare `struct Point` emit distinct typedefs
     /// (`NS_lib_Point` vs `NS_main_Point`) and their headers cannot collide.
     type_prefix: String,
+    /// Nominal types declared by dependency modules, keyed by the name as
+    /// written in this module (imported name, rename, or `alias.Type` path).
+    foreign: BTreeMap<String, ForeignDecl>,
 }
 
 impl TyCtxt {
@@ -261,7 +277,69 @@ impl TyCtxt {
             typedefs: Vec::new(),
             rejects: Vec::new(),
             type_prefix: String::new(),
+            foreign: BTreeMap::new(),
         }
+    }
+
+    /// Registers a type declared by a dependency module under the name as
+    /// written in this module. Must be called before [`TyCtxt`] maps any type.
+    pub fn add_foreign(&mut self, name: String, decl: ForeignDecl) {
+        self.foreign.insert(name, decl);
+    }
+
+    /// Resolves a nominal type name — local, imported, renamed, or
+    /// namespace-dotted — to its declaring module's C prefix and shape.
+    pub fn nominal(&self, name: &str) -> Option<Nominal> {
+        if let Some(shape) = self.env.shape(name).cloned() {
+            return Some(Nominal {
+                prefix: self.type_prefix.clone(),
+                source: name.to_string(),
+                shape,
+                foreign: false,
+            });
+        }
+        let decl = self.foreign.get(name)?;
+        Some(Nominal {
+            prefix: if decl.stem.is_empty() {
+                String::new()
+            } else {
+                format!("{}_", decl.stem)
+            },
+            source: decl.local.clone(),
+            shape: decl.shape.clone(),
+            foreign: true,
+        })
+    }
+
+    /// Resolves a struct name to its shape, local or foreign.
+    pub fn struct_shape(&self, name: &str) -> Option<StructShape> {
+        match self.nominal(name)?.shape {
+            DeclShape::Struct(shape) => Some(shape),
+            DeclShape::Enum(_) => None,
+        }
+    }
+
+    /// Resolves an enum name to its shape, local or foreign.
+    pub fn enum_shape(&self, name: &str) -> Option<EnumShape> {
+        match self.nominal(name)?.shape {
+            DeclShape::Enum(shape) => Some(shape),
+            DeclShape::Struct(_) => None,
+        }
+    }
+
+    /// Builds the C tag constant for an enum variant
+    /// (`NS_<prefix><Owner>_TAG_<Variant>`), local or foreign.
+    pub fn enum_tag(&self, owner: &str, variant: &str) -> Option<String> {
+        let nominal = self.nominal(owner)?;
+        if !matches!(nominal.shape, DeclShape::Enum(_)) {
+            return None;
+        }
+        Some(format!(
+            "NS_{}{}_TAG_{}",
+            nominal.prefix,
+            sanitize(&nominal.source),
+            sanitize(variant)
+        ))
     }
 
     /// Sets the module stem used to qualify nominal type C names in linked
@@ -327,7 +405,13 @@ impl TyCtxt {
             }
             Type::Function(_) => "Fn".into(),
             Type::Named(name, args) => {
-                let base = format!("{}{}", self.type_prefix, sanitize(name));
+                // Foreign types take the declaring dependency's prefix so
+                // container names (`NS_Option_lib_Point`) match the names the
+                // dependency itself generates when values cross modules.
+                let base = match self.nominal(name) {
+                    Some(nominal) => format!("{}{}", nominal.prefix, sanitize(&nominal.source)),
+                    None => format!("{}{}", self.type_prefix, sanitize(name)),
+                };
                 if args.is_empty() {
                     base
                 } else {
@@ -453,6 +537,14 @@ impl TyCtxt {
 
     fn user_typedef(&mut self, name: &str) -> String {
         let cname = format!("NS_{}{}", self.type_prefix, sanitize(name));
+        // A dependency module declares this type: its translation unit and
+        // header own the typedef (this module already includes that header),
+        // so reference the qualified name without re-emitting it here.
+        if let Some(nominal) = self.nominal(name)
+            && nominal.foreign
+        {
+            return format!("NS_{}{}", nominal.prefix, sanitize(&nominal.source));
+        }
         // Clone the declared shape so we release the immutable borrow of
         // `self.env` before `self.c_type` mutably borrows `self`.
         let owned = match self.env.shape(name) {
