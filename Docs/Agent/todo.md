@@ -29,7 +29,7 @@ recoverable errors, integer policies, eager tasks, bounded channels, UTF-8
 string/byte operations, source maps, `.d.ts`, and the shared `conformance/`
 suite — now merged into `master`. `TS-001` is complete (shared-emitter TS mode,
 `astra build --target ts`, and the pinned `@script:ts` transpiler), and the
-conformance suite (16 positive + 11 negative cases) runs green on JavaScript,
+conformance suite (17 positive + 11 negative cases) runs green on JavaScript,
 TypeScript, and Nova with empty backend gap ledgers. The
 `INTEROP-001` inline-script design is complete in
 `Docs/Design/V1/10-inline-script-interop.md`; the C/C++ slice is in progress.
@@ -681,6 +681,9 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - [x] Emit `@script:js` blocks as separate ESM artifacts, import their namespace,
       validate declared exports, convert `Option` boundaries, map declared error
       effects, and write script source maps.
+- [x] Emit statement-position `if` and `match` as real JavaScript statements so
+      `break`, `continue`, and early `return` work inside them (pinned by the
+      `early_exit` conformance case).
 
 **Current scope boundary**
 
@@ -728,6 +731,11 @@ by the Rust frontend, without re-parsing `.ns` source in TypeScript.
 - `astra build` writes a line-level `.js.map` with `sourcesContent`, rewrites the
   source path for the output directory, and appends a `sourceMappingURL`
   comment.
+- Statement-position `if` and `match` lower to plain JavaScript statements, so
+  `break`, `continue`, and early `return` bind to the enclosing loop or
+  function. In a value-position expression (`let x = match ... { _ => { return
+  0 } }`), the IIFE lowering still rejects that control flow with `NS8001`;
+  closing it requires expression-statement hoisting.
 
 **Evidence**
 
@@ -1191,7 +1199,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI
 - [ ] `CONC-001` Structured concurrency runtime
-- [~] `CONF-001` Conformance suite — 16 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C backend runner waits on the native toolchain gate
+- [~] `CONF-001` Conformance suite — 17 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners wired and green with empty gap ledgers; the C backend runner waits on the native toolchain gate
 - [ ] `HARD-001` v0.1 hardening
 
 ---

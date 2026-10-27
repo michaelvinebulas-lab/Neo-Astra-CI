@@ -2590,8 +2590,26 @@ class JavaScriptGenerator {
           data.iterable,
         )}) ${this.emitBlock(data.body, "statement")}`;
       }
-      case "Expr":
-        return `${this.emitExpr(payloadOf(kind) as Expr)};`;
+      case "Expr": {
+        const expression = payloadOf(kind) as Expr;
+        if (variantOf(expression.kind) === "If") {
+          return this.emitIfStatement(
+            structPayload<{
+              condition: Expr;
+              then_branch: Block;
+              else_branch: unknown;
+            }>(expression.kind, "If"),
+          );
+        }
+        if (variantOf(expression.kind) === "Match") {
+          const data = structPayload<{
+            value: Expr;
+            arms: readonly MatchArm[];
+          }>(expression.kind, "Match");
+          return this.emitMatchStatement(data.value, data.arms);
+        }
+        return `${this.emitExpr(expression)};`;
+      }
       case "Scoped": {
         const data = structPayload<{
           annotation: { kind: "Mode" | "Memory"; value: string };
@@ -3528,6 +3546,37 @@ class JavaScriptGenerator {
     return `(() => {\n  if (${condition}) ${thenBranch}${otherwise}\n})()`;
   }
 
+  private emitIfStatement(data: {
+    readonly condition: Expr;
+    readonly then_branch: Block;
+    readonly else_branch: unknown;
+  }): string {
+    const condition = this.emitExpr(data.condition);
+    const thenBranch = this.emitBlock(data.then_branch, "statement");
+    let otherwise = "";
+    if (data.else_branch !== null && data.else_branch !== undefined) {
+      if (variantOf(data.else_branch) === "Block") {
+        otherwise = ` else ${this.emitBlock(
+          payloadOf(data.else_branch) as Block,
+          "statement",
+        )}`;
+      } else {
+        const alternative = payloadOf(data.else_branch) as Expr;
+        otherwise =
+          variantOf(alternative.kind) === "If"
+            ? ` else ${this.emitIfStatement(
+                structPayload<{
+                  condition: Expr;
+                  then_branch: Block;
+                  else_branch: unknown;
+                }>(alternative.kind, "If"),
+              )}`
+            : ` else {\n${indent(`${this.emitExpr(alternative)};`)}\n}`;
+      }
+    }
+    return `if (${condition}) ${thenBranch}${otherwise}`;
+  }
+
   private emitMatchExpression(value: Expr, arms: readonly MatchArm[]): string {
     if (this.scanExpression(value, 0)) {
       this.unsupported(
@@ -3555,32 +3604,19 @@ class JavaScriptGenerator {
       }
     }
 
-    const temporary = this.temporary("match");
-    this.useHelper("err");
-    const rootSemantic = this.typeAt(value.span);
-    const lines: string[] = this.isTs
-      ? [
-          `let ${temporary} = ${this.emitExpr(value)} as unknown as $Dyn;`,
-          `if (${temporary} !== null && ${temporary} !== undefined && ${temporary}.$failure) ${temporary} = $err(${temporary}.error);`,
-        ]
-      : [
-          `let ${temporary} = ${this.emitExpr(value)};`,
-          `if (${temporary} && ${temporary}.$failure) ${temporary} = $err(${temporary}.error);`,
-        ];
-    if (this.isTs) {
-      this.useLooseType("$Dyn");
-    }
+    const scrutinee = this.prepareMatchScrutinee(value);
+    const lines: string[] = [...scrutinee.lines];
     let hasCatchAll = false;
 
     for (const arm of arms) {
       if (hasCatchAll) {
         continue;
       }
-      const bindingType: PatternBindingType | undefined =
-        this.isTs && rootSemantic !== undefined
-          ? { kind: "semantic", ty: rootSemantic }
-          : undefined;
-      const pattern = this.lowerPattern(arm.pattern, temporary, bindingType);
+      const pattern = this.lowerPattern(
+        arm.pattern,
+        scrutinee.temporary,
+        scrutinee.bindingType,
+      );
       const body =
         variantOf(arm.body) === "Expr"
           ? `return ${this.emitExpr(payloadOf(arm.body) as Expr)};`
@@ -3600,6 +3636,75 @@ class JavaScriptGenerator {
     this.useHelper("panic");
     lines.push('$panic("non-exhaustive match");');
     return `(() => {\n${indent(lines.join("\n"))}\n})()`;
+  }
+
+  private emitMatchStatement(value: Expr, arms: readonly MatchArm[]): string {
+    const scrutinee = this.prepareMatchScrutinee(value);
+    const prelude = [...scrutinee.lines];
+    const segments: string[] = [];
+    let hasCatchAll = false;
+
+    for (const arm of arms) {
+      if (hasCatchAll) {
+        continue;
+      }
+      const pattern = this.lowerPattern(
+        arm.pattern,
+        scrutinee.temporary,
+        scrutinee.bindingType,
+      );
+      const body =
+        variantOf(arm.body) === "Expr"
+          ? `${this.emitExpr(payloadOf(arm.body) as Expr)};`
+          : this.emitBlock(payloadOf(arm.body) as Block, "statement");
+      const bindings =
+        pattern.bindings.length === 0 ? "" : `${indent(pattern.bindings.join("\n"))}\n`;
+      const guard =
+        pattern.checks.length === 0
+          ? ""
+          : `if (${pattern.checks.join(" && ")}) `;
+      if (pattern.checks.length === 0) {
+        hasCatchAll = true;
+      }
+      segments.push(`${guard}{\n${bindings}${indent(body)}\n}`);
+    }
+
+    let chain = segments.join(" else ");
+    if (!hasCatchAll) {
+      this.useHelper("panic");
+      const fallback = `{\n${indent('$panic("non-exhaustive match");')}\n}`;
+      chain = chain.length === 0 ? fallback : `${chain} else ${fallback}`;
+    }
+    return chain.length === 0
+      ? prelude.join("\n")
+      : [...prelude, chain].join("\n");
+  }
+
+  private prepareMatchScrutinee(value: Expr): {
+    readonly temporary: string;
+    readonly lines: readonly string[];
+    readonly bindingType: PatternBindingType | undefined;
+  } {
+    const temporary = this.temporary("match");
+    this.useHelper("err");
+    const rootSemantic = this.typeAt(value.span);
+    const lines = this.isTs
+      ? [
+          `let ${temporary} = ${this.emitExpr(value)} as unknown as $Dyn;`,
+          `if (${temporary} !== null && ${temporary} !== undefined && ${temporary}.$failure) ${temporary} = $err(${temporary}.error);`,
+        ]
+      : [
+          `let ${temporary} = ${this.emitExpr(value)};`,
+          `if (${temporary} && ${temporary}.$failure) ${temporary} = $err(${temporary}.error);`,
+        ];
+    if (this.isTs) {
+      this.useLooseType("$Dyn");
+    }
+    const bindingType: PatternBindingType | undefined =
+      this.isTs && rootSemantic !== undefined
+        ? { kind: "semantic", ty: rootSemantic }
+        : undefined;
+    return { temporary, lines, bindingType };
   }
 
   private scanStatements(statements: readonly Stmt[], loopDepth: number): boolean {

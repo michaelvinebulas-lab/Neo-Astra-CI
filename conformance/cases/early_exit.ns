@@ -1,0 +1,23 @@
+fn summarize(values: [i32]) -> i32 {
+    let mut total = 0
+    for value in values {
+        if value < 0 {
+            continue
+        }
+        match value {
+            99 => { break }
+            _ => { total = total + value }
+        }
+    }
+    if total == 0 {
+        return -1
+    }
+    return total
+}
+
+pub fn main() -> i32 {
+    println(summarize([-5, 1, 2, 99, 3]))
+    println(summarize([0]))
+    println(summarize([]))
+    return 0
+}

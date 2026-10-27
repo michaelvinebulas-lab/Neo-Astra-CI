@@ -74,9 +74,14 @@ Current Nova gaps: none. The `bytes` builtin, the full `str` method set, and
 the `Channel` runtime landed with NOVA-004; the `KNOWN_GAPS` ledger stays in
 place, empty, for the next gap a new case uncovers.
 
-Current JavaScript gaps: `break`/`continue` and early `return` inside an
-`if` block are not emitted yet (`NS8001`). Cases therefore use loops with a
-single exit and `match` expressions until the backend closes that gap.
+Current JavaScript gaps: none — every case runs. Statement-position `if` and
+`match` now lower to real JavaScript statements, so `break`, `continue`, and
+early `return` work inside them (pinned by the `early_exit` case and the test
+`javascript backend emits statement-position if and match control flow`).
+Control flow inside a *value-position* expression — `let x = match ... { _ => {
+return 0 } }` and similar IIFE-lowered `if`/`match`/block expressions — is still
+rejected with `NS8001`; that boundary is pinned by the test `javascript backend
+rejects control flow inside value-position expressions`.
 
 Current TypeScript gap: none. `TS-001` removed the `readonly` emission that
 failed `tsc` with `TS2540` on `user.name = "Neo"`; the `struct_mutation` case

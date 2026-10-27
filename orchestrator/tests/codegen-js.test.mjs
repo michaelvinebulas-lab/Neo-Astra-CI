@@ -410,7 +410,7 @@ test("javascript backend emits expression default exports", () => {
   assert.equal(result.stdout, "7");
 });
 
-test("javascript backend rejects non-local control flow inside expression blocks", () => {
+test("javascript backend returns from inside a statement-position match", () => {
   const generated = generate(
     [
       "fn choose(value: i32) -> i32 {",
@@ -419,6 +419,61 @@ test("javascript backend rejects non-local control flow inside expression blocks
       "        _ => { return 20 }",
       "    }",
       "    return 0",
+      "}",
+      "pub fn main() -> i32 { return choose(1) }",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "RETURN=10");
+});
+
+test("javascript backend emits statement-position if and match control flow", () => {
+  const generated = generate(
+    [
+      "fn summarize(values: [i32]) -> i32 {",
+      "    let mut total = 0",
+      "    for value in values {",
+      "        if value < 0 {",
+      "            continue",
+      "        }",
+      "        match value {",
+      "            99 => { break }",
+      "            _ => { total = total + value }",
+      "        }",
+      "    }",
+      "    if total == 0 {",
+      "        return -1",
+      "    }",
+      "    return total",
+      "}",
+      "",
+      "pub fn main() -> i32 {",
+      "    println(summarize([-5, 1, 2, 99, 3]))",
+      "    println(summarize([0]))",
+      "    println(summarize([]))",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "3\n-1\n-1\nRETURN=0");
+});
+
+test("javascript backend rejects control flow inside value-position expressions", () => {
+  const generated = generate(
+    [
+      "fn choose(value: i32) -> i32 {",
+      "    let picked = match value {",
+      "        1 => { return 10 }",
+      "        _ => { return 20 }",
+      "    }",
+      "    return picked",
       "}",
       "pub fn main() -> i32 { return choose(1) }",
       "",

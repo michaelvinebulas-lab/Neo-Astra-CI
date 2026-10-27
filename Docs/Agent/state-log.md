@@ -10,12 +10,25 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `NOVA-004` Nova gaps closed and committed (str methods, `bytes`, Channel); `work/conf-001` merged into master (`78d8920`); `C-001` project-linking slice committed (`a0dea19`); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`); TS struct-mutation fix committed (`49a84c8`) |
+| Current task | `JS-001` statement-position control-flow slice (`NS8001` closure) committed; `NOVA-004` Nova gaps closed (`f0a62e6`); `work/conf-001` merged into master (`78d8920`); `C-001` project-linking slice (`a0dea19`); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`); TS struct-mutation fix (`49a84c8`) |
 | Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, C multi-module project linking (module-qualified symbols, cross-module calls, `compile_project`), `@script` inline interop frontend complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
-| Next action | JS IIFE control-flow (NS8001), then C-001 remainder (GC/manual memory, concurrency, cross-platform native CI gate); later backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+| Next action | C-001 remainder (GC/manual memory, concurrency, cross-module struct/enum types `NS8020`, package linking, native CI gate); consider pinning `bytes.slice` semantics in conformance; later backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+
+---
+
+### 2026-10-27 — `JS-001` slice: statement-position control flow (`NS8001` closure)
+
+- Command: `npm run ci`
+- Result: pass (`[ci] all checks passed`); commit follows this entry
+- What: the shared JavaScript/TypeScript emitter no longer lowers statement-position `if` and `match` to arrow IIFEs. `emitStatement`'s `Expr` case now routes `if` statements to a new `emitIfStatement` (plain `if`/`else if`/`else` statements, recursing through else-if chains) and `match` statements to a new `emitMatchStatement` (`else`-chained arms with the scrutinee temporary and `$failure` normalization shared with the value-mode path via `prepareMatchScrutinee`).
+- Consequence: `break`, `continue`, and early `return` inside statement-position `if` and `match` blocks now emit as legal JavaScript bound to the enclosing loop or function — the documented JS conformance gap closes. Value-position `if`/`match`/block expressions still lower to IIFEs and keep rejecting non-local control flow with `NS8001`.
+- Match detail: statement-position matches chain arms with `else if` so exactly one arm runs (arms no longer `return` out of an IIFE), and the non-exhaustive `$panic` fallback moved into a final `else` block so it is reachable only when no arm matches — the value-mode intent.
+- Tests: the pinned `rejects non-local control flow inside expression blocks` test becomes two positive tests (early `return` from a statement-position `match`; `break`/`continue`/early `return` across statement-position `if` and `match` in a loop) plus one negative test keeping value-position control flow rejected with `NS8001`.
+- New case: `conformance/cases/early_exit.ns` (17 positive cases now) passes on JavaScript, TypeScript, and Nova; `conformance/README.md` records no backend gap that blocks a case.
+- Verification: full `npm run ci` green immediately before this entry (JS codegen suite 31/31, TS suite 9/9 incl. shared conformance, Nova `--test conformance` ok).
 
 ---
 
