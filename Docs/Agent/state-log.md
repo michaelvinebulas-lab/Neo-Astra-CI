@@ -10,12 +10,26 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-27 |
 | Current phase | Phase 7 - Backends |
-| Current task | `TS-001` [x] TypeScript ESM backend complete (3 slices: `83ec555`, `6f0e80b`, `df4ffc9`); `C-001` continuation pending |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, `@script` inline interop frontend complete |
-| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim), `orchestrator/packages` (manifest, nopm, registry, compiler-client, codegen-js, codegen-ts, CLI) |
+| Current task | `C-001` multi-module project linking slice implemented (uncommitted); `TS-001` [x] complete (`83ec555`, `6f0e80b`, `df4ffc9`); TS struct-mutation fix committed (`49a84c8`) |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend (shared emitter TS mode, `astra build --target ts`, `@script:ts` pinned transpiler), first C17 managed slice (`astra-codegen-c`) with freestanding runtime & `astra build --target c` pipeline, C multi-module project linking (module-qualified symbols, cross-module calls, `compile_project`), `@script` inline interop frontend complete |
+| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, host shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | Hosted native executable linking on Windows requires MSVC/Windows SDK headers for libc (`stdio.h`), or a Tier-1 host with standard C library headers in CI |
-| Next action | Continue `C-001` (multi-module project linking for C, cross-platform native CI gate, GC/manual memory, concurrency, FFI, native target policy); then backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+| Next action | Commit `C-001` multi-module slice; then Nova gaps (bytes builtin, str methods, Channel), JS IIFE control-flow (NS8001), then C-001 remainder (GC/manual memory, concurrency, cross-platform native CI gate); later backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice |
+
+---
+
+### 2026-10-27 - C-001 multi-module project linking slice
+
+- Command: `npm run ci`
+- Result: pass (`[ci] all checks passed`: 548+ Rust tests incl. 63 in `astra-codegen-c` and 31 in `astra-compiler-api`, TypeScript unit tests, native/Wasm/boundary tests incl. 2 new C e2e tests, fmt and clippy clean)
+- What: the C backend can now compile a multi-module project into one translation unit per module that links as a unit.
+  - **Emitter** (`crates/astra-codegen-c/{emit,ty}.rs`): linked mode module-qualifies function symbols (`ns_<stem>_<name>`) and nominal type names (`NS_<stem>_<Type>`) so two modules declaring the same name cannot collide; standalone single-module output stays byte-identical (`ns_<name>`). Cross-module calls resolve through HIR import bindings (`collect_import_tables`: named imports → `(depKey, imported)`, namespace imports → `alias.fn(...)`); callers include `<dep stem>.h`. Default-import calls are rejected `NS8019`; cross-module struct/enum types `NS8020` (honest boundary). `module_key_stem` strips a trailing `.ns` so CLI file-path keys yield clean stems (`src/main.ns` → `src_main`, not `src_main_ns`).
+  - **Compiler API** (`crates/astra-compiler-api/src/lib.rs`): `compile_project` JSON-RPC method returns `ProjectCompileResponse` (per-module `cFilename`/`hFilename`/`cSource`/`hSource`/`scriptSources` + shared `hostShim`); filename stem kept in step with the emitter. Relative import specifiers (`./lib`) now resolve against the importer key before type-checking via `check_module_graph_with_imports` (mirrors `check_project`), fixing `NS3012` on `compile_project`. `int main(void)` wrapper is emitted only for the entry module (last source).
+  - **Client/CLI**: `CompilerClient.compileProject` mirrors `checkProject` (method `compile_project`); `astra build --target c` routes multi-module projects through it (writing one `.c`+`.h` per module, shared `astra_host.c`, and linking all translation units for `--target native`), while single-module builds keep the standalone `compile` path so `main.c`/`ns_main()` output is unchanged.
+  - **Tests**: 8 new `emit_c.rs` project tests (cross-module call resolution, collision avoidance, qualified prototypes, entry-only `main`, namespace imports, `NS8019`/`NS8020` rejections); 3 new `compile_project` compiler-api tests (per-module artifacts, cross-module diagnostics, empty-sources `-32602`); 1 new boundary e2e test (`astra build --target c emits one qualified translation unit per module`).
+- Verification: full `npm run ci` green immediately before this entry; commit follows.
+- Boundary: cross-module struct/enum types (`NS8020`), default imports (`NS8019`), Cargo/npm package linking, GC (`GC-001`), concurrency (`CONC-001`), and the native CI gate remain open.
 
 ---
 
@@ -1160,12 +1174,12 @@ Nova CLI, NoPM, and real backends are not implemented yet.
 ```markdown
 ### Handoff
 - Phase: 7 - Backends
-- Task: TS-001 completed (3 slices: `83ec555` shared-emitter TS mode + thin codegen-ts wrapper, `6f0e80b` `astra build --target ts` wiring + TS test suite, `df4ffc9` `@script:ts` pinned-transpiler emission); C-001 continuation remains (multi-module project linking, cross-platform native CI gate, GC/manual memory, concurrency, FFI, native target policy)
-- Status: Ready
-- Files changed: `orchestrator/packages/codegen-js/src/{generate,index}.ts` (TS emission mode + `transpileTypeScript` seam), `orchestrator/packages/codegen-ts/src/index.ts` (pinned `transpileTypeScriptBody`, `pinnedTypeScriptVersionError`, `PINNED_TYPESCRIPT_VERSION`), `orchestrator/packages/codegen-ts/package.json` (exact `typescript@7.0.2` dep), `orchestrator/packages/cli/src/index.ts` (`--target ts`), `orchestrator/tests/codegen-ts.test.mjs` (9 tests incl. 5-program parity, `@script:ts` transpile/parity/map/hard-error, e2e build), `package.json` + `package-lock.json` (exact pin), `Docs/Agent/{todo,state-log}.md`
-- Verification: `npm run ci` green on `df4ffc9`: 548 Rust tests, 49 TypeScript unit tests, 46 native/Wasm/boundary tests, fmt clean, clippy with warnings denied
+- Task: C-001 multi-module project linking slice implemented (module-qualified symbols, cross-module calls, `compile_project` JSON-RPC method, `CompilerClient.compileProject`, `astra build --target c` multi-module path, `NS3012` relative-import fix); TS-001 complete (`83ec555`/`6f0e80b`/`df4ffc9`); TS struct-mutation fix committed (`49a84c8`)
+- Status: Ready (this slice commits next; CI green immediately before commit)
+- Files changed: `crates/astra-codegen-c/src/{emit,ty}.rs` (module qualification, `collect_import_tables`, `module_key_stem` `.ns` strip), `crates/astra-codegen-c/tests/emit_c.rs` (8 project tests), `crates/astra-compiler-api/src/lib.rs` (`compile_project` artifacts, relative-import resolution via `check_module_graph_with_imports`, 3 tests), `orchestrator/packages/compiler-client/src/index.ts` (`compileProject` + parse), `orchestrator/packages/cli/src/index.ts` (multi-module C build path), `orchestrator/tests/codegen-js.test.mjs` (multi-module C e2e), `Docs/Agent/{todo,state-log}.md`
+- Verification: `npm run ci` green: 63 `astra-codegen-c` tests, 31 `astra-compiler-api` tests, TypeScript unit + boundary tests, fmt clean, clippy with warnings denied
 - Blockers: Windows native linking needs MSVC/Windows SDK (`stdio.h`) or a Tier-1 CI host
-- Next action: C-001 continuation — multi-module project linking for the C backend and the cross-platform native CI gate; then backlog WASM-001, GC-001, FFI-001, CONC-001, PLAY-001, HARD-001, INTEROP-001 native slice
+- Next action: Nova gaps (bytes builtin, str byte_at/char_at/slice/char_count/chars/bytes, Channel runtime), JS IIFE control-flow (NS8001); then C-001 remainder (GC-001, CONC-001, cross-module types NS8020, native CI gate); later backlog WASM-001, FFI-001, PLAY-001, HARD-001, INTEROP-001 C slice
 ```
 
 

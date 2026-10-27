@@ -623,9 +623,33 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
         };
     }
 
-    // Type-check the graph.
-    let graph = astra_core::type_surface::check_module_graph(
-        &project_modules,
+    // Type-check the graph. Keys are project-relative paths, so resolve
+    // relative specifiers against the importer before checking (mirrors
+    // `check_project`); `check_module_graph` alone would treat `./lib` as its
+    // own module key and fail to resolve it.
+    let mut module_graph = ModuleGraph::default();
+    for module in &project_modules {
+        module_graph.insert_module(module.key.clone(), module.source.clone());
+    }
+    for module in &project_modules {
+        for specifier in collect_module_specifiers(&module.source) {
+            let target = resolve_project_target(&module.key, &specifier.specifier, &module_graph);
+            module_graph.insert_import(module.key.clone(), specifier.specifier, target);
+        }
+    }
+    let ordered_keys = dependency_order(&project_modules, &module_graph);
+    let ordered_modules: Vec<astra_core::type_surface::ProjectModule> = ordered_keys
+        .iter()
+        .filter_map(|key| {
+            project_modules
+                .iter()
+                .find(|module| module.key == *key)
+                .cloned()
+        })
+        .collect();
+    let graph = astra_core::type_surface::check_module_graph_with_imports(
+        &ordered_modules,
+        &module_graph,
         astra_core::checker::CheckOptions::new(selected_mode),
     );
 
@@ -679,7 +703,14 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
             let mut modules = Vec::new();
             let mut host_shim = String::new();
             for (entry, module_out) in entries.iter().zip(generated.iter()) {
-                let stem = entry.key.replace(['/', '.', '-'], "_");
+                // Strip a trailing `.ns` before replacing separators so the
+                // artifact filename matches the stem used for symbol
+                // qualification and `#include` directives in the emitter.
+                let stem = entry
+                    .key
+                    .strip_suffix(".ns")
+                    .unwrap_or(&entry.key)
+                    .replace(['/', '.', '-'], "_");
                 let c_filename = format!("{stem}.c");
                 let h_filename = format!("{stem}.h");
                 modules.push(ModuleCompileArtifact {
@@ -1465,5 +1496,42 @@ mod tests {
             "parse error should fail project: {output}"
         );
         assert!(output.contains("NS2001"), "expected NS2001: {output}");
+    }
+
+    #[test]
+    fn compile_project_emits_one_translation_unit_per_module() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":10,"method":"compile_project","params":{"apiVersion":"1.0","sources":[{"key":"lib","path":"src/lib.ns","text":"pub fn add(a: i32, b: i32) -> i32 { return a + b }\n"},{"key":"app/main","path":"src/main.ns","text":"import { add } from \"lib\"\npub fn main() -> i32 { return add(1, 2) }\n"}],"target":"c","mode":"core"}}"#,
+        );
+        assert!(output.contains(r#""ok":true"#), "{output}");
+        // One module artifact per source.
+        assert!(output.contains(r#""cFilename":"lib.c""#), "{output}");
+        assert!(output.contains(r#""cFilename":"app_main.c""#), "{output}");
+        // The dependency's symbol is module-qualified and the caller includes
+        // its header.
+        assert!(output.contains("ns_lib_add"), "{output}");
+        // JSON escapes the quotes in the emitted `#include "lib.h"` line.
+        assert!(output.contains(r#"#include \"lib.h\""#), "{output}");
+    }
+
+    #[test]
+    fn compile_project_reports_cross_module_diagnostics() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":11,"method":"compile_project","params":{"apiVersion":"1.0","sources":[{"key":"lib","path":"src/lib.ns","text":"pub const MAX: i32 = 10\n"},{"key":"app/main","path":"src/main.ns","text":"import { MAX } from \"lib\"\npub fn main() -> i32 { return MAX }\n"}],"target":"c","mode":"core"}}"#,
+        );
+        assert!(output.contains(r#""ok":false"#), "{output}");
+        assert!(output.contains("NS8019"), "expected NS8019: {output}");
+    }
+
+    #[test]
+    fn compile_project_rejects_empty_sources() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":12,"method":"compile_project","params":{"apiVersion":"1.0","sources":[],"target":"c","mode":"core"}}"#,
+        );
+        assert!(
+            output.contains("-32602"),
+            "empty sources should be a JSON-RPC invalid-params error: {output}"
+        );
+        assert!(output.contains("at least one source unit"), "{output}");
     }
 }

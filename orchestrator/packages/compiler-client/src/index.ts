@@ -628,6 +628,100 @@ export interface ProjectCheckResponse {
   };
 }
 
+/** Parameters for `CompilerClient.compileProject`. */
+export interface ProjectCompileRequest {
+  /** Ordered list of source units. Dependencies must precede importers. */
+  readonly sources: readonly ProjectSourceUnit[];
+  readonly target?: string;
+  readonly mode?: Mode;
+  readonly integerPolicy?: IntegerPolicy;
+}
+
+/** Per-module artifact returned by `compile_project` (C multi-module). */
+export interface ModuleCompileArtifact {
+  readonly key: string;
+  readonly path: string;
+  /** Emitted C source filename. */
+  readonly cFilename: string;
+  /** Emitted C header filename. */
+  readonly hFilename: string;
+  readonly cSource: string;
+  readonly hSource: string;
+  /** Script translation units (`@script:c` / `@script:cpp`) from this module. */
+  readonly scriptSources: readonly (readonly [string, string])[];
+}
+
+/** Response returned by `CompilerClient.compileProject`. */
+export interface ProjectCompileResponse {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly modules: readonly ModuleCompileArtifact[];
+  /** Single shared host shim (`astra_host.c`). */
+  readonly hostShim: string;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+function parseModuleCompileArtifact(value: unknown): ModuleCompileArtifact {
+  if (!isRecord(value)) {
+    throw new CompilerClientError("NS9005", "Compiler returned an invalid module artifact.");
+  }
+  const { key, path, cFilename, hFilename, cSource, hSource, scriptSources } = value;
+  if (
+    typeof key !== "string" ||
+    typeof path !== "string" ||
+    typeof cFilename !== "string" ||
+    typeof hFilename !== "string" ||
+    typeof cSource !== "string" ||
+    typeof hSource !== "string" ||
+    !Array.isArray(scriptSources)
+  ) {
+    throw new CompilerClientError("NS9005", "Compiler returned an invalid module artifact.");
+  }
+  return {
+    key,
+    path,
+    cFilename,
+    hFilename,
+    cSource,
+    hSource,
+    scriptSources: scriptSources.map((entry) => {
+      if (!Array.isArray(entry) || entry.length !== 2) {
+        throw new CompilerClientError("NS9005", "Compiler returned an invalid script source.");
+      }
+      return [String(entry[0]), String(entry[1])] as const;
+    }),
+  };
+}
+
+function parseProjectCompileResponse(value: unknown): ProjectCompileResponse {
+  if (!isRecord(value)) {
+    throw new CompilerClientError("NS9005", "Compiler returned an invalid project compile result.");
+  }
+  const { apiVersion, ok, modules, hostShim, diagnostics, metadata } = value;
+  if (
+    typeof apiVersion !== "string" ||
+    apiVersion !== COMPILER_API_VERSION ||
+    typeof ok !== "boolean" ||
+    !Array.isArray(modules) ||
+    typeof hostShim !== "string" ||
+    !Array.isArray(diagnostics)
+  ) {
+    throw new CompilerClientError(
+      "NS9005",
+      `Compiler returned an incompatible project compile result; expected API ${COMPILER_API_VERSION}.`,
+    );
+  }
+  return {
+    apiVersion,
+    ok,
+    modules: modules.map(parseModuleCompileArtifact),
+    hostShim,
+    diagnostics: diagnostics.map(parseDiagnostic),
+    metadata: isRecord(metadata) ? metadata : {},
+  };
+}
+
 function parseModuleCheckResult(value: unknown): ModuleCheckResult {
   if (!isRecord(value)) {
     throw new CompilerClientError("NS9005", "Compiler returned an invalid module result.");
@@ -777,4 +871,90 @@ export interface CompilerClient {
    * imports it. The entry-point module should appear last.
    */
   checkProject(request: ProjectCheckRequest): ProjectCheckResponse;
+}
+
+// Extend CompilerClient with compileProject ───────────────────────────────────
+
+CompilerClient.prototype.compileProject = function (
+  this: CompilerClient,
+  request: ProjectCompileRequest,
+): ProjectCompileResponse {
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: "astra-compile-project",
+    method: "compile_project",
+    params: {
+      apiVersion: COMPILER_API_VERSION,
+      sources: request.sources,
+      target: request.target ?? "c",
+      ...(request.mode === undefined ? {} : { mode: request.mode }),
+      ...(request.integerPolicy === undefined
+        ? {}
+        : { integerPolicy: request.integerPolicy }),
+    },
+  });
+
+  const result = spawnSync(this.binaryPath, [], {
+    input: payload,
+    cwd: (this as unknown as { cwd: string }).cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  });
+
+  if (result.error !== undefined) {
+    throw new CompilerClientError(
+      "NS9004",
+      `Unable to run compiler '${this.binaryPath}': ${result.error.message}`,
+      { cause: result.error },
+    );
+  }
+  if (result.status !== 0) {
+    const detail = result.stderr.trim();
+    throw new CompilerClientError(
+      "NS9004",
+      `Compiler exited with status ${result.status ?? "unknown"}${detail.length === 0 ? "" : `: ${detail}`}`,
+    );
+  }
+
+  const output = result.stdout.trim();
+  if (output.length === 0) {
+    throw new CompilerClientError("NS9005", "Compiler returned an empty response.");
+  }
+
+  let response: unknown;
+  try {
+    response = JSON.parse(output);
+  } catch (error) {
+    throw new CompilerClientError("NS9005", "Compiler returned invalid JSON.", { cause: error });
+  }
+
+  if (!isRecord(response) || response["jsonrpc"] !== "2.0") {
+    throw new CompilerClientError("NS9005", "Compiler returned an invalid JSON-RPC response.");
+  }
+
+  if (response["error"] !== undefined && response["error"] !== null) {
+    const rpcError = response["error"];
+    const code =
+      isRecord(rpcError) && typeof rpcError["code"] === "number" ? rpcError["code"] : -32603;
+    const message =
+      isRecord(rpcError) && typeof rpcError["message"] === "string"
+        ? rpcError["message"]
+        : "Unknown compiler error.";
+    throw new CompilerClientError("NS9006", `Compiler request failed (${code}): ${message}`);
+  }
+
+  return parseProjectCompileResponse(response["result"]);
+};
+
+/** Augment `CompilerClient` to include `compileProject`. */
+export interface CompilerClient {
+  /**
+   * Compiles a multi-module project to C through the Rust `compile_project`
+   * method, returning one translation unit + header per source module.
+   *
+   * `sources` must be in dependency order: each module before any module that
+   * imports it. The entry-point module should appear last.
+   */
+  compileProject(request: ProjectCompileRequest): ProjectCompileResponse;
 }

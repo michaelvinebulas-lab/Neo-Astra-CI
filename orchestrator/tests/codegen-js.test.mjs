@@ -1276,3 +1276,90 @@ test("astra build writes C translation unit and host shim with --target c", () =
     rmSync(project, { recursive: true, force: true });
   }
 });
+
+test("astra build --target c emits one qualified translation unit per module", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-build-c-multi-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "c", defaultMode: "core" },
+          nova: { entry: "src/main.ns" },
+          targets: {
+            c: { backend: "c", mode: "core", outDir: "dist/c" },
+          },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    // The dependency module.
+    writeFileSync(
+      join(project, "src", "lib.ns"),
+      [
+        "module demo.lib",
+        "",
+        "pub fn add(a: i32, b: i32) -> i32 {",
+        "    return a + b",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    // The entry module imports the dependency by name.
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        'import { add } from "./lib"',
+        "",
+        "pub fn main() -> i32 {",
+        "    println(add(2, 3))",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "c"],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    // CLI module keys are file-relative paths; with the `.ns` suffix stripped
+    // the stems are `src_main` and `src_lib`.
+    const mainPath = join(project, "dist", "c", "src_main.c");
+    const libPath = join(project, "dist", "c", "src_lib.c");
+    const libHeaderPath = join(project, "dist", "c", "src_lib.h");
+    assert.ok(existsSync(mainPath), "entry translation unit not written");
+    assert.ok(existsSync(libPath), "dependency translation unit not written");
+    assert.ok(existsSync(libHeaderPath), "dependency header not written");
+
+    const mainCode = readFileSync(mainPath, "utf8");
+    const libCode = readFileSync(libPath, "utf8");
+    // The dependency defines its function under a module-qualified symbol.
+    assert.match(libCode, /ns_src_lib_add/);
+    // The entry calls the qualified dependency symbol, not a local one, and
+    // includes the dependency header so the prototype is visible.
+    assert.match(mainCode, /ns_src_lib_add\(/);
+    assert.doesNotMatch(mainCode, /\bns_add\(/);
+    assert.match(mainCode, /#include "src_lib\.h"/);
+    // The entry's own `main` is module-qualified too.
+    assert.match(mainCode, /ns_src_main_main/);
+
+    const hostPath = join(project, "dist", "c", "astra_host.c");
+    assert.ok(existsSync(hostPath), "host shim not written");
+    assert.match(readFileSync(hostPath, "utf8"), /astra_panic/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});

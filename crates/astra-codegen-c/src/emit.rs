@@ -13,12 +13,14 @@
 //! panic/abort. Anything beyond that slice is rejected with a stable `NS80xx`
 //! diagnostic instead of emitting incorrect C.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use astra_core::ast::{
     self, BinaryOp, ElseBranch, Expr, ExprKind, FailArguments, Literal, MatchArm, MatchArmBody,
     Pattern, PatternKind, Stmt, StmtKind, UnaryOp,
 };
+use astra_core::hir::ImportKind;
 use astra_core::types::Type;
 
 use crate::runtime::RUNTIME_HEADER;
@@ -145,6 +147,11 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         policy: module.integer_policy,
         scripts: scripts.clone(),
         linked: false,
+        prefix: String::new(),
+        imports: HashMap::new(),
+        namespaces: HashMap::new(),
+        default_imports: HashSet::new(),
+        emit_main_entry: true,
         out: String::new(),
         pre: String::new(),
         fresh: 0,
@@ -180,6 +187,7 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
         .collect();
 
     let mut results = Vec::new();
+    let last_key = entries.last().map(|e| e.key.clone());
     for entry in entries {
         if !entry.module.manual_memory_scopes.is_empty() {
             return Err(BackendError::new(
@@ -205,8 +213,13 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             }
         }
 
+        let stem = module_key_stem(&entry.key);
         let env = TypeEnv::collect(&entry.module.ast);
         let mut tcx = TyCtxt::new(env);
+        // Qualify nominal type names with the module stem so two modules that
+        // each declare `struct Point` emit distinct typedefs and their headers
+        // cannot collide when a dependent includes both.
+        tcx.set_type_prefix(&stem);
         prescan(&mut tcx, &entry.module);
         if tcx.rejected() {
             let r = tcx.rejects.into_iter().next().expect("non-empty");
@@ -220,6 +233,12 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             .filter_map(|k| header_map.get(k).cloned())
             .collect();
 
+        // Resolve this module's imports into call-site lookup tables. A named
+        // or namespace import resolves to the dependency's qualified symbol;
+        // a default import cannot be mapped to a C symbol and is rejected at
+        // the call site.
+        let (imports, namespaces, default_imports) = collect_import_tables(&entry.module.hir);
+
         let ann = Annotations::new(&entry.module.annotations);
         let mut e = Emitter {
             module: &entry.module,
@@ -228,6 +247,12 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             policy: entry.module.integer_policy,
             scripts: scripts.clone(),
             linked: true,
+            prefix: format!("{stem}_"),
+            imports,
+            namespaces,
+            default_imports,
+            // Only the entry (last) module emits the `int main(void)` wrapper.
+            emit_main_entry: last_key.as_deref() == Some(entry.key.as_str()),
             out: String::new(),
             pre: String::new(),
             fresh: 0,
@@ -244,7 +269,6 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
         let source = e.out.clone();
         let header = e.emit_header();
 
-        let stem = module_key_stem(&entry.key);
         results.push(GeneratedC {
             source,
             header: Some(header),
@@ -252,15 +276,70 @@ pub fn emit_project(entries: &[crate::ProjectEntry]) -> Result<Vec<GeneratedC>, 
             script_sources,
             target: "c".to_string(),
         });
-        let _ = stem; // used in header_map above
     }
     Ok(results)
 }
 
+/// Call-site lookup tables derived from a module's HIR imports.
+///
+/// - `named`: local binding name → (dep module key, imported name), so a call
+///   to a named import resolves to the dependency's qualified symbol.
+/// - `namespaces`: namespace alias → dep module key, for `alias.fn(...)` calls.
+/// - `default_imports`: local names bound by a default import, which the C
+///   backend cannot lower and rejects when referenced.
+type ImportTables = (
+    HashMap<String, (String, String)>,
+    HashMap<String, String>,
+    HashSet<String>,
+);
+
+/// Builds call-site lookup tables from a module's HIR imports.
+fn collect_import_tables(hir: &astra_core::hir::Module) -> ImportTables {
+    let mut named = HashMap::new();
+    let mut namespaces = HashMap::new();
+    let mut default_imports = HashSet::new();
+    for import in &hir.imports {
+        match &import.kind {
+            ImportKind::Named { bindings } => {
+                for binding in bindings {
+                    named.insert(
+                        binding.local.clone(),
+                        (import.module.clone(), binding.imported.clone()),
+                    );
+                }
+            }
+            ImportKind::Namespace { alias } => {
+                namespaces.insert(alias.clone(), import.module.clone());
+            }
+            ImportKind::Default { local } => {
+                default_imports.insert(local.clone());
+            }
+            ImportKind::DefaultNamed { default, bindings } => {
+                default_imports.insert(default.clone());
+                for binding in bindings {
+                    named.insert(
+                        binding.local.clone(),
+                        (import.module.clone(), binding.imported.clone()),
+                    );
+                }
+            }
+            ImportKind::SideEffect => {}
+        }
+    }
+    (named, namespaces, default_imports)
+}
+
 /// Derives a safe C header stem from a module key.
-/// `"app/math"` → `"app_math"`, `"lib"` → `"lib"`.
+/// `"app/math"` → `"app_math"`, `"lib"` → `"lib"`, `"src/main.ns"` → `"src_main"`.
+///
+/// A trailing `.ns` source extension is stripped before separators are
+/// replaced so CLI file-path keys do not leak a `_ns` suffix into filenames
+/// and symbol prefixes. This must stay in step with the filename stem
+/// computed in `astra-compiler-api`'s `compile_project`.
 fn module_key_stem(key: &str) -> String {
-    key.replace(['/', '.', '-'], "_")
+    key.strip_suffix(".ns")
+        .unwrap_or(key)
+        .replace(['/', '.', '-'], "_")
 }
 
 /// Pre-scans declared and annotation types to register every `typedef` and
@@ -389,6 +468,22 @@ struct Emitter<'a> {
     /// When `true`, functions are emitted with external linkage (no `static`)
     /// so they are visible across translation units.
     linked: bool,
+    /// Prefix (with trailing `_`) prepended to every function symbol
+    /// (`ns_<prefix><name>`). Empty in standalone builds so single-module
+    /// output is unchanged; the module stem in linked builds, so two modules
+    /// that each declare `helper` emit distinct symbols.
+    prefix: String,
+    /// Named-import bindings: local name → (dep module key, imported name).
+    /// Used to resolve a cross-module call to the dependency's symbol.
+    imports: HashMap<String, (String, String)>,
+    /// Namespace-import aliases → dep module key, for `alias.fn(...)` calls.
+    namespaces: HashMap<String, String>,
+    /// Local names bound by a default import (`import foo from "lib"`), which
+    /// the C backend cannot resolve to a symbol and rejects at the call site.
+    default_imports: HashSet<String>,
+    /// When `false`, the module's `main` wrapper is suppressed (linked builds
+    /// emit `int main(void)` only for the entry module).
+    emit_main_entry: bool,
     out: String,
     pre: String,
     fresh: usize,
@@ -398,6 +493,10 @@ struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
+    /// The C symbol for a function declared in this module.
+    fn fn_symbol(&self, name: &str) -> String {
+        format!("ns_{}{}", self.prefix, sanitize(name))
+    }
     fn emit_program(&mut self) {
         self.out.push_str(RUNTIME_HEADER);
         self.out.push('\n');
@@ -495,7 +594,9 @@ impl<'a> Emitter<'a> {
             self.emit_function(f);
             self.out.push('\n');
         }
-        if let Some(main) = self.find_main() {
+        if self.emit_main_entry
+            && let Some(main) = self.find_main()
+        {
             self.emit_main(&main);
         }
     }
@@ -545,7 +646,7 @@ impl<'a> Emitter<'a> {
                 if f.type_parameters.is_empty() {
                     let (ret_c, _) = self.fn_return_c(f);
                     let params = self.fn_params_c(f);
-                    let _ = writeln!(h, "{ret_c} ns_{}({params});", sanitize(&f.name));
+                    let _ = writeln!(h, "{ret_c} {}({params});", self.fn_symbol(&f.name));
                 }
             }
         }
@@ -622,15 +723,12 @@ impl<'a> Emitter<'a> {
         }
         let (ret_c, _is_fallible) = self.fn_return_c(f);
         let params = self.fn_params_c(f);
+        let sym = self.fn_symbol(&f.name);
         if self.linked {
             // External linkage: forward declaration without `static`.
-            let _ = writeln!(self.out, "{ret_c} ns_{}({params});", sanitize(&f.name));
+            let _ = writeln!(self.out, "{ret_c} {sym}({params});");
         } else {
-            let _ = writeln!(
-                self.out,
-                "static {ret_c} ns_{}({params});",
-                sanitize(&f.name)
-            );
+            let _ = writeln!(self.out, "static {ret_c} {sym}({params});");
         }
     }
 
@@ -765,14 +863,11 @@ impl<'a> Emitter<'a> {
         self.cur_err = err.clone();
         let (ret_c, is_fallible) = self.fn_return_c(f);
         let params = self.fn_params_c(f);
+        let sym = self.fn_symbol(&f.name);
         if self.linked {
-            let _ = writeln!(self.out, "{ret_c} ns_{}({params}) {{", sanitize(&f.name));
+            let _ = writeln!(self.out, "{ret_c} {sym}({params}) {{");
         } else {
-            let _ = writeln!(
-                self.out,
-                "static {ret_c} ns_{}({params}) {{",
-                sanitize(&f.name)
-            );
+            let _ = writeln!(self.out, "static {ret_c} {sym}({params}) {{");
         }
         self.emit_block_body(&f.body, true, is_fallible);
         self.out.push_str("}\n");
@@ -780,11 +875,12 @@ impl<'a> Emitter<'a> {
 
     fn emit_main(&mut self, main: &ast::FunctionDecl) {
         let ret = main.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
+        let sym = self.fn_symbol("main");
         self.out.push_str("int main(void) {\n");
         if ret == Type::I32 {
-            self.out.push_str("    return (int)ns_main();\n");
+            let _ = writeln!(self.out, "    return (int){sym}();");
         } else {
-            self.out.push_str("    ns_main();\n");
+            let _ = writeln!(self.out, "    {sym}();");
             self.out.push_str("    return 0;\n");
         }
         self.out.push_str("}\n");
@@ -1367,6 +1463,19 @@ impl<'a> Emitter<'a> {
     }
 
     fn identifier_c(&mut self, name: &str, _e: &Expr) -> String {
+        // A bare identifier that resolves to an import is a cross-module value
+        // reference (imported constant, struct, or enum). The C backend links
+        // cross-module *calls* only, so reject it here instead of emitting a
+        // symbol that would not resolve at link time.
+        if self.imports.contains_key(name) || self.default_imports.contains(name) {
+            self.tcx.rejects.push(reject(
+                "NS8019",
+                format!(
+                    "cross-module reference to value '{name}' is not supported by the C backend; only cross-module function calls link"
+                ),
+            ));
+            return "0 /* unresolved cross-module value */".to_string();
+        }
         // Constants and locals are the only bare identifiers in this slice.
         if self.is_constant(name) {
             format!("const_{}", sanitize(name))
@@ -1607,9 +1716,26 @@ impl<'a> Emitter<'a> {
                     let joined = vals.join(", ");
                     return format!("({ty_c}){{ {joined} }}");
                 }
-                // User function call.
+                // Call through a named import: resolve to the dependency's
+                // qualified symbol so the linker sees one external definition.
+                if let Some((dep_key, imported)) = self.imports.get(name).cloned() {
+                    let arg_c = self.args_c(args);
+                    let dep_stem = module_key_stem(&dep_key);
+                    return format!("ns_{dep_stem}_{}({arg_c})", sanitize(&imported));
+                }
+                // A default import has no C symbol to call into this slice.
+                if self.default_imports.contains(name) {
+                    self.tcx.rejects.push(reject(
+                        "NS8019",
+                        format!(
+                            "call to default import '{name}' is not supported by the C backend; import the symbol by name"
+                        ),
+                    ));
+                    return "(NS_Unit){0}".into();
+                }
+                // Local user function call.
                 let arg_c = self.args_c(args);
-                format!("ns_{}({arg_c})", sanitize(name))
+                format!("{}({arg_c})", self.fn_symbol(name))
             }
             ExprKind::Member { target, member } => {
                 if let ExprKind::Identifier(owner) = &target.kind {
@@ -1618,6 +1744,12 @@ impl<'a> Emitter<'a> {
                         ("Result", "Ok") => return self.ok_c(args, e),
                         ("Result", "Err") => return self.err_c(args, e),
                         _ => {
+                            // Namespace-import call: `alias.fn(...)`.
+                            if let Some(dep_key) = self.namespaces.get(owner).cloned() {
+                                let arg_c = self.args_c(args);
+                                let dep_stem = module_key_stem(&dep_key);
+                                return format!("ns_{dep_stem}_{}({arg_c})", sanitize(member));
+                            }
                             // Enum variant constructor with payload.
                             if self.tcx.env.enum_of(owner).is_some() {
                                 return self.enum_variant_c(owner, member, args);

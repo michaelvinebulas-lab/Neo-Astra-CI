@@ -16,10 +16,11 @@
 use std::path::PathBuf;
 
 use astra_capabilities::Mode;
-use astra_codegen_c::{CModule, IntegerPolicy, generate};
+use astra_codegen_c::{CModule, IntegerPolicy, ProjectEntry, generate, generate_project};
 use astra_core::checker::{CheckOptions, check_resolved};
 use astra_core::parser::parse;
 use astra_core::resolver::resolve_module;
+use astra_core::type_surface::{ProjectModule, check_module_graph};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -149,6 +150,75 @@ fn clang_build_and_run(c_source: &str) -> Option<(bool, String, String)> {
     let stdout = String::from_utf8_lossy(&run_output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&run_output.stderr).into_owned();
     Some((run_output.status.success(), stdout, stderr))
+}
+
+/// Compiles a multi-module project (key → source, in any order) through the
+/// shared graph frontend and emits one translation unit per module.
+///
+/// Returns the emitted sources keyed by module, plus the header for each.
+fn compile_project_and_emit(modules: &[(&str, &str)]) -> Vec<(String, String, Option<String>)> {
+    try_compile_project(modules).expect("project generation failed")
+}
+
+/// Like [`compile_project_and_emit`] but surfaces the backend error instead of
+/// panicking, so rejection tests can assert on the exact diagnostic code.
+fn try_compile_project(
+    modules: &[(&str, &str)],
+) -> Result<Vec<(String, String, Option<String>)>, astra_codegen_c::BackendError> {
+    let project: Vec<ProjectModule> = modules
+        .iter()
+        .map(|(key, source)| ProjectModule {
+            key: (*key).to_string(),
+            source: parse(source).expect("parse failed"),
+        })
+        .collect();
+    let graph = check_module_graph(&project, CheckOptions::new(Mode::Core));
+    assert!(
+        graph.is_ok(),
+        "project type check failed: {:?}",
+        graph.all_diagnostics()
+    );
+
+    let entries: Vec<ProjectEntry> = project
+        .iter()
+        .map(|pm| {
+            let checked = graph.get(&pm.key).expect("module missing from graph");
+            let dep_keys: Vec<String> = checked
+                .module
+                .imports
+                .iter()
+                .map(|imp| imp.module.clone())
+                .collect();
+            ProjectEntry {
+                module: CModule {
+                    name: checked.module.name.clone(),
+                    ast: pm.source.clone(),
+                    hir: checked.module.clone(),
+                    annotations: checked.annotations.clone(),
+                    manual_memory_scopes: checked.manual_memory_scopes.clone(),
+                    integer_policy: IntegerPolicy::Wrapping,
+                },
+                key: pm.key.clone(),
+                dep_keys,
+            }
+        })
+        .collect();
+
+    let generated = generate_project(&entries)?;
+    Ok(entries
+        .iter()
+        .zip(generated.iter())
+        .map(|(entry, out)| (entry.key.clone(), out.source.clone(), out.header.clone()))
+        .collect())
+}
+
+/// Returns the emitted translation unit for module `key`.
+fn project_source<'a>(emitted: &'a [(String, String, Option<String>)], key: &str) -> &'a str {
+    &emitted
+        .iter()
+        .find(|(k, _, _)| k == key)
+        .unwrap_or_else(|| panic!("module '{key}' not emitted"))
+        .1
 }
 
 // ─── tests ────────────────────────────────────────────────────────────────────
@@ -1192,4 +1262,204 @@ module test.script_js
     };
     let err = generate(&c_module).expect_err("should reject js script on c target");
     assert_eq!(err.code, "NS7002");
+}
+
+// ─── multi-module (linked) project emission ──────────────────────────────────
+
+#[test]
+fn project_resolves_cross_module_call_to_dependency_symbol() {
+    let emitted = compile_project_and_emit(&[
+        (
+            "lib",
+            "pub fn add(a: i32, b: i32) -> i32 { return a + b }\n",
+        ),
+        (
+            "app/main",
+            "import { add } from \"lib\"\npub fn main() -> i32 { return add(1, 2) }\n",
+        ),
+    ]);
+    let main = project_source(&emitted, "app/main");
+    // The call must target the dependency's qualified symbol, not a local one.
+    assert!(
+        main.contains("ns_lib_add(v_1, v_2)") || main.contains("ns_lib_add("),
+        "cross-module call not resolved in:\n{main}"
+    );
+    assert!(
+        !main.contains("ns_app_main_add"),
+        "call resolved to the wrong module symbol in:\n{main}"
+    );
+    // The dependency header must be included so the prototype is visible.
+    assert!(
+        main.contains("#include \"lib.h\""),
+        "missing dep header:\n{main}"
+    );
+}
+
+#[test]
+fn project_module_qualifies_symbols_to_avoid_collision() {
+    // Two modules each independently declare `helper`. Without module
+    // qualification both would emit `ns_helper` with external linkage and
+    // collide at link time. `app/main` imports a *different* function (`add`)
+    // to establish the link dependency while defining its own `helper`.
+    let emitted = compile_project_and_emit(&[
+        (
+            "lib",
+            "pub fn helper() -> i32 { return 1 }\npub fn add(a: i32, b: i32) -> i32 { return a + b }\n",
+        ),
+        (
+            "app/main",
+            "import { add } from \"lib\"\nfn helper() -> i32 { return 2 }\npub fn main() -> i32 { return helper() + add(1, 2) }\n",
+        ),
+    ]);
+    let lib = project_source(&emitted, "lib");
+    let main = project_source(&emitted, "app/main");
+    assert!(
+        lib.contains("ns_lib_helper"),
+        "lib symbol not qualified:\n{lib}"
+    );
+    // The local `helper` in main is qualified with main's stem, and the call
+    // to the imported `add` targets lib's symbol.
+    assert!(
+        main.contains("ns_app_main_helper"),
+        "main local symbol not qualified:\n{main}"
+    );
+    assert!(main.contains("ns_lib_add("), "call not qualified:\n{main}");
+    // Neither module emits an unqualified `ns_helper`.
+    assert!(
+        !lib.contains("ns_helper("),
+        "lib emitted bare symbol:\n{lib}"
+    );
+    assert!(
+        !main.contains("ns_helper("),
+        "main emitted bare symbol:\n{main}"
+    );
+}
+
+#[test]
+fn project_header_exports_qualified_prototypes() {
+    let emitted = compile_project_and_emit(&[
+        (
+            "lib",
+            "pub fn add(a: i32, b: i32) -> i32 { return a + b }\n",
+        ),
+        (
+            "app/main",
+            "import { add } from \"lib\"\npub fn main() -> i32 { return add(1, 2) }\n",
+        ),
+    ]);
+    let lib_header = &emitted
+        .iter()
+        .find(|(k, _, _)| k == "lib")
+        .expect("lib missing")
+        .2
+        .clone()
+        .expect("lib header missing");
+    assert!(
+        lib_header.contains("ns_lib_add(int32_t v_a, int32_t v_b)"),
+        "header prototype not qualified:\n{lib_header}"
+    );
+}
+
+#[test]
+fn project_emits_main_wrapper_only_for_entry_module() {
+    let emitted = compile_project_and_emit(&[
+        ("lib", "pub fn main() -> i32 { return 1 }\n"),
+        (
+            "app/main",
+            "import { main as lib_main } from \"lib\"\npub fn main() -> i32 { return lib_main() }\n",
+        ),
+    ]);
+    let lib = project_source(&emitted, "lib");
+    let main = project_source(&emitted, "app/main");
+    // Only the entry module gets the `int main(void)` wrapper.
+    assert!(
+        !lib.contains("int main(void)"),
+        "lib should not emit main:\n{lib}"
+    );
+    assert!(
+        main.contains("int main(void)"),
+        "entry missing main:\n{main}"
+    );
+    assert!(
+        main.contains("return (int)ns_app_main_main();"),
+        "main wrapper should call the qualified symbol:\n{main}"
+    );
+}
+
+#[test]
+fn project_resolves_namespace_import_call() {
+    let emitted = compile_project_and_emit(&[
+        ("lib", "pub fn triple(n: i32) -> i32 { return n * 3 }\n"),
+        (
+            "app/main",
+            "import * as lib from \"lib\"\npub fn main() -> i32 { return lib.triple(4) }\n",
+        ),
+    ]);
+    let main = project_source(&emitted, "app/main");
+    assert!(
+        main.contains("ns_lib_triple("),
+        "namespace call not resolved in:\n{main}"
+    );
+}
+
+#[test]
+fn project_rejects_cross_module_value_reference() {
+    // A cross-module constant used as a bare value cannot link in this slice;
+    // it must be rejected with a clear diagnostic, not mis-emitted.
+    let err = try_compile_project(&[
+        ("lib", "pub const MAX: i32 = 10\n"),
+        (
+            "app/main",
+            "import { MAX } from \"lib\"\npub fn main() -> i32 { return MAX }\n",
+        ),
+    ])
+    .expect_err("cross-module value reference should be rejected");
+    assert_eq!(err.code, "NS8019");
+    assert!(
+        err.message.contains("MAX"),
+        "diagnostic should name the symbol: {}",
+        err.message
+    );
+}
+
+#[test]
+fn project_rejects_cross_module_struct_type() {
+    // A cross-module struct type used in a signature cannot be lowered in this
+    // slice (its typedef lives in the defining module). It must be rejected,
+    // not silently mis-typed.
+    let err = try_compile_project(&[
+        ("lib", "pub struct Point { x: i32, y: i32 }\n"),
+        (
+            "app/main",
+            "import { Point } from \"lib\"\npub fn take(p: Point) -> i32 { return p.x }\n",
+        ),
+    ])
+    .expect_err("cross-module struct type should be rejected");
+    assert_eq!(err.code, "NS8020");
+    assert!(
+        err.message.contains("Point"),
+        "diagnostic should name the type: {}",
+        err.message
+    );
+}
+
+#[test]
+fn project_rejects_default_import_call() {
+    let err = try_compile_project(&[
+        (
+            "lib",
+            "export default fn add(a: i32, b: i32) -> i32 { return a + b }\n",
+        ),
+        (
+            "app/main",
+            "import add from \"lib\"\npub fn main() -> i32 { return add(1, 2) }\n",
+        ),
+    ])
+    .expect_err("default import call should be rejected");
+    assert_eq!(err.code, "NS8019");
+    assert!(
+        err.message.contains("add"),
+        "diagnostic should name the symbol: {}",
+        err.message
+    );
 }

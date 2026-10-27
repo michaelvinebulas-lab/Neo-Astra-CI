@@ -243,6 +243,13 @@ pub struct TyCtxt {
     seen: BTreeSet<String>,
     pub typedefs: Vec<String>,
     pub rejects: Vec<Reject>,
+    /// Prefix (with trailing `_`) prepended to every nominal type's C name.
+    ///
+    /// Empty in standalone (single-module) builds so the emitted names are
+    /// unchanged. In multi-module linked builds it is the module stem, so two
+    /// modules that each declare `struct Point` emit distinct typedefs
+    /// (`NS_lib_Point` vs `NS_main_Point`) and their headers cannot collide.
+    type_prefix: String,
 }
 
 impl TyCtxt {
@@ -253,7 +260,18 @@ impl TyCtxt {
             seen: BTreeSet::new(),
             typedefs: Vec::new(),
             rejects: Vec::new(),
+            type_prefix: String::new(),
         }
+    }
+
+    /// Sets the module stem used to qualify nominal type C names in linked
+    /// (multi-module) builds. Must be called before any type is mapped.
+    pub fn set_type_prefix(&mut self, stem: &str) {
+        self.type_prefix = if stem.is_empty() {
+            String::new()
+        } else {
+            format!("{stem}_")
+        };
     }
 
     /// Returns true if any type was rejected.
@@ -309,12 +327,13 @@ impl TyCtxt {
             }
             Type::Function(_) => "Fn".into(),
             Type::Named(name, args) => {
+                let base = format!("{}{}", self.type_prefix, sanitize(name));
                 if args.is_empty() {
-                    sanitize(name)
+                    base
                 } else {
                     format!(
                         "{}_{}",
-                        sanitize(name),
+                        base,
                         args.iter()
                             .map(|t| self.ident(t))
                             .collect::<Vec<_>>()
@@ -433,7 +452,7 @@ impl TyCtxt {
     }
 
     fn user_typedef(&mut self, name: &str) -> String {
-        let cname = format!("NS_{}", sanitize(name));
+        let cname = format!("NS_{}{}", self.type_prefix, sanitize(name));
         // Clone the declared shape so we release the immutable borrow of
         // `self.env` before `self.c_type` mutably borrows `self`.
         let owned = match self.env.shape(name) {
@@ -457,11 +476,12 @@ impl TyCtxt {
                 self.ensure(&cname, format!("typedef struct {{ {fields_c}}} {cname};"));
             }
             OwnedDecl::Enum(variants) => {
-                let tag_name = format!("NS_{}_tag", sanitize(name));
+                let tag_name = format!("NS_{}{}_tag", self.type_prefix, sanitize(name));
                 let mut tags = String::new();
                 for (index, variant) in variants.iter().enumerate() {
                     tags.push_str(&format!(
-                        "NS_{}_TAG_{} = {index}, ",
+                        "NS_{}{}_TAG_{} = {index}, ",
+                        self.type_prefix,
                         sanitize(name),
                         variant.name
                     ));

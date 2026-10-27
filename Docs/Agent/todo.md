@@ -978,12 +978,26 @@ by a production native target.
       - CLI compiles all script translation units and links with `-lstdc++` when C++ is used.
 - [x] Native build options in `astra build`: `cflags` array, `optLevel`/`optimization`,
       and target triple (`--target=<triple>`).
+- [x] Multi-module project linking (`C-001` project-linking slice):
+      - One translation unit + header per module (`<stem>.c`/`<stem>.h`) with the
+        module-qualified symbols (`ns_<stem>_<name>`, `NS_<stem>_<Type>`) so two
+        modules declaring the same name cannot collide at link time. Standalone
+        single-module output is unchanged (`ns_<name>`, `main.c`).
+      - Cross-module calls resolve through HIR import bindings to the
+        dependency's qualified symbol, and callers include `<dep stem>.h`.
+      - Compiler API `compile_project` method returns per-module artifacts plus a
+        shared `astra_host.c` shim; relative import specifiers (`./lib`) resolve
+        against the importer key before type-checking (mirrors `check_project`).
+      - `CompilerClient.compileProject` and `astra build --target c` wire the
+        multi-module path (single-module builds keep the standalone emitter).
+      - Honest boundary: default-import calls are rejected with `NS8019` and
+        cross-module struct/enum types with `NS8020`.
 
 **Actually left**
 
-- [ ] Multi-module/project linking. Imports are rejected with `NS8019`; the
-      backend currently emits one self-contained translation unit and cannot
-      link a project module graph or Cargo/npm/native packages.
+- [ ] Multi-module/project linking remainder: Cargo/npm/native package linking and
+      cross-module struct/enum types (`NS8020`) remain unimplemented; only
+      function-level cross-module imports link today.
 - [ ] Manual memory and GC. `@memory:manual` is rejected with `NS8012`; native
       allocation, ownership, roots, and finalization are not implemented
       (`GC-001`).
@@ -1005,20 +1019,23 @@ by a production native target.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 55 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 63 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays, structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
   `for` loops (arrays, maps, bytes), byte literals/indexing/slicing/comparisons,
-  `@script:c` and `@script:cpp` emission, compiler API artifacts, and rejection paths.
-- `cargo test --workspace` passes (55 in `astra-codegen-c`, 142 in `astra-core`, 27 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
-- `astra build --target c` emits `main.c` and `astra_host.c`.
+  `@script:c` and `@script:cpp` emission, compiler API artifacts, rejection paths,
+  and multi-module project emission (cross-module call resolution, symbol
+  collision avoidance, qualified header prototypes, entry-only `main`, namespace
+  imports, `NS8019`/`NS8020` rejections).
+- `cargo test --workspace` passes (63 in `astra-codegen-c`, 142 in `astra-core`,
+  31 in `astra-compiler-api`, 51 in `astra-nova`, etc.).
+- `astra build --target c` emits `main.c` (single module) or one qualified
+  `<stem>.c`/`<stem>.h` per module plus `astra_host.c` (multi module); boundary
+  tests cover both paths.
 - `astra build --target native` currently fails on this Windows host at host
   shim compilation because the clang installation has no Windows SDK/libc
   headers. This is a toolchain/CI gap that must be closed before claiming a
   working native binary.
-- Repo-wide `npm run ci` is currently red in the JavaScript project-import test
-  because the JS backend work is not merged into `master`; this is separate from
-  the C backend result.
 
 **Depends on**
 
@@ -1166,7 +1183,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `TS-001` TypeScript backend (complete at `df4ffc9`: shared-emitter TS mode, `astra build --target ts`, pinned `@script:ts` transpiler)
 - [~] `INTEROP-001` Inline `@script` foreign-language blocks (JS and TS slices done; C slice remains)
 - [ ] `PLAY-001` Browser playground (expanded plan above)
-- [~] `C-001` C backend - managed first slice done; project linking, GC/manual memory, concurrency, FFI/`@script:c`, full patterns, native target policy, and cross-platform native verification remain
+- [~] `C-001` C backend - managed first slice + multi-module function-level project linking done; cross-module types (`NS8020`), package linking, GC/manual memory, concurrency, FFI/`@script:c`, full patterns, native target policy, and cross-platform native verification remain
 - [ ] `GC-001` Native GC
 - [ ] `WASM-001` Wasm target
 - [ ] `FFI-001` Polymorphic FFI

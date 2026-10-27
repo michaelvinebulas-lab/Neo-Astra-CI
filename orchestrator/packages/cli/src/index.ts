@@ -1198,15 +1198,76 @@ function runBuild(args: readonly string[], cwd: string): number {
     };
 
     if (compilerTarget === "c") {
-      const cResult = client.compile({
-        source: { path: entryKey, text: source },
-        target: "c",
-        ...sharedParams,
-      });
+      // A single module builds through the standalone (unlinked) path, which
+      // emits `ns_main` and writes `main.c`. A multi-module project builds
+      // through `compile_project`, which module-qualifies symbols to avoid
+      // cross-module collisions and emits one translation unit + header per
+      // module. Both results are normalized into one file list so the write,
+      // native-link, and report steps are shared.
+      type CBuildFile = {
+        filename: string;
+        content: string;
+        kind: "source" | "header" | "host" | "script";
+        isEntry?: boolean;
+      };
+      let files: CBuildFile[];
+      let diagnostics: ReportedDiagnostic[];
 
-      const diagnostics = cResult.diagnostics.map((diagnostic) =>
-        reportDiagnostic(sourceFile, source, diagnostic),
-      );
+      if (projectSources.length <= 1) {
+        const single = client.compile({
+          source: { path: entryKey, text: source },
+          target: "c",
+          ...sharedParams,
+        });
+        diagnostics = single.diagnostics.map((diagnostic) =>
+          reportDiagnostic(sourceFile, source, diagnostic),
+        );
+        files = [];
+        for (const artifact of single.artifacts) {
+          if (!isRecord(artifact)) continue;
+          const artType = artifact["type"];
+          const artName = artifact["name"] ?? artifact["filename"];
+          const artContent = artifact["content"];
+          if (typeof artName !== "string" || typeof artContent !== "string") continue;
+          const kind =
+            artType === "c-host-shim"
+              ? "host"
+              : artType === "c-script"
+                ? "script"
+                : "source";
+          files.push({ filename: artName, content: artContent, kind, isEntry: kind === "source" });
+        }
+      } else {
+        const project = client.compileProject({
+          sources: projectSources.map((module) => ({
+            key: module.key,
+            path: module.key,
+            text: module.text,
+          })),
+          target: "c",
+          ...sharedParams,
+        });
+        diagnostics = project.diagnostics.map((diagnostic) =>
+          reportDiagnostic(sourceFile, source, diagnostic),
+        );
+        files = [];
+        for (const module of project.modules) {
+          files.push({
+            filename: module.cFilename,
+            content: module.cSource,
+            kind: "source",
+            isEntry: module.key === entryKey,
+          });
+          files.push({ filename: module.hFilename, content: module.hSource, kind: "header" });
+          for (const [scriptName, scriptContent] of module.scriptSources) {
+            files.push({ filename: scriptName, content: scriptContent, kind: "script" });
+          }
+        }
+        if (project.hostShim.length > 0) {
+          files.push({ filename: "astra_host.c", content: project.hostShim, kind: "host" });
+        }
+      }
+
       const errors = diagnostics.filter(
         (diagnostic) => diagnostic.severity === "error",
       );
@@ -1235,26 +1296,23 @@ function runBuild(args: readonly string[], cwd: string): number {
 
       let mainCPath = "";
       let hostCPath = "";
+      const cSourcePaths: string[] = [];
       const scriptPaths: string[] = [];
       try {
         mkdirSync(outDir, { recursive: true });
-        for (const artifact of cResult.artifacts) {
-          if (isRecord(artifact)) {
-            const artType = artifact["type"];
-            const artName = artifact["name"] ?? artifact["filename"];
-            const artContent = artifact["content"];
-            if (typeof artName === "string" && typeof artContent === "string") {
-              const filePath = resolve(outDir, artName);
-              mkdirSync(dirname(filePath), { recursive: true });
-              writeFileSync(filePath, artContent, "utf8");
-              if (artType === "c-source") {
-                mainCPath = filePath;
-              } else if (artType === "c-host-shim") {
-                hostCPath = filePath;
-              } else if (artType === "c-script") {
-                scriptPaths.push(filePath);
-              }
-            }
+        // Write every translation unit, header, host shim, and script source.
+        // The entry module's translation unit is the link root for native.
+        for (const file of files) {
+          const filePath = resolve(outDir, file.filename);
+          mkdirSync(dirname(filePath), { recursive: true });
+          writeFileSync(filePath, file.content, "utf8");
+          if (file.kind === "source") {
+            cSourcePaths.push(filePath);
+            if (file.isEntry === true) mainCPath = filePath;
+          } else if (file.kind === "host") {
+            hostCPath = filePath;
+          } else if (file.kind === "script") {
+            scriptPaths.push(filePath);
           }
         }
       } catch (error) {
@@ -1321,7 +1379,7 @@ function runBuild(args: readonly string[], cwd: string): number {
           ...cflags,
           "-o",
           exePath,
-          mainCPath,
+          ...cSourcePaths,
           hostCPath,
           ...scriptPaths,
         ];
