@@ -14,8 +14,9 @@
 > **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
 > (`GC-001`, 6.C), `Ptr` dereference/indexing (6.C follow-up), OS-threaded
 > structured concurrency (`CONC-001`, 6.D), and recorded Linux/macOS CI evidence
-> (6.F — blocked only on pushing to a GitHub remote, not on codegen). Each is
-> design-gated; see the section notes before starting.
+> (6.F — needs a second, full-fidelity CI remote; the source-only mirror can
+> never trigger the workflow). The first three are design-gated; see the section
+> notes before starting.
 
 ---
 
@@ -103,7 +104,11 @@ and section 6.A (the generics design) before touching code.
   `Channel<T>` (capacity 16), `ChannelError`, and deadlock panics ship and run
   the `channels` case. No OS-thread scheduler or task-local heaps yet.
 - Linux/macOS native builds: the Tier-1 CI workflow (`.github/workflows/ci.yml`,
-  3 OSes) is provisioned; recorded runs need the first push to a remote.
+  3 OSes) is provisioned but cannot run from the source-only mirror - that
+  remote carries no `.github/`, `scripts/`, `tests/`, or `conformance/`, so no
+  run is ever triggered there (the pre-push guard enforces the exclusion).
+  Recorded runs need a second, full-fidelity CI remote that receives the whole
+  repo. Previously mis-stated as "blocked only on pushing to a remote".
 
 ### Commits that built the current state (newest first)
 

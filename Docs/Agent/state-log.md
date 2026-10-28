@@ -14,8 +14,21 @@ This is the agent's persistent memory. Update it at the end of every substantial
 | Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend, first C17 managed slice with hosted runtime, multi-module linking, generics, native libraries/ABI, single-threaded concurrency, path + installed package linking, managed arena memory, manual-memory alloc/free, Tier-1 CI workflow, and a full C conformance runner; `@script` inline interop complete |
 | Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker incl. `Memory` builtins), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project` with `import_map`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, managed arena + hosted shim, `Ptr`/manual memory, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI incl. `linkedPathPackages`), `.github/workflows/ci.yml` (Tier-1 matrix) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
-| Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64). Recorded Linux/macOS CI evidence needs a push to a GitHub remote (no remote configured this session). clang alone remains unusable here without the MSVC/Windows SDK |
-| Next action | C-001 honest handoff: precise mark-sweep GC with stack maps (`GC-001`), `Ptr` dereference/indexing, OS-threaded structured concurrency (`CONC-001`) — all design-gated; record Tier-1 CI evidence on first push; WASM-001 last |
+| Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64). Recorded Linux/macOS CI evidence needs a **second, full-fidelity CI remote** (the source-only mirror cannot trigger the workflow); remote not created yet. clang alone remains unusable here without the MSVC/Windows SDK |
+| Next action | Set up the full-fidelity CI remote (user creates repo; then push full tree from `C:\Projects\Neo Astra`) to record Tier-1 runs; then C-001 next slice: `Ptr` dereference/indexing (the tractable one) ahead of the design-gated items (`GC-001`, `CONC-001`); WASM-001 last |
+
+---
+
+### 2026-10-28 - Correction: Tier-1 CI evidence needs a second, full-fidelity remote (not a push to the mirror)
+
+- Command: `git ls-tree -r --name-only origin/master` (source mirror), doc reconciliation
+- Result: docs corrected in `todo.md` and `c001-handoff.md`; mirror re-synced to `master = cae0c46` as commit `6ce9f39`
+- What:
+  - **Finding**: "recorded Linux/macOS CI evidence is blocked only on pushing to a remote" was wrong. The source-only mirror (`luminousvalentine-cell/Neo-Astra`) intentionally carries no `.github/`, `scripts/`, `tests/`, or `conformance/` — so pushing it never triggers the Tier-1 workflow (no workflow file exists on the remote), and the pre-push guard actively enforces those exclusions. The blocker is the mirror policy, not infrastructure timing.
+  - **Decision (user: option A)**: create a **second, full-fidelity CI remote** that receives the whole repo (tests, conformance, `scripts/`, `.github/`) from `C:\Projects\Neo Astra`; the source mirror stays clean and is still guarded. Item 4 of the C-001 handoff moves from "waiting on a push" to "blocked on the CI remote not existing yet".
+  - **Mirror sync**: re-snapshot from `cae0c46` (93 files, comment-stripped, em-dash-free), verified green in the cleaned tree (`cargo fmt --check`, `clippy -D warnings`, `cargo test --workspace`, `tsc -b`, 154 JS/TS tests — up one from the new codegen-js test), force-pushed as `6ce9f39` "Initial commit" through the pre-push guard.
+- Verification: remote = single branch `master` (default), single commit, 93 files, 0 em dashes, no forbidden paths; hook blocks a simulated polluted push (main history) with the expected reasons.
+- Boundary: the CI remote cannot be created from this host yet — `gh` is not authenticated, so repo creation stays with the user (same as the mirror repo). The Tier-1 workflow itself is written and correct; it needs the full-fidelity remote plus a first push to produce recorded runs.
 
 ---
 

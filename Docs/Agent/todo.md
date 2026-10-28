@@ -1142,7 +1142,13 @@ by a production native target.
       hosted run.
 - [x] Tier-1 CI matrix workflow (`.github/workflows/ci.yml`) runs the full gate
       on Linux, macOS, and Windows so the native build + conformance corpus
-      execute on Tier-1 platforms (recorded runs need a push to a remote).
+      execute on Tier-1 platforms. Correction (2026-10-28): the workflow cannot
+      run from the source-only mirror (`luminousvalentine-cell/Neo-Astra`) -
+      that remote intentionally carries no `.github/`, `scripts/`, `tests/`, or
+      `conformance/`, so no run is ever triggered there, and the pre-push guard
+      enforces the exclusion. Recorded runs require a second, full-fidelity CI
+      remote that receives the whole repo; this was previously mis-stated as
+      "waiting on a push".
 - [x] Manual-memory allocation subset: `Memory.alloc<T>`/`Memory.free` builtins
       (system-mode gated, `NS5004` in core), `Ptr<T>` → `T*`, arena lowering,
       `NS8012` removed for the supported subset.
