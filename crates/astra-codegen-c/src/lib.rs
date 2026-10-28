@@ -43,7 +43,7 @@ pub enum IntegerPolicy {
 ///
 /// Mirrors the typed-IR fields the compiler API produces for source-to-source
 /// backends: the parsed AST, resolved HIR, checked expression annotations, the
-/// `@memory:manual` scopes the managed subset rejects, and the integer
+/// `@memory:manual` scopes (supported for alloc/free), and the integer
 /// arithmetic policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CModule {
@@ -55,7 +55,8 @@ pub struct CModule {
     pub hir: astra_core::hir::Module,
     /// Checked expression types, in source order.
     pub annotations: Vec<astra_core::checker::TypeAnnotation>,
-    /// Spans of `@memory:manual` scopes, which this slice rejects.
+    /// Spans of `@memory:manual` scopes. The C backend supports `Memory.alloc`
+    /// / `Memory.free` inside them; pointer dereference/indexing is a follow-up.
     pub manual_memory_scopes: Vec<astra_core::span::Span>,
     /// Selected integer arithmetic policy.
     pub integer_policy: IntegerPolicy,

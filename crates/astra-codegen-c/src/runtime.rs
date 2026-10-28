@@ -80,6 +80,8 @@ ASTRA_NORETURN extern void astra_abort(const char* msg);
 
 /* Managed allocation and containers. */
 extern void* astra_alloc(size_t n);
+/* Frees one arena block (no-op for NULL). Used by manual-memory `Memory.free`. */
+extern void astra_free(void* p);
 /* Managed-lifecycle hook: releases every arena block for the run. The emitted
    main entry point calls this before returning (freestanding object compiles
    only see the declaration; the hosted shim defines it). */

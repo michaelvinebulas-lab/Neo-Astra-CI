@@ -610,6 +610,13 @@ impl TyCtxt {
                 "void*".into()
             }
             Type::Named(name, _) if name == "Channel" => "NS_Channel*".into(),
+            Type::Named(name, args) if name == "Ptr" => {
+                // A manual-memory pointer (`Memory.alloc<T>`): a raw `T*` into
+                // the arena. Dereference/indexing is a documented follow-up.
+                let inner = args.first().cloned().unwrap_or(Type::U8);
+                let value = self.c_type(&inner);
+                format!("{value}*")
+            }
             Type::Named(name, args) if name == "Task" => {
                 let inner = args.first().cloned().unwrap_or(Type::Unit);
                 let value = self.c_type(&inner);

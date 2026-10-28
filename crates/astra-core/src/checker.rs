@@ -2405,6 +2405,45 @@ impl<'a> Checker<'a> {
                     errors: Vec::new(),
                 }));
             }
+            // Manual-memory builtins: `Memory.alloc<T>(count)` and
+            // `Memory.free(ptr)` (03-runtime-and-memory.md §5.2). Manual memory
+            // is available only in a mode that grants system capability.
+            if name == "Memory" && self.resolve_struct(name).is_none() {
+                if !self.mode.allows(Mode::System) {
+                    self.error(
+                        MEMORY_REQUIREMENT,
+                        format!(
+                            "Manual memory requires system mode, but the active mode is '{}'.",
+                            self.mode.as_str()
+                        ),
+                        span,
+                        "Use 'Memory' only inside a system-mode boundary.",
+                    );
+                    return ExprInfo::value(Type::Error);
+                }
+                if member == "alloc" {
+                    return ExprInfo::value(Type::Function(FunctionType {
+                        type_parameters: vec!["T".to_owned()],
+                        parameters: vec![Type::Usize],
+                        return_type: Box::new(Type::Named(
+                            "Ptr".to_owned(),
+                            vec![Type::Generic("T".to_owned())],
+                        )),
+                        errors: Vec::new(),
+                    }));
+                }
+                if member == "free" {
+                    return ExprInfo::value(Type::Function(FunctionType {
+                        type_parameters: vec!["T".to_owned()],
+                        parameters: vec![Type::Named(
+                            "Ptr".to_owned(),
+                            vec![Type::Generic("T".to_owned())],
+                        )],
+                        return_type: Box::new(Type::Unit),
+                        errors: Vec::new(),
+                    }));
+                }
+            }
         }
 
         let target_info = self.check_expr(target, None);

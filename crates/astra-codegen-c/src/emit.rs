@@ -99,12 +99,6 @@ fn reject(code: &'static str, message: impl Into<String>) -> Reject {
 
 /// Emits a generated C translation unit (and the matching host shim path).
 pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
-    if !module.manual_memory_scopes.is_empty() {
-        return Err(BackendError::new(
-            "NS8012",
-            "@memory:manual is not supported by the C managed-subset backend; native manual memory is tracked by GC-001",
-        ));
-    }
     if module
         .ast
         .items
@@ -212,16 +206,6 @@ pub fn emit_project(
         .map(|e| (e.key.clone(), TypeEnv::collect(&e.module.ast)))
         .collect();
     for entry in entries {
-        if !entry.module.manual_memory_scopes.is_empty() {
-            return Err(BackendError::new(
-                "NS8012",
-                format!(
-                    "module '{}': @memory:manual is not supported by the C managed-subset backend",
-                    entry.module.name
-                ),
-            ));
-        }
-
         let mut scripts = Vec::new();
         collect_scripts(&entry.module.ast.items, &mut scripts);
         for s in &scripts {
@@ -1396,25 +1380,9 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_scoped_block(&mut self, scoped: &ast::ScopedStatements) {
-        if scoped.annotation.kind == ast::ScopeKind::Memory && scoped.annotation.value == "manual" {
-            self.tcx.rejects.push(reject(
-                "NS8012",
-                "@memory:manual is not supported by the C managed-subset backend",
-            ));
-            return;
-        }
         self.defers.push(Vec::new());
-        let n = scoped.statements.len();
-        for (i, stmt) in scoped.statements.iter().enumerate() {
-            let is_tail = i + 1 == n;
-            if is_tail {
-                self.emit_tail_stmt(stmt, self.cur_err.is_some());
-            } else {
-                self.emit_stmt(stmt);
-            }
-        }
-        if scoped.statements.is_empty() {
-            self.emit_implicit_tail_return(self.cur_err.is_some());
+        for stmt in &scoped.statements {
+            self.emit_stmt(stmt);
         }
         self.emit_scope_defers();
         self.defers.pop();
@@ -2150,6 +2118,37 @@ impl<'a> Emitter<'a> {
                             };
                             let elem_c = self.tcx.c_type(&element);
                             return format!("astra_channel_new(sizeof({elem_c}))");
+                        }
+                        // Manual memory: `Memory.alloc<T>(count)` carves `count`
+                        // `T`s out of the run arena and yields `T*`; the emitted
+                        // main releases the arena at exit. `Memory.free(p)`
+                        // returns one block to the arena now.
+                        ("Memory", "alloc") => {
+                            let ptr_ty = self
+                                .type_of(e)
+                                .cloned()
+                                .unwrap_or_else(|| Type::Named("Ptr".to_owned(), vec![Type::U8]));
+                            let element = match &ptr_ty {
+                                Type::Named(_, arguments) => {
+                                    arguments.first().cloned().unwrap_or(Type::U8)
+                                }
+                                _ => Type::U8,
+                            };
+                            let elem_c = self.tcx.c_type(&element);
+                            let count = args
+                                .first()
+                                .map(|a| self.expr(a))
+                                .unwrap_or_else(|| "0".to_owned());
+                            return format!(
+                                "(({elem_c}*)astra_alloc((size_t)({count}) * sizeof({elem_c})))"
+                            );
+                        }
+                        ("Memory", "free") => {
+                            let ptr = args
+                                .first()
+                                .map(|a| self.expr(a))
+                                .unwrap_or_else(|| "NULL".to_owned());
+                            return format!("(astra_free({ptr}), (NS_Unit){{0}})");
                         }
                         _ => {
                             // Namespace-import call: `alias.fn(...)`.

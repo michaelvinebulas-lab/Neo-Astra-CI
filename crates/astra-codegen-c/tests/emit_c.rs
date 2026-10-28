@@ -25,10 +25,14 @@ use astra_core::type_surface::{ProjectModule, check_module_graph};
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
 fn compile_and_emit(source: &str) -> String {
+    compile_and_emit_mode(source, Mode::Core)
+}
+
+fn compile_and_emit_mode(source: &str, mode: Mode) -> String {
     let module = parse(source).expect("parse failed");
     let resolved = resolve_module(&module).expect("resolve failed");
-    let checked = check_resolved(&module, &resolved, CheckOptions::new(Mode::Core))
-        .expect("type check failed");
+    let checked =
+        check_resolved(&module, &resolved, CheckOptions::new(mode)).expect("type check failed");
     let c_module = CModule {
         name: checked.module.name.clone(),
         ast: module,
@@ -607,19 +611,23 @@ fn float_arithmetic_uses_plain_operators() {
 }
 
 #[test]
-fn manual_memory_is_rejected() {
+fn manual_memory_alloc_free_lowers_to_arena() {
     use astra_capabilities::Mode;
     use astra_core::checker::CheckOptions;
     use astra_core::checker::check_source;
-    // system mode allows manual memory scopes
-    let src = "{@memory:manual;\npub fn alloc() {}\n}\n";
-    let checked = match check_source(src, CheckOptions::new(Mode::System)) {
-        Ok(r) => r,
-        Err(_diags) => {
-            // Checker may also reject it with NS5xxx; either way the backend never sees it.
-            return;
-        }
-    };
+    // System mode allows manual memory; `Memory.alloc`/`Memory.free` lower to the
+    // run-arena helpers. Pointer dereference/indexing is a documented follow-up.
+    let src = r#"
+pub fn main() -> i32 {
+    {@memory:manual;
+        let buf = Memory.alloc<u8>(16)
+        Memory.free(buf)
+    }
+    return 0
+}
+"#;
+    let checked = check_source(src, CheckOptions::new(Mode::System))
+        .expect("system-mode manual memory should type check");
     let c_module = CModule {
         name: checked.module.name.clone(),
         ast: astra_core::parser::parse(src).unwrap(),
@@ -628,13 +636,37 @@ fn manual_memory_is_rejected() {
         manual_memory_scopes: checked.manual_memory_scopes,
         integer_policy: IntegerPolicy::Wrapping,
     };
-    let result = generate(&c_module);
+    let generated = generate(&c_module).expect("C generation should accept manual memory");
+    let out = &generated.source;
     assert!(
-        result.is_err(),
-        "C backend should reject manual-memory scopes"
+        out.contains("astra_alloc"),
+        "expected Memory.alloc to lower to astra_alloc:\n{out}"
     );
-    let err = result.unwrap_err();
-    assert_eq!(err.code, "NS8012", "wrong rejection code: {}", err.code);
+    assert!(
+        out.contains("astra_free"),
+        "expected Memory.free to lower to astra_free:\n{out}"
+    );
+    assert!(
+        out.contains("uint8_t*"),
+        "expected Ptr<u8> to map to uint8_t*:\n{out}"
+    );
+    assert_clang_ok(out);
+}
+
+#[test]
+fn manual_memory_requires_system_mode_in_checker() {
+    use astra_capabilities::Mode;
+    use astra_core::checker::CheckOptions;
+    use astra_core::checker::check_source;
+    // In core mode, `Memory.alloc` is rejected with NS5004 (manual memory needs
+    // system capability) before the backend ever sees it.
+    let src = "pub fn f() { let b = Memory.alloc<u8>(8) }\n";
+    let diagnostics = check_source(src, CheckOptions::new(Mode::Core))
+        .expect_err("core mode should reject Memory.alloc");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "NS5004"),
+        "expected NS5004 for manual memory in core mode: {diagnostics:?}"
+    );
 }
 
 #[test]
