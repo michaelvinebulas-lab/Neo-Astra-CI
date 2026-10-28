@@ -1818,6 +1818,145 @@ test("astra build links a path package through a bare import", (t) => {
   }
 });
 
+test("astra build links an installed (non-path) package via the NoPM store", (t) => {
+  const compiler = hostedCCompiler();
+  if (compiler === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-installed-package-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    // The "installed" package, as NoPM's content store would lay it out.
+    mkdirSync(join(project, ".astra", "store", "nova-mathlib", "src"), {
+      recursive: true,
+    });
+    // App declares a non-path dependency (a registry package).
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "app", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "native", defaultMode: "core" },
+          nova: { entry: "src/main.ns" },
+          targets: { native: { backend: "native", mode: "core", outDir: "dist/native" } },
+          dependencies: {
+            mathlib: { source: "nova", version: "1.0.0" },
+          },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        'import { add } from "mathlib"',
+        "",
+        "pub fn main() -> i32 {",
+        "    println(add(20, 22))",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    // `nopm lock` output: name -> id.
+    writeFileSync(
+      join(project, "core.lock.json"),
+      JSON.stringify(
+        {
+          lockfileVersion: 1,
+          generatedBy: "test",
+          manifestHash: "sha256:test",
+          compiler: { version: "0.1.0", apiVersion: "1.0" },
+          semantics: { integers: "wrapping", strings: "unicode" },
+          targets: { native: { backend: "native", mode: "core", triple: null } },
+          packages: [
+            {
+              id: "nova:mathlib@1.0.0",
+              name: "mathlib",
+              source: "nova",
+              version: "1.0.0",
+              resolved: "https://registry.test/mathlib/1.0.0",
+              registry: "https://registry.test",
+              integrity: "sha256:test",
+              targets: ["native"],
+              capabilities: [],
+              lifecycleScripts: false,
+              dependencies: [],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    // `nopm install` output: id -> root (relative to the project root).
+    writeFileSync(
+      join(project, ".astra", "store", "index.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          generatedBy: "test",
+          packages: [
+            {
+              id: "nova:mathlib@1.0.0",
+              source: "nova",
+              root: ".astra/store/nova-mathlib",
+              integrity: "sha256:test",
+              targets: ["native"],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, ".astra", "store", "nova-mathlib", "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "mathlib", version: "1.0.0", edition: "2026", license: "MIT" },
+          nova: { entry: "src/lib.ns" },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, ".astra", "store", "nova-mathlib", "src", "lib.ns"),
+      ["pub fn add(a: i32, b: i32) -> i32 {", "    return a + b", "}", ""].join("\n"),
+      "utf8",
+    );
+
+    const built = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(built.status, 0, built.stderr);
+
+    const outDir = join(project, "dist", "native");
+    assert.ok(
+      existsSync(join(outDir, "deps_mathlib_src_lib.c")),
+      "expected the installed package translation unit",
+    );
+    const exe = join(outDir, process.platform === "win32" ? "main.exe" : "main");
+    const run = spawnSync(exe, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("astra build --target c emits one qualified translation unit per module", () => {
   const project = mkdtempSync(join(tmpdir(), "astra-build-c-multi-"));
   try {

@@ -1118,14 +1118,80 @@ interface LinkedPathPackages {
 }
 
 /**
- * Loads manifest `path` dependencies as project modules.
+ * Reads a JSON file if it exists, otherwise `undefined`. Used for the optional
+ * NoPM lockfile and store index, which only exist after `nopm install`.
+ */
+function readJsonIfExists(path: string): unknown {
+  if (!existsSync(path)) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolves installed (non-`path`) dependencies to their package directories by
+ * combining the NoPM lockfile with the content store:
+ *
+ * - `core.lock.json` maps a plain dependency `name` to a formatted package `id`.
+ * - `.astra/store/index.json` maps that `id` to the installed `root` on disk.
+ *
+ * Returns a `name → absolute package root` map covering only packages that are
+ * both locked and installed. This reuses NoPM's resolver output rather than
+ * re-implementing any registry/git fetching.
+ */
+function loadInstalledPackageRoots(root: string): Map<string, string> {
+  const roots = new Map<string, string>();
+  const lockfile = readJsonIfExists(join(root, "core.lock.json"));
+  const store = readJsonIfExists(join(root, ".astra", "store", "index.json"));
+  if (!isRecord(lockfile) || !isRecord(store)) {
+    return roots;
+  }
+  if (!Array.isArray(lockfile["packages"]) || !Array.isArray(store["packages"])) {
+    return roots;
+  }
+
+  const storeRootById = new Map<string, string>();
+  for (const entry of store["packages"]) {
+    if (
+      isRecord(entry) &&
+      typeof entry["id"] === "string" &&
+      typeof entry["root"] === "string"
+    ) {
+      storeRootById.set(entry["id"], resolve(root, entry["root"]));
+    }
+  }
+
+  for (const entry of lockfile["packages"]) {
+    if (
+      isRecord(entry) &&
+      typeof entry["name"] === "string" &&
+      typeof entry["id"] === "string"
+    ) {
+      const installed = storeRootById.get(entry["id"]);
+      if (installed !== undefined) {
+        roots.set(entry["name"], installed);
+      }
+    }
+  }
+  return roots;
+}
+
+/**
+ * Loads manifest dependencies as project modules, for both `path` sources and
+ * NoPM-installed (git/registry) sources resolved through the lockfile + store.
  *
  * Each package is keyed under `deps/<name>/<relative path>` so its own symbol
  * stems and headers cannot collide with the importer's. Bare imports such as
  * `import { add } from "mathlib"` resolve through the returned import map to
  * the package's `nova.entry` module. This deliberately does not re-implement
- * package resolution: it reads the manifest dependency entries directly and
- * delegates the graph/type-check work to the compiler API.
+ * package resolution: `path` entries are read directly, installed packages come
+ * from NoPM's own lock/store output, and the graph/type-check work is delegated
+ * to the compiler API. A dependency that is neither a `path` nor installed is
+ * skipped (it will surface as an unresolved import if actually referenced).
  */
 function linkedPathPackages(
   root: string,
@@ -1137,14 +1203,16 @@ function linkedPathPackages(
   const dependencies = isRecord(manifest.data["dependencies"])
     ? manifest.data["dependencies"]
     : {};
+  const installedRoots = loadInstalledPackageRoots(root);
   const sources: ProjectModuleSource[] = [];
   const importMap: Record<string, string> = {};
   const seen = new Set<string>();
 
   for (const [name, raw] of Object.entries(dependencies)) {
-    if (!isRecord(raw) || raw["source"] !== "path" || typeof raw["path"] !== "string") {
+    if (!isRecord(raw)) {
       continue;
     }
+    const isPath = raw["source"] === "path" && typeof raw["path"] === "string";
     const targets = Array.isArray(raw["targets"])
       ? raw["targets"].filter((value): value is string => typeof value === "string")
       : undefined;
@@ -1156,26 +1224,48 @@ function linkedPathPackages(
       continue;
     }
 
-    const packageRoot = resolve(root, raw["path"]);
-    if (!existsSync(packageRoot)) {
-      throw new CliError(
-        "NS9008",
-        `Path dependency '${name}' does not exist: ${displayPath(packageRoot, cwd)}`,
-        displayPath(packageRoot, cwd),
-      );
+    let packageRoot: string;
+    if (isPath) {
+      packageRoot = resolve(root, raw["path"] as string);
+      if (!existsSync(packageRoot)) {
+        throw new CliError(
+          "NS9008",
+          `Path dependency '${name}' does not exist: ${displayPath(packageRoot, cwd)}`,
+          displayPath(packageRoot, cwd),
+        );
+      }
+    } else {
+      const installed = installedRoots.get(name);
+      if (installed === undefined || !existsSync(installed)) {
+        continue;
+      }
+      packageRoot = installed;
     }
-    const packageManifest = loadManifest(packageRoot);
+    let packageManifest: ManifestDocument;
+    try {
+      packageManifest = loadManifest(packageRoot);
+    } catch (error) {
+      // An installed foreign package (e.g. a plain npm library) has no Astra
+      // manifest; it is simply not linkable, so skip rather than fail the build.
+      if (isPath) {
+        throw error;
+      }
+      continue;
+    }
     const packageDir = dirname(packageManifest.file.path);
     const nova = isRecord(packageManifest.data["nova"])
       ? packageManifest.data["nova"]
       : {};
     const entryValue = nova["entry"];
     if (typeof entryValue !== "string" || entryValue.length === 0) {
-      throw new CliError(
-        "NV0002",
-        `Path dependency '${name}' does not declare nova.entry.`,
-        displayPath(packageManifest.file.path, cwd),
-      );
+      if (isPath) {
+        throw new CliError(
+          "NV0002",
+          `Dependency '${name}' does not declare nova.entry.`,
+          displayPath(packageManifest.file.path, cwd),
+        );
+      }
+      continue;
     }
 
     const entryPath = resolve(packageDir, entryValue);
@@ -1186,11 +1276,14 @@ function linkedPathPackages(
       relativeEntry === ".." ||
       relativeEntry.startsWith(`..${sep}`)
     ) {
-      throw new CliError(
-        "NS9008",
-        `Path dependency '${name}' has an entry outside its package.`,
-        displayPath(packageManifest.file.path, cwd),
-      );
+      if (isPath) {
+        throw new CliError(
+          "NS9008",
+          `Path dependency '${name}' has an entry outside its package.`,
+          displayPath(packageManifest.file.path, cwd),
+        );
+      }
+      continue;
     }
     const entryKey = relativeEntry.split(sep).join("/");
     const namespace = `deps/${name.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
