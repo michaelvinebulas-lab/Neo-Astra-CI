@@ -10,12 +10,27 @@ This is the agent's persistent memory. Update it at the end of every substantial
 |---|---|
 | Last updated | 2026-10-28 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001` package-linking slice landed (`2e80554`): manifest `path` dependencies link into the C backend through a bare-specifier import map; next is GC/manual memory (6.C) |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend, first C17 managed slice with hosted runtime, multi-module linking, generics, native libraries/ABI, single-threaded concurrency, path-package linking, and a full C conformance runner; `@script` inline interop complete |
-| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project` with `import_map`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, hosted shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI incl. `linkedPathPackages`) |
+| Current task | `C-001` landed package linking (path + NoPM-installed), managed arena, Tier-1 CI workflow, and the `Memory.alloc`/`free` first cut (`399bee0`); remaining items are design-gated handoffs (precise GC, `Ptr` access, OS-threaded concurrency, recorded CI evidence) |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend, first C17 managed slice with hosted runtime, multi-module linking, generics, native libraries/ABI, single-threaded concurrency, path + installed package linking, managed arena memory, manual-memory alloc/free, Tier-1 CI workflow, and a full C conformance runner; `@script` inline interop complete |
+| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker incl. `Memory` builtins), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project` with `import_map`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, managed arena + hosted shim, `Ptr`/manual memory, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI incl. `linkedPathPackages`), `.github/workflows/ci.yml` (Tier-1 matrix) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
-| Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64) after the shim fix. Linux/macOS native builds still need their own CI run, and clang alone remains unusable here without the MSVC/Windows SDK |
-| Next action | C-001 remainder: GC/manual memory (6.C) starting from `03-runtime-and-memory.md` (arena-released-at-exit first slice, then collector); OS-threaded concurrency (6.D); Tier-1 native CI matrix evidence; non-path package adapters; WASM-001 last |
+| Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64). Recorded Linux/macOS CI evidence needs a push to a GitHub remote (no remote configured this session). clang alone remains unusable here without the MSVC/Windows SDK |
+| Next action | C-001 honest handoff: precise mark-sweep GC with stack maps (`GC-001`), `Ptr` dereference/indexing, OS-threaded structured concurrency (`CONC-001`) — all design-gated; record Tier-1 CI evidence on first push; WASM-001 last |
+
+---
+
+### 2026-10-28 - `C-001` slices: non-path packages, Tier-1 CI workflow, managed arena, manual memory
+
+- Command: `cargo test -p astra-codegen-c`, `cargo test -p astra-compiler-api`, package boundary `node --test`, `npm run ci`
+- Result: 80 emission tests (up from 77 with the new arena/manual-memory tests), full `npm run ci` green (fmt, clippy, JS/TS tests, workspace Rust tests, conformance runner)
+- What:
+  - **Non-path package adapters**: `linkedPathPackages` now also resolves installed packages by joining `core.lock.json` (name → id) with `.astra/store/index.json` (id → root); git/registry `.ns` packages feed the same `deps/<name>/` discovery and import map. Foreign (non-Astra) installed packages are skipped, not fatal.
+  - **Tier-1 CI workflow** (`.github/workflows/ci.yml`): runs `npm run ci` on ubuntu/macos/windows so the hosted compiler is present and the conformance corpus + native build execute on Tier-1 platforms.
+  - **Managed arena (GC-001 managed-mode first step)**: `astra_alloc` records blocks; `astra_free`/`astra_realloc` keep the tracker in sync (array/map growth); emitted `main` calls `astra_runtime_shutdown` to release the run's arena at exit. `RUNTIME_HEADER` declares `astra_free`/`astra_runtime_shutdown`.
+  - **Manual-memory first cut**: `Memory.alloc<T>(n) -> Ptr<T>` / `Memory.free(p)` checker builtins (system-mode gated — `NS5004` in core), `Ptr<T>` → `T*`, lowering to `astra_alloc`/`astra_free`; `NS8012` removed. Also fixed `emit_scoped_block`, which wrongly force-returned a scoped block's last statement (broke statement-position `@memory:manual`).
+- Tests: `managed_arena_is_released_at_shutdown`, `allocation_heavy_program_runs_clean_after_shutdown`, `manual_memory_alloc_free_lowers_to_arena`, `manual_memory_requires_system_mode_in_checker`, and an installed-package CLI boundary test.
+- Verification: full `npm run ci` green after each slice; arena + manual memory verified end to end through gcc.
+- Boundary (honest handoff): `Ptr` dereference/indexing, precise mark-sweep GC with stack maps (`GC-001`), and OS-threaded concurrency (`CONC-001`) are design-gated and deliberately not invented here; recorded Linux/macOS CI evidence needs a push to a remote.
 
 ---
 

@@ -6,16 +6,16 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master = 2e80554` (2026-10-28), working tree clean. Package
-> linking (section 6.B) is done for path packages. Remaining: GC (6.C,
-> language semantics), OS-threaded concurrency (6.D), Tier-1 CI evidence (6.F).
+> **Snapshot:** `master = 399bee0` (2026-10-28), working tree clean, full
+> `npm run ci` green. This session landed package linking (path + NoPM-installed),
+> the managed arena, the Tier-1 CI workflow, and the `Memory.alloc`/`free`
+> first cut (sections 6.B, 6.C, 6.F).
 >
-> **Next task:** GC/manual memory (section 6.C) — read
-> `Docs/Design/V1/03-runtime-and-memory.md` first; the managed-mode first
-> slice (arena released at exit) is small and unblocks leak tests. Non-path
-> package adapters (git/npm/cargo via the NoPM store) reuse the 6.B import-map
-> mechanism and are integration work. Tier-1 Linux/macOS CI evidence needs
-> infrastructure, not codegen.
+> **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
+> (`GC-001`, 6.C), `Ptr` dereference/indexing (6.C follow-up), OS-threaded
+> structured concurrency (`CONC-001`, 6.D), and recorded Linux/macOS CI evidence
+> (6.F — blocked only on pushing to a GitHub remote, not on codegen). Each is
+> design-gated; see the section notes before starting.
 
 ---
 
@@ -102,13 +102,19 @@ and section 6.A (the generics design) before touching code.
 - **Concurrency (first slice):** eager `spawn`/`Task<T>`, bounded
   `Channel<T>` (capacity 16), `ChannelError`, and deadlock panics ship and run
   the `channels` case. No OS-thread scheduler or task-local heaps yet.
-- Linux/macOS native builds remain unverified (Tier-1 CI matrix is the remaining
-  infrastructure item).
+- Linux/macOS native builds: the Tier-1 CI workflow (`.github/workflows/ci.yml`,
+  3 OSes) is provisioned; recorded runs need the first push to a remote.
 
 ### Commits that built the current state (newest first)
 
 | Commit | Content |
 |---|---|
+| `399bee0` | `Memory.alloc`/`Memory.free` first cut (system-gated, `Ptr<T>`→`T*`, arena lowering, `NS8012` removed) |
+| `79ef931` | NoPM-installed (git/registry) packages link via lockfile + store index |
+| `3cafffc` | Tier-1 CI workflow (Linux/macOS/Windows `npm run ci`) |
+| `bd734d5`/`623c4b8` | Managed arena allocator released at exit (`astra_runtime_shutdown`) |
+| `ed5ac5e`/`2e80554` | Manifest path-package linking (import map) + include-guard fix + docs |
+| `4040aa5` | Docs: record C-001 library and concurrency slices |
 | `483caae` | Single-threaded concurrency (eager spawn/Task, bounded Channel, ChannelError); C corpus runs 19/19 |
 | `16afbcd` | `Array.get`, native library artifacts (`--emit staticlib\|cdylib`), provisional C ABI |
 | `d8e4efa` | Hosted shim fix (`host_shim()` TU), hosted-compiler probing, native conformance execution, match-arm `pre` fix |
@@ -317,35 +323,47 @@ Expected: `7`, `ok`, `true`, `RETURN=0`.
   a compiler-api JSON-RPC test and a CLI boundary test.
 
 **Honest boundaries.**
-- Only `source: "path"` is wired; git/npm/cargo adapters install into the NoPM
-  store and still need store wiring — the same import-map mechanism applies.
-- Package-of-package dependencies are not resolved (a package's own bare
-  imports are not re-mapped).
+- Both `source: "path"` and NoPM-installed (git/registry) packages are wired:
+  the CLI reads `core.lock.json` (name → id) and `.astra/store/index.json`
+  (id → root) and feeds installed directories through the same discovery.
+- Only non-aliased dependencies resolve by name (an aliased or git-URL dep key
+  is not the lockfile `name`); a package's own bare imports are not re-mapped
+  (no package-of-package resolution).
 - Diagnostics for package modules attribute spans to the entry file, as
   before for multi-module projects.
 
-**Acceptance met:** fixture project with a path dependency builds via
-`astra build`; symbols qualified; package TU cannot collide with importer
-stems (namespace prefix).
+**Acceptance met:** fixture project with a path dependency (and an installed
+registry package) builds via `astra build`; symbols qualified; package TU
+cannot collide with importer stems (namespace prefix).
 
-### 6.C GC-001 — managed memory and `@memory:manual`
+### 6.C GC-001 — managed memory and `@memory:manual` — **FIRST CUTS DONE**
 
-**Today.** `@memory:manual` scopes are rejected with `NS8012`. The hosted runtime
-allocates with `malloc` through `astra_alloc` (arrays, maps, `bytes.new`) and
-never frees; there is no ownership model.
+**Landed this session.**
+- Managed arena: `astra_alloc` records every block; `astra_free`/`astra_realloc`
+  keep the tracker in sync (array/map growth); the emitted `main` calls
+  `astra_runtime_shutdown` to release the run's arena at exit. Freestanding
+  `extern astra_alloc` boundary unchanged. This is the design's "arena per
+  program run, released at exit" managed-mode first step (§4.1).
+- Manual-memory allocation subset: `Memory.alloc<T>(n) -> Ptr<T>` and
+  `Memory.free(p)` are checker builtins (system-mode gated — `NS5004` in core),
+  `Ptr<T>` maps to `T*`, and they lower to the arena. `NS8012` is removed for
+  this subset; `@memory:manual` scopes emit normally.
 
-**Design sketch (read `Docs/Design/V1/03-runtime-and-memory.md` first).**
-- Managed mode: arena/bump allocator per program run, released at exit; keep the
-  freestanding `extern` boundary so a future Wasm target can supply its own
-  allocator.
-- Manual mode: emit explicit `astra_alloc`/`astra_free` with a lexical ownership
-  rule (scope-based `defer`-style release) — must match the spec's manual rules
-  before enabling.
-- Acceptance: remove `NS8012` for the supported subset; add a leak/ownership
-  test that runs the shim (requires the native gate); document the model.
+**Remaining (honest handoff).**
+- `Ptr<T>` **dereference/indexing** — reading/writing through a manual pointer.
+  `Ptr` is alloc/free-only for now; the access semantics (dereference, bounds,
+  aliasing) are left unsettled in the design (§5.2 is "proposed") and are a
+  deliberate follow-up rather than invented unilaterally.
+- **Precise mark-sweep GC** with compiler-generated stack maps (§4.1/§4.3). The
+  arena is not a collector; the real one needs frontend precise roots (multi-week
+  `GC-001`). Conservative scanning would contradict the design's precise-roots
+  requirement, so it is not the chosen path.
+- Fallible `Memory.alloc` returning `Result<Ptr<T>, AllocError>` (the design's
+  `!` form) vs. the current infallible arena alloc (panics on OOM).
 
-**Risk.** This is a language-semantics change, not just codegen — do not start
-without reading the memory design doc and the D-decisions.
+**Risk/ownership.** Pointer-access and precise-GC root design are
+language-semantics decisions (GC-001), not just codegen — read
+`03-runtime-and-memory.md` and the D-decisions before continuing.
 
 ### 6.D CONC-001 — structured concurrency — **FIRST SLICE DONE**
 
@@ -363,9 +381,11 @@ without reading the memory design doc and the D-decisions.
 - `channels` left `KNOWN_GAPS`; the C conformance ledger is empty and all 19
   cases run.
 
-**Remaining (full CONC-001).**
+**Remaining (full CONC-001) — a design decision, not just codegen.**
 - OS-thread or worker scheduling; the current runtime is single-threaded and
-  eager, so blocking operations panic instead of yielding.
+  eager, so blocking operations panic instead of yielding. Moving to
+  pthreads/C11 **changes these deadlock-panic semantics to blocking waits** —
+  a `CONC-001` design choice that should be made deliberately, not unilaterally.
 - Task-local heaps and message transfer rules (design §4.2).
 - Cancellation safepoints and parent-scope join/failure propagation.
 - Thread-pool sizing/policy and Web Worker mapping (Wasm path).
@@ -428,9 +448,14 @@ shared linking follows the same `-shared` path but needs the Tier-1 run.
 - Tests self-skip when no hosted compiler is available, so CI on a minimal host
   stays green while a normal Linux runner exercises execution.
 
-**Remaining.** Provision/record a Tier-1 Linux (and ideally macOS) run of the
-same commands. That is infrastructure, not codegen, and it is the last gate for
-calling `C-001` fully done.
+**Remaining — workflow provisioned, evidence needs a push.**
+`.github/workflows/ci.yml` now runs the full `npm run ci` gate on
+`ubuntu-latest`, `macos-latest`, and `windows-latest` (runners ship a hosted C
+compiler, so the conformance corpus and native build execute on Tier-1
+platforms). The one thing not recorded from this Windows-only session is the
+actual Linux/macOS run — it happens the first time this repo is pushed to a
+GitHub remote. That is the last gate for calling `C-001` fully done, and it is
+blocked on remote infrastructure, not codegen.
 
 ### 6.G WASM-001 — Wasm target (deliberately deferred)
 

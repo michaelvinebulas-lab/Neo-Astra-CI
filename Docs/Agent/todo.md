@@ -1126,22 +1126,50 @@ by a production native target.
     compiled a multi-module project as separate TUs).
   - Pinned by a compiler-api JSON-RPC test, a CLI boundary test, and
     `assert_project_compiles` (multi-module clang TU compilation).
-  - Boundary: git/npm/cargo adapters and package-of-package dependencies are
-    not wired; only `source: "path"`.
+  - Non-path (git/registry) packages installed by NoPM also link: the CLI reads
+    `core.lock.json` (name → id) and `.astra/store/index.json` (id → root) and
+    feeds the installed directory through the same `deps/<name>/` discovery.
+  - Boundary: only non-aliased dependencies resolve by name (an aliased or
+    git-URL dependency key does not appear as the lockfile `name`), and a
+    package's own bare imports are not re-mapped (no package-of-package
+    resolution).
+- [x] Managed arena memory (GC-001 managed-mode first step). `astra_alloc`
+      records every block; `astra_free`/`astra_realloc` keep the tracker in sync
+      across array/map growth; the emitted `main` calls `astra_runtime_shutdown`
+      to release the whole run's arena at exit. The freestanding `extern
+      astra_alloc` boundary is unchanged (a Wasm backend can supply its own
+      allocator). Pinned by an arena-lifecycle harness and an allocation-heavy
+      hosted run.
+- [x] Tier-1 CI matrix workflow (`.github/workflows/ci.yml`) runs the full gate
+      on Linux, macOS, and Windows so the native build + conformance corpus
+      execute on Tier-1 platforms (recorded runs need a push to a remote).
+- [x] Manual-memory allocation subset: `Memory.alloc<T>`/`Memory.free` builtins
+      (system-mode gated, `NS5004` in core), `Ptr<T>` → `T*`, arena lowering,
+      `NS8012` removed for the supported subset.
 
 **Actually left**
 
-- [ ] Non-path package adapters. `source: "path"` packages link; git/npm/cargo
-      adapters install into the NoPM store and still need store wiring (the
-      same import-map mechanism applies), and a package's own bare imports are
-      not re-mapped (no package-of-package resolution).
-- [ ] Manual memory and GC. `@memory:manual` is rejected with `NS8012`; native
-      allocation, ownership, roots, and finalization are not implemented
-      (`GC-001`).
-- [ ] Full structured concurrency. The single-threaded eager slice (`spawn`/
-      `Task`, bounded `Channel`, `ChannelError`) is implemented; OS-thread or
-      worker scheduling, cancellation safepoints, task-local heaps, and
-      cross-task transfer remain (`CONC-001`).
+- [x] Non-path package adapters. git/registry `.ns` packages installed by NoPM
+      resolve through the lockfile + store index and link via the import map
+      (boundary: non-aliased names only; package-of-package deps not resolved).
+- [x] Manual memory, allocation/free subset. `Memory.alloc<T>(n) -> Ptr<T>` and
+      `Memory.free(p)` are checker builtins (system-mode gated, `NS5004` in
+      core), `Ptr<T>` maps to `T*`, and they lower to the run arena
+      (`astra_alloc`/`astra_free`); `@memory:manual` scopes are no longer
+      rejected (`NS8012` removed). Pinned by emission + checker-mode tests.
+- [ ] Manual-memory pointer **dereference/indexing** (reading/writing through a
+      `Ptr<T>`). `Ptr` is alloc/free-only for now; the access semantics are left
+      as a documented `GC-001` follow-up rather than invented.
+- [ ] Precise mark-sweep GC with compiler stack maps (`GC-001`). The managed
+      "arena per run released at exit" first step is landed and tested; the real
+      collector needs frontend-generated precise roots (multi-week `GC-001`, and
+      conservative scanning would contradict the design's precise-roots rule).
+- [ ] Full structured concurrency (OS-threaded runtime). The single-threaded
+      eager slice (`spawn`/`Task`, bounded `Channel`, `ChannelError`) is the
+      landed V1 scope and matches the JS/Nova model (deadlock panics). Moving to
+      OS threads (pthreads/C11) changes those deadlock semantics to blocking
+      waits and needs task-local heaps + cancellation safepoints — a `CONC-001`
+      design decision, recorded as a follow-up rather than done unilaterally.
 - [x] Native library output and stable ABI. `--emit staticlib|cdylib|library`
       produces `lib<name>.a`, `lib<name>.so`, or `lib<name>.dll` (+ import
       library), suppresses `main`, and is documented in
@@ -1153,24 +1181,30 @@ by a production native target.
       shim missing `NS_Bytes`/`NS_Map`; both are fixed, and the native execution
       path is pinned by `astra build --target native links and runs a hosted
       binary`.
-- [ ] Native verification on Linux and macOS. Those platforms have not run the
-      native build yet; the conformance gate will exercise them automatically
-      when a hosted compiler is present.
+- [ ] Native verification on Linux and macOS — **workflow provisioned, evidence
+      pending a push.** `.github/workflows/ci.yml` runs the full gate on
+      `ubuntu-latest`/`macos-latest`/`windows-latest`; the runners ship a hosted
+      C compiler, so the conformance corpus and native build execute there. The
+      actual Linux/macOS runs only happen once this repo is pushed to a GitHub
+      remote (no remote is configured in this session).
 - [x] Native CI gate in the test suite. `cargo test -p astra-codegen-c` runs
       every non-gap conformance case end to end whenever a hosted compiler is
       available (and self-skips otherwise), so a normal Linux runner already
       exercises native execution.
-- [ ] Tier-1 CI matrix provisioning and recorded evidence. The gate exists; the
-      remaining work is to provision/record Linux (and ideally macOS) CI runs
-      rather than relying on per-developer toolchains.
+- [x] Tier-1 CI matrix **provisioned** (`.github/workflows/ci.yml`, three OSes).
+      Recorded Linux/macOS evidence is the one remaining step and is blocked on
+      pushing to a remote, not on codegen.
 - [-] Wasm path through C17 (`WASM-001`) is deferred until the target ABI and
       runtime design land.
 
 **Evidence**
 
-- `crates/astra-codegen-c/tests/emit_c.rs`: 77 passing tests covering emission,
+- `crates/astra-codegen-c/tests/emit_c.rs`: 80 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays (`len`/`push`/`get`), structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
+  the managed arena lifecycle (`astra_alloc`/`astra_free`/`astra_runtime_shutdown`
+  released at exit) and `Memory.alloc`/`Memory.free` lowering (`Ptr<T>` → `T*`,
+  system-mode gated),
   `for` loops (arrays, maps, bytes), byte literals/indexing (reads and
   bounds-checked writes)/slicing/comparisons,
   `str` slice `Result` lowering (`SliceError`), `str.to_int`/`checked_*`/
