@@ -80,6 +80,10 @@ ASTRA_NORETURN extern void astra_abort(const char* msg);
 
 /* Managed allocation and containers. */
 extern void* astra_alloc(size_t n);
+/* Managed-lifecycle hook: releases every arena block for the run. The emitted
+   main entry point calls this before returning (freestanding object compiles
+   only see the declaration; the hosted shim defines it). */
+extern void astra_runtime_shutdown(void);
 extern NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src);
 extern void astra_array_push(NS_Array* arr, size_t elem_size, const void* value);
 extern void* astra_array_index(NS_Array* arr, size_t i, size_t elem_size);
@@ -225,7 +229,91 @@ void astra_assert(bool cond) { if (!cond) { astra_panic("assertion failed"); } }
 void astra_panic(const char* msg) { fprintf(stderr, "panic: %s\n", msg); abort(); }
 void astra_abort(const char* msg) { fprintf(stderr, "abort: %s\n", msg); abort(); }
 
-void* astra_alloc(size_t n) { void* p = malloc(n); if (!p) { astra_panic("out of memory"); } return p; }
+/* Managed arena: every `astra_alloc` block is recorded so the whole run can be
+   released at exit. This is the V1 "arena per program run" managed-memory first
+   step from 03-runtime-and-memory.md §4 — individual blocks are reclaimed by
+   `astra_free` where the backend knows the old buffer is dead (e.g. array
+   growth), and `astra_runtime_shutdown` frees whatever remains. A future precise
+   collector reuses this bookkeeping; the freestanding `extern astra_alloc`
+   boundary is unchanged so a Wasm backend can supply its own allocator. */
+typedef struct NS_Arena_Node { void* ptr; struct NS_Arena_Node* next; } NS_Arena_Node;
+static NS_Arena_Node* astra_arena_head = NULL;
+static size_t astra_arena_live = 0;
+static size_t astra_arena_total = 0;
+
+void* astra_alloc(size_t n) {
+    void* p = malloc(n == 0 ? 1 : n);
+    if (!p) { astra_panic("out of memory"); }
+    NS_Arena_Node* node = (NS_Arena_Node*)malloc(sizeof(NS_Arena_Node));
+    if (!node) { free(p); astra_panic("out of memory"); }
+    node->ptr = p;
+    node->next = astra_arena_head;
+    astra_arena_head = node;
+    astra_arena_live += 1;
+    astra_arena_total += 1;
+    return p;
+}
+
+/* Frees one arena block (no-op-safe for NULL). Falls back to plain `free` for a
+   pointer the arena never handed out, so hand-written `@script:c` that frees a
+   malloc'd buffer keeps working across the FFI boundary. */
+void astra_free(void* p) {
+    if (!p) { return; }
+    NS_Arena_Node** cur = &astra_arena_head;
+    while (*cur) {
+        if ((*cur)->ptr == p) {
+            NS_Arena_Node* dead = *cur;
+            *cur = dead->next;
+            free(dead->ptr);
+            free(dead);
+            astra_arena_live -= 1;
+            return;
+        }
+        cur = &(*cur)->next;
+    }
+    free(p);
+}
+
+/* Reallocates an arena-tracked block, keeping the arena's recorded pointer in
+   sync (a plain `realloc` would move the block and leave a stale entry). A
+   foreign pointer is reallocated and then adopted into the arena. */
+void* astra_realloc(void* p, size_t n) {
+    if (!p) { return astra_alloc(n); }
+    void* q = realloc(p, n == 0 ? 1 : n);
+    if (!q) { astra_panic("out of memory"); }
+    NS_Arena_Node** cur = &astra_arena_head;
+    while (*cur) {
+        if ((*cur)->ptr == p) {
+            (*cur)->ptr = q;
+            return q;
+        }
+        cur = &(*cur)->next;
+    }
+    NS_Arena_Node* node = (NS_Arena_Node*)malloc(sizeof(NS_Arena_Node));
+    if (!node) { astra_panic("out of memory"); }
+    node->ptr = q;
+    node->next = astra_arena_head;
+    astra_arena_head = node;
+    astra_arena_live += 1;
+    astra_arena_total += 1;
+    return q;
+}
+
+void astra_runtime_shutdown(void) {
+    NS_Arena_Node* cur = astra_arena_head;
+    while (cur) {
+        NS_Arena_Node* next = cur->next;
+        free(cur->ptr);
+        free(cur);
+        cur = next;
+    }
+    astra_arena_head = NULL;
+    astra_arena_live = 0;
+}
+
+/* Test/observability accessors for the arena (leak checks in the native gate). */
+size_t astra_arena_live_count(void) { return astra_arena_live; }
+size_t astra_arena_total_count(void) { return astra_arena_total; }
 
 NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src) {
     NS_Array arr;
@@ -241,7 +329,7 @@ void astra_array_push(NS_Array* arr, size_t elem_size, const void* value) {
         size_t new_cap = arr->cap == 0 ? 4 : arr->cap * 2;
         void* new_data = astra_alloc(new_cap * (elem_size == 0 ? 1 : elem_size));
         if (arr->len > 0) { memcpy(new_data, arr->data, arr->len * elem_size); }
-        free(arr->data);
+        astra_free(arr->data);
         arr->data = new_data;
         arr->cap = new_cap;
     }
@@ -450,8 +538,8 @@ void astra_map_set(NS_Map* m, const void* key, const void* val) {
     }
     if (m->len >= m->cap) {
         size_t new_cap = m->cap == 0 ? 8 : m->cap * 2;
-        m->keys = realloc(m->keys, new_cap * (m->key_size == 0 ? 1 : m->key_size));
-        m->values = realloc(m->values, new_cap * (m->val_size == 0 ? 1 : m->val_size));
+        m->keys = astra_realloc(m->keys, new_cap * (m->key_size == 0 ? 1 : m->key_size));
+        m->values = astra_realloc(m->values, new_cap * (m->val_size == 0 ? 1 : m->val_size));
         m->cap = new_cap;
     }
     memcpy((char*)m->keys + m->len * m->key_size, key, m->key_size);

@@ -831,6 +831,66 @@ fn host_shim_is_a_complete_hosted_translation_unit() {
     );
 }
 
+/// Managed-mode first step (`03-runtime-and-memory.md` §4): `astra_alloc`
+/// records every block so `astra_runtime_shutdown` can release the whole run's
+/// arena. Pins that the tracker counts allocations and that shutdown drops the
+/// live count to zero (the leak check the native gate needs).
+#[test]
+fn managed_arena_is_released_at_shutdown() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+extern void* astra_alloc(size_t n);
+extern void astra_free(void* p);
+extern void astra_runtime_shutdown(void);
+extern size_t astra_arena_live_count(void);
+int main(void) {
+    void* a = astra_alloc(16);
+    void* b = astra_alloc(32);
+    void* c = astra_alloc(64);
+    (void)a; (void)b; (void)c;
+    if (astra_arena_live_count() < 3) { printf("TRACK_FAIL\n"); return 1; }
+    /* Freeing one block must drop the live count by exactly one. */
+    astra_free(b);
+    if (astra_arena_live_count() != 2) { printf("FREE_FAIL\n"); return 1; }
+    astra_runtime_shutdown();
+    if (astra_arena_live_count() != 0) { printf("SHUTDOWN_FAIL\n"); return 1; }
+    printf("ARENA_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
+        eprintln!("skipping managed_arena_is_released_at_shutdown: no hosted compiler");
+        return;
+    };
+    assert!(ok, "arena harness did not run:\n{stderr}");
+    assert!(stdout.contains("ARENA_OK"), "arena lifecycle broken: {stdout}");
+}
+
+/// Array growth must route its old buffer through the arena (`astra_free`), not
+/// bare `free`, so the tracker stays in sync across a realloc-style pattern.
+#[test]
+fn allocation_heavy_program_runs_clean_after_shutdown() {
+    let src = r#"
+pub fn main() -> i32 {
+    let mut totals = [0]
+    let mut i: i32 = 1
+    while i < 200 {
+        totals.push(i)
+        i = i + 1
+    }
+    println(totals.len())
+    return 0
+}
+"#;
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&compile_and_emit(src)) else {
+        eprintln!("skipping allocation_heavy_program_runs_clean_after_shutdown: no hosted compiler");
+        return;
+    };
+    assert!(ok, "program failed:\n{stderr}");
+    assert_eq!(stdout.trim(), "200");
+}
+
 #[test]
 fn defer_runs_in_lifo_order() {
     let src = r#"
@@ -2019,8 +2079,13 @@ fn project_emits_main_wrapper_only_for_entry_module() {
         "entry missing main:\n{main}"
     );
     assert!(
-        main.contains("return (int)ns_app_main_main();"),
+        main.contains("astra_exit_code = (int)ns_app_main_main();"),
         "main wrapper should call the qualified symbol:\n{main}"
+    );
+    // Managed-mode first step: the entry releases the run arena before exit.
+    assert!(
+        main.contains("astra_runtime_shutdown();"),
+        "main wrapper should release the managed arena:\n{main}"
     );
 }
 

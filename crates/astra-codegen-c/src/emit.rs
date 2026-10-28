@@ -1199,12 +1199,17 @@ impl<'a> Emitter<'a> {
         let ret = main.return_type.as_ref().map(to_type).unwrap_or(Type::Unit);
         let sym = self.fn_symbol("main");
         self.out.push_str("int main(void) {\n");
+        self.out.push_str("    int astra_exit_code = 0;\n");
         if ret == Type::I32 {
-            let _ = writeln!(self.out, "    return (int){sym}();");
+            let _ = writeln!(self.out, "    astra_exit_code = (int){sym}();");
         } else {
             let _ = writeln!(self.out, "    {sym}();");
-            self.out.push_str("    return 0;\n");
         }
+        // Release the managed arena for the run before exiting (managed-mode
+        // first step; the hosted shim defines the hook, freestanding compiles
+        // only see its declaration).
+        self.out.push_str("    astra_runtime_shutdown();\n");
+        self.out.push_str("    return astra_exit_code;\n");
         self.out.push_str("}\n");
     }
 
