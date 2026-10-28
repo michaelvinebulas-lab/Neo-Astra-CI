@@ -1,0 +1,7 @@
+pub fn peek(buffer: Ptr<u8>, index: usize) -> u8 {
+    return buffer.read(index)
+}
+
+pub fn poke(buffer: Ptr<u8>, index: usize, value: u8) {
+    buffer.write(index, value)
+}

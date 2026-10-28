@@ -118,7 +118,9 @@ Programs that must be rejected live in `conformance/rejects`:
 
 The current rejects cover lexical/parse failure (`NS2001`), visibility
 (`NS3001`, `NS3002`, `NS3005`, `NS3010`, `NS3011`), exports (`NS3003`), types
-(`NS4001`, `NS4002`), effects (`NS4011`), and mode requirements (`NS5001`).
+(`NS4001`, `NS4002`), effects (`NS4011`), and mode requirements (`NS5001`,
+`NS5004` — the latter for raw pointer access, which is manual memory and so
+needs system mode even when the pointer arrives as a parameter).
 
 ## Adding a case
 

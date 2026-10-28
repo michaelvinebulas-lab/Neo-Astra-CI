@@ -1186,7 +1186,9 @@ by a production native target.
       that merely receives a `Ptr` and reads through it is rejected rather than
       silently touching raw memory. Boundary: `ptr.as_slice(count) ->
       MutSlice<T>` stays unimplemented - the spec names `MutSlice` but defines
-      no surface for it, so building it would mean inventing semantics.
+      no surface for it, so building it would mean inventing semantics. Pinned
+      by `emit_c` tests (including a hosted compile-and-run) and by the
+      backend-neutral reject case `conformance/rejects/pointer_access_requires_system`.
 - [ ] Precise mark-sweep GC with compiler stack maps (`GC-001`). The managed
       "arena per run released at exit" first step is landed and tested; the real
       collector needs frontend-generated precise roots (multi-week `GC-001`, and
@@ -1429,9 +1431,13 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [ ] `PLAY-001` Browser playground (expanded plan above)
 - [~] `C-001` C backend — managed first slice, multi-module project linking,
   generics monomorphization, hosted runtime shim, native compile-and-run
-  verification, `Array.get`, native library output/ABI, and the single-threaded
-  concurrency slice done; package linking, GC/manual memory, full structured
-  concurrency, and a Tier-1 native CI matrix remain
+  verification, `Array.get`, native library output/ABI, the single-threaded
+  concurrency slice, path/installed package linking, the managed arena,
+  manual-memory alloc/free plus `ptr.read`/`ptr.write`, and the Tier-1
+  Linux/macOS/Windows matrix (green on runs `40677187427` and the re-run of
+  run 8) done. What remains is design-gated: `GC-001` precise roots,
+  `CONC-001` OS threads, `MutSlice` for `ptr.as_slice`, and the entry-point
+  error policy that a fallible `Memory.alloc` would need.
 - [ ] `GC-001` Native GC
 - [-] `WASM-001` Wasm target (deliberately deferred until the target ABI and runtime design land)
 - [ ] `FFI-001` Polymorphic FFI

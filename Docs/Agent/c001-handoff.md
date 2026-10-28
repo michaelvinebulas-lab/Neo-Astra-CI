@@ -363,7 +363,9 @@ cannot collide with importer stems (namespace prefix).
   `(ptr)[i]` / `ptr[i] = v`. Unchecked by design — a manual pointer carries no
   length, so there is nothing to bounds-check against. Raw pointer *usage*
   carries the same `NS5004` system-mode gate as the allocation, so a core-mode
-  function that merely receives a `Ptr` cannot read raw memory.
+  function that merely receives a `Ptr` cannot read raw memory; that gate is
+  pinned backend-neutrally by
+  `conformance/rejects/pointer_access_requires_system`.
 
 **Remaining (honest handoff).**
 - `ptr.as_slice(count) -> MutSlice<T>` — spec §8.4 lists the row, but `MutSlice`
@@ -375,7 +377,13 @@ cannot collide with importer stems (namespace prefix).
   `GC-001`). Conservative scanning would contradict the design's precise-roots
   requirement, so it is not the chosen path.
 - Fallible `Memory.alloc` returning `Result<Ptr<T>, AllocError>` (the design's
-  `!` form) vs. the current infallible arena alloc (panics on OOM).
+  `!` form) vs. the current infallible arena alloc (panics on OOM). This is
+  blocked on a policy decision, not codegen: `!` at the call site propagates
+  into the enclosing function's error set, and `emit_main` writes
+  `(int)main()` with no notion of an error effect, so a fallible `main` — the
+  natural home for a manual-memory block — has no specified native behavior.
+  Decide that first: an unwrap-and-panic entry wrapper, a non-fallible
+  `alloc_or_panic` alternative, or a native `NV0004`-style report.
 - The wasm backend implements no manual memory at all, so `ptr.*` (like
   `Memory.alloc`) is C-only today; the "native or Wasm" half is a `WASM-001`
   item.
