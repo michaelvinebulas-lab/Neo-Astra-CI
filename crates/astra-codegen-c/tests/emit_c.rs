@@ -260,6 +260,52 @@ fn project_header<'a>(emitted: &'a [(String, String, Option<String>)], key: &str
         .expect("module has no header")
 }
 
+/// Writes every emitted module and header, then compiles each module as its own
+/// translation unit with clang. Pins header/runtime typedef ordering, which a
+/// single-file check cannot catch (a dependency header re-includes the runtime
+/// header).
+fn assert_project_compiles(emitted: &[(String, String, Option<String>)]) {
+    let Some(clang) = clang_path() else {
+        return;
+    };
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stem_of = |key: &str| {
+        key.strip_suffix(".ns")
+            .unwrap_or(key)
+            .replace(['/', '.', '-'], "_")
+    };
+    for (key, source, header) in emitted {
+        let stem = stem_of(key);
+        if let Some(header) = header {
+            std::fs::write(dir.path().join(format!("{stem}.h")), header).expect("write header");
+        }
+        std::fs::write(dir.path().join(format!("{stem}.c")), source).expect("write source");
+    }
+    for (key, _, _) in emitted {
+        let stem = stem_of(key);
+        let output = std::process::Command::new(&clang)
+            .args([
+                "-std=c17",
+                "-ffreestanding",
+                "-Wall",
+                "-Wno-unused-variable",
+                "-I",
+            ])
+            .arg(dir.path())
+            .arg("-c")
+            .arg(dir.path().join(format!("{stem}.c")))
+            .arg("-o")
+            .arg(dir.path().join(format!("{stem}.o")))
+            .output()
+            .expect("clang failed to start");
+        assert!(
+            output.status.success(),
+            "clang rejected module '{key}':\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 // ─── tests ────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -1884,6 +1930,7 @@ fn project_resolves_cross_module_call_to_dependency_symbol() {
         main.contains("#include \"lib.h\""),
         "missing dep header:\n{main}"
     );
+    assert_project_compiles(&emitted);
 }
 
 #[test]

@@ -10,7 +10,9 @@
 
 /// Fixed-width value type declarations and `extern` runtime prototypes emitted
 /// at the top of every generated `.c`. Uses only freestanding clang builtins.
-pub const RUNTIME_HEADER: &str = r#"#include <stdint.h>
+pub const RUNTIME_HEADER: &str = r#"#ifndef NS_RUNTIME_HEADER
+#define NS_RUNTIME_HEADER
+#include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -141,6 +143,7 @@ extern int8_t  astra_mul_i8(int8_t a, int8_t b);
 extern int16_t astra_mul_i16(int16_t a, int16_t b);
 extern int32_t astra_mul_i32(int32_t a, int32_t b);
 extern int64_t astra_mul_i64(int64_t a, int64_t b);
+#endif /* NS_RUNTIME_HEADER */
 "#;
 
 /// Body of the hosted runtime implementation.

@@ -637,6 +637,8 @@ export interface ProjectCompileRequest {
   readonly integerPolicy?: IntegerPolicy;
   /** Emit a library (no `int main`) instead of an executable. */
   readonly library?: boolean;
+  /** Package specifier → canonical module key (bare package imports). */
+  readonly importMap?: Readonly<Record<string, string>>;
 }
 
 /** Per-module artifact returned by `compile_project` (C multi-module). */
@@ -894,6 +896,9 @@ CompilerClient.prototype.compileProject = function (
         ? {}
         : { integerPolicy: request.integerPolicy }),
       ...(request.library === true ? { library: true } : {}),
+      ...(request.importMap === undefined || Object.keys(request.importMap).length === 0
+        ? {}
+        : { importMap: request.importMap }),
     },
   });
 

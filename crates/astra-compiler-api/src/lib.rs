@@ -388,7 +388,12 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
     }
     for module in &project_modules {
         for specifier in collect_module_specifiers(&module.source) {
-            let target = resolve_project_target(&module.key, &specifier.specifier, &module_graph);
+            let target = resolve_project_target(
+                &module.key,
+                &specifier.specifier,
+                &module_graph,
+                &BTreeMap::new(),
+            );
             module_graph.insert_import(module.key.clone(), specifier.specifier, target);
         }
     }
@@ -506,6 +511,11 @@ pub struct ProjectCompileRequest {
     /// keeping `pub` functions external. Defaults to an executable.
     #[serde(default)]
     pub library: bool,
+    /// Package import map: source specifier → canonical module key. Used to
+    /// resolve bare package specifiers (e.g. `"mathlib"`) to a module whose
+    /// key lives under a package namespace.
+    #[serde(default)]
+    pub import_map: BTreeMap<String, String>,
 }
 
 /// Per-module artifact in a `ProjectCompileResponse`.
@@ -637,7 +647,12 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
     }
     for module in &project_modules {
         for specifier in collect_module_specifiers(&module.source) {
-            let target = resolve_project_target(&module.key, &specifier.specifier, &module_graph);
+            let target = resolve_project_target(
+                &module.key,
+                &specifier.specifier,
+                &module_graph,
+                &request.import_map,
+            );
             module_graph.insert_import(module.key.clone(), specifier.specifier, target);
         }
     }
@@ -1110,7 +1125,15 @@ fn parse_project_compile_request(params: Option<Value>) -> Result<ProjectCompile
 }
 
 /// Resolves one import specifier to a canonical project-relative module path.
-fn resolve_project_target(importer: &str, specifier: &str, graph: &ModuleGraph) -> String {
+fn resolve_project_target(
+    importer: &str,
+    specifier: &str,
+    graph: &ModuleGraph,
+    import_map: &BTreeMap<String, String>,
+) -> String {
+    if let Some(target) = import_map.get(specifier) {
+        return target.clone();
+    }
     if graph.modules.contains_key(specifier) {
         return specifier.to_owned();
     }
@@ -1523,6 +1546,22 @@ mod tests {
         assert!(output.contains("ns_lib_add"), "{output}");
         // JSON escapes the quotes in the emitted `#include "lib.h"` line.
         assert!(output.contains(r#"#include \"lib.h\""#), "{output}");
+    }
+
+    #[test]
+    fn compile_project_resolves_package_import_map() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":13,"method":"compile_project","params":{"apiVersion":"1.0","sources":[{"key":"deps/mathlib/src/lib.ns","path":"packages/mathlib/src/lib.ns","text":"pub fn add(a: i32, b: i32) -> i32 { return a + b }\n"},{"key":"src/main.ns","path":"src/main.ns","text":"import { add } from \"mathlib\"\npub fn main() -> i32 { return add(1, 2) }\n"}],"importMap":{"mathlib":"deps/mathlib/src/lib.ns"},"target":"c","mode":"core"}}"#,
+        );
+        assert!(output.contains(r#""ok":true"#), "{output}");
+        assert!(
+            output.contains("ns_deps_mathlib_src_lib_add"),
+            "package symbol missing: {output}"
+        );
+        assert!(
+            output.contains("deps_mathlib_src_lib.h"),
+            "package header include missing: {output}"
+        );
     }
 
     #[test]

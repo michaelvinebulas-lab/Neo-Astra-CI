@@ -1112,8 +1112,109 @@ function discoverProjectModules(
   return ordered;
 }
 
-function outputPathForModule(
-  outDir: string,
+interface LinkedPathPackages {
+  readonly sources: readonly ProjectModuleSource[];
+  readonly importMap: Readonly<Record<string, string>>;
+}
+
+/**
+ * Loads manifest `path` dependencies as project modules.
+ *
+ * Each package is keyed under `deps/<name>/<relative path>` so its own symbol
+ * stems and headers cannot collide with the importer's. Bare imports such as
+ * `import { add } from "mathlib"` resolve through the returned import map to
+ * the package's `nova.entry` module. This deliberately does not re-implement
+ * package resolution: it reads the manifest dependency entries directly and
+ * delegates the graph/type-check work to the compiler API.
+ */
+function linkedPathPackages(
+  root: string,
+  manifest: ManifestDocument,
+  targetName: string,
+  backend: string,
+  cwd: string,
+): LinkedPathPackages {
+  const dependencies = isRecord(manifest.data["dependencies"])
+    ? manifest.data["dependencies"]
+    : {};
+  const sources: ProjectModuleSource[] = [];
+  const importMap: Record<string, string> = {};
+  const seen = new Set<string>();
+
+  for (const [name, raw] of Object.entries(dependencies)) {
+    if (!isRecord(raw) || raw["source"] !== "path" || typeof raw["path"] !== "string") {
+      continue;
+    }
+    const targets = Array.isArray(raw["targets"])
+      ? raw["targets"].filter((value): value is string => typeof value === "string")
+      : undefined;
+    if (
+      targets !== undefined &&
+      !targets.includes(targetName) &&
+      !targets.includes(backend)
+    ) {
+      continue;
+    }
+
+    const packageRoot = resolve(root, raw["path"]);
+    if (!existsSync(packageRoot)) {
+      throw new CliError(
+        "NS9008",
+        `Path dependency '${name}' does not exist: ${displayPath(packageRoot, cwd)}`,
+        displayPath(packageRoot, cwd),
+      );
+    }
+    const packageManifest = loadManifest(packageRoot);
+    const packageDir = dirname(packageManifest.file.path);
+    const nova = isRecord(packageManifest.data["nova"])
+      ? packageManifest.data["nova"]
+      : {};
+    const entryValue = nova["entry"];
+    if (typeof entryValue !== "string" || entryValue.length === 0) {
+      throw new CliError(
+        "NV0002",
+        `Path dependency '${name}' does not declare nova.entry.`,
+        displayPath(packageManifest.file.path, cwd),
+      );
+    }
+
+    const entryPath = resolve(packageDir, entryValue);
+    const relativeEntry = relative(packageDir, entryPath);
+    if (
+      relativeEntry.length === 0 ||
+      isAbsolute(relativeEntry) ||
+      relativeEntry === ".." ||
+      relativeEntry.startsWith(`..${sep}`)
+    ) {
+      throw new CliError(
+        "NS9008",
+        `Path dependency '${name}' has an entry outside its package.`,
+        displayPath(packageManifest.file.path, cwd),
+      );
+    }
+    const entryKey = relativeEntry.split(sep).join("/");
+    const namespace = `deps/${name.replace(/[^A-Za-z0-9_.-]/g, "_")}`;
+    importMap[name] = `${namespace}/${entryKey}`;
+
+    for (const module of discoverProjectModules(
+      packageDir,
+      entryPath,
+      entryKey,
+      cwd,
+    )) {
+      const key = `${namespace}/${module.key}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      sources.push({ key, absolutePath: module.absolutePath, text: module.text });
+    }
+  }
+
+  return { sources, importMap };
+}
+
+function outputPathForModule(  outDir: string,
   key: string,
   extension: "js" | "ts" = "js",
 ): string {
@@ -1334,8 +1435,16 @@ function runBuild(args: readonly string[], cwd: string): number {
       };
       let files: CBuildFile[];
       let diagnostics: ReportedDiagnostic[];
+      const linkedPackages = linkedPathPackages(
+        root,
+        manifest,
+        targetName,
+        String(backend),
+        cwd,
+      );
+      const cSources = [...linkedPackages.sources, ...projectSources];
 
-      if (projectSources.length <= 1 && !libraryMode) {
+      if (cSources.length <= 1 && !libraryMode) {
         const single = client.compile({
           source: { path: entryKey, text: source },
           target: "c",
@@ -1361,7 +1470,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         }
       } else {
         const project = client.compileProject({
-          sources: projectSources.map((module) => ({
+          sources: cSources.map((module) => ({
             key: module.key,
             path: module.key,
             text: module.text,
@@ -1369,6 +1478,9 @@ function runBuild(args: readonly string[], cwd: string): number {
           target: "c",
           ...sharedParams,
           ...(libraryMode ? { library: true } : {}),
+          ...(Object.keys(linkedPackages.importMap).length === 0
+            ? {}
+            : { importMap: linkedPackages.importMap }),
         });
         diagnostics = project.diagnostics.map((diagnostic) =>
           reportDiagnostic(sourceFile, source, diagnostic),
