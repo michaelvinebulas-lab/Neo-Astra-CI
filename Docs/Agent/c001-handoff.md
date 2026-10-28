@@ -6,17 +6,18 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `bc5d1c9` plus this docs entry (2026-10-28),
+> **Snapshot:** `master` at `d0d7bf9` plus this docs entry (2026-10-28),
 > working tree clean, full `npm run ci` green. This session landed package
 > linking (path + NoPM-installed), the managed arena, the Tier-1 CI workflow,
-> the `Memory.alloc`/`free` first cut (sections 6.B, 6.C, 6.F), and the first
-> recorded Tier-1 runs: `40677187427` is green on Linux, macOS, and Windows.
+> the `Memory.alloc`/`free` first cut and `Ptr` pointer access (sections 6.B,
+> 6.C, 6.F), and the first recorded Tier-1 runs: `40677187427` is green on
+> Linux, macOS, and Windows.
 >
 > **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
-> (`GC-001`, 6.C), `Ptr` dereference/indexing (6.C follow-up), and OS-threaded
-> structured concurrency (`CONC-001`, 6.D). All three are design-gated; see the
-> section notes before starting. Recorded Linux/macOS/Windows CI evidence is
-> closed (6.F).
+> (`GC-001`, 6.C), the unspecced `MutSlice` surface behind `ptr.as_slice` (6.C),
+> and OS-threaded structured concurrency (`CONC-001`, 6.D). All three are
+> design-gated; see the section notes before starting. `Ptr` pointer access
+> (spec §8.4) and recorded Linux/macOS/Windows CI evidence are closed (6.C, 6.F).
 
 ---
 
@@ -113,6 +114,7 @@ and section 6.A (the generics design) before touching code.
 
 | Commit | Content |
 |---|---|
+| `d0d7bf9` | `Ptr` pointer access: `ptr.read`/`ptr.write` (spec §8.4), `NS5004` gate on raw pointer usage, `as_slice` left open (unspecced `MutSlice`) |
 | `bc5d1c9` | Tier-1 run `40677187427` green on all three OSes (cdylib import-library check is win32-only) |
 | `32b0ef5` | macOS `ar` candidates attempted for real instead of `--version`-probed; MSVC-flavored cdylib links with a generated `.def` + `/IMPLIB` |
 | `fb51841` | CI installs the `wasm32-unknown-unknown` target for `test:boundary` |
@@ -356,22 +358,32 @@ cannot collide with importer stems (namespace prefix).
   `Memory.free(p)` are checker builtins (system-mode gated — `NS5004` in core),
   `Ptr<T>` maps to `T*`, and they lower to the arena. `NS8012` is removed for
   this subset; `@memory:manual` scopes emit normally.
+- Manual-memory **pointer access** (spec §8.4): `ptr.read(index) -> T` and
+  `ptr.write(index, value)` type-check as methods on `Ptr<T>` and lower to
+  `(ptr)[i]` / `ptr[i] = v`. Unchecked by design — a manual pointer carries no
+  length, so there is nothing to bounds-check against. Raw pointer *usage*
+  carries the same `NS5004` system-mode gate as the allocation, so a core-mode
+  function that merely receives a `Ptr` cannot read raw memory.
 
 **Remaining (honest handoff).**
-- `Ptr<T>` **dereference/indexing** — reading/writing through a manual pointer.
-  `Ptr` is alloc/free-only for now; the access semantics (dereference, bounds,
-  aliasing) are left unsettled in the design (§5.2 is "proposed") and are a
-  deliberate follow-up rather than invented unilaterally.
+- `ptr.as_slice(count) -> MutSlice<T>` — spec §8.4 lists the row, but `MutSlice`
+  is named exactly twice in the entire spec (the type list and that row) with no
+  method surface, indexing contract, or lifetime rule. It needs a design
+  decision, not codegen; deliberately not invented here.
 - **Precise mark-sweep GC** with compiler-generated stack maps (§4.1/§4.3). The
   arena is not a collector; the real one needs frontend precise roots (multi-week
   `GC-001`). Conservative scanning would contradict the design's precise-roots
   requirement, so it is not the chosen path.
 - Fallible `Memory.alloc` returning `Result<Ptr<T>, AllocError>` (the design's
   `!` form) vs. the current infallible arena alloc (panics on OOM).
+- The wasm backend implements no manual memory at all, so `ptr.*` (like
+  `Memory.alloc`) is C-only today; the "native or Wasm" half is a `WASM-001`
+  item.
 
-**Risk/ownership.** Pointer-access and precise-GC root design are
-language-semantics decisions (GC-001), not just codegen — read
-`03-runtime-and-memory.md` and the D-decisions before continuing.
+**Risk/ownership.** The remaining pointer question (`MutSlice`'s surface) and
+precise-GC roots are language-semantics decisions (GC-001), not just codegen —
+read `03-runtime-and-memory.md` and the D-decisions before continuing. Pointer
+read/write itself is settled by spec §8.4 and needs no further design.
 
 ### 6.D CONC-001 — structured concurrency — **FIRST SLICE DONE**
 

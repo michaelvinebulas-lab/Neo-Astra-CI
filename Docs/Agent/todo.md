@@ -1176,9 +1176,17 @@ by a production native target.
       core), `Ptr<T>` maps to `T*`, and they lower to the run arena
       (`astra_alloc`/`astra_free`); `@memory:manual` scopes are no longer
       rejected (`NS8012` removed). Pinned by emission + checker-mode tests.
-- [ ] Manual-memory pointer **dereference/indexing** (reading/writing through a
-      `Ptr<T>`). `Ptr` is alloc/free-only for now; the access semantics are left
-      as a documented `GC-001` follow-up rather than invented.
+- [x] Manual-memory pointer **access** (spec §8.4). `ptr.read(index)` and
+      `ptr.write(index, value)` type-check as methods on `Ptr<T>` and lower to
+      plain C indexing on the `T*` that `Ptr<T>` already maps to, so a write is
+      visible to a later read and to the eventual `Memory.free`. Both are
+      unchecked by design (a manual pointer carries no length, so there is
+      nothing to bounds-check against). Raw pointer *usage* now carries the same
+      `NS5004` system-mode gate as the allocation call, so a core-mode function
+      that merely receives a `Ptr` and reads through it is rejected rather than
+      silently touching raw memory. Boundary: `ptr.as_slice(count) ->
+      MutSlice<T>` stays unimplemented - the spec names `MutSlice` but defines
+      no surface for it, so building it would mean inventing semantics.
 - [ ] Precise mark-sweep GC with compiler stack maps (`GC-001`). The managed
       "arena per run released at exit" first step is landed and tested; the real
       collector needs frontend-generated precise roots (multi-week `GC-001`, and
