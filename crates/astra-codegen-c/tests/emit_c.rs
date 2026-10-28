@@ -864,7 +864,10 @@ int main(void) {
         return;
     };
     assert!(ok, "arena harness did not run:\n{stderr}");
-    assert!(stdout.contains("ARENA_OK"), "arena lifecycle broken: {stdout}");
+    assert!(
+        stdout.contains("ARENA_OK"),
+        "arena lifecycle broken: {stdout}"
+    );
 }
 
 /// Array growth must route its old buffer through the arena (`astra_free`), not
@@ -884,7 +887,9 @@ pub fn main() -> i32 {
 }
 "#;
     let Some((ok, stdout, stderr)) = hosted_build_and_run(&compile_and_emit(src)) else {
-        eprintln!("skipping allocation_heavy_program_runs_clean_after_shutdown: no hosted compiler");
+        eprintln!(
+            "skipping allocation_heavy_program_runs_clean_after_shutdown: no hosted compiler"
+        );
         return;
     };
     assert!(ok, "program failed:\n{stderr}");
