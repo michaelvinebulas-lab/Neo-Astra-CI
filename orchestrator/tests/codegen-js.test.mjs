@@ -1715,9 +1715,15 @@ test("astra build --emit cdylib produces a runnable shared library", (t) => {
       "utf8",
     );
     const exe = join(outDir, "consumer.exe");
+    // GNU linkers write `libmathlib.dll.a`, link.exe writes `libmathlib.lib`;
+    // link against whichever the build produced.
+    const implib = ["libmathlib.dll.a", "libmathlib.lib"]
+      .map((name) => join(outDir, name))
+      .find((path) => existsSync(path));
+    assert.ok(implib, `expected an import library in ${outDir}`);
     const linkArgs =
       process.platform === "win32"
-        ? ["-std=c17", consumer, "-I", outDir, join(outDir, "libmathlib.dll.a"), "-o", exe]
+        ? ["-std=c17", consumer, "-I", outDir, implib, "-o", exe]
         : ["-std=c17", consumer, "-I", outDir, "-L", outDir, "-lmathlib", `-Wl,-rpath,${outDir}`, "-o", exe];
     const linked = spawnSync(compiler, linkArgs, {
       encoding: "utf8",

@@ -309,14 +309,14 @@ function buildCflags(targetConfig: Record<string, unknown>): string[] {
 }
 
 /**
- * Finds an archiver compatible with the selected C compiler.
+ * Archiver candidates for the selected C compiler, most preferred first.
  *
- * Uses the compiler's own answer first (`gcc -print-prog-name=ar`) and then the
- * usual LLVM/GNU tools. Standard `ar` is deliberately preferred over writing
- * an archive ourselves: it is the format every consumer toolchain already
- * understands.
+ * The compiler's own answer comes first (`gcc -print-prog-name=ar`) and then
+ * the usual LLVM/GNU tools. Candidates are *attempted*, never probed with
+ * `--version`: Apple's `ar` rejects GNU long options, so a version probe would
+ * wrongly report "no archiver" on macOS even though the tool works.
  */
-function findArchiver(compilerBin: string): string | null {
+function archiverCandidates(compilerBin: string): string[] {
   const candidates: string[] = [];
   const printed = spawnSync(compilerBin, ["-print-prog-name=ar"], {
     windowsHide: true,
@@ -328,15 +328,63 @@ function findArchiver(compilerBin: string): string | null {
       candidates.push(value);
     }
   }
-  candidates.push("llvm-ar", "gcc-ar", "ar");
-
-  for (const candidate of candidates) {
-    const probe = spawnSync(candidate, ["--version"], { windowsHide: true });
-    if (probe.status === 0) {
-      return candidate;
+  for (const candidate of ["llvm-ar", "gcc-ar", "ar"]) {
+    if (!candidates.includes(candidate)) {
+      candidates.push(candidate);
     }
   }
-  return null;
+  return candidates;
+}
+
+/**
+ * Returns the linker flavor of `compilerBin`.
+ *
+ * Windows is the split: a `*-windows-msvc` triple drives link.exe, which has
+ * neither GNU ld's `--export-all-symbols`/`--out-implib` nor its import
+ * libraries, so shared libraries need a module-definition file and an
+ * `.lib` import library. Everything else (MinGW, Darwin, ELF) uses GNU-style
+ * flags. An unsupported `-dumpmachine` falls back to GNU, the historical path.
+ */
+function compilerFlavor(compilerBin: string): "msvc" | "gnu" {
+  const probe = spawnSync(compilerBin, ["-dumpmachine"], {
+    windowsHide: true,
+    encoding: "utf8",
+  });
+  if (probe.status === 0 && probe.stdout.includes("windows-msvc")) {
+    return "msvc";
+  }
+  return "gnu";
+}
+
+/** Marker the C backend writes immediately before the exported prototypes. */
+const EXPORTS_MARKER = "/* Exported function prototypes. */";
+
+/**
+ * Extracts the exported function names declared in one generated header.
+ *
+ * Only the section after `EXPORTS_MARKER` is read: the rest of the header
+ * holds runtime and dependency declarations that are not defined by this
+ * module's objects, and listing those in a `.def` would fail the link.
+ */
+function exportedSymbolsFromHeader(headerPath: string): string[] {
+  let text: string;
+  try {
+    text = readFileSync(headerPath, "utf8");
+  } catch {
+    return [];
+  }
+  const marker = text.indexOf(EXPORTS_MARKER);
+  if (marker === -1) {
+    return [];
+  }
+  const names: string[] = [];
+  for (const line of text.slice(marker + EXPORTS_MARKER.length).split(/\r?\n/)) {
+    const name = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;]*\)\s*;$/.exec(line)?.[1];
+    if (name !== undefined) {
+      names.push(name);
+    }
+  }
+  return names;
 }
 
 function parseFmtArgs(args: readonly string[], cwd: string): FmtOptions {
@@ -1626,6 +1674,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       let hostCPath = "";
       const cSourcePaths: string[] = [];
       const scriptPaths: string[] = [];
+      const headerPaths: string[] = [];
       try {
         mkdirSync(outDir, { recursive: true });
         // Write every translation unit, header, host shim, and script source.
@@ -1641,6 +1690,8 @@ function runBuild(args: readonly string[], cwd: string): number {
             hostCPath = filePath;
           } else if (file.kind === "script") {
             scriptPaths.push(filePath);
+          } else if (file.kind === "header") {
+            headerPaths.push(filePath);
           }
         }
       } catch (error) {
@@ -1725,44 +1776,73 @@ function runBuild(args: readonly string[], cwd: string): number {
           // runtime stays a separate link input (`astra_host.c`), matching the
           // ABI contract in `Docs/Design/V1/11-c-abi.md` and avoiding duplicate
           // runtime symbols when several Astra libraries are linked together.
-          const archiver = findArchiver(compilerBin);
-          if (!archiver) {
-            throw new CliError(
-              "NS9008",
-              "No archiver (ar, llvm-ar, or gcc-ar) found to build a static library.",
-              displayPath(outDir, cwd),
+          const archive = resolve(outDir, `${libStem}.a`);
+          const failures: string[] = [];
+          let archiver: string | null = null;
+          for (const candidate of archiverCandidates(compilerBin)) {
+            rmSync(archive, { force: true });
+            const proc = spawnSync(
+              candidate,
+              ["rcs", archive, ...objects],
+              { windowsHide: true, encoding: "utf8" },
+            );
+            if (proc.status === 0) {
+              archiver = candidate;
+              break;
+            }
+            failures.push(
+              `${candidate}: ${
+                proc.stderr?.trim() ||
+                proc.error?.message ||
+                `exit ${String(proc.status)}`
+              }`,
             );
           }
-          const archive = resolve(outDir, `${libStem}.a`);
-          rmSync(archive, { force: true });
-          const proc = spawnSync(
-            archiver,
-            ["rcs", archive, ...objects],
-            { windowsHide: true, encoding: "utf8" },
-          );
-          if (proc.status !== 0) {
+          if (!archiver) {
+            rmSync(archive, { force: true });
             throw new CliError(
               "NS9008",
-              `Static library creation failed with ${archiver}:\n${proc.stderr}`,
+              "No archiver (ar, llvm-ar, or gcc-ar) could build a static library:\n" +
+                failures.join("\n"),
               displayPath(outDir, cwd),
             );
           }
           outputPath = archive;
         } else {
           // A shared library carries the runtime shim so consumers link one
-          // artifact. Windows needs explicit symbol export (MinGW PE).
+          // artifact. GNU linkers (MinGW PE included) export every global
+          // symbol on their own; link.exe has no equivalent switch, so an
+          // MSVC-flavored toolchain gets a module-definition file listing the
+          // module's own exported functions and an `.lib` import library.
           const hostObject = resolve(objDir, "astra_host.o");
           compileObject(hostCPath, hostObject);
           const sharedExt = process.platform === "win32" ? ".dll" : ".so";
           const shared = resolve(outDir, `${libStem}${sharedExt}`);
           const linkArgs = ["-shared", "-o", shared, ...objects, hostObject];
-          if (process.platform === "win32") {
+          const flavor = compilerFlavor(compilerBin);
+          if (flavor === "msvc") {
+            const exports = [
+              ...new Set(headerPaths.flatMap(exportedSymbolsFromHeader)),
+            ];
+            if (exports.length > 0) {
+              const defPath = resolve(outDir, `${libStem}.def`);
+              writeFileSync(
+                defPath,
+                `EXPORTS\n${exports.join("\n")}\n`,
+                "utf8",
+              );
+              linkArgs.push(`-Wl,/DEF:${defPath}`);
+            }
+            linkArgs.push(
+              `-Wl,/IMPLIB:${resolve(outDir, `${libStem}.lib`)}`,
+            );
+          } else if (process.platform === "win32") {
             linkArgs.push(
               "-Wl,--export-all-symbols",
               `-Wl,--out-implib,${resolve(outDir, `${libStem}.dll.a`)}`,
             );
           }
-          if (hasCpp) {
+          if (hasCpp && flavor === "gnu") {
             linkArgs.push("-lstdc++");
           }
           const proc = spawnSync(compilerBin, linkArgs, {
