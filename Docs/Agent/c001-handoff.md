@@ -6,17 +6,17 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master = 399bee0` (2026-10-28), working tree clean, full
-> `npm run ci` green. This session landed package linking (path + NoPM-installed),
-> the managed arena, the Tier-1 CI workflow, and the `Memory.alloc`/`free`
-> first cut (sections 6.B, 6.C, 6.F).
+> **Snapshot:** `master` at `bc5d1c9` plus this docs entry (2026-10-28),
+> working tree clean, full `npm run ci` green. This session landed package
+> linking (path + NoPM-installed), the managed arena, the Tier-1 CI workflow,
+> the `Memory.alloc`/`free` first cut (sections 6.B, 6.C, 6.F), and the first
+> recorded Tier-1 runs: `40677187427` is green on Linux, macOS, and Windows.
 >
 > **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
-> (`GC-001`, 6.C), `Ptr` dereference/indexing (6.C follow-up), OS-threaded
-> structured concurrency (`CONC-001`, 6.D), and recorded Linux/macOS CI evidence
-> (6.F — needs a second, full-fidelity CI remote; the source-only mirror can
-> never trigger the workflow). The first three are design-gated; see the section
-> notes before starting.
+> (`GC-001`, 6.C), `Ptr` dereference/indexing (6.C follow-up), and OS-threaded
+> structured concurrency (`CONC-001`, 6.D). All three are design-gated; see the
+> section notes before starting. Recorded Linux/macOS/Windows CI evidence is
+> closed (6.F).
 
 ---
 
@@ -104,16 +104,19 @@ and section 6.A (the generics design) before touching code.
   `Channel<T>` (capacity 16), `ChannelError`, and deadlock panics ship and run
   the `channels` case. No OS-thread scheduler or task-local heaps yet.
 - Linux/macOS native builds: the Tier-1 CI workflow (`.github/workflows/ci.yml`,
-  3 OSes) is provisioned but cannot run from the source-only mirror - that
-  remote carries no `.github/`, `scripts/`, `tests/`, or `conformance/`, so no
-  run is ever triggered there (the pre-push guard enforces the exclusion).
-  Recorded runs need a second, full-fidelity CI remote that receives the whole
-  repo. Previously mis-stated as "blocked only on pushing to a remote".
+  3 OSes) runs from the full-fidelity remote `voidgod79-debug/Neo-Astra-CI` -
+  the source-only mirror still cannot trigger it (no `.github/`, `scripts/`,
+  `tests/`, or `conformance/`, enforced by the pre-push guard). Recorded:
+  run `40677187427` is green on Linux, macOS, and Windows.
 
 ### Commits that built the current state (newest first)
 
 | Commit | Content |
 |---|---|
+| `bc5d1c9` | Tier-1 run `40677187427` green on all three OSes (cdylib import-library check is win32-only) |
+| `32b0ef5` | macOS `ar` candidates attempted for real instead of `--version`-probed; MSVC-flavored cdylib links with a generated `.def` + `/IMPLIB` |
+| `fb51841` | CI installs the `wasm32-unknown-unknown` target for `test:boundary` |
+| `1811ce1` | `pretest` builds `astra-compiler` before `npm test`; orphaned stress suites join the gate (49 → 111 tests) |
 | `399bee0` | `Memory.alloc`/`Memory.free` first cut (system-gated, `Ptr<T>`→`T*`, arena lowering, `NS8012` removed) |
 | `79ef931` | NoPM-installed (git/registry) packages link via lockfile + store index |
 | `3cafffc` | Tier-1 CI workflow (Linux/macOS/Windows `npm run ci`) |
@@ -425,7 +428,7 @@ consumers link the shim. Export lists are implicit (`pub` + external linkage),
 not a generated visibility file. `cdylib` is tested on Windows here; Linux/macOS
 shared linking follows the same `-shared` path but needs the Tier-1 run.
 
-### 6.F Cross-platform native verification + CI gate — **DONE on this host**
+### 6.F Cross-platform native verification + CI gate — **DONE (this host + Tier-1)**
 
 **What was blocking it (all fixed).**
 
@@ -453,14 +456,22 @@ shared linking follows the same `-shared` path but needs the Tier-1 run.
 - Tests self-skip when no hosted compiler is available, so CI on a minimal host
   stays green while a normal Linux runner exercises execution.
 
-**Remaining — workflow provisioned, evidence needs a push.**
-`.github/workflows/ci.yml` now runs the full `npm run ci` gate on
-`ubuntu-latest`, `macos-latest`, and `windows-latest` (runners ship a hosted C
-compiler, so the conformance corpus and native build execute on Tier-1
-platforms). The one thing not recorded from this Windows-only session is the
-actual Linux/macOS run — it happens the first time this repo is pushed to a
-GitHub remote. That is the last gate for calling `C-001` fully done, and it is
-blocked on remote infrastructure, not codegen.
+**Evidence recorded (2026-10-28).**
+`.github/workflows/ci.yml` runs the full `npm run ci` gate on `ubuntu-latest`,
+`macos-latest`, and `windows-latest` (runners ship a hosted C compiler, so the
+conformance corpus and native build execute on Tier-1 platforms) from the
+full-fidelity remote `voidgod79-debug/Neo-Astra-CI`. Run `40677187427`
+(commit `bc5d1c9`) is `success` on all three OSes. Reaching it took four
+fixes, each surfaced by a run: a `pretest` hook builds `astra-compiler`
+before `npm test` (and `npm test` now includes the two orphaned stress
+suites, 49 → 111 tests), the workflow installs the `wasm32-unknown-unknown`
+target for `test:boundary`, staticlib archiving attempts
+`ar`/`llvm-ar`/`gcc-ar` instead of `--version`-probing (Apple's `ar` rejects
+GNU long options), and cdylib emission detects an MSVC-flavored linker via
+`-dumpmachine` and links with a generated `.def` plus `/IMPLIB` because
+link.exe has no `--export-all-symbols`. Defect trail: `40655262547`
+(`2206f4e`) → `40670278321` (`1811ce1`) → `40671917569` (`fb51841`) →
+`40676108614` (`32b0ef5`) → `40677187427` (`bc5d1c9`, green).
 
 ### 6.G WASM-001 — Wasm target (deliberately deferred)
 

@@ -1148,10 +1148,23 @@ by a production native target.
       `conformance/`, so no run is ever triggered there, and the pre-push guard
       enforces the exclusion. Recorded runs require a second, full-fidelity CI
       remote that receives the whole repo; this was previously mis-stated as
-      "waiting on a push".
+      "waiting on a push". Evidence now exists: `voidgod79-debug/Neo-Astra-CI`
+      is that remote, and run `40677187427` (commit `bc5d1c9`) passed all
+      three OSes.
 - [x] Manual-memory allocation subset: `Memory.alloc<T>`/`Memory.free` builtins
       (system-mode gated, `NS5004` in core), `Ptr<T>` → `T*`, arena lowering,
       `NS8012` removed for the supported subset.
+- [x] Tier-1 gate correctness fixes, each surfaced by a recorded run: `npm test`
+      now runs a `pretest` hook that builds `astra-compiler` (which
+      `codegen-ts` and the stress suites spawn) and includes
+      `stress_compiler_api`/`stress_nopm`, which were in no npm script and
+      therefore never ran (49 → 111 tests); the workflow installs the
+      `wasm32-unknown-unknown` target for `test:boundary`; staticlib archiving
+      *attempts* `ar`/`llvm-ar`/`gcc-ar` instead of `--version`-probing them
+      (Apple's `ar` rejects GNU long options, so macOS always reported
+      NS9008); cdylib emission on an MSVC-flavored linker writes a `.def` from
+      the generated headers' export section and links with `/DEF` + `/IMPLIB`
+      (link.exe has neither `--export-all-symbols` nor `--out-implib`).
 
 **Actually left**
 
@@ -1187,24 +1200,34 @@ by a production native target.
       shim missing `NS_Bytes`/`NS_Map`; both are fixed, and the native execution
       path is pinned by `astra build --target native links and runs a hosted
       binary`.
-- [ ] Native verification on Linux and macOS — **workflow provisioned, evidence
-      pending a push.** `.github/workflows/ci.yml` runs the full gate on
-      `ubuntu-latest`/`macos-latest`/`windows-latest`; the runners ship a hosted
-      C compiler, so the conformance corpus and native build execute there. The
-      actual Linux/macOS runs only happen once this repo is pushed to a GitHub
-      remote (no remote is configured in this session).
+- [x] Native verification on Linux and macOS — **recorded.** The full-fidelity
+      CI remote `voidgod79-debug/Neo-Astra-CI` runs `.github/workflows/ci.yml`
+      on `ubuntu-latest`/`macos-latest`/`windows-latest`, where the runners
+      ship a hosted C compiler, so the conformance corpus and native build
+      execute there. Run `40677187427` (commit `bc5d1c9`) is `success` on all
+      three OSes; the four earlier failing runs are the defect trail (listed
+      under Evidence below).
 - [x] Native CI gate in the test suite. `cargo test -p astra-codegen-c` runs
       every non-gap conformance case end to end whenever a hosted compiler is
       available (and self-skips otherwise), so a normal Linux runner already
       exercises native execution.
-- [x] Tier-1 CI matrix **provisioned** (`.github/workflows/ci.yml`, three OSes).
-      Recorded Linux/macOS evidence is the one remaining step and is blocked on
-      pushing to a remote, not on codegen.
+- [x] Tier-1 CI matrix **provisioned and green** (`.github/workflows/ci.yml`,
+      three OSes). Recorded Linux/macOS/Windows evidence landed 2026-10-28:
+      run `40677187427` on `bc5d1c9`.
 - [-] Wasm path through C17 (`WASM-001`) is deferred until the target ABI and
       runtime design land.
 
 **Evidence**
 
+- Tier-1 CI (full-fidelity remote `voidgod79-debug/Neo-Astra-CI`): run
+  `40677187427` on `bc5d1c9` is `success` on ubuntu-latest, macos-latest, and
+  windows-latest, which is the recorded Linux/macOS native verification.
+  Defect trail: `40655262547` (`2206f4e`, TS tests spawned a binary that was
+  never built on a fresh runner) → `40670278321` (`1811ce1`, missing
+  `wasm32-unknown-unknown` target) → `40671917569` (`fb51841`, Ubuntu green;
+  macOS `ar` probe and Windows link.exe flavor exposed) → `40676108614`
+  (`32b0ef5`, Windows green; test asserted an import library off-Windows) →
+  `40677187427` (`bc5d1c9`, all three green).
 - `crates/astra-codegen-c/tests/emit_c.rs`: 80 passing tests covering emission,
   runtime helpers, `Option`/`Result`, errors, matches (string, bytes, enum, bool, option),
   arrays (`len`/`push`/`get`), structs, enums, `defer`, map literals/methods (`.len`/`.contains`/`.get`/`.insert`),
