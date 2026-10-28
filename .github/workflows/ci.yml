@@ -27,6 +27,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # test:boundary builds the Wasm target of the compiler, so the
+          # target must be present or that step fails with E0463.
+          targets: wasm32-unknown-unknown
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
