@@ -2536,12 +2536,26 @@ impl<'a> Checker<'a> {
                     );
                     return Type::Error;
                 }
-                if let Some(method) = builtin_method(ty, member) {
-                    return method;
-                }
-                if matches!(name.as_str(), "Task" | "Channel" | "Ptr" | "MutSlice")
-                    && let Some(method) = builtin_method(ty, member)
+                // Pointer access is manual memory, so it obeys the same
+                // system-mode gate as `Memory.alloc`: what makes a file
+                // `@requires(system)` is raw pointer *usage*, not only the
+                // allocation call (06-tooling-and-workflow.md).
+                if name == "Ptr"
+                    && matches!(member, "read" | "write")
+                    && !self.mode.allows(Mode::System)
                 {
+                    self.error(
+                        MEMORY_REQUIREMENT,
+                        format!(
+                            "Manual memory requires system mode, but the active mode is '{}'.",
+                            self.mode.as_str()
+                        ),
+                        span,
+                        "Use pointer access only inside a system-mode boundary.",
+                    );
+                    return Type::Error;
+                }
+                if let Some(method) = builtin_method(ty, member) {
                     return method;
                 }
                 if ty.is_opaque() {
@@ -4129,6 +4143,28 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
             },
             _ => return None,
         },
+        Type::Named(name, arguments) if name == "Ptr" => {
+            let element = arguments.first().cloned().unwrap_or(Type::Unknown);
+            match member {
+                // `ptr.read(index)` / `ptr.write(index, value)` (spec §8.4).
+                // Both are unchecked: a manual pointer carries no length, so
+                // the compiler has nothing to bounds-check against, and the
+                // spec makes out-of-bounds access undefined in manual mode.
+                "read" => FunctionType {
+                    type_parameters: Vec::new(),
+                    parameters: vec![Type::Usize],
+                    return_type: Box::new(element),
+                    errors: Vec::new(),
+                },
+                "write" => FunctionType {
+                    type_parameters: Vec::new(),
+                    parameters: vec![Type::Usize, element],
+                    return_type: Box::new(Type::Unit),
+                    errors: Vec::new(),
+                },
+                _ => return None,
+            }
+        }
         Type::Named(name, arguments) if name == "Channel" => {
             let element = arguments.first().cloned().unwrap_or(Type::Unknown);
             match member {

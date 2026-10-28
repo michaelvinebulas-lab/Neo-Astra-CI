@@ -2358,6 +2358,32 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.pre, "    {task}.canceled = true;");
                 "(NS_Unit){0}".into()
             }
+            // Manual-memory pointer access (spec §8.4): `Ptr<T>` lowers to
+            // `T*`, so `ptr.read(i)` is `ptr[i]` and `ptr.write(i, v)` is the
+            // statement `ptr[i] = v`. Both are unchecked by design - the
+            // pointer carries no length - which matches the C semantics the
+            // backend already emits for the allocation itself.
+            (Some(Type::Named(type_name, _)), "read") if type_name == "Ptr" => {
+                let receiver_c = self.expr(receiver);
+                let index = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                format!("({receiver_c})[{index}]")
+            }
+            (Some(Type::Named(type_name, _)), "write") if type_name == "Ptr" => {
+                let receiver_c = self.expr(receiver);
+                let index = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let value = args
+                    .get(1)
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let _ = writeln!(self.pre, "    {receiver_c}[{index}] = {value};");
+                "(NS_Unit){0}".into()
+            }
             (Some(Type::Str), "len") => {
                 let r = self.expr(receiver);
                 format!("({r}).len")

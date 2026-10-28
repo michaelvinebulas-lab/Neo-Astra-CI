@@ -56,7 +56,8 @@ pub struct CModule {
     /// Checked expression types, in source order.
     pub annotations: Vec<astra_core::checker::TypeAnnotation>,
     /// Spans of `@memory:manual` scopes. The C backend supports `Memory.alloc`
-    /// / `Memory.free` inside them; pointer dereference/indexing is a follow-up.
+    /// / `Memory.free` and pointer access (`ptr.read` / `ptr.write`) inside
+    /// them; `ptr.as_slice` needs the still-unspecced `MutSlice` surface.
     pub manual_memory_scopes: Vec<astra_core::span::Span>,
     /// Selected integer arithmetic policy.
     pub integer_policy: IntegerPolicy,

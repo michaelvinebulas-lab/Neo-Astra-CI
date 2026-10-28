@@ -669,6 +669,94 @@ fn manual_memory_requires_system_mode_in_checker() {
     );
 }
 
+/// `ptr.read(i)` / `ptr.write(i, v)` (spec §8.4) lower to plain C indexing on
+/// the `T*` that `Ptr<T>` already maps to, so a write is visible to a later
+/// read and to a `Memory.free` that follows. Unchecked by design.
+#[test]
+fn manual_memory_pointer_access_runs() {
+    use astra_capabilities::Mode;
+    let src = r#"
+pub fn main() -> i32 {
+    {@memory:manual;
+        let buf = Memory.alloc<i32>(2)
+        buf.write(0, 20)
+        buf.write(1, 22)
+        println(buf.read(0))
+        println(buf.read(1))
+        println(buf.read(0) + buf.read(1))
+        Memory.free(buf)
+    }
+    return 0
+}
+"#;
+    let out = compile_and_emit_mode(src, Mode::System);
+    assert!(
+        out.contains("buf[0] = 20"),
+        "expected ptr.write to lower to pointer indexing:\n{out}"
+    );
+    assert!(
+        out.contains("buf[1]"),
+        "expected ptr.read to lower to pointer indexing:\n{out}"
+    );
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        eprintln!("skipping manual_memory_pointer_access_runs: no hosted compiler");
+        return;
+    };
+    assert!(ok, "program failed:\n{stderr}");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["20", "22", "42"],
+        "reads must observe the writes through the pointer"
+    );
+}
+
+/// Raw pointer *usage* is what makes a file `@requires(system)`, so a core-mode
+/// function that merely receives a `Ptr` and reads through it is rejected with
+/// NS5004 - the gate is not tied to the allocation call alone.
+#[test]
+fn pointer_access_requires_system_mode_in_checker() {
+    use astra_capabilities::Mode;
+    use astra_core::checker::CheckOptions;
+    use astra_core::checker::check_source;
+    let src = "pub fn peek(p: Ptr<u8>, index: usize) -> u8 { return p.read(index) }\n";
+    let diagnostics = check_source(src, CheckOptions::new(Mode::Core))
+        .expect_err("core mode should reject pointer access");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "NS5004"),
+        "expected NS5004 for pointer access in core mode: {diagnostics:?}"
+    );
+    let src = "pub fn poke(p: Ptr<u8>, index: usize, value: u8) { p.write(index, value) }\n";
+    let diagnostics = check_source(src, CheckOptions::new(Mode::Core))
+        .expect_err("core mode should reject pointer writes");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "NS5004"),
+        "expected NS5004 for pointer writes in core mode: {diagnostics:?}"
+    );
+}
+
+/// `ptr.write` types its value against the pointer's element type, so passing
+/// the wrong element type is a normal argument error rather than a silent
+/// reinterpretation.
+#[test]
+fn pointer_write_checks_the_element_type() {
+    use astra_capabilities::Mode;
+    use astra_core::checker::CheckOptions;
+    use astra_core::checker::check_source;
+    let src = "pub fn f(p: Ptr<u8>) { p.write(0, 1) }\n";
+    assert!(
+        check_source(src, CheckOptions::new(Mode::System)).is_ok(),
+        "a u8 pointer should accept a u8 value"
+    );
+    let src = "pub fn f(p: Ptr<u8>) { p.write(0, true) }\n";
+    let diagnostics = check_source(src, CheckOptions::new(Mode::System))
+        .expect_err("a u8 pointer should reject a bool value");
+    assert!(
+        !diagnostics.is_empty(),
+        "expected an argument-type diagnostic: {diagnostics:?}"
+    );
+}
+
 #[test]
 fn unsupported_target_map_emits_ns_map() {
     // Maps are now supported — the backend must emit NS_Map via astra_map_new.
