@@ -8,14 +8,28 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 | Field | Value |
 |---|---|
-| Last updated | 2026-10-27 |
+| Last updated | 2026-10-28 |
 | Current phase | Phase 7 - Backends |
-| Current task | `C-001`/`CONC-001` single-threaded concurrency slice landed (`483caae`): eager `spawn`/`Task`, bounded `Channel<T>`, `ChannelError`; the C conformance ledger is empty and all 19 cases execute |
-| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend, first C17 managed slice with hosted runtime, multi-module linking, generics, native libraries/ABI, single-threaded concurrency, and a full C conformance runner; `@script` inline interop complete |
-| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, hosted shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI) |
+| Current task | `C-001` package-linking slice landed (`2e80554`): manifest `path` dependencies link into the C backend through a bare-specifier import map; next is GC/manual memory (6.C) |
+| Project status | D1-D25 confirmed; compiler frontend, cross-module type surfaces, multi-source compiler API, least-privileged mode inference, effect-provenance diagnostics, typed-HIR Nova interpreter, complete Nova CLI with project module loading/linking, complete NoPM stack, complete JavaScript ESM backend, complete TypeScript ESM backend, first C17 managed slice with hosted runtime, multi-module linking, generics, native libraries/ABI, single-threaded concurrency, path-package linking, and a full C conformance runner; `@script` inline interop complete |
+| Source code | `crates/astra-core` (lexer/parser/formatter/resolver/types/mode/checker), `crates/astra-capabilities` (mode inference and explanation), `crates/astra-nova` (module-aware typed-HIR interpreter and `nova` binary), `crates/astra-compiler-api` (checking and typed-module compile boundary incl. `compile_project` with `import_map`), `crates/astra-codegen-c` (C17 backend, freestanding runtime, hosted shim, multi-module emission), `orchestrator/packages` (manifest, nopm, registry, compiler-client incl. `compileProject`, codegen-js, codegen-ts, CLI incl. `linkedPathPackages`) |
 | Git repository | Yes; initialized 2026-10-25 (baseline `2ce78ad`); `target/`, `dist/`, `node_modules/`, and `.tools/` are ignored |
 | Blockers | None on this host: `astra build --target native` links and runs through gcc (MSYS2 UCRT64) after the shim fix. Linux/macOS native builds still need their own CI run, and clang alone remains unusable here without the MSVC/Windows SDK |
-| Next action | C-001 remainder, best next slices: package linking (6.B) reusing NoPM's resolver; GC/manual memory (6.C) starting from `03-runtime-and-memory.md`; full structured concurrency (OS-thread scheduler, task-local heaps); then the Tier-1 native CI matrix; WASM-001 last |
+| Next action | C-001 remainder: GC/manual memory (6.C) starting from `03-runtime-and-memory.md` (arena-released-at-exit first slice, then collector); OS-threaded concurrency (6.D); Tier-1 native CI matrix evidence; non-path package adapters; WASM-001 last |
+
+---
+
+### 2026-10-28 - `C-001` slice: manifest path packages link into the C backend
+
+- Command: `cargo test -p astra-compiler-api`, `cargo test -p astra-codegen-c`, `node --test --test-name-pattern "path package" orchestrator/tests/codegen-js.test.mjs`, `npm run ci`
+- Result: 32 compiler-api tests (new import-map test), 77 emission tests, and an end-to-end `astra build --target native` fixture that links a path dependency and prints 42
+- What:
+  - **Import map**: `ProjectCompileRequest.import_map` (JSON `importMap`) maps source specifiers to canonical module keys; `resolve_project_target` consults it before identity/relative resolution, so `import { add } from "mathlib"` binds to `deps/mathlib/src/lib.ns`.
+  - **CLI package discovery**: `linkedPathPackages` reads manifest `dependencies` with `source: "path"` (honours `targets` filtering), loads the package manifest (`nova.entry`), reuses `discoverProjectModules`, and re-keys modules under `deps/<sanitised name>/`; package modules are prepended so the importer stays the entry module.
+  - **Include-guard fix**: `RUNTIME_HEADER` is wrapped in `#ifndef NS_RUNTIME_HEADER` — a dependency header re-including it previously produced conflicting anonymous-struct typedefs, latent because no test compiled a multi-module project as separate TUs (`assert_project_compiles` now does).
+- Tests: compiler-api `compile_project_resolves_package_import_map`; CLI boundary test `astra build links a path package through a bare import`; `assert_project_compiles` pins multi-module TU compilation.
+- Verification: full `npm run ci` green; the fixture binary prints `42` with exit code 0.
+- Boundary: only `source: "path"` is wired; git/npm/cargo adapters (NoPM store) and package-of-package dependencies are not resolved; package-module diagnostics attribute spans to the entry file.
 
 ---
 

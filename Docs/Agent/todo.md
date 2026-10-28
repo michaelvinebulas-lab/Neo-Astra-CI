@@ -977,7 +977,7 @@ by a production native target.
 - [x] `astra build --target c` writes `main.c` and `astra_host.c`;
       `--target native` probes for a *hosted-capable* compiler (clang, gcc, cc),
       links a host executable, and runs it; verified end to end through gcc.
-- [x] 73 `astra-codegen-c` tests pass, including generated-C checks with the
+- [x] 77 `astra-codegen-c` tests pass, including generated-C checks with the
       available clang toolchain, freestanding object compilation, and hosted
       compile/link/run checks.
 - [x] Hosted runtime shim is a complete translation unit:
@@ -1114,11 +1114,27 @@ by a production native target.
         sorted key; local declarations always win).
       - Honest boundary: default-import calls are rejected with `NS8019`.
 
+- [x] Manifest path-package linking (`C-001` package-linking slice):
+  - `ProjectCompileRequest.import_map` resolves bare specifiers (e.g.
+    `"mathlib"`) to canonical module keys; `resolve_project_target` consults it
+    before identity/relative resolution.
+  - `astra build` reads `dependencies` entries with `source: "path"`, discovers
+    the package's module graph (same `discoverProjectModules`), and re-keys it
+    under `deps/<name>/...`, prepended so the importer stays the entry module.
+  - `RUNTIME_HEADER` is include-guarded; previously a dependency header
+    re-including it produced conflicting anonymous-struct typedefs (no test
+    compiled a multi-module project as separate TUs).
+  - Pinned by a compiler-api JSON-RPC test, a CLI boundary test, and
+    `assert_project_compiles` (multi-module clang TU compilation).
+  - Boundary: git/npm/cargo adapters and package-of-package dependencies are
+    not wired; only `source: "path"`.
+
 **Actually left**
 
-- [ ] Multi-module/project linking remainder: Cargo/npm/native package linking
-      remains unimplemented; function-level and type-level cross-module imports
-      link today.
+- [ ] Non-path package adapters. `source: "path"` packages link; git/npm/cargo
+      adapters install into the NoPM store and still need store wiring (the
+      same import-map mechanism applies), and a package's own bare imports are
+      not re-mapped (no package-of-package resolution).
 - [ ] Manual memory and GC. `@memory:manual` is rejected with `NS8012`; native
       allocation, ownership, roots, and finalization are not implemented
       (`GC-001`).

@@ -6,14 +6,16 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master = 483caae` (2026-10-27), working tree clean, full
-> `npm run ci` green. The current slice (single-threaded concurrency, empty C
-> conformance ledger) is described in section 4.
+> **Snapshot:** `master = 2e80554` (2026-10-28), working tree clean. Package
+> linking (section 6.B) is done for path packages. Remaining: GC (6.C,
+> language semantics), OS-threaded concurrency (6.D), Tier-1 CI evidence (6.F).
 >
-> **Next task:** package linking (section 6.B) is the largest remaining
-> integration slice; GC (6.C) is the remaining language-semantics item and
-> should start from `03-runtime-and-memory.md`. Full structured concurrency
-> (6.D) now has a working single-threaded base. A Tier-1 CI matrix remains.
+> **Next task:** GC/manual memory (section 6.C) — read
+> `Docs/Design/V1/03-runtime-and-memory.md` first; the managed-mode first
+> slice (arena released at exit) is small and unblocks leak tests. Non-path
+> package adapters (git/npm/cargo via the NoPM store) reuse the 6.B import-map
+> mechanism and are integration work. Tier-1 Linux/macOS CI evidence needs
+> infrastructure, not codegen.
 
 ---
 
@@ -289,26 +291,42 @@ Expected: `7`, `ok`, `true`, `RETURN=0`.
 - Aborting on any unbound parameter keeps failures honest rather than emitting
   broken C.
 
-### 6.B Package linking (Cargo/npm/native)
+### 6.B Package linking — **DONE (path packages)**
 
-**Today.** `astra build` resolves the local module graph and the C path emits
-one TU + header per module. Manifest-level dependencies (packages installed by
-NoPM) do not feed the C module graph; only explicit local `import`s link.
+**Done (this slice).**
+- Compiler API: `ProjectCompileRequest.import_map` (JSON `importMap`), a map
+  from source specifier to canonical module key. `resolve_project_target`
+  consults it before identity/relative resolution, so a bare
+  `import { add } from "mathlib"` binds to a package module whose key lives
+  under a package namespace.
+- CLI: `linkedPathPackages` reads manifest `dependencies` entries with
+  `source: "path"` (honouring optional `targets` filtering), loads each
+  package's manifest (`nova.entry`), discovers its module graph with the same
+  `discoverProjectModules` used for the project, and re-keys every module as
+  `deps/<sanitised name>/<path>`. Package modules are prepended so the
+  importer's entry module stays last (`emit_project` treats the last entry as
+  main). Internal relative imports keep resolving within the package.
+- Bug uncovered and fixed: `RUNTIME_HEADER` was prepended to every `.c` and
+  `.h`, so a dependency header re-including it produced conflicting
+  anonymous-struct typedefs. It is now guarded (`#ifndef NS_RUNTIME_HEADER`).
+  No test compiled a multi-module project as separate TUs before;
+  `assert_project_compiles` now does.
+- Verified end to end: fixture with a path dependency builds via
+  `astra build --target native`, emits `deps_mathlib_src_lib.c`, qualifies
+  symbols (`ns_deps_mathlib_src_lib_add`), and the binary prints 42. Pinned by
+  a compiler-api JSON-RPC test and a CLI boundary test.
 
-**Design sketch.**
-- `orchestrator/packages/cli` build command: after manifest resolution, append
-  package modules to the project graph with canonical keys; `compileProject`
-  already accepts `{key, path, text}` entries.
-- Artifact layout: per-package subdirectory or flattened `<stem>.c/.h` with
-  collision-free stems (module keys already provide stems).
-- Determinism: stable ordering of entries (dependencies before importers) —
-  `generate_project` requires that ordering (entry = last).
-- Acceptance: fixture project with a path dependency builds via
-  `astra build --target c`; symbols qualified; two packages declaring the same
-  helper link cleanly.
+**Honest boundaries.**
+- Only `source: "path"` is wired; git/npm/cargo adapters install into the NoPM
+  store and still need store wiring — the same import-map mechanism applies.
+- Package-of-package dependencies are not resolved (a package's own bare
+  imports are not re-mapped).
+- Diagnostics for package modules attribute spans to the entry file, as
+  before for multi-module projects.
 
-**Risks.** Name/stem collisions across packages; include-path handling in the
-CLI; package-provided C script TUs.
+**Acceptance met:** fixture project with a path dependency builds via
+`astra build`; symbols qualified; package TU cannot collide with importer
+stems (namespace prefix).
 
 ### 6.C GC-001 — managed memory and `@memory:manual`
 
