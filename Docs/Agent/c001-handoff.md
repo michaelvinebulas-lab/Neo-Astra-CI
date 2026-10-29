@@ -13,8 +13,9 @@
 > the `Region` manual-memory API (fixed-block bump arena, section 6.C), and the
 > `GC-001` design decision: all eleven `[P1]`-`[P11]` choices are approved with
 > amendments applied inline in `Docs/Design/GC-001-proposal.md`, and both
-> implementation-gating conditions are answered in its §11. Tier-1 runs through
-> run 11 (`40690850075`) are green on Linux, macOS, and Windows.
+> implementation-gating conditions are answered in its §11. Tier-1 runs are
+> green on Linux, macOS, and Windows through run 15 (`40840682971`, `cd102a9`);
+> `40690850075` is run 10, not run 11, per the API's own `run_number`.
 >
 > **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
 > (`GC-001`, 6.C; design approved 2026-10-29 - next is Phase 0, the `NS6002`

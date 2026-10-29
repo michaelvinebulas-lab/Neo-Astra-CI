@@ -309,6 +309,7 @@ that true, and the allocator chooses one per block:
   2. **Length-aware shapes**: `ARRAY` shapes that can carry spare capacity
      (array/map buffers, whose `cap` may exceed `len`) carry the live element
      count at a known offset, and the mark loop traces only `len` elements.
+
 The runtime already leans this way (`cap`-sized buffers exist precisely to
 grow), so option 2 is the intended path for collection-bearing buffers and
 option 1 covers fixed-size records. A trace must never consult uninitialized
