@@ -931,8 +931,15 @@ void astra_map_set(NS_Map* m, const void* key, const void* val) {
     }
     if (m->len >= m->cap) {
         size_t new_cap = m->cap == 0 ? 8 : m->cap * 2;
+        /* Two managed blocks grow here. The stress hook collects inside every
+           managed allocation, so the freshly grown key buffer must be rooted
+           while the value buffer is allocated - the map's own root slots still
+           hold the pre-growth pointers (the call has not returned). */
+        size_t root = astra_gc_temp_enter();
         m->keys = astra_gc_realloc(m->keys, m->key_shape, new_cap * (m->key_size == 0 ? 1 : m->key_size));
+        astra_gc_publish(root, m->keys);
         m->values = astra_gc_realloc(m->values, m->val_shape, new_cap * (m->val_size == 0 ? 1 : m->val_size));
+        astra_gc_temp_exit(root);
         m->cap = new_cap;
     }
     memcpy((char*)m->keys + m->len * m->key_size, key, m->key_size);

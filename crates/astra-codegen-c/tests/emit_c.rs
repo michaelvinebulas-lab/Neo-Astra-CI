@@ -1479,6 +1479,69 @@ pub fn main() -> i32 {
 /// every safepoint. A loop that grows a live array and allocates a scratch
 /// array per iteration must keep the live array intact, including across the
 /// push growth that moves its buffer.
+/// Regression for the macOS run-25 failure: `astra_map_set` grows the key and
+/// value buffers with two managed allocations. Under stress the second
+/// allocation collected the freshly grown key buffer, because the map's root
+/// slots still held the pre-growth (null) pointers. The helper now roots the
+/// key buffer across the value allocation; the live count proves both buffers
+/// exist and the lookup proves they were not recycled.
+#[test]
+fn map_growth_keeps_the_key_buffer_across_the_value_allocation() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+typedef struct {
+    void* keys;
+    void* values;
+    size_t len;
+    size_t cap;
+    size_t key_size;
+    size_t val_size;
+    bool key_is_str;
+    const NS_Gc_Shape* key_shape;
+    const NS_Gc_Shape* val_shape;
+} NS_Map;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern NS_Map astra_map_new(size_t key_size, size_t val_size, bool key_is_str, const NS_Gc_Shape* key_shape, const NS_Gc_Shape* val_shape);
+extern void astra_map_set(NS_Map* m, const void* key, const void* value);
+extern void* astra_map_get(const NS_Map* m, const void* key);
+extern size_t astra_arena_live_count(void);
+extern size_t astra_gc_frame_enter(size_t slots);
+extern void astra_gc_publish(size_t index, void* payload);
+int main(void) {
+    NS_Map map = astra_map_new(sizeof(int32_t), sizeof(int32_t), false, &NS_SHAPE_LEAF, &NS_SHAPE_LEAF);
+    size_t rf = astra_gc_frame_enter(2);
+    astra_gc_publish(rf + 0, map.keys);
+    astra_gc_publish(rf + 1, map.values);
+    int32_t key = 7;
+    int32_t value = 70;
+    astra_map_set(&map, &key, &value);
+    /* key buffer + value buffer: neither was collected mid-growth. */
+    if (astra_arena_live_count() != 2) { printf("MAP_BLOCKS_FAIL\n"); return 1; }
+    int32_t* found = (int32_t*)astra_map_get(&map, &key);
+    if (!found || *found != 70) { printf("MAP_VALUE_FAIL\n"); return 2; }
+    printf("MAP_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(harness, &[("ASTRA_GC_STRESS", "1")])
+    else {
+        eprintln!(
+            "skipping map_growth_keeps_the_key_buffer_across_the_value_allocation: no hosted compiler"
+        );
+        return;
+    };
+    assert!(ok, "map harness did not run:\n{stderr}");
+    assert!(
+        stdout.contains("MAP_OK"),
+        "map growth lost its key buffer: {stdout}"
+    );
+}
+
 #[test]
 fn roots_survive_stress_collection_at_every_allocation() {
     let src = r#"
