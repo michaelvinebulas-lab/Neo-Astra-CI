@@ -1938,6 +1938,69 @@ pub fn main() -> i32 {
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines, vec!["sent", "hello", "world", "closed send"]);
     }
+    // Same program with a collection at every managed allocation. The channel
+    // helper allocates two blocks (handle + data buffer); the handle must stay
+    // rooted across the second allocation or the messages are lost.
+    if let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(&out, &[("ASTRA_GC_STRESS", "1")])
+    {
+        assert!(ok, "stress execution failed:\nstderr:\n{stderr}");
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert_eq!(
+            lines,
+            vec!["sent", "hello", "world", "closed send"],
+            "channel state was collected under stress"
+        );
+    }
+}
+
+/// Regression for the run-23 failure: `astra_channel_new` allocates the handle
+/// and then the message buffer. Under stress the second allocation collects at
+/// entry, so an unrooted handle was freed (the language cannot reference it
+/// yet). The live count proves both blocks exist, and the round-trip proves the
+/// handle was not recycled.
+#[test]
+fn channel_creation_keeps_the_handle_across_the_data_allocation() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern void* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape);
+extern bool astra_channel_send(void* channel, const void* value);
+extern bool astra_channel_receive(void* channel, void* out);
+extern size_t astra_arena_live_count(void);
+int main(void) {
+    void* channel = astra_channel_new(sizeof(int32_t), &NS_SHAPE_LEAF, &NS_SHAPE_LEAF);
+    /* handle + message buffer: the handle survived the second allocation. */
+    if (astra_arena_live_count() != 2) {
+        printf("CHANNEL_BLOCKS_FAIL\n");
+        return 1;
+    }
+    int32_t value = 42;
+    if (!astra_channel_send(channel, &value)) { printf("SEND_FAIL\n"); return 2; }
+    int32_t out = 0;
+    if (!astra_channel_receive(channel, &out)) { printf("RECEIVE_FAIL\n"); return 3; }
+    if (out != 42) { printf("VALUE_FAIL\n"); return 4; }
+    printf("CHANNEL_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(harness, &[("ASTRA_GC_STRESS", "1")])
+    else {
+        eprintln!(
+            "skipping channel_creation_keeps_the_handle_across_the_data_allocation: no hosted compiler"
+        );
+        return;
+    };
+    assert!(ok, "channel harness did not run:\n{stderr}");
+    assert!(
+        stdout.contains("CHANNEL_OK"),
+        "channel creation lost its handle: {stdout}"
+    );
 }
 
 #[test]

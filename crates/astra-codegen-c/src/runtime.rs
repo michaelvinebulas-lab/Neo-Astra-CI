@@ -970,8 +970,15 @@ void* astra_map_key_at(const NS_Map* m, size_t i) {
 #define ASTRA_CHANNEL_CAP 16
 
 NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape) {
+    /* Two managed blocks. The stress hook collects inside every managed
+       allocation, so the handle must be rooted while the data buffer is
+       allocated - otherwise the second allocation would free the handle, which
+       the language cannot reference yet. */
+    size_t root = astra_gc_temp_enter();
     NS_Channel* c = (NS_Channel*)astra_gc_alloc(handle_shape, sizeof(NS_Channel));
+    astra_gc_publish(root, c);
     c->data = astra_gc_alloc(data_shape, elem_size * ASTRA_CHANNEL_CAP);
+    astra_gc_temp_exit(root);
     c->len = 0;
     c->cap = ASTRA_CHANNEL_CAP;
     c->elem_size = elem_size;

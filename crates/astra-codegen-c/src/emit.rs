@@ -3510,7 +3510,7 @@ impl<'a> Emitter<'a> {
             return "(NS_Unit){0}".into();
         }
         let tuple_c = self.tcx.c_type(&ty);
-        let vals: Vec<String> = elements.iter().map(|el| self.expr(el)).collect();
+        let vals: Vec<String> = elements.iter().map(|el| self.materialize(el)).collect();
         let joined = vals.join(", ");
         format!("({tuple_c}){{ {joined} }}")
     }
