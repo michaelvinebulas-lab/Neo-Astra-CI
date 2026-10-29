@@ -29,7 +29,7 @@ recoverable errors, integer policies, eager tasks, bounded channels, UTF-8
 string/byte operations, source maps, `.d.ts`, and the shared `conformance/`
 suite — now merged into `master`. `TS-001` is complete (shared-emitter TS mode,
 `astra build --target ts`, and the pinned `@script:ts` transpiler), and the
-conformance suite (19 positive + 11 negative cases) runs green on JavaScript,
+conformance suite (19 positive + 12 negative cases) runs green on JavaScript,
 TypeScript, and Nova with empty backend gap ledgers. The
 `INTEROP-001` inline-script design is complete in
 `Docs/Design/V1/10-inline-script-interop.md`; the C/C++ emission slice and the
@@ -1442,7 +1442,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [-] `WASM-001` Wasm target (deliberately deferred until the target ABI and runtime design land)
 - [ ] `FFI-001` Polymorphic FFI
 - [~] `CONC-001` Structured concurrency runtime — single-threaded eager `spawn`/`Task<T>`, bounded `Channel<T>` with `ChannelError`, close, and deadlock panics are done and the `channels` corpus case passes on C, JS, TS, and Nova; OS-thread scheduling, cancellation safepoints, and task-local heaps remain
-- [x] `CONF-001` Conformance suite — 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, frontend-reject, and C runners are wired and green with empty gap ledgers (C executes every case when a hosted compiler is available)
+- [x] `CONF-001` Conformance suite - 19 positive + 12 negative cases; JavaScript, TypeScript, Nova, frontend-reject, and C runners are wired and green with empty gap ledgers (C executes every case when a hosted compiler is available)
 - [ ] `HARD-001` v0.1 hardening
 
 ---

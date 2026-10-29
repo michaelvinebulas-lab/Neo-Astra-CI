@@ -90,7 +90,9 @@ and section 6.A (the generics design) before touching code.
 
 - `master = 483caae`; tree clean; `npm run ci` green.
 - `astra-codegen-c`: **77** emission tests + 1 conformance gate.
-- Corpus: **19 positive** cases, **11 negative** rejects.
+- Corpus: **19 positive** cases, **12 negative** rejects (including
+  `pointer_access_requires_system`, which pins the `NS5004` gate on raw pointer
+  usage backend-neutrally).
 - C emits, compiles, links, **and runs** **all 19** cases when a hosted-capable
   compiler is present; the C `KNOWN_GAPS` ledger is empty.
 - Native execution is verified on this Windows host through **gcc**

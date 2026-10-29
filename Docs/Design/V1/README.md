@@ -203,7 +203,7 @@ Do not change a design by editing only one file and leaving the others stale.
 - TypeScript backend: `TS-001` complete — shared-emitter strict TS, `astra build --target ts`, `.d.ts`, and pinned `@script:ts`
 - Nova: the `NOVA-001` interpreter, `NOVA-002` CLI (`run`, `eval`, `repl`, `watch`, `test`, manifest entry), and `NOVA-003` project module loading/linking are implemented
 - NoPM: complete stack through NOPM-004 - package IDs, descriptors, target/mode filtering, deterministic graph, lockfile model/I/O, content-addressed store, path/Git/npm/Cargo/PyPI/NuGet/OCI adapters, CLI lock/tree/install/search/audit/why/update, and registry gateway with signing/federation
-- Conformance suite: 19 positive + 11 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners are green, and the C runner executes every non-gap case when a hosted compiler is available
+- Conformance suite: 19 positive + 12 negative cases; JavaScript, TypeScript, Nova, and frontend-reject runners are green, and the C runner executes every non-gap case when a hosted compiler is available
 - C backend: managed C17 first slice, multi-module linking, generic monomorphization, hosted execution, inline C/C++ scripts, and native library output with a provisional ABI (`11-c-abi.md`) are implemented
 - Next artifact: package linking, GC/manual memory, structured concurrency, and a Tier-1 native CI matrix for `C-001`
 
