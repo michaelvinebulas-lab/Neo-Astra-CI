@@ -15,7 +15,7 @@ Last updated: 2026-10-29.
 |---|---|---|
 | 0 | `NS6002`: managed element types forbidden in `Memory.alloc`/`region.alloc` | **Landed** `cf1056a` (checker + spec §8.4/§14.9); Tier-1 run 18 |
 | A | Block header (`NS_Gc_Head`), shape grammar (`NS_Gc_Shape`), compiler-emitted shape tables, manual/managed allocator split | **Landed** `a7c3b58` (Tier-1 run 20 red on Ubuntu, fixed by `753c54f`) |
-| B | Root frames, type-directed snapshots, materialisation, safepoints, mark-sweep collector under `ASTRA_GC_STRESS=1`, stress leg in CI | **Landed** `3e9893b`, `0233ce2`, `18fc3fa`, follow-ups `1b6fa85` + map-growth fix; collection still **off by default** |
+| B | Root frames, type-directed snapshots, materialisation, safepoints, mark-sweep collector under `ASTRA_GC_STRESS=1`, stress leg in CI | **Landed** `3e9893b`, `0233ce2`, `18fc3fa`, follow-ups `1b6fa85` + `463ff54`; collection still **off by default**. Verified by Tier-1 run 27 (`97e1475`): green on Linux, macOS and Windows |
 | C | Collection on by default (`bytes_since_gc` threshold), re-point arena-accounting tests | **Blocked** on §2 and §3 below |
 | D | Wasm managed allocator in linear memory | Deferred by design (proposal §7, `[P10]`) |
 
@@ -23,8 +23,8 @@ Last updated: 2026-10-29.
 
 | Bug | State |
 |---|---|
-| macOS-only stress failure in the `collections` corpus case (panic before output) | **Root-caused and fixed**: `astra_map_set` growth allocated the key buffer and then the value buffer; the second `astra_gc_alloc` collected the not-yet-rooted key buffer because the map's root slots still held the pre-growth pointers. Fix: the helper roots the key buffer across the value allocation (same class as the channel handle bug). Regression test: `map_growth_keeps_the_key_buffer_across_the_value_allocation` (deterministic live-count + lookup under stress). Pending: Tier-1 green run for the fix commit |
-| `channels` corpus case under stress on Windows/macOS (empty messages) | **Fixed** `1b6fa85`: `astra_channel_new` freed the handle while allocating the message buffer. Regression test: `channel_creation_keeps_the_handle_across_the_data_allocation`. Tier-1 run 25: Windows green, macOS failed later in `collections` (the row above) |
+| macOS-only stress failure in the `collections` corpus case (panic before output) | **Fixed** `463ff54`: the helper roots the key buffer across the value allocation (same class as the channel handle bug). Regression test: `map_growth_keeps_the_key_buffer_across_the_value_allocation` (deterministic live-count + lookup under stress). Verified: Tier-1 run 27 (`97e1475`) green on all three OSes |
+| `channels` corpus case under stress on Windows/macOS (empty messages) | **Fixed** `1b6fa85`: `astra_channel_new` freed the handle while allocating the message buffer. Regression test: `channel_creation_keeps_the_handle_across_the_data_allocation`. Verified: run 27 green (run 25 had fixed Windows; macOS then exposed the map bug above) |
 
 **Rule learned (applies to every runtime helper):** a helper that allocates more
 than one managed block must root the intermediate block(s) with
@@ -53,13 +53,12 @@ channel creation. Single-block helpers are safe by construction.
 | 5. Interior-root (`bytes` slice after owner reassigned) | **Done** - `interior_slice_keeps_its_block_alive_under_stress`; harness-level interior/VARIANT test |
 | 6. Boundary pinning test | **Blocked** on S2 (pinning) and S4 (`[P9]` for the borrowed half) |
 | 7. Runtime budget vs `03` §12 (32 KB) | **Not measured** - root array, directory, mark stack |
-| 8. Tier-1 across Linux/macOS/Windows | **In progress** - run 22 green; runs 23-25 red on channel/map root bugs; next run must be green |
+| 8. Tier-1 across Linux/macOS/Windows | **Done for Phase B** - run 27 (`97e1475`) green on all three OSes (runs 23-25 caught the channel and map root bugs first) |
 
 ## 5. Next slices (in order)
 
-- **S1 - finish the stress fixes.** Land the map-growth fix and its regression
-  test; get a green Tier-1 run on all three OSes; correct every doc that says
-  the stress suite is clean.
+- **S1 - finish the stress fixes. Done** (`1b6fa85`, `463ff54`; run 27 green on
+  all three OSes).
 - **S2 - §5.8 boundary pinning.** Managed values returned from exported symbols
   are pinned for the run (a permanent root set), and the `11-c-abi.md` §5
   parenthetical changes from "because there is none" to "because they are
