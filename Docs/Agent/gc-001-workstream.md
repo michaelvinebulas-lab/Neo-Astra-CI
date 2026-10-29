@@ -131,7 +131,7 @@ assumed `int`-sized for the future mark loop; shape tables are per-TU statics.
   slots are not cleared on scope exit (dead locals stay alive until the frame
   returns, as §5.1 designs); manual memory is unchecked.
 
-### S2 - §5.8 boundary pinning (2026-10-29, local; not yet committed)
+### S2 - §5.8 boundary pinning (landed `25763da`, 2026-10-30; records written 2026-10-29)
 
 - Runtime: a monotone pin set (`astra_gc_pins`) alongside the frame root array.
   `astra_gc_pin(payload)` appends (NULL ignored), the collector marks every pin

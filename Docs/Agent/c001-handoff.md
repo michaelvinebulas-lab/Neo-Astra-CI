@@ -6,13 +6,13 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `97e1475` plus one local docs commit (2026-10-29),
-> working tree clean, full `npm run ci` green and Tier-1 run 27 green on Linux,
-> macOS and Windows (both stress-mode root fixes verified). Live GC status -
-> phases, open bugs, open decisions, the §8 verification matrix and the next
-> slices - is owned by `Docs/Agent/gc-001-workstream.md`; this document keeps
-> the transfer notes and the architecture pointers, not a second copy of that
-> board.
+> **Snapshot:** `master` at `d9d09de` (2026-10-30: S2 pinning `25763da` +
+> decision records `d9d09de`), working tree clean, full `npm run ci` green;
+> the Tier-1 run for `d9d09de` is polling (run 27 was the last verified
+> all-green run). Live GC status - phases, open bugs, open decisions, the §8
+> verification matrix and the next slices - is owned by
+> `Docs/Agent/gc-001-workstream.md`; this document keeps the transfer notes and
+> the architecture pointers, not a second copy of that board.
 > Since the previous snapshot this work landed Phase B of `GC-001`: a root
 > array with per-frame snapshots, type-directed root extraction, materialised
 > managed arguments before calls, safepoints at function entry and loop
