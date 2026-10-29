@@ -114,30 +114,66 @@ slice.
 
 ## 5. Ownership and memory
 
-This slice runs a two-family allocator and does not collect yet (GC-001 Phase A,
-proposal §5.7). Managed allocation goes through `astra_gc_alloc`, which places an
-`NS_Gc_Head` (payload extent plus a compiler-emitted `NS_Gc_Shape`) immediately
-before every payload, zeroes the payload, and records the block so
-`astra_runtime_shutdown` can release the whole run at exit; the header and shape
-table are the object model later GC-001 phases collect over. Manual memory
-(`Memory.alloc`, `Region`) goes through `astra_manual_alloc`, a plain `malloc`
-that is never recorded, never traced, and released only by `astra_manual_free`
-(`Memory.free`, `region.free`). `NS6002` keeps GC-managed element types out of
-manual allocation because a manual block is never a root. There is no public
-free for managed values and no collector yet (`GC-001`).
+This slice runs a two-family allocator with a non-moving mark-sweep collector
+(GC-001 Phase B; collection is off by default until Phase C). Managed allocation
+goes through `astra_gc_alloc`, which places an `NS_Gc_Head` (payload extent plus
+a compiler-emitted `NS_Gc_Shape`) immediately before every payload, zeroes the
+payload, and records the block; `astra_runtime_shutdown` releases whatever
+remains at exit. Manual memory (`Memory.alloc`, `Region`) goes through
+`astra_manual_alloc`, a plain `malloc` that is never recorded, never traced, and
+released only by `astra_manual_free` (`Memory.free`, `region.free`). `NS6002`
+keeps GC-managed element types out of manual allocation because a manual block is
+never a root. There is no public free for managed values; the collector reclaims
+unreachable blocks.
 
 - `str` and `bytes` values are borrowed views. A consumer must not free the
   `data` pointer, and a view returned from a function stays valid until the
-  process exits (allocated/static data) — not until the next collection, because
-  there is none.
+  process exits because returned managed values are pinned for the run
+  (GC-001 §5.8) — not merely until the next collection.
 - Arrays and maps returned across the boundary are owned by the runtime heap and
-  must not be freed by the consumer.
-- A future GC or manual-memory mode will replace this rule; consumers should not
-  encode it as a permanent guarantee.
+  must not be freed by the consumer; they are pinned on return for the same
+  reason.
+- The pinning rule applies to values *returned* to the foreign module. Values
+  *borrowed* by it are not pinned: a borrowed pointer is valid only for the call
+  (spec §8.5), exactly like any other non-root, and a foreign module that keeps
+  one for later use is violating that rule.
+- A future release API (post-V1) will let a consumer hand ownership back;
+  consumers should not encode pinning as a permanent guarantee beyond this slice.
 
 Boundary conversions are explicit: an empty `str`/`bytes` view has a non-null or
 null `data` pointer with `len == 0`; consumers must branch on `len`, not on
 `data`.
+
+### 5.1 FFI root registration (GC-001 §5.9; signature decided 2026-10-30)
+
+A hand-written `@script:c` block runs in a foreign frame the collector cannot
+see, so managed values it borrows for the call must be registered as roots.
+The approved API (`[P9]`, proposal §5.9) is a scoped registration triple:
+
+```c
+size_t astra_gc_scope_enter(void);
+void   astra_gc_root(size_t scope, const void* payload);
+void   astra_gc_scope_exit(size_t scope);
+```
+
+- `astra_gc_scope_enter` opens a root region and returns its handle;
+  `astra_gc_root` adds one payload pointer to that region (NULL ignored) — a
+  `str`/`bytes` value registers its `data` view, a map registers `keys` and
+  `values`, a channel registers the handle;
+  `astra_gc_scope_exit` releases every root the region holds.
+- Roots are released at exit, so a borrowed pointer is valid only for the call
+  (spec §8.5) — the same borrowed-value rule as the pinning pair above,
+  stated here so the registration and ownership rules sit together.
+- Regions nest LIFO, like function frames; a debug build MAY trap on an
+  out-of-order exit.
+- The **emitter**, not the script author, owns the pairing: it brackets the
+  whole foreign call, so an early `return` inside a script block cannot leave a
+  registration unpopped.
+
+No emitter site calls this API yet: no `@script:c` boundary passes managed
+values into a foreign frame today. This subsection is the approved contract,
+landed before the first call site per the proposal §5.9 trigger; §7 gains the
+boundary-rooting test with the first emitter site that emits it.
 
 ---
 
@@ -158,6 +194,8 @@ The contract is pinned by:
 
 - `crates/astra-codegen-c/tests/emit_c.rs`:
   `library_emission_omits_main_and_exports_public_functions`,
+  `library_pins_values_returned_across_the_c_boundary`,
+  `only_library_exports_pin_managed_returns`,
   `array_get_returns_bounded_option`, and the hosted execution tests.
 - `orchestrator/tests/codegen-js.test.mjs`:
   `astra build --emit staticlib produces a linkable C library` and

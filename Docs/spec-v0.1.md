@@ -1315,6 +1315,7 @@ Rules:
 - `Memory.free` is explicit.
 - `defer` runs in reverse order at scope exit.
 - `Memory.alloc` in a GC-managed scope is a compile-time error.
+- `Region.new` and `region.alloc` are scoped allocation and do not require the manual-memory mode (the mode gate applies to `Memory.alloc`/`Memory.free`): a region's blocks are released by `region.free()`, and a region that is never freed leaks them — the GC never reclaims manual memory.
 - The element type `T` of `Memory.alloc<T>` and `region.alloc<T>` MUST NOT contain GC-managed references (`str`, `bytes`, `[T]`, a map, `Channel`, `Task`, or a struct, enum, or tuple containing them); such an allocation is a compile-time error.
 - `Ptr<T>` is not a GC reference.
 - `ptr.read` and `ptr.write` are unchecked except in an explicit debug-checked mode.

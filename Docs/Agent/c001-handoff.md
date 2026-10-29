@@ -26,10 +26,11 @@
 >
 > **Remaining (honest handoff):** the rest of precise mark-sweep GC (`GC-001`,
 > 6.C; design approved 2026-10-29, Phases 0/A/B landed). Before collection can
-> be on by default (Phase C): §5.8 boundary pinning (managed values returned to
-> a foreign module pinned for the run, the promise `11-c-abi.md` §5 makes),
-> §5.9 FFI root registration (concept approved, `[P9]`'s exact signature still
-> open in `11-c-abi.md`), and the §8.2 poison-on-free oracle. Phase D (Wasm)
+> be on by default (Phase C): the §8.2 poison-on-free oracle. §5.8 boundary
+> pinning (managed values returned to a foreign module pinned for the run, the
+> promise `11-c-abi.md` §5 makes) landed 2026-10-30, and §5.9's signature is
+> decided and landed as `11-c-abi.md` §5.1 (scoped handle; the emitter emits
+> it with the first foreign-frame boundary). Phase D (Wasm)
 > needs a managed allocator in linear memory. Also still open: the unspecced
 > `MutSlice` surface behind `ptr.as_slice` (6.C), the fallible
 > `Memory.alloc`/`region.alloc` entry-point policy (6.C), and OS-threaded

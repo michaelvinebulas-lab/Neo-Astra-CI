@@ -4,10 +4,10 @@
 > `[P1]`-`[P11]` that this file originally carried for approval have been
 > decided (see §10 for the verdicts and reasons); the approved amendments are
 > applied inline in the sections they change and marked "Amendment". Two items
-> are not fully closed: `[P9]`'s exact signature is deferred to
-> `11-c-abi.md` (concept approved), and `[P11]` is split out for its own spec
+> is not fully closed: `[P11]` is split out for its own spec
 > review (until then, left-to-right managed-argument evaluation is an
-> implementation detail, not normative). The two conditions the approval was
+> implementation detail, not normative). `[P9]`'s signature was decided
+> 2026-10-30 (scoped handle) and landed in `11-c-abi.md` §5.1. The two conditions the approval was
 > gated on (task execution model; `Ptr<T>` with managed element types) are
 > answered in §11 with evidence.
 >
@@ -20,9 +20,12 @@
 > Phase A (block header, shape grammar, allocator split) are landed as of
 > 2026-10-29; Phase B (root frames, snapshots, materialisation, safepoints
 > behind `ASTRA_GC_STRESS=1`, stress leg in the CI gate) is landed as well.
-> Before Phase C turns collection on by default: §5.8 boundary pinning, §5.9
-> FFI root registration (signature still open in `11-c-abi.md`), and the §8.2
-> poison oracle.
+> Before Phase C turns collection on by default: §5.8 boundary pinning is
+> **landed** (2026-10-29, S2 — library returns are pinned for the run), §5.9
+> FFI root registration's signature is **decided** (2026-10-30, landed in
+> `11-c-abi.md` §5.1; the emitter emits it with the first `@script:c` boundary
+> that passes managed values into a foreign frame), and the §8.2
+> poison oracle remains.
 >
 > Written 2026-10-29 under the `GC-001` backlog item in `Docs/Agent/todo.md`.
 
@@ -401,16 +404,19 @@ violating §8.5, and the collector treating the stashed value as dead is the
 correct consequence, not a defect. The two rules are documented as a pair so
 neither can be read without the other.
 
-### 5.9 [P9] FFI frames register roots explicitly — concept approved, signature deferred
+### 5.9 [P9] FFI frames register roots explicitly — decided: scoped handle
 
 §4.3 already requires this. The concept is approved: expose a small runtime
-API for hand-written `@script:c` blocks — a push/pop root registration pair —
-and have the inline-script boundary emit it around calls, since foreign frames
-are opaque to the emitter. The names used in this document (`astra_gc_push` /
-`astra_gc_pop`) are placeholders: **the exact signature stays open as an ABI
-decision for `11-c-abi.md`** and must be approved as an `11-c-abi.md` change
-before any `@script:c` boundary emits registration calls. The mechanism
-(§5.1-§5.4) does not depend on the signature.
+API for hand-written `@script:c` blocks and have the inline-script boundary
+emit it around calls, since foreign frames are opaque to the emitter. The
+signature was **decided 2026-10-30** (user approval of the recommendation) and
+landed as `11-c-abi.md` §5.1: a scoped handle triple — `astra_gc_scope_enter`
+/ `astra_gc_root(scope, payload)` / `astra_gc_scope_exit(scope)` — chosen over
+a counted push/pop pair because the **emitter owns the pairing** and a script
+author cannot unbalance a handle. The §5.9 trigger is satisfied: §5.1 was
+approved as an `11-c-abi.md` change before any `@script:c` boundary emits
+registration calls (none does yet). The mechanism (§5.1-§5.4) does not depend
+on the signature.
 
 Roots registered through that API are released at pop; a foreign module that
 retains a borrowed pointer past the call violates spec §8.5 - the same
@@ -445,14 +451,14 @@ block cannot leave a registration unpopped.
 |---|---|---|
 | 0 | `NS6002`: forbid managed element types in `Memory.alloc<T>`/`region.alloc<T>` (§11, condition 2) | **Landed 2026-10-29** (code confirmed by user): checker rule + spec §8.4 line + §14.9 row, ahead of Phase A so the footgun class is closed before any allocator split makes it observable |
 | A | Header + shapes, allocator split, no collection yet | **Landed 2026-10-29**: `NS_Gc_Head` + `NS_Gc_Shape` grammar in the runtime, compiler-emitted shape tables threaded through every managed allocation (`astra_gc_alloc`), manual family split out (`astra_manual_alloc` for `Memory.alloc`/`Region`), zero-on-alloc applied to growth. Pure refactor: the arena keeps its current behaviour and its leak tests (`managed_arena_is_released_at_shutdown` now pins both families, plus a header/shape zeroing harness) |
-| B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | **Landed 2026-10-29** (slices: root array + collector, frame roots + republish, materialisation; stress reruns the whole hosted gate in CI). Default off; §8 proves correctness. Not part of the row but still required before default collection: §5.8 boundary pinning, §5.9 FFI registration (signature deferred to `11-c-abi.md`), and the §8.2 poison oracle |
+| B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | **Landed 2026-10-29** (slices: root array + collector, frame roots + republish, materialisation; stress reruns the whole hosted gate in CI). Default off; §8 proves correctness. Not part of the row but still required before default collection: §5.8 boundary pinning, §5.9 FFI registration (signature decided 2026-10-30, `11-c-abi.md` §5.1; landed as S2/poison-adjacent slices), and the §8.2 poison oracle |
 | C | Turn collection on by default; re-point `astra_arena_live_count`-based tests at the new accounting | |
 | D | Wasm: needs a managed allocator in linear memory before any of this can run there | Sequencing decision, [P10] |
 
 Both conditions that gated implementation (§11) are answered, so Phase 0 and
-Phase A have landed (2026-10-29); Phase B may start. The `[P9]` signature
-remains deferred to `11-c-abi.md`, but only the FFI half of the work depends on
-it. The C runtime surface now has two families (`astra_gc_*` and
+Phase A have landed (2026-10-29); Phase B may start. The `[P9]` signature is
+decided (scoped handle, `11-c-abi.md` §5.1, 2026-10-30), and only the FFI
+half of the work depends on it. The C runtime surface now has two families (`astra_gc_*` and
 `astra_manual_*`) in place of the single `astra_alloc`/`astra_free` pair;
 `11-c-abi.md` §5 records that split.
 
@@ -530,7 +536,7 @@ Items 1 and 2 are recorded in `Docs/Agent/todo.md` alongside this proposal.
 | [P6] | Sorted block directory for interior-root resolution | **Approve** | Keeps slicing O(1) with no `NS_Str` ABI change. Recorded: the per-collection sort cost and the 32 KB budget are the things to revisit; the fallback if it fails is an ABI change, which would need its own approval — applied in §5.6 |
 | [P7] | Separate manual and GC allocators | **Approve** | One list with two owners would be a bug, and spec §8.4 already says `Ptr<T>` is not a GC reference |
 | [P8] | Pin boundary-crossing values instead of releasing them | **Approve with amendment** | Preserves the `11-c-abi.md` §5 contract. Amendment: record that unbounded pinning is accepted for V1 and add a release API as a follow-up — applied in §5.8, together with the returned-pinned / borrowed-not pair |
-| [P9] | `astra_gc_push/pop` API for FFI frames | **Approve concept, defer signature** | §4.3 requires an answer and this is a reasonable one; the exact signature is an ABI decision for `11-c-abi.md` and stays open — applied in §5.9 |
+| [P9] | `astra_gc_push/pop` API for FFI frames | **Approved; signature decided 2026-10-30 (scoped handle)** | §4.3 requires an answer and this is a reasonable one; the signature is an ABI decision for `11-c-abi.md`, and the decided form is the scoped handle triple `astra_gc_scope_enter`/`astra_gc_root`/`astra_gc_scope_exit` — landed as `11-c-abi.md` §5.1 — applied in §5.9 |
 | [P10] | Native first, Wasm in a later phase | **Approve** | Wasm needs a managed allocator in linear memory first, so this is sequencing, not a real choice |
 | [P11] | Whether call-argument evaluation order becomes normative (surfaced by [P3]) | **Split out, not decided here** | It is a spec change that needs its own review; `[P3]`'s left-to-right behaviour for managed args is an implementation detail until that review happens |
 

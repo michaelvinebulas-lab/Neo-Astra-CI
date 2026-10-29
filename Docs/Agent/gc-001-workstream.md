@@ -7,7 +7,7 @@
 > broken, what is next). `Docs/Agent/state-log.md` keeps the chronological
 > history; `Docs/Agent/todo.md` keeps one queue line per slice that points here.
 
-Last updated: 2026-10-29.
+Last updated: 2026-10-30.
 
 ## 1. Phase status
 
@@ -37,9 +37,10 @@ channel creation. Single-block helpers are safe by construction.
 
 | Decision | Where | Status |
 |---|---|---|
-| `[P9]` FFI root registration signature (`astra_gc_push`/`pop` placeholders) | proposal §5.9, §10 Q5; must land in `11-c-abi.md` §5 | **Open** - proposal §5.9 now states the trigger: approved as an `11-c-abi.md` change before any `@script:c` boundary emits registration calls. Needed before the FFI half and before Phase C claims boundary safety |
-| `Region` scope rule: should `Region.new`/`region.alloc` require `@memory:manual`? | todo.md, spec §8.4 names only `Memory.alloc` | **Open** - spec question, not blocking GC |
-| Per-case mode selection in the negative-conformance runner | todo.md | **Open** - infrastructure; would let `NS6001`/`NS6002` be corpus-pinned |
+| `[P9]` FFI root registration signature (`astra_gc_push`/`pop` placeholders) | proposal §5.9, §10 Q5; landed in `11-c-abi.md` §5.1 | **Decided 2026-10-30** (user approved the recommendation): scoped handle triple `astra_gc_scope_enter` / `astra_gc_root(scope, payload)` / `astra_gc_scope_exit(scope)`, chosen over counted push/pop because the emitter owns the pairing and a script author cannot unbalance a handle. Landed as `11-c-abi.md` §5.1 before any call site, per the §5.9 trigger; the emitter emits it with the first `@script:c` boundary that passes managed values into a foreign frame (none does today) |
+| §5.8 pinning scope: which returns pin? | proposal §5.8, `11-c-abi.md` §5 | **Decided 2026-10-30**: exported (`pub`) non-generic functions in **library** builds (implemented in S2). Executable builds have no foreign consumer, and private helpers never cross the boundary, so neither pins |
+| `Region` scope rule: should `Region.new`/`region.alloc` require `@memory:manual`? | todo.md, spec §8.4 | **Decided 2026-10-30**: no mode change — spec §8.4 names only `Memory.alloc`, matching the implementation; `Region` is scoped allocation whose blocks are released by `region.free()`. A clarification line landed in spec §8.4, recording the hazard too: a region that is never freed leaks its blocks, and the GC never reclaims manual memory |
+| Per-case mode selection in the negative-conformance runner | todo.md | **Decided 2026-10-30**: implement it, as test infrastructure only — a runner-parsed comment directive in the case file (no language surface). Unblocks `NS6001`/`NS6002` negative-conformance cases; own infra slice, not on the Phase C critical path |
 | Generic forwarding past `NS6002` | todo.md, proposal §9 | **Recorded** - checker validates bodies once against generic placeholders; follows the existing instantiation model |
 
 ## 4. Verification matrix (proposal §8)
@@ -51,25 +52,27 @@ channel creation. Single-block helpers are safe by construction.
 | 3. Bounded live set while total grows | **Done** - `stress_collection_keeps_the_live_set_bounded` |
 | 4. Growth-then-collect (push realloc) | **Done** - `roots_survive_stress_collection_at_every_allocation` |
 | 5. Interior-root (`bytes` slice after owner reassigned) | **Done** - `interior_slice_keeps_its_block_alive_under_stress`; harness-level interior/VARIANT test |
-| 6. Boundary pinning test | **Blocked** on S2 (pinning) and S4 (`[P9]` for the borrowed half) |
+| 6. Boundary pinning test | **Done (returned half)** - `library_pins_values_returned_across_the_c_boundary` returns an array to C, collects, and reads it; `only_library_exports_pin_managed_returns` covers an `Err` payload and asserts executable builds/private helpers never pin. The borrowed-not-pinned half is the §5.8 pair stated in `11-c-abi.md` §5 and asserted by the pass-back/no-new-pin check; FFI frame registration remains S4 |
 | 7. Runtime budget vs `03` §12 (32 KB) | **Not measured** - root array, directory, mark stack |
-| 8. Tier-1 across Linux/macOS/Windows | **Done for Phase B** - run 27 (`97e1475`) green on all three OSes (runs 23-25 caught the channel and map root bugs first) |
+| 8. Tier-1 across Linux/macOS/Windows | **Done for Phase B** - run 27 (`97e1475`) green on all three OSes (runs 23-25 caught the channel and map root bugs first); re-verified locally 2026-10-29 (full `npm run ci`, 96 `emit_c` tests, 19/19 conformance cases executed under `ASTRA_GC_STRESS=1`) |
 
 ## 5. Next slices (in order)
 
 - **S1 - finish the stress fixes. Done** (`1b6fa85`, `463ff54`; run 27 green on
   all three OSes).
-- **S2 - §5.8 boundary pinning.** Managed values returned from exported symbols
-  are pinned for the run (a permanent root set), and the `11-c-abi.md` §5
-  parenthetical changes from "because there is none" to "because they are
-  pinned for the run". Test: return an array to C, collect, read it; borrowed
-  pointers are *not* pinned (the §5.8 pair). Needs the exported-symbol surface
-  the emitter already knows (`pub` functions in library mode).
+- **S2 - §5.8 boundary pinning. Done** (2026-10-29; see the landing record).
+  Library-mode exported functions pin managed returns (including `Ok`/`Err`
+  payloads) into a monotone run-scoped set; `11-c-abi.md` §5 now states the
+  returned-pinned / borrowed-not pair. Covered by two `emit_c` tests, one of
+  which runs a hand-written C consumer across an explicit `astra_gc_collect()`.
 - **S3 - §8.2 poison oracle.** Fill freed payloads with `0xDD` in debug builds
   so a live read of a collected block fails loudly; rerun the stress leg.
-- **S4 - §5.9 ABI proposal.** Draft the push/pop signature options in
-  `11-c-abi.md` §5 for user approval (single value vs counted push; returned
-  frame handle vs scope stack; emitter owns pairing). Blocks the FFI half only.
+- **S4 - §5.9 FFI signature. Done** (2026-10-30): the scoped-handle triple
+  (`astra_gc_scope_enter`/`astra_gc_root`/`astra_gc_scope_exit`) is landed as
+  `11-c-abi.md` §5.1 before any call site, per the §5.9 trigger. The emitter
+  does not emit registration yet: the first `@script:c` boundary that passes
+  managed values into a foreign frame emits it, and the §7 boundary-rooting
+  test lands with that slice.
 - **S5 - Phase C.** `bytes_since_gc` threshold at safepoints, collection on by
   default, re-point `astra_arena_live_count` tests, record the budget (§8.7).
 - **S6 - Phase D (Wasm).** Deferred; needs a managed allocator in linear memory.
@@ -102,7 +105,7 @@ threaded through array/map/channel/`str_chars` allocations. Limits: nothing read
 the shapes yet at that point; manual free stays unchecked; the enum tag is
 assumed `int`-sized for the future mark loop; shape tables are per-TU statics.
 
-### Phase B - roots, materialisation, collector (`3e9893b`, `0233ce2`, `18fc3fa`, `1b6fa85`)
+### Phase B - roots, materialisation, collector (`3e9893b`, `0233ce2`, `18fc3fa`, `1b6fa85`, `463ff54`)
 
 - Runtime (`3e9893b`): growable root array of payload pointers;
   `frame_enter/exit`, `publish` (grows on demand, idempotent per declaration
@@ -120,10 +123,51 @@ assumed `int`-sized for the future mark loop; shape tables are per-TU statics.
   binary operands; disabled in short-circuit right operands and `while`
   conditions. CI stress leg added.
 - Follow-ups: channel handle rooting (`1b6fa85`) and map-growth key rooting
-  (this slice); both were the same helper class and both have deterministic
+  (`463ff54`); both were the same helper class and both have deterministic
   live-count regression tests.
-- Limits, still true: §5.8 pinning and §5.9 FFI registration are not
-  implemented; §8.2 poison and §8.7 budget are not done; hoisting gaps remain
+- Limits, still true: §5.9 FFI registration and §8.2 poison and §8.7 budget are
+  not done (§5.8 boundary pinning landed later as S2); hoisting gaps remain
   inside short-circuit/`while` conditions; republishing is statement-level;
   slots are not cleared on scope exit (dead locals stay alive until the frame
   returns, as §5.1 designs); manual memory is unchecked.
+
+### S2 - §5.8 boundary pinning (2026-10-29, local; not yet committed)
+
+- Runtime: a monotone pin set (`astra_gc_pins`) alongside the frame root array.
+  `astra_gc_pin(payload)` appends (NULL ignored), the collector marks every pin
+  after the frame roots, and `astra_runtime_shutdown` releases the array.
+  `astra_gc_pin_count` is the observability hook the tests assert on. Pinning is
+  deliberately unbounded for V1 per the §5.8 amendment.
+- Emitter: `Emitter::library` (true iff `emit_project` runs with
+  `emit_main = false`) plus `pin_returns`, set per function by
+  `returns_across_abi` — exported (`pub`), non-generic, library mode. Every
+  value-carrying return path materialises the value into a fresh temporary and
+  pins `TyCtxt::root_exprs` of the declared return type before the frame exit:
+  tail expression (plain and fallible), explicit `return`, `fail`, and the
+  `expr!` error branch. Materialising first means each sub-expression is
+  evaluated exactly once; `Option`/`Result` guards yield `NULL` for inactive
+  payloads, which the pin call ignores. Because the result is materialised, a
+  fallible return pins the `Ok` value and the `Err` payload through the same
+  type-directed expressions.
+- Why library mode only: an executable has no foreign consumer, and pinning
+  every `pub` return there would make a loop that calls a linked module's
+  function grow the live set without bound once Phase C turns collection on.
+- `11-c-abi.md` §5: the allocator paragraph now describes the Phase B collector,
+  the `str`/`bytes` and array/map promises say "because returned managed values
+  are pinned for the run (GC-001 §5.8)", and the returned-pinned /
+  borrowed-not-pinned pair is stated together.
+- Tests: `library_pins_values_returned_across_the_c_boundary` (hosted consumer
+  returns an array, calls `astra_gc_collect()`, reads all three elements, asserts
+  exactly one pin, and checks that passing the value back into an exported
+  function adds none) and `only_library_exports_pin_managed_returns` (exported
+  array + constructed `Err` across a collection in C; private helper and
+  executable build emit no pin calls).
+- Evidence: full local gate green (`npm run ci` → `[ci] all checks passed`,
+  98 `emit_c` tests including the stress leg) and the conformance corpus green
+  with `ASTRA_GC_STRESS=1`.
+- Limits: an exported function that returns a *foreign* struct/enum type pins
+  nothing for its inner fields (the shape is not in this module's `TypeEnv`),
+  the same limitation `root_exprs` already has for locals of foreign nominal
+  types; a pinned pointer can still be invalidated by `astra_gc_realloc` if the
+  exporter later grows the same buffer (aliasing, not collector loss); release
+  is post-V1.
