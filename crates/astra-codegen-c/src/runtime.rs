@@ -16,6 +16,10 @@ pub const RUNTIME_HEADER: &str = r#"#ifndef NS_RUNTIME_HEADER
 #include <stdbool.h>
 #include <stddef.h>
 
+/* Forward declaration: GC shape descriptors (GC-001 Phase A) are referenced by
+   value-type typedefs below and defined after them. */
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+
 /* Neo Astra C runtime -- freestanding declarations. */
 #define ASTRA_NORETURN __attribute__((noreturn))
 
@@ -23,7 +27,7 @@ pub const RUNTIME_HEADER: &str = r#"#ifndef NS_RUNTIME_HEADER
 typedef struct { const char* data; size_t len; } NS_Str;
 typedef struct { const uint8_t* data; size_t len; } NS_Bytes;
 typedef struct { void* data; size_t len; size_t cap; } NS_Array;
-typedef struct { void* keys; void* values; size_t len; size_t cap; size_t key_size; size_t val_size; bool key_is_str; } NS_Map;
+typedef struct { void* keys; void* values; size_t len; size_t cap; size_t key_size; size_t val_size; bool key_is_str; const NS_Gc_Shape* key_shape; const NS_Gc_Shape* val_shape; } NS_Map;
 typedef struct { char _unit; } NS_Unit;
 /* Built-in nominal error payload for `str.slice` (spec §6.2). Declared here
    rather than per module so every translation unit shares one stem-free type. */
@@ -41,6 +45,37 @@ typedef struct { void* data; size_t len; size_t cap; size_t elem_size; bool clos
    bump-style. A region is a header-plus-block handle, so every pointer it
    hands out stays valid until `region.free()`. */
 typedef struct { uint8_t* base; size_t cap; size_t offset; } NS_Region;
+
+/* GC block model (GC-001 Phase A, proposal §5.5/§5.7). Every managed payload
+   is preceded by an NS_Gc_Head; manual memory has no header and is never
+   traced. Shapes are compiler-emitted constants describing how a payload's
+   interior pointers decompose: LEAF (bytes only), ARRAY (payload is
+   elem_size-strided elements described by `elem`), RECORD (payload holds
+   pointer-bearing fields at the listed offsets), VARIANT (tag at tag_offset
+   selects shapes[tag], NULL for a payload-less variant). Shapes compose. */
+typedef enum {
+    NS_SHAPE_KIND_LEAF = 0,
+    NS_SHAPE_KIND_ARRAY = 1,
+    NS_SHAPE_KIND_RECORD = 2,
+    NS_SHAPE_KIND_VARIANT = 3
+} NS_Gc_Shape_Kind;
+typedef struct { size_t offset; const NS_Gc_Shape* shape; } NS_Gc_Shape_Field;
+struct NS_Gc_Shape {
+    NS_Gc_Shape_Kind kind;
+    size_t elem_size;                 /* ARRAY: element stride */
+    const NS_Gc_Shape* elem;             /* ARRAY: element shape */
+    const NS_Gc_Shape_Field* fields;     /* RECORD: pointer-bearing fields */
+    size_t field_count;
+    size_t tag_offset;                /* VARIANT: offset of the tag */
+    const NS_Gc_Shape* const* variants;  /* VARIANT: payload shape per tag */
+    size_t variant_count;
+};
+typedef struct { uint32_t marks; size_t bytes; const NS_Gc_Shape* shape; } NS_Gc_Head;
+/* Builtin shapes for the runtime's own containers (compiler-emitted programs
+   add per-type shapes on top of these). */
+extern const NS_Gc_Shape NS_SHAPE_LEAF;      /* bytes only */
+extern const NS_Gc_Shape NS_SHAPE_STR;       /* inline NS_Str/NS_Bytes value: data -> LEAF buffer */
+extern const NS_Gc_Shape NS_SHAPE_ARRAY_OF_STR; /* Array<str> buffer, used by str_chars */
 
 /* Console builtins. Each `print`/`println` is typed by its argument type. */
 extern void astra_print_i8(int8_t x);
@@ -82,20 +117,33 @@ extern void astra_assert(bool cond);
 ASTRA_NORETURN extern void astra_panic(const char* msg);
 ASTRA_NORETURN extern void astra_abort(const char* msg);
 
-/* Managed allocation and containers. */
-extern void* astra_alloc(size_t n);
-/* Frees one arena block (no-op for NULL). Used by manual-memory `Memory.free`. */
-extern void astra_free(void* p);
+/* Managed allocation and containers. Managed blocks carry an NS_Gc_Head and
+   are recorded so the whole run can be released at exit (GC-001 Phase A:
+   tracked and headered, but not yet collected). */
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+/* Frees one managed block (no-op for NULL). Panics when the pointer is not a
+   block this allocator handed out: the manual and managed families must not be
+   crossed (proposal §5.7, spec §8.4 double-free stance). */
+extern void astra_gc_free(void* p);
+/* Grows or creates a managed block, zeroing the grown tail. NULL creates. */
+extern void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n);
+/* Manual allocation (spec §8.4): plain malloc, never recorded, never traced,
+   freed only by astra_manual_free (`Memory.free`, region blocks). */
+extern void* astra_manual_alloc(size_t n);
+extern void astra_manual_free(void* p);
+/* Manual-family accounting (mirror of the managed live/total counters). */
+extern size_t astra_manual_live_count(void);
+extern size_t astra_manual_total_count(void);
 /* Manual-memory `Region` (spec 8.4): a fixed block carved bump-style. */
 extern NS_Region* astra_region_new(size_t bytes);
 extern void* astra_region_alloc(NS_Region* r, size_t n);
 extern void astra_region_free(NS_Region* r);
-/* Managed-lifecycle hook: releases every arena block for the run. The emitted
+/* Managed-lifecycle hook: releases every managed block for the run. The emitted
    main entry point calls this before returning (freestanding object compiles
    only see the declaration; the hosted shim defines it). */
 extern void astra_runtime_shutdown(void);
-extern NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src);
-extern void astra_array_push(NS_Array* arr, size_t elem_size, const void* value);
+extern NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src, const NS_Gc_Shape* shape);
+extern void astra_array_push(NS_Array* arr, size_t elem_size, const void* value, const NS_Gc_Shape* shape);
 extern void* astra_array_index(NS_Array* arr, size_t i, size_t elem_size);
 
 /* String helpers. */
@@ -127,8 +175,9 @@ extern NS_Bytes astra_bytes_new(size_t len);
    so a reversed or out-of-range panics. */
 extern NS_Bytes astra_bytes_slice(NS_Bytes b, size_t start, size_t end);
 
-/* Map helpers. */
-extern NS_Map astra_map_new(size_t key_size, size_t val_size, bool key_is_str);
+/* Map helpers. The key/value buffer shapes are stored so growth can re-head
+   the buffers without the caller (GC-001 Phase A). */
+extern NS_Map astra_map_new(size_t key_size, size_t val_size, bool key_is_str, const NS_Gc_Shape* key_shape, const NS_Gc_Shape* val_shape);
 extern void astra_map_set(NS_Map* m, const void* key, const void* val);
 extern void* astra_map_get(const NS_Map* m, const void* key);
 extern bool astra_map_contains(const NS_Map* m, const void* key);
@@ -139,7 +188,9 @@ extern void* astra_map_key_at(const NS_Map* m, size_t i);
    closed channel and panics on a full open channel; `receive` fails on a closed
    and empty channel and panics on an empty open channel (the JS/Nova deadlock
    rule). Buffered messages remain readable after `close`. */
-extern NS_Channel* astra_channel_new(size_t elem_size);
+/* handle_shape describes the NS_Channel handle block (its data field points at
+   the buffer); data_shape describes the message buffer. */
+extern NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape);
 extern bool astra_channel_send(NS_Channel* c, const void* value);
 extern bool astra_channel_receive(NS_Channel* c, void* out);
 extern void astra_channel_close(NS_Channel* c);
@@ -239,91 +290,128 @@ void astra_assert(bool cond) { if (!cond) { astra_panic("assertion failed"); } }
 void astra_panic(const char* msg) { fprintf(stderr, "panic: %s\n", msg); abort(); }
 void astra_abort(const char* msg) { fprintf(stderr, "abort: %s\n", msg); abort(); }
 
-/* Managed arena: every `astra_alloc` block is recorded so the whole run can be
-   released at exit. This is the V1 "arena per program run" managed-memory first
-   step from 03-runtime-and-memory.md §4 — individual blocks are reclaimed by
-   `astra_free` where the backend knows the old buffer is dead (e.g. array
-   growth), and `astra_runtime_shutdown` frees whatever remains. A future precise
-   collector reuses this bookkeeping; the freestanding `extern astra_alloc`
-   boundary is unchanged so a Wasm backend can supply its own allocator. */
+/* GC block model (GC-001 Phase A). Builtin shapes for the runtime's own
+   containers; emitted programs add per-type shapes on top of these. */
+static const NS_Gc_Shape_Field astra_shape_fields_str[] = { { 0, &NS_SHAPE_LEAF } };
+const NS_Gc_Shape NS_SHAPE_LEAF = { .kind = NS_SHAPE_KIND_LEAF };
+const NS_Gc_Shape NS_SHAPE_STR = { .kind = NS_SHAPE_KIND_RECORD, .fields = astra_shape_fields_str, .field_count = 1 };
+const NS_Gc_Shape NS_SHAPE_ARRAY_OF_STR = { .kind = NS_SHAPE_KIND_ARRAY, .elem_size = sizeof(NS_Str), .elem = &NS_SHAPE_STR };
+
+/* Managed blocks: every `astra_gc_alloc` payload is recorded, with its
+   NS_Gc_Head immediately before it, so the whole run can be released at exit.
+   This is the V1 "arena per program run" managed-memory first step from
+   03-runtime-and-memory.md §4 - now headered and shaped, so later GC-001
+   phases turn the same bookkeeping into collection instead of replacing it.
+   Individual blocks are reclaimed by `astra_gc_free` where the backend knows
+   the old buffer is dead (e.g. array growth), and `astra_runtime_shutdown`
+   frees whatever remains. Manual memory (`astra_manual_alloc`) is a separate
+   family: not recorded, never traced, released only by `astra_manual_free`
+   (proposal §5.7, spec §8.4). */
 typedef struct NS_Arena_Node { void* ptr; struct NS_Arena_Node* next; } NS_Arena_Node;
 static NS_Arena_Node* astra_arena_head = NULL;
 static size_t astra_arena_live = 0;
 static size_t astra_arena_total = 0;
+static size_t astra_manual_live = 0;
+static size_t astra_manual_total = 0;
 
-void* astra_alloc(size_t n) {
-    void* p = malloc(n == 0 ? 1 : n);
-    if (!p) { astra_panic("out of memory"); }
+static NS_Gc_Head* astra_gc_head(void* payload) {
+    return ((NS_Gc_Head*)payload) - 1;
+}
+
+void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
+    size_t bytes = sizeof(NS_Gc_Head) + (n == 0 ? 1 : n);
+    NS_Gc_Head* head = (NS_Gc_Head*)calloc(bytes, 1);
+    if (!head) { astra_panic("out of memory"); }
+    head->marks = 0;
+    head->bytes = n;
+    head->shape = shape;
     NS_Arena_Node* node = (NS_Arena_Node*)malloc(sizeof(NS_Arena_Node));
-    if (!node) { free(p); astra_panic("out of memory"); }
-    node->ptr = p;
+    if (!node) { free(head); astra_panic("out of memory"); }
+    node->ptr = (void*)(head + 1);
     node->next = astra_arena_head;
     astra_arena_head = node;
     astra_arena_live += 1;
     astra_arena_total += 1;
-    return p;
+    return (void*)(head + 1);
 }
 
-/* Frees one arena block (no-op-safe for NULL). Falls back to plain `free` for a
-   pointer the arena never handed out, so hand-written `@script:c` that frees a
-   malloc'd buffer keeps working across the FFI boundary. */
-void astra_free(void* p) {
+/* Frees one managed block (no-op for NULL). A pointer that is not a tracked
+   payload is a family crossing (or a double free) and panics; manual memory is
+   freed through `astra_manual_free`. */
+void astra_gc_free(void* p) {
     if (!p) { return; }
     NS_Arena_Node** cur = &astra_arena_head;
     while (*cur) {
         if ((*cur)->ptr == p) {
             NS_Arena_Node* dead = *cur;
             *cur = dead->next;
-            free(dead->ptr);
+            free(astra_gc_head(dead->ptr));
             free(dead);
             astra_arena_live -= 1;
             return;
         }
         cur = &(*cur)->next;
     }
-    free(p);
+    astra_panic("free of a pointer that is not a managed block");
 }
 
-/* Reallocates an arena-tracked block, keeping the arena's recorded pointer in
-   sync (a plain `realloc` would move the block and leave a stale entry). A
-   foreign pointer is reallocated and then adopted into the arena. */
-void* astra_realloc(void* p, size_t n) {
-    if (!p) { return astra_alloc(n); }
-    void* q = realloc(p, n == 0 ? 1 : n);
-    if (!q) { astra_panic("out of memory"); }
+/* Grows or creates a managed block. The grown tail is zeroed so spare
+   capacity never reads as pointers (the [P5] amendment's zero-on-alloc rule,
+   applied to growth). The shape argument only matters for a NULL create; a
+   tracked block keeps the shape it was allocated with. */
+void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n) {
+    if (!p) { return astra_gc_alloc(shape, n); }
+    NS_Gc_Head* head = astra_gc_head(p);
+    size_t old_bytes = head->bytes;
+    NS_Gc_Head* fresh = (NS_Gc_Head*)realloc(head, sizeof(NS_Gc_Head) + (n == 0 ? 1 : n));
+    if (!fresh) { astra_panic("out of memory"); }
+    fresh->bytes = n;
+    if (n > old_bytes) {
+        memset(((unsigned char*)(fresh + 1)) + old_bytes, 0, n - old_bytes);
+    }
+    void* payload = (void*)(fresh + 1);
     NS_Arena_Node** cur = &astra_arena_head;
     while (*cur) {
         if ((*cur)->ptr == p) {
-            (*cur)->ptr = q;
-            return q;
+            (*cur)->ptr = payload;
+            return payload;
         }
         cur = &(*cur)->next;
     }
-    NS_Arena_Node* node = (NS_Arena_Node*)malloc(sizeof(NS_Arena_Node));
-    if (!node) { astra_panic("out of memory"); }
-    node->ptr = q;
-    node->next = astra_arena_head;
-    astra_arena_head = node;
-    astra_arena_live += 1;
-    astra_arena_total += 1;
-    return q;
+    astra_panic("realloc of a pointer that is not a managed block");
+}
+
+void* astra_manual_alloc(size_t n) {
+    void* p = malloc(n == 0 ? 1 : n);
+    if (!p) { astra_panic("out of memory"); }
+    astra_manual_live += 1;
+    astra_manual_total += 1;
+    return p;
+}
+
+void astra_manual_free(void* p) {
+    if (!p) { return; }
+    astra_manual_live -= 1;
+    free(p);
 }
 
 /* `Region` (spec 8.4): a fixed-capacity manual block carved bump-style.
    `Region.new(bytes)` reserves one block; `region.alloc<T>(n)` hands out the
    next `n * sizeof(T)` bytes and panics when the block is exhausted (the spec
    types this `! AllocError`; until the fallible entry-point policy lands,
-   allocation failure is a panic, matching `astra_alloc`). Every carv is
+   allocation failure is a panic, matching `astra_gc_alloc`). Every carv is
    aligned to 8 bytes so sequential allocations of any scalar or struct the
    language can form stay naturally aligned. `region.free()` returns the whole
    block and zeroes the header, so a double-free is a no-op rather than a
    crash (spec 8.4 makes double-free a programmer bug). Regions never move, so
-   every pointer handed out stays valid until the region is freed. */
+   every pointer handed out stays valid until the region is freed. The handle
+   is a managed LEAF block (its `base` points at manual memory, which the
+   collector never traces); the carved block itself is manual (proposal §5.7). */
 #define ASTRA_REGION_ALIGN 8
 
 NS_Region* astra_region_new(size_t bytes) {
-    NS_Region* r = (NS_Region*)astra_alloc(sizeof(NS_Region));
-    r->base = (uint8_t*)astra_alloc(bytes == 0 ? 1 : bytes);
+    NS_Region* r = (NS_Region*)astra_gc_alloc(&NS_SHAPE_LEAF, sizeof(NS_Region));
+    r->base = (uint8_t*)astra_manual_alloc(bytes == 0 ? 1 : bytes);
     r->cap = bytes;
     r->offset = 0;
     return r;
@@ -339,7 +427,7 @@ void* astra_region_alloc(NS_Region* r, size_t n) {
 
 void astra_region_free(NS_Region* r) {
     if (!r || !r->base) { return; }
-    astra_free(r->base);
+    astra_manual_free(r->base);
     r->base = NULL;
     r->cap = 0;
     r->offset = 0;
@@ -349,7 +437,7 @@ void astra_runtime_shutdown(void) {
     NS_Arena_Node* cur = astra_arena_head;
     while (cur) {
         NS_Arena_Node* next = cur->next;
-        free(cur->ptr);
+        free(astra_gc_head(cur->ptr));
         free(cur);
         cur = next;
     }
@@ -357,26 +445,29 @@ void astra_runtime_shutdown(void) {
     astra_arena_live = 0;
 }
 
-/* Test/observability accessors for the arena (leak checks in the native gate). */
+/* Test/observability accessors for both families (leak checks in the native
+   gate). The manual counters reflect astra_manual_alloc/free balance; the
+   managed counters reflect tracked gc blocks, released wholesale at shutdown. */
 size_t astra_arena_live_count(void) { return astra_arena_live; }
 size_t astra_arena_total_count(void) { return astra_arena_total; }
+size_t astra_manual_live_count(void) { return astra_manual_live; }
+size_t astra_manual_total_count(void) { return astra_manual_total; }
 
-NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src) {
+NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src, const NS_Gc_Shape* shape) {
     NS_Array arr;
     arr.cap = n == 0 ? 1 : n;
     arr.len = n;
-    arr.data = astra_alloc(arr.cap * (elem_size == 0 ? 1 : elem_size));
+    arr.data = astra_gc_alloc(shape, arr.cap * (elem_size == 0 ? 1 : elem_size));
     if (n > 0) { memcpy(arr.data, src, n * elem_size); }
     return arr;
 }
 
-void astra_array_push(NS_Array* arr, size_t elem_size, const void* value) {
+/* Growth reuses the buffer's own header shape when a block already exists;
+   the passed shape covers a from-empty start (e.g. `str_chars`). */
+void astra_array_push(NS_Array* arr, size_t elem_size, const void* value, const NS_Gc_Shape* shape) {
     if (arr->len >= arr->cap) {
         size_t new_cap = arr->cap == 0 ? 4 : arr->cap * 2;
-        void* new_data = astra_alloc(new_cap * (elem_size == 0 ? 1 : elem_size));
-        if (arr->len > 0) { memcpy(new_data, arr->data, arr->len * elem_size); }
-        astra_free(arr->data);
-        arr->data = new_data;
+        arr->data = astra_gc_realloc(arr->data, shape, new_cap * (elem_size == 0 ? 1 : elem_size));
         arr->cap = new_cap;
     }
     memcpy((char*)arr->data + arr->len * elem_size, value, elem_size);
@@ -484,7 +575,7 @@ bool astra_str_char_at(NS_Str s, size_t index, NS_Str* out) {
 
 NS_Array astra_str_bytes(NS_Str s) {
     NS_Array arr;
-    arr.data = astra_alloc(s.len == 0 ? 1 : s.len);
+    arr.data = astra_gc_alloc(&NS_SHAPE_LEAF, s.len == 0 ? 1 : s.len);
     arr.len = s.len;
     arr.cap = s.len;
     if (s.len > 0) memcpy(arr.data, s.data, s.len);
@@ -503,7 +594,7 @@ NS_Array astra_str_chars(NS_Str s) {
         NS_Str part;
         part.data = s.data + i;
         part.len = width;
-        astra_array_push(&arr, sizeof(NS_Str), &part);
+        astra_array_push(&arr, sizeof(NS_Str), &part, &NS_SHAPE_ARRAY_OF_STR);
         i += width;
     }
     return arr;
@@ -511,7 +602,9 @@ NS_Array astra_str_chars(NS_Str s) {
 
 NS_Bytes astra_bytes_new(size_t len) {
     NS_Bytes b;
-    b.data = calloc(len == 0 ? 1 : len, 1);
+    /* A managed LEAF block: tracked like every other buffer, and zeroed by
+       gc_alloc (calloc) exactly as the old calloc did. */
+    b.data = (const uint8_t*)astra_gc_alloc(&NS_SHAPE_LEAF, len == 0 ? 1 : len);
     if (b.data == NULL) astra_panic("out of memory");
     b.len = len;
     return b;
@@ -560,7 +653,7 @@ static bool astra_keys_equal(const void* a, const void* b, size_t size, bool is_
     return memcmp(a, b, size) == 0;
 }
 
-NS_Map astra_map_new(size_t key_size, size_t val_size, bool key_is_str) {
+NS_Map astra_map_new(size_t key_size, size_t val_size, bool key_is_str, const NS_Gc_Shape* key_shape, const NS_Gc_Shape* val_shape) {
     NS_Map m;
     m.keys = NULL;
     m.values = NULL;
@@ -569,6 +662,8 @@ NS_Map astra_map_new(size_t key_size, size_t val_size, bool key_is_str) {
     m.key_size = key_size;
     m.val_size = val_size;
     m.key_is_str = key_is_str;
+    m.key_shape = key_shape;
+    m.val_shape = val_shape;
     return m;
 }
 
@@ -584,8 +679,8 @@ void astra_map_set(NS_Map* m, const void* key, const void* val) {
     }
     if (m->len >= m->cap) {
         size_t new_cap = m->cap == 0 ? 8 : m->cap * 2;
-        m->keys = astra_realloc(m->keys, new_cap * (m->key_size == 0 ? 1 : m->key_size));
-        m->values = astra_realloc(m->values, new_cap * (m->val_size == 0 ? 1 : m->val_size));
+        m->keys = astra_gc_realloc(m->keys, m->key_shape, new_cap * (m->key_size == 0 ? 1 : m->key_size));
+        m->values = astra_gc_realloc(m->values, m->val_shape, new_cap * (m->val_size == 0 ? 1 : m->val_size));
         m->cap = new_cap;
     }
     memcpy((char*)m->keys + m->len * m->key_size, key, m->key_size);
@@ -622,9 +717,9 @@ void* astra_map_key_at(const NS_Map* m, size_t i) {
    runtime is cooperative, so blocking is a structured deadlock panic. */
 #define ASTRA_CHANNEL_CAP 16
 
-NS_Channel* astra_channel_new(size_t elem_size) {
-    NS_Channel* c = (NS_Channel*)astra_alloc(sizeof(NS_Channel));
-    c->data = astra_alloc(elem_size * ASTRA_CHANNEL_CAP);
+NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape) {
+    NS_Channel* c = (NS_Channel*)astra_gc_alloc(handle_shape, sizeof(NS_Channel));
+    c->data = astra_gc_alloc(data_shape, elem_size * ASTRA_CHANNEL_CAP);
     c->len = 0;
     c->cap = ASTRA_CHANNEL_CAP;
     c->elem_size = elem_size;

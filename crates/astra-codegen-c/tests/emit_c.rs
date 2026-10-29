@@ -639,12 +639,12 @@ pub fn main() -> i32 {
     let generated = generate(&c_module).expect("C generation should accept manual memory");
     let out = &generated.source;
     assert!(
-        out.contains("astra_alloc"),
-        "expected Memory.alloc to lower to astra_alloc:\n{out}"
+        out.contains("astra_manual_alloc"),
+        "expected Memory.alloc to lower to astra_manual_alloc:\n{out}"
     );
     assert!(
-        out.contains("astra_free"),
-        "expected Memory.free to lower to astra_free:\n{out}"
+        out.contains("astra_manual_free"),
+        "expected Memory.free to lower to astra_manual_free:\n{out}"
     );
     assert!(
         out.contains("uint8_t*"),
@@ -1020,30 +1020,54 @@ fn host_shim_is_a_complete_hosted_translation_unit() {
     );
 }
 
-/// Managed-mode first step (`03-runtime-and-memory.md` §4): `astra_alloc`
-/// records every block so `astra_runtime_shutdown` can release the whole run's
-/// arena. Pins that the tracker counts allocations and that shutdown drops the
-/// live count to zero (the leak check the native gate needs).
+/// GC-001 Phase A: `astra_gc_alloc` records every managed block (each with an
+/// `NS_Gc_Head` before its payload) so `astra_runtime_shutdown` can release the
+/// whole run, while the manual family (`astra_manual_alloc`) keeps its own
+/// counters that shutdown never touches. Pins the two-family split of proposal
+/// §5.7 plus the leak check the native gate needs.
 #[test]
 fn managed_arena_is_released_at_shutdown() {
     let harness = r#"
 #include <stdio.h>
 #include <stddef.h>
-extern void* astra_alloc(size_t n);
-extern void astra_free(void* p);
+#include <stdint.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+extern void astra_gc_free(void* p);
+extern void* astra_manual_alloc(size_t n);
+extern void astra_manual_free(void* p);
 extern void astra_runtime_shutdown(void);
 extern size_t astra_arena_live_count(void);
+extern size_t astra_arena_total_count(void);
+extern size_t astra_manual_live_count(void);
+extern size_t astra_manual_total_count(void);
 int main(void) {
-    void* a = astra_alloc(16);
-    void* b = astra_alloc(32);
-    void* c = astra_alloc(64);
-    (void)a; (void)b; (void)c;
-    if (astra_arena_live_count() < 3) { printf("TRACK_FAIL\n"); return 1; }
+    void* a = astra_gc_alloc(&NS_SHAPE_LEAF, 16);
+    void* b = astra_gc_alloc(&NS_SHAPE_LEAF, 32);
+    void* c = astra_gc_alloc(&NS_SHAPE_LEAF, 64);
+    (void)a; (void)c;
+    if (astra_arena_live_count() != 3) { printf("TRACK_FAIL\n"); return 1; }
+    if (astra_arena_total_count() != 3) { printf("TOTAL_FAIL\n"); return 1; }
     /* Freeing one block must drop the live count by exactly one. */
-    astra_free(b);
+    astra_gc_free(b);
     if (astra_arena_live_count() != 2) { printf("FREE_FAIL\n"); return 1; }
+    /* The manual family is tracked separately and does not move the arena. */
+    void* m1 = astra_manual_alloc(8);
+    void* m2 = astra_manual_alloc(8);
+    if (astra_manual_live_count() != 2) { printf("MANUAL_TRACK_FAIL\n"); return 1; }
+    if (astra_manual_total_count() != 2) { printf("MANUAL_TOTAL_FAIL\n"); return 1; }
+    if (astra_arena_live_count() != 2) { printf("MANUAL_LEAKED_INTO_ARENA\n"); return 1; }
+    astra_manual_free(m1);
+    if (astra_manual_live_count() != 1) { printf("MANUAL_FREE_FAIL\n"); return 1; }
+    if (astra_arena_live_count() != 2) { printf("MANUAL_FREE_MOVED_ARENA\n"); return 1; }
     astra_runtime_shutdown();
     if (astra_arena_live_count() != 0) { printf("SHUTDOWN_FAIL\n"); return 1; }
+    /* Shutdown never touches the manual family: m2 is still live. */
+    if (astra_manual_live_count() != 1) { printf("SHUTDOWN_TOUCHED_MANUAL\n"); return 1; }
+    astra_manual_free(m2);
+    if (astra_manual_live_count() != 0) { printf("MANUAL_LEAK\n"); return 1; }
+    if (astra_arena_total_count() != 3) { printf("TOTAL_REWOUND\n"); return 1; }
     printf("ARENA_OK\n");
     return 0;
 }
@@ -1059,8 +1083,176 @@ int main(void) {
     );
 }
 
-/// Array growth must route its old buffer through the arena (`astra_free`), not
-/// bare `free`, so the tracker stays in sync across a realloc-style pattern.
+/// GC-001 Phase A: every managed payload is preceded by an `NS_Gc_Head`
+/// carrying the payload extent and the compiler-emitted shape, payloads are
+/// zeroed on allocation, and growth zeroes the tail while preserving the old
+/// bytes. This is the object model (§5.5) the collector in later phases reads.
+#[test]
+fn gc_blocks_carry_headers_shapes_and_zeroed_payloads() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+typedef struct { size_t offset; const NS_Gc_Shape* shape; } NS_Gc_Shape_Field;
+struct NS_Gc_Shape {
+    int kind;
+    size_t elem_size;
+    const NS_Gc_Shape* elem;
+    const NS_Gc_Shape_Field* fields;
+    size_t field_count;
+    size_t tag_offset;
+    const NS_Gc_Shape* const* variants;
+    size_t variant_count;
+};
+typedef struct { uint32_t marks; size_t bytes; const NS_Gc_Shape* shape; } NS_Gc_Head;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+extern void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n);
+extern void astra_runtime_shutdown(void);
+int main(void) {
+    static const NS_Gc_Shape array_of_i32 = { 1, 4, &NS_SHAPE_LEAF, NULL, 0, 0, NULL, 0 };
+    unsigned char* p = (unsigned char*)astra_gc_alloc(&array_of_i32, 64);
+    NS_Gc_Head* head = ((NS_Gc_Head*)p) - 1;
+    if (head->bytes != 64) { printf("BYTES_FAIL\n"); return 1; }
+    if (head->shape != &array_of_i32) { printf("SHAPE_FAIL\n"); return 1; }
+    if (head->marks != 0) { printf("MARKS_FAIL\n"); return 1; }
+    for (size_t i = 0; i < 64; i++) {
+        if (p[i] != 0) { printf("ZERO_FAIL\n"); return 1; }
+    }
+    for (size_t i = 0; i < 64; i++) { p[i] = (unsigned char)(i + 1); }
+    unsigned char* q = (unsigned char*)astra_gc_realloc(p, &array_of_i32, 128);
+    NS_Gc_Head* grown = ((NS_Gc_Head*)q) - 1;
+    if (grown->bytes != 128) { printf("GROW_BYTES_FAIL\n"); return 1; }
+    if (grown->shape != &array_of_i32) { printf("GROW_SHAPE_FAIL\n"); return 1; }
+    for (size_t i = 0; i < 64; i++) {
+        if (q[i] != (unsigned char)(i + 1)) { printf("GROW_COPY_FAIL\n"); return 1; }
+    }
+    for (size_t i = 64; i < 128; i++) {
+        if (q[i] != 0) { printf("GROW_TAIL_FAIL\n"); return 1; }
+    }
+    astra_runtime_shutdown();
+    printf("HEADER_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
+        eprintln!(
+            "skipping gc_blocks_carry_headers_shapes_and_zeroed_payloads: no hosted compiler"
+        );
+        return;
+    };
+    assert!(ok, "header harness did not run:\n{stderr}");
+    assert!(
+        stdout.contains("HEADER_OK"),
+        "header model broken: {stdout}"
+    );
+}
+
+/// GC-001 Phase A: the compiler emits a shape constant for every managed
+/// container that can hold pointers, and threads it into the allocation call.
+/// Covers all four grammar forms: LEAF (scalar buffers), ARRAY (buffer of fat
+/// elements), RECORD (struct with a `str` field, `NS_Array`/`NS_Map` values,
+/// the `NS_Channel` handle), and VARIANT (enum payloads, tag-dispatched so an
+/// inactive slot is never traced). The program also runs: shape plumbing must
+/// not change behaviour.
+#[test]
+fn shapes_are_emitted_for_managed_containers_and_still_run() {
+    let src = r#"
+struct Tagged {
+    label: str
+    n: i32
+}
+
+enum Choice {
+    Word(text: str)
+    Nothing
+}
+
+pub fn main() -> i32 {
+    let rows = [[10, 20], [30]]
+    println(rows.len())
+    let labels = [Tagged { label: "a", n: 1 }]
+    println(labels.len())
+    let choices = [Choice.Word("w"), Choice.Nothing]
+    println(choices.len())
+    let m = {"k": "v"}
+    println(m.len())
+    let maps = [m]
+    println(maps.len())
+    let channel = Channel.create<i32>()
+    match channel.send(7) {
+        Ok(value) => println("sent"),
+        Err(error) => println("closed"),
+    }
+    match channel.receive() {
+        Ok(value) => println(value),
+        Err(error) => println("closed"),
+    }
+    channel.close()
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("/* Compiler-emitted GC shapes (GC-001 Phase A). */"),
+        "expected a shape table:\n{out}"
+    );
+    // ARRAY: the outer buffer of `[[10, 20], [30]]` holds `NS_Array` values.
+    assert!(
+        out.contains("NS_SHAPE_KIND_ARRAY") && out.contains("offsetof(NS_Array, data)"),
+        "expected an ARRAY shape over NS_Array values:\n{out}"
+    );
+    // RECORD: a struct with a `str` field names the field offset.
+    assert!(
+        out.contains("NS_SHAPE_KIND_RECORD") && out.contains("offsetof(NS_Tagged, label)"),
+        "expected a RECORD shape naming the str field:\n{out}"
+    );
+    // VARIANT: enum payloads dispatch on the tag and name the payload member.
+    assert!(
+        out.contains("NS_SHAPE_KIND_VARIANT")
+            && out.contains("offsetof(NS_Choice, tag)")
+            && out.contains("offsetof(NS_Choice, payload.Word)"),
+        "expected a VARIANT shape for the enum:\n{out}"
+    );
+    // Map buffers and the channel handle keep their data/keys/values slots.
+    assert!(
+        out.contains("offsetof(NS_Map, keys)")
+            && out.contains("offsetof(NS_Map, values)")
+            && out.contains("offsetof(NS_Channel, data)"),
+        "expected map and channel shapes:\n{out}"
+    );
+    // The shapes reach the allocation calls themselves.
+    assert!(
+        out.contains("astra_array_new_lit(2, sizeof(") && out.contains("}, &NS_SHAPE_"),
+        "expected array literals to pass their block shape:\n{out}"
+    );
+    assert!(
+        out.contains("astra_map_new(sizeof(NS_Str), sizeof(NS_Str), true, &NS_SHAPE_"),
+        "expected map literals to pass key and value shapes:\n{out}"
+    );
+    assert!(
+        out.contains("astra_channel_new(sizeof(int32_t), &NS_SHAPE_"),
+        "expected channel creation to pass handle and data shapes:\n{out}"
+    );
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        eprintln!(
+            "skipping shapes_are_emitted_for_managed_containers_and_still_run: no hosted compiler"
+        );
+        return;
+    };
+    assert!(ok, "program failed:\n{stderr}");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["2", "1", "2", "1", "1", "sent", "7"],
+        "shape plumbing must not change runtime behaviour"
+    );
+}
+
+/// Array growth must route its old buffer through the managed family
+/// (`astra_gc_realloc`/`astra_gc_free`), not bare `free`, so the tracker stays
+/// in sync across a growth pattern.
 #[test]
 fn allocation_heavy_program_runs_clean_after_shutdown() {
     let src = r#"

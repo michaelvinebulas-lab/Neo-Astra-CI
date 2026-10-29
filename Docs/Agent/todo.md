@@ -1238,6 +1238,101 @@ by a production native target.
       parameter - is silent until the element type is concrete at the
       definition site, the same instantiation model the whole checker uses
       (bodies are not re-checked per call instantiation).
+- [x] Phase A of GC-001: block header + shape grammar + allocator split,
+      **no collection yet** (proposal §7: "pure refactor; arena keeps its
+      current behaviour and its leak tests"). Concretely: `NS_Gc_Head`
+      (marks/bytes/shape) immediately preceding every managed payload;
+      `NS_Shape` with the approved grammar (`LEAF`, `ARRAY(elem, elem_size)`,
+      `RECORD({offset, shape}[])`, `VARIANT(tag_offset, shapes[])`, shapes
+      compose); `astra_gc_alloc(shape, n)` (header + zeroed payload + arena
+      record) versus `astra_manual_alloc`/`astra_manual_free` (plain
+      malloc/free, never recorded, never traced - `Memory.alloc`, `Memory.free`
+      and the `Region` base block move here per [P7]); compiler-emitted shape
+      tables (`shape_of(ty)` recursion over every expressible type, emitted
+      static constants, structural dedupe) with builtin runtime shapes for the
+      runtime's own `str`/`bytes`/array-of-str containers. Zero-on-alloc is
+      the allocator's side of the [P5] amendment (grows zero their tail on
+      realloc; length-aware shapes deferred as the recorded revisit).
+      Accounting note to verify: `Region.new` today records two arena blocks
+      (handle + base) and becomes one managed (handle, LEAF - its `base` is
+      manual and never traced) plus one untracked manual block, so the
+      `astra_arena_live_count`-based assertions and the `managed_arena_*`
+      harness move to the new two-family API; §7's "keeps its leak tests"
+      means their purpose (count, free-drops-one, shutdown-zeroes) survives,
+      with `astra_manual_live_count`/`astra_manual_total_count` added as the
+      manual family's mirror. Ends with the full gate green and the mirror
+      re-synced; §8 items 2-7 (poison oracle, live-during-run proofs) belong
+      to Phase C and are explicitly not part of this slice.
+      **Landed 2026-10-29.** What the implementation pinned down:
+      - Runtime types are `NS_Gc_Head`, `NS_Gc_Shape`, `NS_Gc_Shape_Kind`
+        (`LEAF`/`ARRAY`/`RECORD`/`VARIANT`), `NS_Gc_Shape_Field`, plus the
+        builtin shapes `NS_SHAPE_LEAF`, `NS_SHAPE_STR` (an inline
+        `NS_Str`/`NS_Bytes` value: `data` points at a LEAF buffer) and
+        `NS_SHAPE_ARRAY_OF_STR` (what `str_chars` builds). The types carry the
+        `Gc_` infix because a user enum named `Shape` emits `NS_Shape` and
+        collided with the sketch's name - found by the existing
+        `enum_with_payload_emits_union` test the moment the first VARIANT shape
+        was emitted, which is the right time to have found it.
+      - `astra_gc_alloc(shape, n)` calloc's header + payload (zero-on-alloc for
+        free), fills the header (`marks = 0`, `bytes = n`, `shape`) and records
+        the payload exactly where `astra_alloc` did, so `astra_runtime_shutdown`
+        only had to learn to free `payload - sizeof(NS_Gc_Head)`.
+        `astra_gc_realloc` keeps the list pointer in sync, preserves the old
+        bytes and zeroes the grown tail (the [P5] amendment's option 1 applied
+        to growth); a NULL argument creates, using the shape the caller passes,
+        which is how a map's first growth and `str_chars`' empty start work.
+        `astra_gc_free` is strict: a pointer it did not hand out panics, because
+        the old "foreign pointers are plain-freed" fallback now belongs to
+        `astra_manual_free` (this is the §5.7 "families are not crossed"
+        stance; the manual side stays an unchecked plain `free`, so a manual
+        double-free remains a programmer bug, exactly as before).
+      - The manual family is `astra_manual_alloc`/`astra_manual_free` plus
+        `astra_manual_live_count`/`astra_manual_total_count`.
+        `Memory.alloc`/`Memory.free` and the `Region` base block use it; the
+        `Region` *handle* stays a managed LEAF block (its `base` points at
+        manual memory, which the collector will never follow), so
+        `region.free()`'s double-free no-op survives and the handle is released
+        at shutdown as before. `astra_bytes_new` moved from untracked `calloc`
+        onto `astra_gc_alloc(&NS_SHAPE_LEAF, ..)` - same zeroing, but bytes
+        buffers are now counted, which is the one accounting change that is not
+        a straight rename.
+      - Compiler-emitted shapes live in `TyCtxt` (`shapes` + dedupe by
+        definition text, emitted in dependency order, flushed after the
+        typedefs in both the standalone and linked assembly paths, `static const`
+        per translation unit). `shape_ref` recurses over `str`/`bytes`,
+        `Array`/`Slice` (data slot -> block shape), `Map` (keys/values slots),
+        `Option`/`Result` (`VARIANT` over the `some`/`ok` tag so an inactive
+        payload is never read), `Channel` (pointer slot -> handle RECORD whose
+        `data` field -> message buffer), `Task`, the builtin error nominals,
+        user structs (RECORD over pointer-bearing fields only) and user enums
+        (`VARIANT` with `offsetof(payload.Variant[_j])` payload records);
+        `Ptr`, `Region` and scalars are LEAF. The rule that mattered most: a
+        slot pointing at a LEAF *block* is still a pointer and must stay in the
+        RECORD - only scalar-typed slots are dropped - otherwise the first
+        `Array<u8>` inside another object would not mark its buffer.
+      - Shapes reach allocation through: array literals and `.push`
+        (`astra_array_new_lit`/`astra_array_push` gained a shape argument), map
+        literals (`astra_map_new` gained key/val buffer shapes, stored in
+        `NS_Map` so growth can re-head the buffers), `Channel.create`
+        (handle + data shapes), `str_chars` (builtin array-of-str shape).
+        `Memory.alloc` now emits `astra_manual_alloc`.
+      - Tests: `managed_arena_is_released_at_shutdown` was rewritten to pin both
+        families (counts, free-drops-one, shutdown-zeroes, shutdown never
+        touching manual); new `gc_blocks_carry_headers_shapes_and_zeroed_payloads`
+        (header fields, zeroed payload, realloc tail zeroing, preserved bytes)
+        and `shapes_are_emitted_for_managed_containers_and_still_run` (all four
+        grammar forms emitted, shapes threaded into the calls, hosted run
+        unchanged). 87 `emit_c` tests + the conformance corpus green, full
+        `npm run ci` green (the gate needed one `cargo fmt` pass first).
+      - Honest limits, recorded rather than hidden: nothing *reads* the shapes
+        yet - their content is only proven by inspection and by the Phase B/C
+        mark loop that consumes them; the manual family has no ownership check
+        (plain `free`); the enum tag is assumed `int`-sized (true for
+        gcc/clang/MSVC, but implementation-defined in C17) for the future mark
+        loop; shape tables are per-TU statics, duplicated across linked modules
+        (harmless, same convention as typedefs); Wasm still has no managed
+        allocator (Phase D). `11-c-abi.md` §5 now documents the two families,
+        and the proposal's mechanism references say `astra_gc_alloc`.
 - [x] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
       error" - **was unimplemented, now enforced as `NS6001`.** A probe test
       confirmed the gap was real: system mode accepted `Memory.alloc` with no

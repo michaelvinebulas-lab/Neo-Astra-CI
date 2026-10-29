@@ -16,7 +16,9 @@
 > managed-element-type rule from §11 are spec changes that follow their own
 > approval path. `NS6002`'s has completed — the code was confirmed on
 > assignment and the rule landed 2026-10-29 in spec §8.4 (rule line) and
-> §14.9 (code row); `[P11]`'s review has not started.
+> §14.9 (code row); `[P11]`'s review has not started. Phase 0 (`NS6002`) and
+> Phase A (block header, shape grammar, allocator split) are landed as of
+> 2026-10-29; Phase B is next.
 >
 > Written 2026-10-29 under the `GC-001` backlog item in `Docs/Agent/todo.md`.
 
@@ -242,7 +244,7 @@ not a normative rule.
 
 ### 5.4 [P4] Where collection runs: explicit safepoints — approved with amendment
 
-`astra_alloc` allocates, records, and bumps `bytes_since_gc`; it never
+`astra_gc_alloc` allocates, records, and bumps `bytes_since_gc`; it never
 collects. `astra_gc_maybe_collect()` is emitted:
 
 1. at function entry, after `frame_enter`; and
@@ -254,7 +256,7 @@ collects the current task's heap.
 This keeps "triggered by allocation pressure" (§4.3) while making the set of
 collection points small and auditable: a missed safepoint costs delayed
 collection, never corruption. With §5.3 in place, collecting inside
-`astra_alloc` would also be *correct*, so this is a controllability choice, not
+`astra_gc_alloc` would also be *correct*, so this is a controllability choice, not
 a correctness one.
 
 **Amendments (2026-10-29):**
@@ -265,10 +267,10 @@ a correctness one.
   costs delay (peak memory), never correctness, and matches "a missed
   safepoint costs delay, not corruption". The behaviour is documented rather
   than mitigated in V1.
-- **Debug mode that collects inside every `astra_alloc`.** `ASTRA_GC_STRESS=1`
+- **Debug mode that collects inside every `astra_gc_alloc`.** `ASTRA_GC_STRESS=1`
   (already the stress knob in §7/§8) is specified to collect at *every*
   allocation, not only at safepoints. This exists to continuously test the
-  claim that collecting inside `astra_alloc` is also correct under `[P3]` —
+  claim that collecting inside `astra_gc_alloc` is also correct under `[P3]` —
   if that claim were ever wrong, the stress runs would fail first, which is
   exactly what a debug mode is for.
 
@@ -425,14 +427,17 @@ implemented. The mechanism (§5.1-§5.4) does not depend on the signature.
 | Phase | Content | Note |
 |---|---|---|
 | 0 | `NS6002`: forbid managed element types in `Memory.alloc<T>`/`region.alloc<T>` (§11, condition 2) | **Landed 2026-10-29** (code confirmed by user): checker rule + spec §8.4 line + §14.9 row, ahead of Phase A so the footgun class is closed before any allocator split makes it observable |
-| A | Header + shapes, allocator split, no collection yet | Pure refactor; arena keeps its current behaviour and its leak tests |
+| A | Header + shapes, allocator split, no collection yet | **Landed 2026-10-29**: `NS_Gc_Head` + `NS_Gc_Shape` grammar in the runtime, compiler-emitted shape tables threaded through every managed allocation (`astra_gc_alloc`), manual family split out (`astra_manual_alloc` for `Memory.alloc`/`Region`), zero-on-alloc applied to growth. Pure refactor: the arena keeps its current behaviour and its leak tests (`managed_arena_is_released_at_shutdown` now pins both families, plus a header/shape zeroing harness) |
 | B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | Default off; §8 proves correctness |
 | C | Turn collection on by default; re-point `astra_arena_live_count`-based tests at the new accounting | |
 | D | Wasm: needs a managed allocator in linear memory before any of this can run there | Sequencing decision, [P10] |
 
 Both conditions that gated implementation (§11) are answered, so Phase 0 and
-Phase A may start. The `[P9]` signature remains deferred to `11-c-abi.md`, but
-only the FFI half of the work depends on it.
+Phase A have landed (2026-10-29); Phase B may start. The `[P9]` signature
+remains deferred to `11-c-abi.md`, but only the FFI half of the work depends on
+it. The C runtime surface now has two families (`astra_gc_*` and
+`astra_manual_*`) in place of the single `astra_alloc`/`astra_free` pair;
+`11-c-abi.md` §5 records that split.
 
 No new manifest key is proposed for V1; if a `memory.gc` switch is wanted it is
 a spec change, not an implementation detail (see §10).
@@ -442,7 +447,7 @@ a spec change, not an implementation detail (see §10).
 ## 8. Verification plan
 
 1. **Stress mode.** `ASTRA_GC_STRESS=1` collects at every allocation (§5.4
-   amendment — not only at safepoints, so the "collecting inside `astra_alloc`
+   amendment — not only at safepoints, so the "collecting inside `astra_gc_alloc`
    is correct under `[P3]`" claim is continuously tested). Run the full gate
    (`npm run ci`), the 19 positive + 13 reject conformance cases, and every
    hosted `emit_c` compile-and-run under it. This is the standard way to find
@@ -503,7 +508,7 @@ Items 1 and 2 are recorded in `Docs/Agent/todo.md` alongside this proposal.
 | [P1] | Snapshots (values) rather than address-based shadow stacks | **Approve with amendment** | Values survive realloc of the root array; addresses don't. Amendment: re-snapshot after any operation that can change a managed local's payload pointer (push growth, `&mut` calls, field stores), not only after assignment — applied in §5.1 |
 | [P2] | Type-directed payload extraction, one slot set per managed local | **Approve** | The alternative is conservative scanning, which violates R1 and design §4.1 |
 | [P3] | Materialise managed subvalues before calls (§5.3) | **Approve with amendment** | The emitter has a pre-hook but no post-hook, so suspend/resume is the harder path. Amendment: hoisting must preserve short-circuit and branch semantics (`&&`, `||`, branch-guarded evaluation) — applied in §5.3 |
-| [P4] | Safepoints at function entry + loop back-edges, not inside `astra_alloc` | **Approve with amendment** | Auditable, and a missed safepoint costs delay, not corruption. Amendments: document that a long non-looping function never collects, and specify `ASTRA_GC_STRESS=1` to collect inside every `astra_alloc` to test the claim that this is also correct under `[P3]` — applied in §5.4 |
+| [P4] | Safepoints at function entry + loop back-edges, not inside `astra_gc_alloc` | **Approve with amendment** | Auditable, and a missed safepoint costs delay, not corruption. Amendments: document that a long non-looping function never collects, and specify `ASTRA_GC_STRESS=1` to collect inside every `astra_gc_alloc` to test the claim that this is also correct under `[P3]` — applied in §5.4 |
 | [P5] | Block header + shape grammar | **Approve with amendment** | Without reflection, compiler-emitted shapes are the only way to trace objects. Amendments: add `VARIANT(tag_offset, shapes[])`, and require zeroed payloads or length-aware tracing so spare capacity and padding are never read as pointers — applied in §5.5 |
 | [P6] | Sorted block directory for interior-root resolution | **Approve** | Keeps slicing O(1) with no `NS_Str` ABI change. Recorded: the per-collection sort cost and the 32 KB budget are the things to revisit; the fallback if it fails is an ABI change, which would need its own approval — applied in §5.6 |
 | [P7] | Separate manual and GC allocators | **Approve** | One list with two owners would be a bug, and spec §8.4 already says `Ptr<T>` is not a GC reference |

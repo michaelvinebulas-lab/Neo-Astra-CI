@@ -274,6 +274,13 @@ pub struct TyCtxt {
     pub env: TypeEnv,
     seen: BTreeSet<String>,
     pub typedefs: Vec<String>,
+    /// Compiler-emitted GC shape constants (GC-001 Phase A), in dependency
+    /// order: every shape referenced by an entry is either a runtime builtin
+    /// (`NS_SHAPE_LEAF`/`NS_SHAPE_STR`/`NS_SHAPE_ARRAY_OF_STR`) or an earlier
+    /// entry. Deduplicated by definition text, so two structurally identical
+    /// shapes share one constant.
+    pub shapes: Vec<String>,
+    shape_keys: BTreeMap<String, String>,
     pub rejects: Vec<Reject>,
     /// Prefix (with trailing `_`) prepended to every nominal type's C name.
     ///
@@ -297,6 +304,8 @@ impl TyCtxt {
             env,
             seen: BTreeSet::new(),
             typedefs: Vec::new(),
+            shapes: Vec::new(),
+            shape_keys: BTreeMap::new(),
             rejects: Vec::new(),
             type_prefix: String::new(),
             foreign: BTreeMap::new(),
@@ -660,6 +669,233 @@ impl TyCtxt {
                 "void*".into()
             }
         }
+    }
+
+    /// C expression (`&NS_SHAPE_LEAF` or `&NS_SHAPE_n`) for the shape of a
+    /// heap buffer holding elements of `elem` (GC-001 Phase A, proposal §5.5).
+    ///
+    /// Scalar-only elements need no decomposition, so those buffers reuse the
+    /// builtin `NS_SHAPE_LEAF`; anything else becomes an `ARRAY` shape whose
+    /// `elem_size` is the C element stride.
+    pub fn block_shape_ref(&mut self, elem: &Type) -> String {
+        let elem_shape = self.shape_ref(elem);
+        if elem_shape == "&NS_SHAPE_LEAF" {
+            return "&NS_SHAPE_LEAF".to_owned();
+        }
+        let elem_c = self.c_type(elem);
+        let template = format!(
+            "static const NS_Gc_Shape {{NAME}} = {{ .kind = NS_SHAPE_KIND_ARRAY, \
+             .elem_size = sizeof({elem_c}), .elem = {elem_shape} }};"
+        );
+        self.define_shape(&template)
+    }
+
+    /// C expression for the shape of an `NS_Channel` handle whose data buffer
+    /// holds `elem`: the handle's `data` field always points at a managed
+    /// block (even a LEAF one), so the field is never dropped.
+    pub fn channel_handle_shape_ref(&mut self, elem: &Type) -> String {
+        let data = self.block_shape_ref(elem);
+        self.record_shape(&format!("{{ offsetof(NS_Channel, data), {data} }}"), 1)
+    }
+
+    /// C expression for the shape of one inline value of `ty`: how a block
+    /// holding such a value decomposes into pointer slots. LEAF means the
+    /// value contains no managed pointers at all.
+    ///
+    /// `RECORD` entries list only pointer-bearing slots; a slot whose type
+    /// shapes to LEAF is a scalar and is skipped. Slots pointing at LEAF
+    /// *blocks* (e.g. an array of scalars, whose data buffer is a real block)
+    /// are kept: the pointer is real even though its target has no children.
+    fn shape_ref(&mut self, ty: &Type) -> String {
+        if let Type::Generic(name) = ty
+            && let Some(concrete) = self.subst.get(name).cloned()
+        {
+            return self.shape_ref(&concrete);
+        }
+        if let Type::Named(name, arguments) = ty
+            && arguments.is_empty()
+            && let Some(concrete) = self.subst.get(name).cloned()
+            && concrete != *ty
+        {
+            return self.shape_ref(&concrete);
+        }
+        match ty {
+            Type::Str | Type::Bytes => "&NS_SHAPE_STR".to_owned(),
+            Type::Array(inner) | Type::Slice(inner) => {
+                let data = self.block_shape_ref(inner);
+                self.record_shape(&format!("{{ offsetof(NS_Array, data), {data} }}"), 1)
+            }
+            Type::Map(key, value) => {
+                let key_shape = self.block_shape_ref(key);
+                let value_shape = self.block_shape_ref(value);
+                self.record_shape(
+                    &format!(
+                        "{{ offsetof(NS_Map, keys), {key_shape} }}, \
+                         {{ offsetof(NS_Map, values), {value_shape} }}"
+                    ),
+                    2,
+                )
+            }
+            Type::Option(inner) => {
+                // `{ bool some; T value; }`: tag false = None (no payload),
+                // tag true = Some. VARIANT dispatch keeps an uninitialized
+                // inactive slot out of the mark loop's reach.
+                let c = self.c_type(ty);
+                let inner_shape = self.shape_ref(inner);
+                let payload = if inner_shape == "&NS_SHAPE_LEAF" {
+                    "NULL".to_owned()
+                } else {
+                    self.record_shape(&format!("{{ offsetof({c}, value), {inner_shape} }}"), 1)
+                };
+                self.variant_shape(&c, &[payload, "NULL".to_owned()])
+            }
+            Type::Result(ok, error) => {
+                // `{ bool ok; T value; E error; }`: tag false = Err, true = Ok.
+                let c = self.c_type(ty);
+                let error_shape = self.shape_ref(error);
+                let error_payload = if error_shape == "&NS_SHAPE_LEAF" {
+                    "NULL".to_owned()
+                } else {
+                    self.record_shape(&format!("{{ offsetof({c}, error), {error_shape} }}"), 1)
+                };
+                let ok_shape = self.shape_ref(ok);
+                let ok_payload = if ok_shape == "&NS_SHAPE_LEAF" {
+                    "NULL".to_owned()
+                } else {
+                    self.record_shape(&format!("{{ offsetof({c}, value), {ok_shape} }}"), 1)
+                };
+                self.variant_shape(&c, &[error_payload, ok_payload])
+            }
+            Type::Named(name, args) => match name.as_str() {
+                // A raw address and a manual-block handle are never traced
+                // (spec §8.4, NS6002 predicate).
+                "Ptr" | "Region" => "&NS_SHAPE_LEAF".to_owned(),
+                "Channel" => {
+                    let inner = args.first().cloned().unwrap_or(Type::Unit);
+                    let handle = self.channel_handle_shape_ref(&inner);
+                    self.record_shape(&format!("{{ 0, {handle} }}"), 1)
+                }
+                "Task" => {
+                    let inner = args.first().cloned().unwrap_or(Type::Unit);
+                    let inner_shape = self.shape_ref(&inner);
+                    if inner_shape == "&NS_SHAPE_LEAF" {
+                        return "&NS_SHAPE_LEAF".to_owned();
+                    }
+                    let c = self.c_type(ty);
+                    self.record_shape(&format!("{{ offsetof({c}, value), {inner_shape} }}"), 1)
+                }
+                // Built-in nominal payloads declared in the runtime header:
+                // the string-carrying error tuples hold an NS_Str at `_0`;
+                // the rest are payload-free.
+                "SliceError" | "ParseIntError" | "OverflowError" => {
+                    let c = self.c_type(ty);
+                    self.record_shape(&format!("{{ offsetof({c}, _0), &NS_SHAPE_STR }}"), 1)
+                }
+                _ => {
+                    if !args.is_empty() {
+                        // User generics do not reach the C backend (NS8018);
+                        // any real use rejects before shape tracing matters.
+                        return "&NS_SHAPE_LEAF".to_owned();
+                    }
+                    match self.env.shape(name).cloned() {
+                        Some(DeclShape::Struct(struct_shape)) => {
+                            let c = self.c_type(ty);
+                            let mut fields: Vec<String> = Vec::new();
+                            for (field_name, field_type) in &struct_shape.fields {
+                                let field_shape = self.shape_ref(field_type);
+                                if field_shape != "&NS_SHAPE_LEAF" {
+                                    fields.push(format!(
+                                        "{{ offsetof({c}, {field_name}), {field_shape} }}"
+                                    ));
+                                }
+                            }
+                            if fields.is_empty() {
+                                "&NS_SHAPE_LEAF".to_owned()
+                            } else {
+                                self.record_shape(&fields.join(", "), fields.len())
+                            }
+                        }
+                        Some(DeclShape::Enum(enum_shape)) => {
+                            let c = self.c_type(ty);
+                            let mut variants: Vec<String> = Vec::new();
+                            for variant in &enum_shape.variants {
+                                let mut fields: Vec<String> = Vec::new();
+                                for (index, field_type) in variant.fields.iter().enumerate() {
+                                    let field_shape = self.shape_ref(field_type);
+                                    if field_shape != "&NS_SHAPE_LEAF" {
+                                        let offset = if variant.fields.len() == 1 {
+                                            format!("offsetof({c}, payload.{})", variant.name)
+                                        } else {
+                                            format!(
+                                                "offsetof({c}, payload.{}._{index})",
+                                                variant.name
+                                            )
+                                        };
+                                        fields.push(format!("{{ {offset}, {field_shape} }}"));
+                                    }
+                                }
+                                if fields.is_empty() {
+                                    variants.push("NULL".to_owned());
+                                } else {
+                                    variants
+                                        .push(self.record_shape(&fields.join(", "), fields.len()));
+                                }
+                            }
+                            self.variant_shape(&c, &variants)
+                        }
+                        _ => "&NS_SHAPE_LEAF".to_owned(),
+                    }
+                }
+            },
+            // Scalars, unit, never, function values, and the silent types:
+            // nothing to trace.
+            _ => "&NS_SHAPE_LEAF".to_owned(),
+        }
+    }
+
+    /// Registers (deduplicating) one RECORD shape over `fields` and returns
+    /// its `&` reference. `count` is the number of comma-joined entries.
+    fn record_shape(&mut self, fields: &str, count: usize) -> String {
+        let template = format!(
+            "static const NS_Gc_Shape_Field {{NAME}}_f[] = {{ {fields} }};\n\
+             static const NS_Gc_Shape {{NAME}} = {{ .kind = NS_SHAPE_KIND_RECORD, \
+             .fields = {{NAME}}_f, .field_count = {count} }};"
+        );
+        self.define_shape(&template)
+    }
+
+    /// Registers (deduplicating) one VARIANT shape over `variants` (one entry
+    /// per tag, `NULL` for a payload-less variant) and returns its `&`
+    /// reference. An all-`NULL` variant set traces nothing, so it collapses
+    /// to LEAF. The tag type's member is always named `tag` (see `c_type`'s
+    /// enum emission).
+    fn variant_shape(&mut self, c_name: &str, variants: &[String]) -> String {
+        if variants.iter().all(|entry| entry == "NULL") {
+            return "&NS_SHAPE_LEAF".to_owned();
+        }
+        let template = format!(
+            "static const NS_Gc_Shape* {{NAME}}_v[] = {{ {} }};\n\
+             static const NS_Gc_Shape {{NAME}} = {{ .kind = NS_SHAPE_KIND_VARIANT, \
+             .tag_offset = offsetof({c_name}, tag), .variants = {{NAME}}_v, \
+             .variant_count = {} }};",
+            variants.join(", "),
+            variants.len()
+        );
+        self.define_shape(&template)
+    }
+
+    /// Deduplicates one shape definition (keyed by its template text, with
+    /// `{NAME}` standing for the fresh constant name) and returns its `&`
+    /// reference. Definitions are pushed in dependency order because every
+    /// child shape is defined before its parent template is built.
+    fn define_shape(&mut self, template: &str) -> String {
+        if let Some(existing) = self.shape_keys.get(template) {
+            return format!("&{existing}");
+        }
+        let name = format!("NS_SHAPE_{}", self.shapes.len());
+        self.shapes.push(template.replace("{NAME}", &name));
+        self.shape_keys.insert(template.to_owned(), name.clone());
+        format!("&{name}")
     }
 
     fn user_typedef(&mut self, name: &str) -> String {

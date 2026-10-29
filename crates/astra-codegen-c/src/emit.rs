@@ -794,6 +794,15 @@ impl<'a> Emitter<'a> {
             }
             self.out.push('\n');
         }
+        if !self.tcx.shapes.is_empty() {
+            self.out
+                .push_str("/* Compiler-emitted GC shapes (GC-001 Phase A). */\n");
+            for shape in &self.tcx.shapes.clone() {
+                self.out.push_str(shape);
+                self.out.push('\n');
+            }
+            self.out.push('\n');
+        }
         // Forward declarations so call order does not matter.
         for f in &fns {
             self.emit_fn_proto(f);
@@ -859,6 +868,15 @@ impl<'a> Emitter<'a> {
                 .push_str("/* User and derived type definitions. */\n");
             for decl in &self.tcx.typedefs.clone() {
                 self.out.push_str(decl);
+                self.out.push('\n');
+            }
+            self.out.push('\n');
+        }
+        if !self.tcx.shapes.is_empty() {
+            self.out
+                .push_str("/* Compiler-emitted GC shapes (GC-001 Phase A). */\n");
+            for shape in &self.tcx.shapes.clone() {
+                self.out.push_str(shape);
                 self.out.push('\n');
             }
             self.out.push('\n');
@@ -2117,12 +2135,18 @@ impl<'a> Emitter<'a> {
                                 _ => Type::Unit,
                             };
                             let elem_c = self.tcx.c_type(&element);
-                            return format!("astra_channel_new(sizeof({elem_c}))");
+                            let handle_shape = self.tcx.channel_handle_shape_ref(&element);
+                            let data_shape = self.tcx.block_shape_ref(&element);
+                            return format!(
+                                "astra_channel_new(sizeof({elem_c}), {handle_shape}, {data_shape})"
+                            );
                         }
-                        // Manual memory: `Memory.alloc<T>(count)` carves `count`
-                        // `T`s out of the run arena and yields `T*`; the emitted
-                        // main releases the arena at exit. `Memory.free(p)`
-                        // returns one block to the arena now.
+                        // Manual memory (spec 8.4, proposal [P7]): `Memory.alloc<T>(count)`
+                        // yields `T*` from the manual family - plain malloc,
+                        // never recorded, never traced - and `Memory.free(p)`
+                        // releases it. Separate from the managed family so a
+                        // collection can never see a manual block (NS6002
+                        // forbids managed element types here).
                         ("Memory", "alloc") => {
                             let ptr_ty = self
                                 .type_of(e)
@@ -2140,7 +2164,7 @@ impl<'a> Emitter<'a> {
                                 .map(|a| self.expr(a))
                                 .unwrap_or_else(|| "0".to_owned());
                             return format!(
-                                "(({elem_c}*)astra_alloc((size_t)({count}) * sizeof({elem_c})))"
+                                "(({elem_c}*)astra_manual_alloc((size_t)({count}) * sizeof({elem_c})))"
                             );
                         }
                         ("Memory", "free") => {
@@ -2148,7 +2172,7 @@ impl<'a> Emitter<'a> {
                                 .first()
                                 .map(|a| self.expr(a))
                                 .unwrap_or_else(|| "NULL".to_owned());
-                            return format!("(astra_free({ptr}), (NS_Unit){{0}})");
+                            return format!("(astra_manual_free({ptr}), (NS_Unit){{0}})");
                         }
                         // `Region.new(bytes)` (spec 8.4): reserve one
                         // fixed-capacity block that `region.alloc` carves
@@ -2441,11 +2465,14 @@ impl<'a> Emitter<'a> {
                 let r = self.expr(receiver);
                 let elem_ty = self.elem_type_of(receiver);
                 let elem_c = self.tcx.c_type(&elem_ty);
+                let shape = self.tcx.block_shape_ref(&elem_ty);
                 let val = args
                     .first()
                     .map(|a| self.expr(a))
                     .unwrap_or_else(|| "0".into());
-                format!("astra_array_push(&({r}), sizeof({elem_c}), &({elem_c}){{ {val} }})")
+                format!(
+                    "astra_array_push(&({r}), sizeof({elem_c}), &({elem_c}){{ {val} }}, {shape})"
+                )
             }
             (Some(Type::Array(_) | Type::Slice(_)), "get") => {
                 // `Array<T>.get(i) -> Option<T>`: bounds-check into the option
@@ -2898,10 +2925,13 @@ impl<'a> Emitter<'a> {
             .and_then(|el| self.type_of(el).cloned())
             .unwrap_or(Type::I32);
         let elem_c = self.tcx.c_type(&elem_ty);
+        let shape = self.tcx.block_shape_ref(&elem_ty);
         let vals: Vec<String> = elements.iter().map(|el| self.expr(el)).collect();
         let n = vals.len();
         let joined = vals.join(", ");
-        format!("astra_array_new_lit({n}, sizeof({elem_c}), (const {elem_c}[]){{ {joined} }})")
+        format!(
+            "astra_array_new_lit({n}, sizeof({elem_c}), (const {elem_c}[]){{ {joined} }}, {shape})"
+        )
     }
 
     /// Emits a map literal `{ k: v, ... }` into `self.pre` and returns the
@@ -2917,11 +2947,13 @@ impl<'a> Emitter<'a> {
         };
         let key_c = self.tcx.c_type(&key_ty);
         let val_c = self.tcx.c_type(&val_ty);
+        let key_shape = self.tcx.block_shape_ref(&key_ty);
+        let val_shape = self.tcx.block_shape_ref(&val_ty);
         let key_is_str = key_ty == Type::Str;
         let tmp = self.freshid("map");
         let _ = writeln!(
             self.pre,
-            "    NS_Map {tmp} = astra_map_new(sizeof({key_c}), sizeof({val_c}), {key_is_str});"
+            "    NS_Map {tmp} = astra_map_new(sizeof({key_c}), sizeof({val_c}), {key_is_str}, {key_shape}, {val_shape});"
         );
         for entry in entries {
             let k = self.expr(&entry.key);

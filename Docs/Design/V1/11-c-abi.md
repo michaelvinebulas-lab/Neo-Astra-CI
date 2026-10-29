@@ -114,9 +114,17 @@ slice.
 
 ## 5. Ownership and memory
 
-This slice runs on the managed-until-exit model: the hosted shim allocates with
-`malloc`/`calloc` through `astra_alloc` and never frees. There is no public free
-API and no GC yet (`GC-001`).
+This slice runs a two-family allocator and does not collect yet (GC-001 Phase A,
+proposal §5.7). Managed allocation goes through `astra_gc_alloc`, which places an
+`NS_Gc_Head` (payload extent plus a compiler-emitted `NS_Gc_Shape`) immediately
+before every payload, zeroes the payload, and records the block so
+`astra_runtime_shutdown` can release the whole run at exit; the header and shape
+table are the object model later GC-001 phases collect over. Manual memory
+(`Memory.alloc`, `Region`) goes through `astra_manual_alloc`, a plain `malloc`
+that is never recorded, never traced, and released only by `astra_manual_free`
+(`Memory.free`, `region.free`). `NS6002` keeps GC-managed element types out of
+manual allocation because a manual block is never a root. There is no public
+free for managed values and no collector yet (`GC-001`).
 
 - `str` and `bytes` values are borrowed views. A consumer must not free the
   `data` pointer, and a view returned from a function stays valid until the

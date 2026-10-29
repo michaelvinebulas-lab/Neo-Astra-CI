@@ -6,27 +6,28 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `cf1056a` plus this docs entry (2026-10-29),
-> working tree clean, full `npm run ci` green at the `NS6002` slice. Since the
-> previous snapshot this work recorded the `GC-001` design decision (all eleven
-> `[P1]`-`[P11]` choices approved with amendments applied inline in
-> `Docs/Design/GC-001-proposal.md`, both implementation-gating conditions
-> answered in §11) and landed its Phase 0: `NS6002` forbids managed element
-> types in `Memory.alloc<T>`/`region.alloc<T>` (spec §8.4 rule line, §14.9 code
-> row; code confirmed by the user). Tier-1 runs are green on Linux, macOS, and
-> Windows through run 18 (`40858504156`, `cf1056a`); `40690850075` is run 10,
-> not run 11, per the API's own `run_number`.
+> **Snapshot:** `master` at `c54bd5f` plus this docs entry (2026-10-29),
+> working tree clean, full `npm run ci` green at the `GC-001` Phase A slice.
+> Since the previous snapshot this work landed Phase A of `GC-001`: every
+> managed payload now carries an `NS_Gc_Head` (payload extent + compiler-emitted
+> `NS_Gc_Shape`; grammar `LEAF`/`ARRAY`/`RECORD`/`VARIANT`), allocation is split
+> into the `astra_gc_*` (headered, tracked, zeroed, shaped) and `astra_manual_*`
+> (plain malloc, untracked, untraced - `Memory.alloc`, `Region` block) families,
+> and the compiler emits a deduped shape table behind every managed allocation
+> site. Nothing collects yet. Phase 0 (`NS6002`, `cf1056a`) remains as landed.
+> Tier-1 runs are green on Linux, macOS, and Windows through run 19 (`c54bd5f`);
+> `40690850075` is run 10, not run 11, per the API's own `run_number`.
 >
-> **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
-> (`GC-001`, 6.C; design approved 2026-10-29 and Phase 0 (`NS6002`) landed -
-> next is Phase A: block header + shape grammar + allocator split, no
-> collection yet; only `[P9]`'s FFI push/pop signature stays open as a
-> `11-c-abi.md` ABI decision), the unspecced `MutSlice` surface behind
-> `ptr.as_slice` (6.C), the fallible `Memory.alloc`/`region.alloc` entry-point
-> policy (6.C), and OS-threaded structured concurrency (`CONC-001`, 6.D). All
-> are design-gated; see the section notes before starting. `Ptr` pointer
-> access, the `Region` API, `NS6001`, and recorded Linux/macOS/Windows CI
-> evidence are closed (6.C, 6.F).
+> **Remaining (honest handoff):** the rest of precise mark-sweep GC (`GC-001`,
+> 6.C; design approved 2026-10-29, Phases 0 and A landed - next is Phase B:
+> frame regions, eager snapshots, materialisation before calls, safepoints
+> behind `ASTRA_GC_STRESS=1`, default off; only `[P9]`'s FFI push/pop signature
+> stays open as a `11-c-abi.md` ABI decision), the unspecced `MutSlice` surface
+> behind `ptr.as_slice` (6.C), the fallible `Memory.alloc`/`region.alloc`
+> entry-point policy (6.C), and OS-threaded structured concurrency (`CONC-001`,
+> 6.D). All are design-gated; see the section notes before starting. `Ptr`
+> pointer access, the `Region` API, `NS6001`, `NS6002`, and recorded
+> Linux/macOS/Windows CI evidence are closed (6.C, 6.F).
 
 ---
 
@@ -34,7 +35,7 @@
 
 ```powershell
 cd "C:\Projects\Neo Astra"
-git log --oneline -3          # expect cd102a9 Implement the spec 8.4 Region API ...
+git log --oneline -3          # expect the latest slice on top (5 messages)
 git status --porcelain        # expect empty
 cargo test -p astra-codegen-c # 70 emit/unit tests + the static conformance gate
 npm run ci                    # full gate; green is the baseline
@@ -361,15 +362,28 @@ cannot collide with importer stems (namespace prefix).
 ### 6.C GC-001 — managed memory and `@memory:manual` — **FIRST CUTS DONE**
 
 **Landed this session.**
-- Managed arena: `astra_alloc` records every block; `astra_free`/`astra_realloc`
-  keep the tracker in sync (array/map growth); the emitted `main` calls
-  `astra_runtime_shutdown` to release the run's arena at exit. Freestanding
-  `extern astra_alloc` boundary unchanged. This is the design's "arena per
-  program run, released at exit" managed-mode first step (§4.1).
+- **Two-family allocator (GC-001 Phase A, 2026-10-29).** Managed memory is the
+  `astra_gc_*` family: `astra_gc_alloc(shape, n)` places an `NS_Gc_Head`
+  (`marks`/`bytes`/`shape`) immediately before every payload, zeroes the payload,
+  records the block, and returns the payload; `astra_gc_realloc` keeps the record
+  in sync and zeroes grown tails; `astra_gc_free` is strict (a pointer it did not
+  hand out panics). `astra_runtime_shutdown` frees the remaining blocks at exit -
+  the design's "arena per program run" first step (§4.1), now headered and shaped
+  so Phase B/C turn the same bookkeeping into collection instead of replacing it.
+  Manual memory is the `astra_manual_*` family: plain `malloc`/`free`, never
+  recorded, never traced, with its own `astra_manual_live_count`/
+  `astra_manual_total_count`. **Shapes**: `NS_Gc_Shape` implements the approved
+  grammar (`LEAF`, `ARRAY(elem_size, elem)`, `RECORD({offset, shape}[])`,
+  `VARIANT(tag_offset, shapes[])`); the compiler emits a deduped shape table
+  (`shape_ref` in `ty.rs`) for every type that can hold pointers and threads the
+  block shape through array literals, `.push`, map creation (stored in `NS_Map`
+  for growth), `Channel.create` and `str_chars`. Nothing collects yet.
 - Manual-memory allocation subset: `Memory.alloc<T>(n) -> Ptr<T>` and
   `Memory.free(p)` are checker builtins (system-mode gated — `NS5004` in core),
-  `Ptr<T>` maps to `T*`, and they lower to the arena. `NS8012` is removed for
-  this subset; `@memory:manual` scopes emit normally.
+  `Ptr<T>` maps to `T*`, and they lower to `astra_manual_alloc`/
+  `astra_manual_free` (plain malloc, released by `Memory.free`). `NS8012` is
+  removed for this subset; `@memory:manual` scopes emit normally. `NS6002`
+  rejects managed element types here.
 - Manual-memory **pointer access** (spec §8.4): `ptr.read(index) -> T` and
   `ptr.write(index, value)` type-check as methods on `Ptr<T>` and lower to
   `(ptr)[i]` / `ptr[i] = v`. Unchecked by design — a manual pointer carries no
@@ -397,11 +411,16 @@ cannot collide with importer stems (namespace prefix).
   method surface, indexing contract, or lifetime rule. It needs a design
   decision, not codegen; deliberately not invented here.
 - **Precise mark-sweep GC** with compiler-generated stack maps (§4.1/§4.3). The
-  arena is not a collector; the real one needs frontend precise roots (multi-week
-  `GC-001`). Conservative scanning would contradict the design's precise-roots
+  design is approved (`Docs/Design/GC-001-proposal.md`, 2026-10-29): Phase 0
+  (`NS6002`) and Phase A (block header, shape grammar, allocator split) are
+  landed. Next is Phase B — frame regions, eager value snapshots and
+  materialisation before calls (§5.1-§5.3), safepoints at function entry and loop
+  back-edges behind `ASTRA_GC_STRESS=1` (§5.4), default off — then Phase C
+  (collection on by default) and Phase D (Wasm). The arena is not a collector;
+  conservative scanning would contradict the design's precise-roots
   requirement, so it is not the chosen path.
 - Fallible `Memory.alloc` returning `Result<Ptr<T>, AllocError>` (the design's
-  `!` form) vs. the current infallible arena alloc (panics on OOM). This is
+  `!` form) vs. the current infallible allocator (panics on OOM). This is
   blocked on a policy decision, not codegen: `!` at the call site propagates
   into the enclosing function's error set, and `emit_main` writes
   `(int)main()` with no notion of an error effect, so a fallible `main` — the
@@ -767,7 +786,9 @@ rejected}`, `to_type`, `path_to_type`, `sanitize`, `BUILTIN_NOMINALS`.
 **`runtime.rs`:** `RUNTIME_HEADER`, `HOST_SHIM` (body), `host_shim()` (complete
 `astra_host.c`); helpers: `astra_str_*`,
 `astra_bytes_*`, `astra_array_*`, `astra_map_*`, `astra_add/sub/mul_i8..i64`,
-`astra_panic`, print/println families, `astra_alloc`.
+`astra_panic`, print/println families, `astra_gc_alloc/gc_free/gc_realloc`,
+`astra_manual_alloc/manual_free`, and the shape model (`NS_Gc_Head`,
+`NS_Gc_Shape`, `NS_SHAPE_LEAF`/`NS_SHAPE_STR`/`NS_SHAPE_ARRAY_OF_STR`).
 
 **Useful greps.**
 - `reject(` — every diagnostic the backend can emit.
