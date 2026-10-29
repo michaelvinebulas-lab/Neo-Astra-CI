@@ -13,8 +13,10 @@
 >
 > This file still changes no spec text by itself: the `[P5]` VARIANT shape is
 > internal runtime machinery, but the `[P11]` split-out and the `NS6002`
-> managed-element-type rule proposed in §11 are spec changes that follow their
-> own approval path.
+> managed-element-type rule from §11 are spec changes that follow their own
+> approval path. `NS6002`'s has completed — the code was confirmed on
+> assignment and the rule landed 2026-10-29 in spec §8.4 (rule line) and
+> §14.9 (code row); `[P11]`'s review has not started.
 >
 > Written 2026-10-29 under the `GC-001` backlog item in `Docs/Agent/todo.md`.
 
@@ -422,7 +424,7 @@ implemented. The mechanism (§5.1-§5.4) does not depend on the signature.
 
 | Phase | Content | Note |
 |---|---|---|
-| 0 | `NS6002`: forbid managed element types in `Memory.alloc<T>`/`region.alloc<T>` (§11, condition 2) | Small checker+spec slice; lands before Phase A so the footgun class is closed before any allocator split makes it observable |
+| 0 | `NS6002`: forbid managed element types in `Memory.alloc<T>`/`region.alloc<T>` (§11, condition 2) | **Landed 2026-10-29** (code confirmed by user): checker rule + spec §8.4 line + §14.9 row, ahead of Phase A so the footgun class is closed before any allocator split makes it observable |
 | A | Header + shapes, allocator split, no collection yet | Pure refactor; arena keeps its current behaviour and its leak tests |
 | B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | Default off; §8 proves correctness |
 | C | Turn collection on by default; re-point `astra_arena_live_count`-based tests at the new accounting | |
@@ -544,7 +546,7 @@ To keep the design robust rather than merely correct-for-now, `[P1]`'s root
 array is scoped **per execution context** (§5.1): there is exactly one today,
 and `CONC-001` OS-threaded tasks then add one array per task without redesign.
 
-### Condition 2 — `Ptr<T>` and managed types: forbid (with `NS6002` proposed)
+### Condition 2 - `Ptr<T>` and managed types: forbid (`NS6002`, assigned and landed)
 
 **Answered by probe (2026-10-29): the hazard is fully expressible today, so
 the decision is to forbid managed element types in manual allocation.**
@@ -574,11 +576,12 @@ still hand one over the boundary, which is unsafe by contract under spec
 §8.5); what closes is the compiler-visible way to *create* manual memory that
 holds managed references.
 
-Implementation path (Phase 0, §7): a checker rule with proposed code
-**`NS6002`** "Manual allocation of a GC-managed element type" — the second
+Implementation path (Phase 0, §7) — **landed 2026-10-29**: a checker rule with
+code **`NS6002`** "Manual allocation of a GC-managed element type" — the second
 code in the `NS6xxx | Memory` range that spec §14.3 reserves — plus one rule
-line under spec §8.4. The code number follows the `NS6001` precedent and is
-flagged as proposed in `Docs/Agent/todo.md`; it is reversible.
+line under spec §8.4 and the §14.9 code row, all added to `Docs/spec-v0.1.md`.
+The code number follows the `NS6001` precedent and was confirmed by the user
+when the decision to forbid was given.
 
 Linked to the deferred pointer-access follow-up: `ptr.as_slice`/`MutSlice` and
 any future `Ptr<T>`-producing surface must apply the same predicate, so the

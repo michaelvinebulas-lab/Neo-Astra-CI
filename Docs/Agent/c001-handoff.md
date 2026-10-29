@@ -6,23 +6,22 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `cd102a9` plus this docs entry (2026-10-29),
-> working tree clean, full `npm run ci` green at the `Region` slice. Since the
-> previous snapshot this work landed the `NS6001` enforcement of spec §8.4's
-> manual-scope rule, the conformance reject case `pointer_access_requires_system`,
-> the `Region` manual-memory API (fixed-block bump arena, section 6.C), and the
-> `GC-001` design decision: all eleven `[P1]`-`[P11]` choices are approved with
-> amendments applied inline in `Docs/Design/GC-001-proposal.md`, and both
-> implementation-gating conditions are answered in its §11. Tier-1 runs are
-> green on Linux, macOS, and Windows through run 15 (`40840682971`, `cd102a9`);
-> `40690850075` is run 10, not run 11, per the API's own `run_number`.
+> **Snapshot:** `master` at `0280749` plus this docs entry (2026-10-29),
+> working tree clean, full `npm run ci` green at the `NS6002` slice. Since the
+> previous snapshot this work recorded the `GC-001` design decision (all eleven
+> `[P1]`-`[P11]` choices approved with amendments applied inline in
+> `Docs/Design/GC-001-proposal.md`, both implementation-gating conditions
+> answered in §11) and landed its Phase 0: `NS6002` forbids managed element
+> types in `Memory.alloc<T>`/`region.alloc<T>` (spec §8.4 rule line, §14.9 code
+> row; code confirmed by the user). Tier-1 runs are green on Linux, macOS, and
+> Windows through run 17 (`40852443464`, `0280749`); `40690850075` is run 10,
+> not run 11, per the API's own `run_number`.
 >
 > **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
-> (`GC-001`, 6.C; design approved 2026-10-29 - next is Phase 0, the `NS6002`
-> managed-element-type forbid for `Memory.alloc<T>`/`region.alloc<T>` (code
-> number agent-proposed, reversible), then Phase A: header + shapes + allocator
-> split with no collection yet; only `[P9]`'s FFI push/pop signature stays open
-> as a `11-c-abi.md` ABI decision), the unspecced `MutSlice` surface behind
+> (`GC-001`, 6.C; design approved 2026-10-29 and Phase 0 (`NS6002`) landed -
+> next is Phase A: block header + shape grammar + allocator split, no
+> collection yet; only `[P9]`'s FFI push/pop signature stays open as a
+> `11-c-abi.md` ABI decision), the unspecced `MutSlice` surface behind
 > `ptr.as_slice` (6.C), the fallible `Memory.alloc`/`region.alloc` entry-point
 > policy (6.C), and OS-threaded structured concurrency (`CONC-001`, 6.D). All
 > are design-gated; see the section notes before starting. `Ptr` pointer

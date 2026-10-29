@@ -1206,19 +1206,38 @@ by a production native target.
       inline spawn, no second stack), and managed element types in
       `Memory.alloc<T>`/`region.alloc<T>` are to be **forbidden** (probe showed
       `str`, `[u8]`, `Channel<T>`, and structs with `str` fields all pass
-      through today). Next: Phase 0 (`NS6002`, below), then Phase A (header +
-      shapes + allocator split, no collection yet). `[P9]`'s exact signature
-      stays an open `11-c-abi.md` ABI decision, gating only the FFI half.
-- [ ] Phase 0 of GC-001: forbid managed element types in manual allocation as
-      `NS6002` "Manual allocation of a GC-managed element type" (predicate:
-      T contains no GC-managed references - exactly the inverse of the GC
-      shape predicate, so no new analysis). Touches `Memory.alloc<T>` and
-      `region.alloc<T>` in the checker, one spec §8.4 rule line, and a spec
-      §14.9 row; `Ptr<T>` as a parameter type stays expressible for the FFI
-      boundary. **The code number NS6002 is proposed by the agent, following
-      the NS6001 precedent in the NS6xxx range §14.3 reserves for Memory -
-      reversible if a different code or meaning is wanted.** Must land before
-      GC-001 Phase A per the approved sequencing.
+      through today). Phase 0 (`NS6002`, below) is landed; next: Phase A
+      (header + shapes + allocator split, no collection yet). `[P9]`'s exact
+      signature stays an open `11-c-abi.md` ABI decision, gating only the FFI
+      half.
+- [x] Phase 0 of GC-001: forbid managed element types in manual allocation as
+      `NS6002` "Manual allocation of a GC-managed element type" - **landed
+      2026-10-29; the code number was confirmed by the user ("ok do it"), so it
+      is no longer proposed-but-unapproved.** The predicate is `holds_managed_refs`
+      in the checker: `str`, `bytes`, `[T]`, maps (even scalar-payload ones -
+      the buffer itself is managed), `Channel`, `Task`, `Option`/`Result`,
+      tuples, and structs/enums whose fields hold any of them; allowed are
+      scalars, `Ptr<U>` (a raw address is one machine word), `Region` (a
+      manual-block handle the collector never traces), and composites built
+      only from pointer-free types - exactly the inverse of the GC-001 shape
+      predicate, so no new analysis. Mechanics: `Memory.alloc` registers its
+      member span after the mode and scope gates pass, `region.alloc` registers
+      on any `Region`-typed receiver, and `check_call` applies `NS6002` once
+      the call's `T` is bound in the return type (explicit or inferred), so
+      ordering stays mode `NS5004` -> scope `NS6001` -> element type
+      `NS6002`: one program, one violated condition. Spec: one §8.4 rule line
+      plus a §14.9 row and explanation. Tests: reject matrix (7 simple forms +
+      3 composites + region site), accept matrix (11 pointer-free forms incl.
+      generic instantiation and fixed arrays), and the ordering test. Honest
+      limitations: (1) **no negative-conformance case is possible** - the
+      rejects corpus runs at the default core mode, so `NS5004` always fires
+      first (the same reason `NS6001` has no corpus case); per-case mode
+      selection in the runner would close this and is recorded as an open
+      infrastructure question, not decided; (2) **generic forwarding** -
+      `Memory.alloc<Wrap<T>>` inside a function whose own `T` is still a type
+      parameter - is silent until the element type is concrete at the
+      definition site, the same instantiation model the whole checker uses
+      (bodies are not re-checked per call instantiation).
 - [x] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
       error" - **was unimplemented, now enforced as `NS6001`.** A probe test
       confirmed the gap was real: system mode accepted `Memory.alloc` with no

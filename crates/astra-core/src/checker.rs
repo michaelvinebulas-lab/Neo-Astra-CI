@@ -39,6 +39,7 @@ const CAPABILITY_REQUIREMENT: &str = "NS5003";
 const MEMORY_REQUIREMENT: &str = "NS5004";
 const INVALID_CAPABILITY_ANNOTATION: &str = "NS5005";
 const MANUAL_ALLOC_IN_GC_SCOPE: &str = "NS6001";
+const MANAGED_ELEMENT_IN_MANUAL_ALLOC: &str = "NS6002";
 const UNSUPPORTED_SCRIPT_TARGET: &str = "NS7002";
 const INVALID_SCRIPT_SIGNATURE: &str = "NS7005";
 
@@ -338,6 +339,10 @@ struct Checker<'a> {
     diagnostics: Vec<Diagnostic>,
     annotations: Vec<TypeAnnotation>,
     manual_memory_scopes: Vec<Span>,
+    /// Spans of `Memory.alloc` / `region.alloc` member expressions whose mode
+    /// and scope gates passed, so `check_call` can apply `NS6002` to the
+    /// element type bound for `T` (spec 8.4; GC-001 proposal §11).
+    manual_alloc_spans: Vec<Span>,
     mode: Mode,
     function_modes: HashMap<Span, Mode>,
     type_defs: BTreeMap<String, TypeDef>,
@@ -361,6 +366,7 @@ impl<'a> Checker<'a> {
             diagnostics: Vec::new(),
             annotations: Vec::new(),
             manual_memory_scopes: Vec::new(),
+            manual_alloc_spans: Vec::new(),
             mode,
             function_modes: HashMap::new(),
             type_defs: BTreeMap::new(),
@@ -1171,6 +1177,104 @@ impl<'a> Checker<'a> {
         self.manual_memory_scopes
             .iter()
             .any(|scope| scope.contains(span.start))
+    }
+
+    /// Reports `NS6002` when a manual allocation carries GC-managed
+    /// references into `Ptr<T>` (spec 8.4; GC-001 proposal §11, condition 2).
+    ///
+    /// Fires only for member spans registered as a gate-passed
+    /// `Memory.alloc` / `region.alloc`, and only once the call's `T` is bound
+    /// in the return type, so it covers explicit type arguments and inferred
+    /// ones alike. `Error`/`Unknown`/`Generic` element types stay silent:
+    /// those paths already reported their own diagnostic.
+    fn check_manual_alloc_element(&mut self, callee: &ast::Expr, return_type: &Type, span: Span) {
+        let target_span = match &callee.kind {
+            ast::ExprKind::TypeArguments { target, .. } => target.span,
+            _ => callee.span,
+        };
+        if !self.manual_alloc_spans.contains(&target_span) {
+            return;
+        }
+        let Type::Named(name, arguments) = return_type else {
+            return;
+        };
+        if name != "Ptr" {
+            return;
+        }
+        let Some(element) = arguments.first() else {
+            return;
+        };
+        if matches!(element, Type::Error | Type::Unknown | Type::Generic(_)) {
+            return;
+        }
+        if self.holds_managed_refs(element) {
+            self.error(
+                MANAGED_ELEMENT_IN_MANUAL_ALLOC,
+                format!(
+                    "Manual allocation cannot use element type '{element}': it holds \
+                     GC-managed references, and 'Ptr<T>' is never a GC root (spec 8.4), \
+                     so a collection could reclaim data this pointer still points at."
+                ),
+                span,
+                "Allocate pointer-free types here (scalars, Ptr<U>, or a struct/enum of \
+                 those); str, bytes, [T], Map, Channel, Task, and composites containing \
+                 them belong to GC-managed memory.",
+            );
+        }
+    }
+
+    /// True when a value of this type contains references a precise collector
+    /// would have to trace.
+    ///
+    /// This is the inverse of the pointer-free requirement for manual
+    /// allocation and the same predicate GC-001's shape analysis will use
+    /// (proposal §5.5/§11). `Error`, `Unknown`, and `Generic` return false:
+    /// unresolvable or not-yet-bound types are silent here because a
+    /// diagnostic for them is someone else's job.
+    fn holds_managed_refs(&mut self, ty: &Type) -> bool {
+        match ty {
+            // Fat pointers into managed buffers, and the buffer types
+            // themselves: their storage is a GC block or a view into one.
+            Type::Str | Type::Bytes | Type::Array(_) | Type::Slice(_) | Type::Map(_, _) => true,
+            // Fixed arrays are inline storage: pointer-free iff the element is.
+            Type::FixedArray(element, _) => self.holds_managed_refs(element),
+            Type::Tuple(elements) => elements
+                .iter()
+                .any(|element| self.holds_managed_refs(element)),
+            Type::Option(inner) => self.holds_managed_refs(inner),
+            Type::Result(ok, error) => {
+                self.holds_managed_refs(ok) || self.holds_managed_refs(error)
+            }
+            Type::Named(name, arguments) => match name.as_str() {
+                // Spec 8.4: `Ptr<T>` is not a GC reference - a raw address is
+                // one machine word, whatever it points at. A `Region` handle
+                // points at a manual block the collector never traces.
+                "Ptr" | "Region" => false,
+                // Handles whose payload is managed.
+                "Channel" | "Task" => true,
+                _ => {
+                    if let Some(struct_def) = self.resolve_struct(name) {
+                        let substitutions = substitutions(&struct_def.type_parameters, arguments);
+                        struct_def.fields.iter().any(|field| {
+                            self.holds_managed_refs(&field.ty.substitute(&substitutions))
+                        })
+                    } else if let Some(enum_def) = self.resolve_enum(name) {
+                        let substitutions = substitutions(&enum_def.type_parameters, arguments);
+                        enum_def.variants.iter().any(|variant| {
+                            variant.fields.iter().flatten().any(|field| {
+                                self.holds_managed_refs(&field.ty.substitute(&substitutions))
+                            })
+                        })
+                    } else {
+                        // Opaque or foreign nominal: no payload to inspect,
+                        // and its construction surface is gated elsewhere.
+                        false
+                    }
+                }
+            },
+            // Scalars, unit, never, function values, and the silent types.
+            _ => false,
+        }
     }
 
     /// Validates a scope header and returns the mode it selects.
@@ -2293,6 +2397,10 @@ impl<'a> Checker<'a> {
             .collect::<Vec<_>>();
         append_effects(&mut errors, function_errors);
 
+        // NS6002: once T is bound (explicitly or by inference), manual
+        // allocation must not carry GC-managed references into `Ptr<T>`.
+        self.check_manual_alloc_element(callee, &return_type, span);
+
         ExprInfo {
             ty: return_type,
             errors,
@@ -2476,6 +2584,10 @@ impl<'a> Checker<'a> {
                         );
                         return ExprInfo::value(Type::Error);
                     }
+                    // Mode and scope both hold: record the member span so the
+                    // call site can apply NS6002 to the element type (spec 8.4:
+                    // `Ptr<T>` must not hold GC-managed references).
+                    self.manual_alloc_spans.push(span);
                     return ExprInfo::value(Type::Function(FunctionType {
                         type_parameters: vec!["T".to_owned()],
                         parameters: vec![Type::Usize],
@@ -2527,6 +2639,15 @@ impl<'a> Checker<'a> {
         }
 
         let target_info = self.check_expr(target, None);
+        // `region.alloc<T>` on any receiver of type Region records its span as
+        // well, so the call site can apply NS6002 to the element type. If the
+        // mode gate inside `member_type` rejects the call first, the callee
+        // types as Error and `check_call` returns before NS6002 could fire -
+        // one program, one violated condition.
+        if member == "alloc" && matches!(&target_info.ty, Type::Named(name, _) if name == "Region")
+        {
+            self.manual_alloc_spans.push(span);
+        }
         let ty = self.member_type(&target_info.ty, member, target.span, expected);
         ExprInfo {
             ty,
@@ -5611,6 +5732,185 @@ pub fn main() -> i32 {
         assert!(
             codes.contains(&"NS5004".to_owned()) && !codes.contains(&"NS6001".to_owned()),
             "expected only NS5004, got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_managed_element_types_in_manual_alloc() {
+        // GC-001 proposal §11 (condition 2): the probe showed str, [u8],
+        // Channel<T>, and structs with str fields all flowing through
+        // Memory.alloc before this rule existed. NS6002 closes every form at
+        // both allocation sites; the predicate is pointer-free (the inverse of
+        // the GC shape analysis), so even a scalar-payload Map is rejected -
+        // the map buffer itself is managed.
+        let cases: &[(&str, &str)] = &[
+            ("str", "Memory.alloc<str>(4)"),
+            ("dynamic array", "Memory.alloc<[u8]>(4)"),
+            ("map", "Memory.alloc<{i32: i32}>(2)"),
+            ("channel", "Memory.alloc<Channel<i32>>(2)"),
+            ("task", "Memory.alloc<Task<i32>>(2)"),
+            ("option of str", "Memory.alloc<Option<str>>(2)"),
+            ("tuple with str", "Memory.alloc<(i32, str)>(2)"),
+        ];
+        for (label, alloc) in cases {
+            let source = format!(
+                "pub fn main() -> i32 {{\n    {{@memory:manual;\n        let p = {alloc}\n        \
+                 Memory.free(p)\n    }}\n    return 0\n}}\n"
+            );
+            let codes = check_with_mode(&source, Mode::System)
+                .expect_err(&format!("{label}: managed element must be rejected"));
+            assert!(
+                codes.contains(&"NS6002".to_owned()),
+                "{label}: expected NS6002, got {codes:?}"
+            );
+        }
+
+        // Composite forms: struct with a managed field, a managed enum
+        // payload, and a generic instantiation that substitutes to str.
+        let composite = r#"
+struct Rec { name: str, size: i32 }
+enum Tagged { Name(str), Count(i32) }
+struct Wrap<T> { value: T }
+pub fn main() -> i32 {
+    {@memory:manual;
+        let a = Memory.alloc<Rec>(2)
+        Memory.free(a)
+        let b = Memory.alloc<Tagged>(2)
+        Memory.free(b)
+        let c = Memory.alloc<Wrap<str>>(2)
+        Memory.free(c)
+    }
+    return 0
+}
+"#;
+        let codes = check_with_mode(composite, Mode::System)
+            .expect_err("managed composites must be rejected");
+        let ns6002 = codes.iter().filter(|code| *code == "NS6002").count();
+        assert_eq!(
+            ns6002, 3,
+            "expected three NS6002 diagnostics, got {codes:?}"
+        );
+
+        // The region site needs system mode but no @memory:manual block -
+        // the type rule is independent of the scope rule.
+        let region = r#"
+pub fn main() -> i32 {
+    let r = Region.new(64)
+    let p = r.alloc<str>(4)
+    r.free()
+    return 0
+}
+"#;
+        let codes = check_with_mode(region, Mode::System)
+            .expect_err("region.alloc of str must be rejected");
+        assert!(
+            codes.contains(&"NS6002".to_owned()),
+            "expected NS6002 for region.alloc<str>, got {codes:?}"
+        );
+        assert!(
+            !codes.contains(&"NS6001".to_owned()),
+            "region.alloc carries no scope rule, got {codes:?}"
+        );
+
+        // The element type may also arrive by inference from the binding's
+        // annotation instead of explicit type arguments - it still reaches
+        // NS6002, because the check runs once T is bound in the return type.
+        let inferred = r#"
+pub fn main() -> i32 {
+    {@memory:manual;
+        let p: Ptr<str> = Memory.alloc(4)
+        Memory.free(p)
+    }
+    return 0
+}
+"#;
+        let codes = check_with_mode(inferred, Mode::System)
+            .expect_err("inferred str element must be rejected");
+        assert!(
+            codes.contains(&"NS6002".to_owned()),
+            "expected NS6002 for inferred Ptr<str>, got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_pointer_free_element_types_in_manual_alloc() {
+        // The other half of the rule: everything pointer-free stays legal,
+        // including Ptr<U> (a raw address is one machine word, whatever it
+        // points at), structs of scalars/pointers, scalar-payload enums and
+        // options, generic instantiations that substitute to scalars, tuples
+        // of scalars, and fixed arrays of scalars.
+        let source = r#"
+struct Pair { a: i32, b: f64 }
+struct Addrs { p: Ptr<u8>, n: i32 }
+enum ScalarTag { A(i32), B(f64) }
+struct Wrap<T> { value: T }
+pub fn main() -> i32 {
+    {@memory:manual;
+        let a = Memory.alloc<i32>(4)
+        Memory.free(a)
+        let b = Memory.alloc<f64>(4)
+        Memory.free(b)
+        let c = Memory.alloc<Ptr<u8>>(4)
+        Memory.free(c)
+        let d = Memory.alloc<Pair>(2)
+        Memory.free(d)
+        let e = Memory.alloc<Addrs>(2)
+        Memory.free(e)
+        let f = Memory.alloc<ScalarTag>(2)
+        Memory.free(f)
+        let g = Memory.alloc<Wrap<i32>>(2)
+        Memory.free(g)
+        let h = Memory.alloc<Option<i32>>(2)
+        Memory.free(h)
+        let i = Memory.alloc<(i32, i32)>(2)
+        Memory.free(i)
+        let j = Memory.alloc<[i32; 4]>(2)
+        Memory.free(j)
+    }
+    let r = Region.new(64)
+    let k = r.alloc<i32>(4)
+    r.free()
+    return 0
+}
+"#;
+        check_with_mode(source, Mode::System)
+            .expect("pointer-free element types are allowed in manual memory");
+    }
+
+    #[test]
+    fn ns6002_reports_only_after_mode_and_scope_hold() {
+        // Same one-program-one-condition ordering as NS5004/NS6001: NS6002
+        // speaks only once the earlier gates are satisfied.
+        let source = r#"
+pub fn main() -> i32 {
+    {@memory:manual;
+        let p = Memory.alloc<str>(4)
+        Memory.free(p)
+    }
+    return 0
+}
+"#;
+        let codes =
+            check_with_mode(source, Mode::Core).expect_err("core mode rejects manual memory");
+        assert!(
+            codes.contains(&"NS5004".to_owned())
+                && !codes.contains(&"NS6001".to_owned())
+                && !codes.contains(&"NS6002".to_owned()),
+            "expected only NS5004, got {codes:?}"
+        );
+
+        let outside_scope = r#"
+pub fn main() -> i32 {
+    let p = Memory.alloc<str>(4)
+    Memory.free(p)
+    return 0
+}
+"#;
+        let codes = check_with_mode(outside_scope, Mode::System)
+            .expect_err("system mode without a manual scope rejects alloc");
+        assert!(
+            codes.contains(&"NS6001".to_owned()) && !codes.contains(&"NS6002".to_owned()),
+            "expected only NS6001, got {codes:?}"
         );
     }
 

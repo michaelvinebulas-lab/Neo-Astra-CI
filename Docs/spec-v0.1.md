@@ -1315,6 +1315,7 @@ Rules:
 - `Memory.free` is explicit.
 - `defer` runs in reverse order at scope exit.
 - `Memory.alloc` in a GC-managed scope is a compile-time error.
+- The element type `T` of `Memory.alloc<T>` and `region.alloc<T>` MUST NOT contain GC-managed references (`str`, `bytes`, `[T]`, a map, `Channel`, `Task`, or a struct, enum, or tuple containing them); such an allocation is a compile-time error.
 - `Ptr<T>` is not a GC reference.
 - `ptr.read` and `ptr.write` are unchecked except in an explicit debug-checked mode.
 - Manual pointers MUST NOT be captured by GC-managed closures without an explicit boundary.
@@ -1857,6 +1858,7 @@ The `NS6xxx` range declared in §14.3 covers memory-policy violations:
 | Code | Meaning |
 |---|---|
 | `NS6001` | Manual allocation outside a manual-memory scope |
+| `NS6002` | Manual allocation of a GC-managed element type |
 
 `Memory.alloc` used where the file or block policy is not `manual` is rejected
 with `NS6001`, which is how the rule in §8.4 that "`Memory.alloc` in a
@@ -1864,6 +1866,15 @@ GC-managed scope is a compile-time error" is reported. A program whose mode
 does not grant manual memory reports `NS5004` instead: the mode condition is
 checked first, so one program reports the single condition it actually
 violates.
+
+An allocation whose element type `T` holds GC-managed references is rejected
+with `NS6002`, reporting the §8.4 rule that `T` MUST NOT contain them. The
+conditions are checked in order - mode (`NS5004`), then scope (`NS6001`), then
+element type (`NS6002`) - so the single reported condition remains the one the
+program actually violates first. The predicate is the inverse of what a
+precise collector traces: `str`, `bytes`, `[T]`, maps, `Channel`, `Task`, and
+structs, enums, or tuples containing them; scalars, `Ptr<U>`, `Region`, and
+composites built only from pointer-free types are allowed.
 
 ---
 
