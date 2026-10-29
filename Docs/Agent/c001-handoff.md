@@ -6,16 +6,22 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `7451eda` plus this docs entry (2026-10-29),
-> working tree clean, full `npm run ci` green. Since the previous snapshot this
-> work landed the `NS6001` enforcement of spec §8.4's manual-scope rule, the
-> conformance reject case `pointer_access_requires_system`, and the `Region`
-> manual-memory API (fixed-block bump arena, section 6.C). Tier-1 runs through
+> **Snapshot:** `master` at `cd102a9` plus this docs entry (2026-10-29),
+> working tree clean, full `npm run ci` green at the `Region` slice. Since the
+> previous snapshot this work landed the `NS6001` enforcement of spec §8.4's
+> manual-scope rule, the conformance reject case `pointer_access_requires_system`,
+> the `Region` manual-memory API (fixed-block bump arena, section 6.C), and the
+> `GC-001` design decision: all eleven `[P1]`-`[P11]` choices are approved with
+> amendments applied inline in `Docs/Design/GC-001-proposal.md`, and both
+> implementation-gating conditions are answered in its §11. Tier-1 runs through
 > run 11 (`40690850075`) are green on Linux, macOS, and Windows.
 >
 > **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
-> (`GC-001`, 6.C; a proposal with eleven tagged choices awaits approval in
-> `Docs/Design/GC-001-proposal.md`), the unspecced `MutSlice` surface behind
+> (`GC-001`, 6.C; design approved 2026-10-29 - next is Phase 0, the `NS6002`
+> managed-element-type forbid for `Memory.alloc<T>`/`region.alloc<T>` (code
+> number agent-proposed, reversible), then Phase A: header + shapes + allocator
+> split with no collection yet; only `[P9]`'s FFI push/pop signature stays open
+> as a `11-c-abi.md` ABI decision), the unspecced `MutSlice` surface behind
 > `ptr.as_slice` (6.C), the fallible `Memory.alloc`/`region.alloc` entry-point
 > policy (6.C), and OS-threaded structured concurrency (`CONC-001`, 6.D). All
 > are design-gated; see the section notes before starting. `Ptr` pointer
@@ -28,7 +34,7 @@
 
 ```powershell
 cd "C:\Projects\Neo Astra"
-git log --oneline -3          # expect 47d2598 Docs: reconcile INTEROP-001 ...
+git log --oneline -3          # expect cd102a9 Implement the spec 8.4 Region API ...
 git status --porcelain        # expect empty
 cargo test -p astra-codegen-c # 70 emit/unit tests + the static conformance gate
 npm run ci                    # full gate; green is the baseline

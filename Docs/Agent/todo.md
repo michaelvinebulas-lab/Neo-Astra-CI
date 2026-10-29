@@ -1189,15 +1189,36 @@ by a production native target.
       no surface for it, so building it would mean inventing semantics. Pinned
       by `emit_c` tests (including a hosted compile-and-run) and by the
       backend-neutral reject case `conformance/rejects/pointer_access_requires_system`.
-- [ ] Precise mark-sweep GC with compiler stack maps (`GC-001`). The managed
+- [~] Precise mark-sweep GC with compiler stack maps (`GC-001`). The managed
       "arena per run released at exit" first step is landed and tested; the real
       collector needs frontend-generated precise roots (multi-week `GC-001`, and
       conservative scanning would contradict the design's precise-roots rule).
-      A proposal now exists in `Docs/Design/GC-001-proposal.md` covering the
-      root mechanism, object shapes, interior-pointer resolution, and the
-      manual/managed split, with eleven choices tagged `[P1]`-`[P11]` for
-      approval. It implements nothing; per `agent.md` rule 10 it stays a
-      proposal until those are decided.
+      `Docs/Design/GC-001-proposal.md` is no longer a proposal: the user decided
+      all eleven choices on 2026-10-29 (`[P1]`-`[P10]` approved, several with
+      amendments now applied inline - re-snapshot triggers after push growth /
+      `&mut` calls / field stores, short-circuit-safe hoisting, the
+      non-looping-function starvation note, `ASTRA_GC_STRESS` collecting at
+      every allocation, `VARIANT` shapes, zeroed-or-length-aware payloads, the
+      explicit heap-allocated mark stack counted against the 32 KB budget, and
+      the unbounded-pin V1 acceptance with a release API as follow-up; `[P11]`
+      split out for its own spec review). Both implementation-gating conditions
+      are answered in proposal §11: tasks run on the caller's stack (eager
+      inline spawn, no second stack), and managed element types in
+      `Memory.alloc<T>`/`region.alloc<T>` are to be **forbidden** (probe showed
+      `str`, `[u8]`, `Channel<T>`, and structs with `str` fields all pass
+      through today). Next: Phase 0 (`NS6002`, below), then Phase A (header +
+      shapes + allocator split, no collection yet). `[P9]`'s exact signature
+      stays an open `11-c-abi.md` ABI decision, gating only the FFI half.
+- [ ] Phase 0 of GC-001: forbid managed element types in manual allocation as
+      `NS6002` "Manual allocation of a GC-managed element type" (predicate:
+      T contains no GC-managed references - exactly the inverse of the GC
+      shape predicate, so no new analysis). Touches `Memory.alloc<T>` and
+      `region.alloc<T>` in the checker, one spec §8.4 rule line, and a spec
+      §14.9 row; `Ptr<T>` as a parameter type stays expressible for the FFI
+      boundary. **The code number NS6002 is proposed by the agent, following
+      the NS6001 precedent in the NS6xxx range §14.3 reserves for Memory -
+      reversible if a different code or meaning is wanted.** Must land before
+      GC-001 Phase A per the approved sequencing.
 - [x] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
       error" - **was unimplemented, now enforced as `NS6001`.** A probe test
       confirmed the gap was real: system mode accepted `Memory.alloc` with no

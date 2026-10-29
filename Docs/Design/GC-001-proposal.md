@@ -1,12 +1,20 @@
-# GC-001 — precise roots and non-moving mark-sweep (proposal)
+# GC-001 — precise roots and non-moving mark-sweep (approved design)
 
-> **Status: PROPOSAL. This file is not authoritative.**
+> **Status: APPROVED with amendments, 2026-10-29.** The eleven choices
+> `[P1]`-`[P11]` that this file originally carried for approval have been
+> decided (see §10 for the verdicts and reasons); the approved amendments are
+> applied inline in the sections they change and marked "Amendment". Two items
+> are not fully closed: `[P9]`'s exact signature is deferred to
+> `11-c-abi.md` (concept approved), and `[P11]` is split out for its own spec
+> review (until then, left-to-right managed-argument evaluation is an
+> implementation detail, not normative). The two conditions the approval was
+> gated on (task execution model; `Ptr<T>` with managed element types) are
+> answered in §11 with evidence.
 >
-> It changes no spec text, no design-baseline document, and no D-decision. Per
-> `Docs/Agent/agent.md` rule 10 ("Do not invent decisions"), every choice here
-> that is not already fixed by D1-D25, `Docs/spec-v0.1.md`, or
-> `Docs/Design/V1/` is tagged **[P]** and listed in §10 for approval. Nothing
-> in this file is implemented.
+> This file still changes no spec text by itself: the `[P5]` VARIANT shape is
+> internal runtime machinery, but the `[P11]` split-out and the `NS6002`
+> managed-element-type rule proposed in §11 are spec changes that follow their
+> own approval path.
 >
 > Written 2026-10-29 under the `GC-001` backlog item in `Docs/Agent/todo.md`.
 
@@ -104,16 +112,24 @@ Everything below follows from one invariant that makes that safe:
 
 ---
 
-## 5. Proposed mechanism
+## 5. The mechanism (as approved)
 
-### 5.1 [P1] Eager value snapshots, one contiguous region per frame
+### 5.1 [P1] Eager value snapshots, one contiguous region per frame — approved with amendment
 
-Per task, a growable array of `void*` slots:
+Per execution context, a growable array of `void*` slots:
 
 ```c
 void**  astra_roots;        /* slot values, not addresses */
 size_t  astra_root_count;   /* high-water mark of the live region */
 ```
+
+The landed runtime is single-threaded and eager: `spawn` evaluates its block
+inline in the caller's C frame and stores the result in a `Task` value
+(`emit.rs` `ExprKind::Spawn`; no threads, `ucontext`, or task queue exist
+anywhere in the runtime), so there is exactly one execution context and
+exactly one root array today. The array is nonetheless scoped *per execution
+context* so that `CONC-001` OS-threaded tasks become one array per task — an
+extension, not a redesign (see §11, condition 1).
 
 - Function entry: `size_t _rf = astra_gc_frame_enter(N);` reserves `N` slots
   and zeroes them (so a slot for a local not yet assigned reads as `NULL`).
@@ -122,8 +138,37 @@ size_t  astra_root_count;   /* high-water mark of the live region */
 - **Snapshot on assignment**: immediately after every C store of a value that
   holds managed data (`v_x = ...`, parameter binding, emitter temporary),
   emit `astra_roots[_rf + k] = <root expr>;`.
-- Return: `astra_roots_count = _rf;` before every `return`, emitted by
+- Return: `astra_root_count = _rf;` before every `return`, emitted by
   `emit_return` on all paths (ordinary, fallible, unit).
+
+**Amendment (2026-10-29): values survive realloc of the root array; addresses
+don't — so the snapshot set is not "assignment only".** A managed local's
+payload pointer can also change under operations that are not spelled as
+assignments, and each such operation must re-snapshot every local whose
+payload pointer it can move:
+
+- array/map **push growth** (`astra_array_push` may replace `arr.data` — every
+  live local aliasing that array must be re-snapshotted after the push);
+- **`&mut` calls** that may realloc through a mutable reference;
+- **field stores** into a managed struct or collection element.
+
+Where the emitter cannot cheaply prove which locals alias the grown buffer,
+re-snapshotting every managed local of the current frame after the operation
+is the correct over-approximation; the store is O(live managed locals), once
+per growth, not per element.
+
+Root sources, stated completely for V1: the root set at any collection is
+(a) the current task's frame slots (this section), (b) the permanent boundary
+pin set (§5.8), and (c) explicit FFI registrations (§5.9). Three candidates
+that do not exist in the language and therefore cannot be root sources
+(probed 2026-10-29, reject codes recorded in §11): **module-level statics**
+(the module level accepts declarations only — `let`/`static` at top level is
+`NS2005`), **closure environments** (closure literals exist only as `spawn`
+operands — `let f = || ...` is `NS2002` — and spawn evaluates its block
+eagerly inline, so no closure value with a captured environment ever exists),
+and **queued spawn arguments** (there is no queue; a `Task<T>` stores an
+already-computed value, which is an ordinary managed local of the receiving
+frame and is snapshotted like any other).
 
 Why snapshots rather than the more usual "array of addresses of locals":
 
@@ -137,7 +182,10 @@ Why snapshots rather than the more usual "array of addresses of locals":
 
 Cost: one extra store per managed assignment, and `memset(N)` per frame.
 
-### 5.2 [P2] Root extraction is type-directed
+### 5.2 [P2] Root extraction is type-directed — approved
+
+(Amendment none: the verdict recorded that the alternative — conservative
+scanning — violates R1 and design §4.1, so there was nothing to change.)
 
 A collector marks *objects*, so a slot must hold a heap block pointer, not the
 local's own value. For each managed local the emitter emits the payload pointer
@@ -155,7 +203,7 @@ it owns:
 
 This parallels `tcx.c_type` and lives in the same crate.
 
-### 5.3 [P3] The emitter invariant: materialise managed subvalues before calls
+### 5.3 [P3] The emitter invariant: materialise managed subvalues before calls — approved with amendment
 
 `args_c` currently emits arguments inline, so `foo(a, b())` can hold `a`'s
 managed payload in an unnamed C temporary while `b()` allocates. To satisfy I1
@@ -171,12 +219,26 @@ alternative "suspend collection while mid-expression" scheme: the emitter has a
 hook *before* an expression but no hook *after* one, so bracketing a call with
 `suspend`/`resume` statements would require new plumbing.
 
+**Amendment (2026-10-29): hoisting must preserve short-circuit and branch
+semantics.** Hoisting is only legal in positions whose evaluation is
+unconditional. A managed subvalue under the right operand of `&&` or `||` must
+not be evaluated (and therefore not snapshot) above the guard — `cond &&
+side_effecting_call()` must not run the call when `cond` is false, and the same
+applies under `if`/`match` arms and conditional expressions. The hoisting pass
+distributes over short-circuit operators: only the operands that actually
+execute publish their temporaries, which means the temporaries for the right
+operand live inside the guard's own emitted branch. This constrains *where*
+materialisation may fire, not *whether* it is sound: any expression that can
+allocate while holding an unhoisted managed value is still an error under I1.
+
 Note: materialising also pins left-to-right argument evaluation for managed
 arguments. `Docs/spec-v0.1.md` §2 (expressions) does not currently state an
-evaluation order for call arguments; if it should, that is a separate spec
-decision and is listed in §10 as [P11].
+evaluation order for call arguments; per the `[P11]` verdict that is split out
+for its own spec review, and until that review concludes, left-to-right
+behaviour for managed arguments is an implementation detail of this mechanism,
+not a normative rule.
 
-### 5.4 [P4] Where collection runs: explicit safepoints
+### 5.4 [P4] Where collection runs: explicit safepoints — approved with amendment
 
 `astra_alloc` allocates, records, and bumps `bytes_since_gc`; it never
 collects. `astra_gc_maybe_collect()` is emitted:
@@ -193,7 +255,22 @@ collection, never corruption. With §5.3 in place, collecting inside
 `astra_alloc` would also be *correct*, so this is a controllability choice, not
 a correctness one.
 
-### 5.5 [P5] Object model: block header + compiler-emitted shape
+**Amendments (2026-10-29):**
+
+- **Document the starvation corner.** A long function with no loop — one that
+  allocates heavily but never reaches a back-edge — never collects until it
+  returns and the caller's next safepoint is reached. This is accepted: it
+  costs delay (peak memory), never correctness, and matches "a missed
+  safepoint costs delay, not corruption". The behaviour is documented rather
+  than mitigated in V1.
+- **Debug mode that collects inside every `astra_alloc`.** `ASTRA_GC_STRESS=1`
+  (already the stress knob in §7/§8) is specified to collect at *every*
+  allocation, not only at safepoints. This exists to continuously test the
+  claim that collecting inside `astra_alloc` is also correct under `[P3]` —
+  if that claim were ever wrong, the stress runs would fail first, which is
+  exactly what a debug mode is for.
+
+### 5.5 [P5] Object model: block header + compiler-emitted shape — approved with amendment
 
 Mark-sweep needs, from a payload pointer alone: the block's extent, and how to
 find the pointers inside it. V1 has no runtime reflection (§1), so the shape
@@ -208,7 +285,7 @@ typedef struct NS_Gc_Head {
 } NS_Gc_Head;                    /* immediately precedes the payload */
 ```
 
-Shape grammar (proposed, minimal):
+Shape grammar (approved, minimal):
 
 - `LEAF` — bytes only (`str`/`bytes` buffers, arrays of scalars).
 - `ARRAY(elem)` — payload is `bytes / sizeof(elem)` elements of `elem`;
@@ -216,21 +293,54 @@ Shape grammar (proposed, minimal):
 - `RECORD({offset, shape}[])` — fixed pointer-bearing fields (structs, enum
   payloads, and the fields of a buffer element such as `Array<u8>` inside an
   `Array<Array<u8>>`).
-- Shapes compose; a variant wrapper adds the tag handling already present in
-  §5.2's table.
+- **`VARIANT(tag_offset, shapes[])`** — Amendment (2026-10-29): tagged enums
+  get a first-class shape instead of being approximated by a `RECORD` plus a
+  conditional. The tag is read at `tag_offset`; `shapes[tag]` is the payload
+  shape for that variant (or `NULL` for a payload-less variant). This replaces
+  the vague "a variant wrapper adds the tag handling" sentence the proposal
+  originally carried with a shape the mark loop can actually execute.
+- Shapes compose.
+
+**Amendment (2026-10-29): zeroed payloads or length-aware tracing.** Spare
+capacity and struct padding must never be read as pointers. Two rules make
+that true, and the allocator chooses one per block:
+  1. **Zero on alloc** (default): a freshly allocated payload is zeroed, so
+     unused capacity reads as `NULL` slots and tracing them is harmless; or
+  2. **Length-aware shapes**: `ARRAY` shapes that can carry spare capacity
+     (array/map buffers, whose `cap` may exceed `len`) carry the live element
+     count at a known offset, and the mark loop traces only `len` elements.
+The runtime already leans this way (`cap`-sized buffers exist precisely to
+grow), so option 2 is the intended path for collection-bearing buffers and
+option 1 covers fixed-size records. A trace must never consult uninitialized
+bytes.
+
+**Mark stack (approved addition).** Marking uses an explicit, heap-allocated
+mark stack (a growable `void*` worklist), not C-stack recursion: a deeply
+nested `Array<Array<...>>` must not be able to overflow the C stack during
+collection, and the design's no-unwinding rule (R4) leaves no recovery path
+if it did. Its peak size is counted against the 32 KB native GC budget
+(`03` §12) alongside the root array and block directory; exceeding the budget
+in measurement is a revisit trigger, not a silent overrun.
 
 This is the part the design baseline does **not** cover: §4.1 fixes precise
 *roots* and says nothing about tracing *through objects*. Hence [P5].
 
-### 5.6 [P6] Interior pointers from `str`/`bytes` slices
+### 5.6 [P6] Interior pointers from `str`/`bytes` slices — approved
 
 A slice view (`runtime.rs:374`) does not point at a block start, so
 `payload - sizeof(NS_Gc_Head)` is wrong for it.
 
-Proposed: maintain a directory of live blocks; at collection time, sort it once
+Approved: maintain a directory of live blocks; at collection time, sort it once
 (`O(k log k)` per collection) and resolve each root by binary search — exact
 match if the root is a base pointer, otherwise containment. This keeps slicing
 `O(1)` and keeps precision (only real pointers are followed).
+
+**Recorded with the approval (2026-10-29):** the per-collection sort cost and
+the 32 KB native budget (`03` §12) are the things to revisit first if this
+strains — the directory grows with the live block count, and the sort runs on
+every collection. If the budget cannot hold, the fallback is an ABI change
+(widening `NS_Str`/`NS_Bytes` with a base pointer, per `11-c-abi.md` §2),
+which would need its own approval; it is not to be taken quietly.
 
 Rejected alternatives:
 
@@ -239,7 +349,10 @@ Rejected alternatives:
 - widening `NS_Str` with a base pointer: an ABI change to `11-c-abi.md` §2;
 - conservative scanning: contradicts §4.1 outright.
 
-### 5.7 [P7] Split manual from managed allocation
+### 5.7 [P7] Split manual from managed allocation — approved
+
+(One list with two owners would be a bug, and spec §8.4 already says
+`Ptr<T>` is not a GC reference.)
 
 Today `Memory.free` unlinks from the same list the collector would trace. Once
 GC exists they must be separate owners:
@@ -251,7 +364,7 @@ GC exists they must be separate owners:
 Debug builds should assert the two families are not crossed — the spec already
 allows double-free detection (§8.4, spec 1321).
 
-### 5.8 [P8] C-boundary values are pinned for the run
+### 5.8 [P8] C-boundary values are pinned for the run — approved with amendment
 
 `11-c-abi.md` §5 promises a value returned across the boundary stays valid
 until process exit, and adds "(allocated/static data) — not until the next
@@ -263,12 +376,31 @@ run-scoped root set. §5's parenthetical then needs one sentence changed
 The rejected alternative — releasing boundary values at the next collection —
 would silently invalidate the documented consumer contract.
 
-### 5.9 [P9] FFI frames register roots explicitly
+**Amendment (2026-10-29): unbounded pinning is accepted for V1, with a
+release API as a follow-up.** Pinning is monotone — a long-running program
+that exports many values pins all of them for the process lifetime. That is
+accepted for V1 rather than designed away; a follow-up (a
+`astra_gc_unpin`-style release API, and/or a stable handle indirection) is
+recorded as post-V1 work, not part of this implementation.
 
-§4.3 already requires this. Proposal: expose a small runtime API for hand-written
-`@script:c` blocks — `astra_gc_push(void*)` / `astra_gc_pop(n)` — and have the
-inline-script boundary emit it around calls, since foreign frames are opaque to
-the emitter. The exact signature is an ABI question for `11-c-abi.md`.
+**The pinning pair, stated together (2026-10-29):** values *returned* to a
+foreign module are pinned for the run (this section); values *borrowed* by a
+foreign module are not — a borrowed pointer is valid only for the call
+(spec §8.5) and is released when the call ends, exactly like any other
+non-root. A foreign module that stashes a borrowed pointer for later use is
+violating §8.5, and the collector treating the stashed value as dead is the
+correct consequence, not a defect. The two rules are documented as a pair so
+neither can be read without the other.
+
+### 5.9 [P9] FFI frames register roots explicitly — concept approved, signature deferred
+
+§4.3 already requires this. The concept is approved: expose a small runtime
+API for hand-written `@script:c` blocks — a push/pop root registration pair —
+and have the inline-script boundary emit it around calls, since foreign frames
+are opaque to the emitter. The names used in this document (`astra_gc_push` /
+`astra_gc_pop`) are placeholders: **the exact signature stays open as an ABI
+decision for `11-c-abi.md`** and must be settled there before the FFI half is
+implemented. The mechanism (§5.1-§5.4) does not depend on the signature.
 
 ---
 
@@ -277,8 +409,11 @@ the emitter. The exact signature is an ABI question for `11-c-abi.md`.
 - Any `.ns` syntax, type, or diagnostic (no new surface).
 - JS/TS backends (host GC) and Nova (host memory).
 - `Memory`/`ptr` API signatures; finalizers and weak references stay absent.
-- The single-threaded task model: one task, one heap, one root array. Task-local
-  heaps become meaningful only when `CONC-001` adds OS threads.
+- The single-threaded task model: one execution context, one heap, one root
+  array. `spawn` evaluates inline in the caller's frame (no threads, no task
+  queue), so task-local heaps and one-root-array-per-task become meaningful
+  only when `CONC-001` adds OS threads — the per-execution-context scoping in
+  §5.1 makes that an extension rather than a redesign.
 
 ---
 
@@ -286,10 +421,15 @@ the emitter. The exact signature is an ABI question for `11-c-abi.md`.
 
 | Phase | Content | Note |
 |---|---|---|
+| 0 | `NS6002`: forbid managed element types in `Memory.alloc<T>`/`region.alloc<T>` (§11, condition 2) | Small checker+spec slice; lands before Phase A so the footgun class is closed before any allocator split makes it observable |
 | A | Header + shapes, allocator split, no collection yet | Pure refactor; arena keeps its current behaviour and its leak tests |
 | B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | Default off; §8 proves correctness |
 | C | Turn collection on by default; re-point `astra_arena_live_count`-based tests at the new accounting | |
 | D | Wasm: needs a managed allocator in linear memory before any of this can run there | Sequencing decision, [P10] |
+
+Both conditions that gated implementation (§11) are answered, so Phase 0 and
+Phase A may start. The `[P9]` signature remains deferred to `11-c-abi.md`, but
+only the FFI half of the work depends on it.
 
 No new manifest key is proposed for V1; if a `memory.gc` switch is wanted it is
 a spec change, not an implementation detail (see §10).
@@ -298,22 +438,32 @@ a spec change, not an implementation detail (see §10).
 
 ## 8. Verification plan
 
-1. **Stress mode.** `ASTRA_GC_STRESS=1` collects at every safepoint. Run the
-   full gate (`npm run ci`), the 19 positive + 12 reject conformance cases, and
-   every hosted `emit_c` compile-and-run under it. This is the standard way to
-   find a missing root slot.
+1. **Stress mode.** `ASTRA_GC_STRESS=1` collects at every allocation (§5.4
+   amendment — not only at safepoints, so the "collecting inside `astra_alloc`
+   is correct under `[P3]`" claim is continuously tested). Run the full gate
+   (`npm run ci`), the 19 positive + 13 reject conformance cases, and every
+   hosted `emit_c` compile-and-run under it. This is the standard way to find
+   a missing root slot.
 2. **Use-after-free oracle.** Poison block payloads on free (`0xDD`) in debug
    builds; any live read of a poisoned byte fails the test.
 3. **Proof that collection actually happens.** Today `astra_arena_live_count()`
    cannot fall during a run. Add a test that allocates in a loop and asserts the
    live-block peak stays bounded while total allocations grow — the first test
    in this repo that would fail against today's arena.
-4. **Interior-root test.** Take a slice whose base becomes unreachable, collect,
+4. **Growth-then-collect test.** Build an array past its capacity (forcing a
+   push-growth realloc that moves `arr.data`), then force a collection, then
+   read every element. This is the case the `[P1]` amendment exists for: the
+   snapshot must have been re-published after the growth, or the collector sees
+   a stale payload pointer and the read fails under the poison oracle.
+5. **Interior-root test.** Take a slice whose base becomes unreachable, collect,
    and read through the slice.
-5. **Boundary pinning test.** Return an array to a C consumer, collect, then
-   read it (§5.8).
-6. **Budget.** Measure GC runtime against `03` §12's 32 KB native budget.
-7. **Tier-1.** All of the above on Linux, macOS, and Windows via the CI remote.
+6. **Boundary pinning test.** Return an array to a C consumer, collect, then
+   read it (§5.8). A companion case passes a *borrowed* pointer, lets the call
+   end, collects, and asserts the borrow is not kept alive (the §5.8 pair).
+7. **Budget.** Measure GC runtime against `03` §12's 32 KB native budget — the
+   root array, the block directory, **and the mark stack** (§5.5) all count
+   against it.
+8. **Tier-1.** All of the above on Linux, macOS, and Windows via the CI remote.
 
 ---
 
@@ -343,32 +493,100 @@ Items 1 and 2 are recorded in `Docs/Agent/todo.md` alongside this proposal.
 
 ---
 
-## 10. Decisions requiring approval
+## 10. Decision record (decided 2026-10-29)
 
-| ID | Decision | If rejected |
-|---|---|---|
-| [P1] | Snapshots (values) rather than address-based shadow stacks | Needs local hoisting + zero-init, and breaks across `realloc` of the root array |
-| [P2] | Type-directed payload extraction, one slot set per managed local | Alternative: conservative per-type "whole struct is a root", which mislabels `str.data` bytes as pointers |
-| [P3] | Materialise managed subvalues before calls (§5.3) | Alternative: suspend collection mid-expression; architecturally awkward (no post-expression hook) |
-| [P4] | Safepoints at function entry + loop back-edges, not inside `astra_alloc` | Collecting inside `astra_alloc` is also correct once [P3] holds |
-| [P5] | Block header + `LEAF`/`ARRAY`/`RECORD` shape grammar | Nothing else can trace objects without reflection |
-| [P6] | Sorted block directory for interior-root resolution | Copy-on-slice, or ABI change to `NS_Str` |
-| [P7] | Separate manual and GC allocators | `Memory.free` and the collector would fight over one list |
-| [P8] | Pin boundary-crossing values instead of releasing them | Breaks `11-c-abi.md` §5 as written |
-| [P9] | `astra_gc_push/pop` API for FFI frames | §4.3 requires *some* answer; the API shape is an ABI decision |
-| [P10] | Native first, Wasm in a later phase | Doing both at once doubles the surface of a change that is hard to debug |
-| [P11] | Whether call-argument evaluation order becomes normative (surfaced by [P3]) | Spec change; needs its own review |
+| ID | Decision | Verdict | Reason |
+|---|---|---|---|
+| [P1] | Snapshots (values) rather than address-based shadow stacks | **Approve with amendment** | Values survive realloc of the root array; addresses don't. Amendment: re-snapshot after any operation that can change a managed local's payload pointer (push growth, `&mut` calls, field stores), not only after assignment — applied in §5.1 |
+| [P2] | Type-directed payload extraction, one slot set per managed local | **Approve** | The alternative is conservative scanning, which violates R1 and design §4.1 |
+| [P3] | Materialise managed subvalues before calls (§5.3) | **Approve with amendment** | The emitter has a pre-hook but no post-hook, so suspend/resume is the harder path. Amendment: hoisting must preserve short-circuit and branch semantics (`&&`, `||`, branch-guarded evaluation) — applied in §5.3 |
+| [P4] | Safepoints at function entry + loop back-edges, not inside `astra_alloc` | **Approve with amendment** | Auditable, and a missed safepoint costs delay, not corruption. Amendments: document that a long non-looping function never collects, and specify `ASTRA_GC_STRESS=1` to collect inside every `astra_alloc` to test the claim that this is also correct under `[P3]` — applied in §5.4 |
+| [P5] | Block header + shape grammar | **Approve with amendment** | Without reflection, compiler-emitted shapes are the only way to trace objects. Amendments: add `VARIANT(tag_offset, shapes[])`, and require zeroed payloads or length-aware tracing so spare capacity and padding are never read as pointers — applied in §5.5 |
+| [P6] | Sorted block directory for interior-root resolution | **Approve** | Keeps slicing O(1) with no `NS_Str` ABI change. Recorded: the per-collection sort cost and the 32 KB budget are the things to revisit; the fallback if it fails is an ABI change, which would need its own approval — applied in §5.6 |
+| [P7] | Separate manual and GC allocators | **Approve** | One list with two owners would be a bug, and spec §8.4 already says `Ptr<T>` is not a GC reference |
+| [P8] | Pin boundary-crossing values instead of releasing them | **Approve with amendment** | Preserves the `11-c-abi.md` §5 contract. Amendment: record that unbounded pinning is accepted for V1 and add a release API as a follow-up — applied in §5.8, together with the returned-pinned / borrowed-not pair |
+| [P9] | `astra_gc_push/pop` API for FFI frames | **Approve concept, defer signature** | §4.3 requires an answer and this is a reasonable one; the exact signature is an ABI decision for `11-c-abi.md` and stays open — applied in §5.9 |
+| [P10] | Native first, Wasm in a later phase | **Approve** | Wasm needs a managed allocator in linear memory first, so this is sequencing, not a real choice |
+| [P11] | Whether call-argument evaluation order becomes normative (surfaced by [P3]) | **Split out, not decided here** | It is a spec change that needs its own review; `[P3]`'s left-to-right behaviour for managed args is an implementation detail until that review happens |
 
-**Open questions carried forward** (`03` §14): is non-moving mark-sweep enough
-for V1 (Q1)? how are FFI roots registered (Q5, answered here only as a
-proposal)? plus one new: does a value handed to a foreign module by *borrowed*
-ownership become pinned like a boundary return (§5.8), or is it released when
-the call ends? Spec §8.5 says borrowed pointers are valid only for the call,
-which suggests released — but the two rules must be stated together.
+Open questions (`03` §14), status after the decisions:
+
+- **Q1 — is non-moving mark-sweep enough for V1? Closed: yes, and not by this
+  file** — design §4.1 already fixes non-moving mark-sweep as the V1 design;
+  the proposal never contested it.
+- **Q5 — how are FFI roots registered?** Answered as a concept by `[P9]`
+  (push/pop registration, signature deferred to `11-c-abi.md`).
+- **Borrowed values across FFI** (the question this file originally added):
+  **answered** — borrowed values are not pinned; they are released at call end
+  per spec §8.5, and a foreign module that stashes a borrowed pointer is
+  violating §8.5. The pair (returned = pinned, borrowed = not) is stated
+  together in §5.8 as required.
 
 ---
 
-## 11. References
+## 11. Conditions before implementation — answered (2026-10-29)
+
+The approval was gated on two conditions. Both are answered here with evidence;
+neither blocks Phase 0/A any more.
+
+### Condition 1 — task execution model: tasks run on the caller's stack
+
+**Answered: the caller's C stack; the single root array in `[P1]` works as
+written.** `spawn` is eager and inline: the C backend evaluates the spawn block
+in the caller's own frame and stores the result in a `Task` value (the emitter
+comment says "run the block now and store its value in a Task"), and the
+runtime contains no thread, `ucontext`, `setjmp`, or task queue of any kind. A
+`Task<T>` is therefore just a value holding an already-computed result, and its
+payload is an ordinary managed local of the receiving frame.
+
+To keep the design robust rather than merely correct-for-now, `[P1]`'s root
+array is scoped **per execution context** (§5.1): there is exactly one today,
+and `CONC-001` OS-threaded tasks then add one array per task without redesign.
+
+### Condition 2 — `Ptr<T>` and managed types: forbid (with `NS6002` proposed)
+
+**Answered by probe (2026-10-29): the hazard is fully expressible today, so
+the decision is to forbid managed element types in manual allocation.**
+
+What the probe established (system mode, `@memory:manual`):
+
+| Allocation | Result |
+|---|---|
+| `Memory.alloc<str>(4)` + `p.write(0, "hello")` | **ACCEPTED** — a managed pointer is written into manual memory |
+| `Memory.alloc<[u8]>(4)` | **ACCEPTED** |
+| `Memory.alloc<Channel<i32>>(2)` | **ACCEPTED** |
+| `Memory.alloc<Rec>(2)` with `struct Rec { name: str, size: i32 }` | **ACCEPTED** |
+| `Memory.alloc<Pair>(2)` with scalar-only `Pair` | ACCEPTED (the legitimate case) |
+| `Memory.alloc<Array<u8>>(4)` | Rejected — but only because `Array<T>` is not source syntax (`[T]` is, per spec §5; `Array<T>` is the backend spelling), **not** by any managed-type rule |
+
+Since `[P5]`/`[P7]` make `Ptr<T>` never a root (spec §8.4), every accepted row
+above is a dangling read waiting to happen once collection runs: the manual
+copy outlives a collection that cannot see it. The choice is the offered one:
+**forbid**, not document-as-footgun. The predicate is exactly the inverse of
+`[P5]`'s shape predicate — "T contains no GC-managed references" (`str`,
+`bytes`, `[T]`, `Map`, `Channel`, `Task`, and structs/enums/tuples containing
+them) — so it costs no new analysis: the shape machinery already computes it.
+
+Scope of the rule: the allocation sites `Memory.alloc<T>` and
+`region.alloc<T>`. `Ptr<T>` as a parameter type stays expressible (FFI can
+still hand one over the boundary, which is unsafe by contract under spec
+§8.5); what closes is the compiler-visible way to *create* manual memory that
+holds managed references.
+
+Implementation path (Phase 0, §7): a checker rule with proposed code
+**`NS6002`** "Manual allocation of a GC-managed element type" — the second
+code in the `NS6xxx | Memory` range that spec §14.3 reserves — plus one rule
+line under spec §8.4. The code number follows the `NS6001` precedent and is
+flagged as proposed in `Docs/Agent/todo.md`; it is reversible.
+
+Linked to the deferred pointer-access follow-up: `ptr.as_slice`/`MutSlice` and
+any future `Ptr<T>`-producing surface must apply the same predicate, so the
+forbid is written as a predicate over "manual allocation of T", not as a
+one-off check on two builtins.
+
+---
+
+## 12. References
 
 - `Docs/spec-v0.1.md` §8 (memory), §8.4 (manual API and rules), §8.5 (FFI ownership)
 - `Docs/Design/V1/03-runtime-and-memory.md` §4, §12, §14
