@@ -157,6 +157,7 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         pending_instantiations: VecDeque::new(),
         emitted_instantiations: HashSet::new(),
         defers: Vec::new(),
+        roots: None,
     };
     e.emit_program();
     // Emission can reject constructs that only surface inside a body (an
@@ -277,6 +278,7 @@ pub fn emit_project(
             pending_instantiations: VecDeque::new(),
             emitted_instantiations: HashSet::new(),
             defers: Vec::new(),
+            roots: None,
         };
         e.emit_program_linked(&dep_headers);
         if e.tcx.rejected() {
@@ -618,6 +620,18 @@ struct Emitter<'a> {
     /// Instantiations whose bodies have been emitted (dedupe).
     emitted_instantiations: HashSet<String>,
     defers: Vec<Vec<ast::Stmt>>,
+    /// Root slots for the function being emitted (GC-001 §5.1). `None` outside
+    /// a function body (constants, the `main` wrapper).
+    roots: Option<RootFrame>,
+}
+
+/// Frame root state: the C variable holding the frame base, the next free slot
+/// index, and every published local (C name, type, first slot) so a mutation
+/// can republish that local's slots.
+struct RootFrame {
+    var: String,
+    used: usize,
+    locals: Vec<(String, Type, usize)>,
 }
 
 /// One monomorphized generic function: the declaration plus the concrete type
@@ -1173,6 +1187,397 @@ impl<'a> Emitter<'a> {
         );
     }
 
+    /// Total root slots one function needs: managed parameters plus every
+    /// managed local declaration site anywhere in the body (including blocks
+    /// nested inside expressions, `for` bindings, and the for-loop's iterable
+    /// temporary). Slot indices are assigned during emission, so this is a
+    /// bound; over-counting only wastes a few zeroed slots.
+    fn count_root_slots(&mut self, block: &ast::Block, params: &[ast::Parameter]) -> usize {
+        let mut total = 0;
+        for p in params {
+            let ty = to_type(&p.ty);
+            total += self.tcx.root_slot_count(&ty);
+        }
+        for stmt in &block.statements {
+            self.count_stmt_slots(stmt, &mut total);
+        }
+        total
+    }
+
+    fn count_stmt_slots(&mut self, stmt: &Stmt, total: &mut usize) {
+        match &stmt.kind {
+            StmtKind::Let { ty, value, .. } => {
+                let val_ty = ty
+                    .as_ref()
+                    .map(to_type)
+                    .or_else(|| self.type_of(value).cloned())
+                    .unwrap_or(Type::Unit);
+                *total += self.tcx.root_slot_count(&val_ty);
+                self.count_expr_slots(value, total);
+            }
+            StmtKind::Return { value } => {
+                if let Some(value) = value {
+                    self.count_expr_slots(value, total);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Defer(s) => self.count_stmt_slots(s, total),
+            StmtKind::While { condition, body } => {
+                self.count_expr_slots(condition, total);
+                for stmt in &body.statements {
+                    self.count_stmt_slots(stmt, total);
+                }
+            }
+            StmtKind::For { iterable, body, .. } => {
+                self.count_expr_slots(iterable, total);
+                let iter_ty = self.type_of(iterable).cloned().unwrap_or(Type::Unit);
+                let elem_ty = match &iter_ty {
+                    Type::Array(t) | Type::Slice(t) => (**t).clone(),
+                    Type::Map(k, _) => (**k).clone(),
+                    Type::Bytes => Type::U8,
+                    _ => Type::Unit,
+                };
+                // The loop's iterable temporary and each iteration's binding.
+                *total += self.tcx.root_slot_count(&iter_ty);
+                *total += self.tcx.root_slot_count(&elem_ty);
+                for stmt in &body.statements {
+                    self.count_stmt_slots(stmt, total);
+                }
+            }
+            StmtKind::Expr(e) => self.count_expr_slots(e, total),
+            StmtKind::Scoped(s) => {
+                for stmt in &s.statements {
+                    self.count_stmt_slots(stmt, total);
+                }
+            }
+        }
+    }
+
+    fn count_expr_slots(&mut self, e: &Expr, total: &mut usize) {
+        match &e.kind {
+            ExprKind::Literal(_) | ExprKind::Identifier(_) => {}
+            ExprKind::Unary { operand, .. } | ExprKind::Propagate(operand) => {
+                self.count_expr_slots(operand, total);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.count_expr_slots(left, total);
+                self.count_expr_slots(right, total);
+            }
+            ExprKind::Assign { target, value } => {
+                self.count_expr_slots(target, total);
+                self.count_expr_slots(value, total);
+            }
+            ExprKind::Call { callee, arguments } => {
+                self.count_expr_slots(callee, total);
+                for argument in arguments {
+                    self.count_expr_slots(argument, total);
+                }
+            }
+            ExprKind::Index { target, index } => {
+                self.count_expr_slots(target, total);
+                self.count_expr_slots(index, total);
+            }
+            ExprKind::Member { target, .. } | ExprKind::TypeArguments { target, .. } => {
+                self.count_expr_slots(target, total);
+            }
+            ExprKind::Array(items) | ExprKind::Tuple(items) => {
+                for item in items {
+                    self.count_expr_slots(item, total);
+                }
+            }
+            ExprKind::Map(entries) => {
+                for entry in entries {
+                    self.count_expr_slots(&entry.key, total);
+                    self.count_expr_slots(&entry.value, total);
+                }
+            }
+            ExprKind::StructInit { fields, .. } => {
+                for field in fields {
+                    self.count_expr_slots(&field.value, total);
+                }
+            }
+            ExprKind::Block(block) => {
+                for stmt in &block.statements {
+                    self.count_stmt_slots(stmt, total);
+                }
+            }
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.count_expr_slots(condition, total);
+                for stmt in &then_branch.statements {
+                    self.count_stmt_slots(stmt, total);
+                }
+                match else_branch {
+                    Some(ElseBranch::Block(block)) => {
+                        for stmt in &block.statements {
+                            self.count_stmt_slots(stmt, total);
+                        }
+                    }
+                    Some(ElseBranch::If(inner)) => self.count_expr_slots(inner, total),
+                    None => {}
+                }
+            }
+            ExprKind::Match { value, arms } => {
+                self.count_expr_slots(value, total);
+                for arm in arms {
+                    match &arm.body {
+                        MatchArmBody::Expr(expr) => self.count_expr_slots(expr, total),
+                        MatchArmBody::Block(block) => {
+                            for stmt in &block.statements {
+                                self.count_stmt_slots(stmt, total);
+                            }
+                        }
+                    }
+                }
+            }
+            ExprKind::Spawn { body } => {
+                for stmt in &body.statements {
+                    self.count_stmt_slots(stmt, total);
+                }
+            }
+            ExprKind::Fail { arguments, .. } => match arguments {
+                FailArguments::Tuple(items) => {
+                    for item in items {
+                        self.count_expr_slots(item, total);
+                    }
+                }
+                FailArguments::Struct(fields) => {
+                    for field in fields {
+                        self.count_expr_slots(&field.value, total);
+                    }
+                }
+            },
+            ExprKind::Panic { message } | ExprKind::Abort { message } => {
+                self.count_expr_slots(message, total);
+            }
+        }
+    }
+
+    /// Publishes one local's root slots, writing the stores to the current
+    /// stream (`out`, or the expression buffer when a statement is being
+    /// hoisted). Returns the number of slots written.
+    fn publish_local(&mut self, base: &str, ty: &Type, first: usize) -> usize {
+        let Some(var) = self.roots.as_ref().map(|frame| frame.var.clone()) else {
+            return 0;
+        };
+        let slots = self.tcx.root_exprs(base, ty);
+        for (offset, slot) in slots.iter().enumerate() {
+            let _ = writeln!(
+                self.out,
+                "    astra_gc_publish({var} + {}, {slot});",
+                first + offset
+            );
+        }
+        slots.len()
+    }
+
+    /// Records a local as published and advances the slot cursor.
+    fn record_local(&mut self, name: String, ty: Type, first: usize, slots: usize) {
+        if let Some(frame) = self.roots.as_mut() {
+            frame.used += slots;
+            if slots > 0 {
+                frame.locals.push((name, ty, first));
+            }
+        }
+    }
+
+    /// Re-publishes one named local's slots after an operation that may move
+    /// its payload (assignment, push/insert growth). Looks up the innermost
+    /// binding of that C name.
+    fn republish_local(&mut self, name: &str) {
+        let Some(frame) = self.roots.as_ref() else {
+            return;
+        };
+        let Some((c_name, ty, first)) = frame
+            .locals
+            .iter()
+            .rev()
+            .find(|(local, _, _)| local == name)
+            .cloned()
+        else {
+            return;
+        };
+        self.publish_local(&c_name, &ty, first);
+    }
+
+    /// C local name for a root base expression: the innermost identifier of a
+    /// member/index chain, when it names a recorded local.
+    fn root_base_name(&self, e: &Expr) -> Option<String> {
+        match &e.kind {
+            ExprKind::Identifier(name) => Some(format!("v_{}", sanitize(name))),
+            ExprKind::Member { target, .. }
+            | ExprKind::Index { target, .. }
+            | ExprKind::TypeArguments { target, .. }
+            | ExprKind::Propagate(target) => self.root_base_name(target),
+            _ => None,
+        }
+    }
+
+    /// Every local whose payload can move in `e`: assignment targets and
+    /// method-call receivers (push/insert growth). Collected over the whole
+    /// statement, so nested mutations are republished too.
+    fn mutation_bases(&self, e: &Expr, out: &mut Vec<String>) {
+        match &e.kind {
+            ExprKind::Literal(_) | ExprKind::Identifier(_) => {}
+            ExprKind::Unary { operand, .. } | ExprKind::Propagate(operand) => {
+                self.mutation_bases(operand, out);
+            }
+            ExprKind::Binary { left, right, .. } => {
+                self.mutation_bases(left, out);
+                self.mutation_bases(right, out);
+            }
+            ExprKind::Assign { target, value } => {
+                if let Some(name) = self.root_base_name(target) {
+                    out.push(name);
+                }
+                self.mutation_bases(target, out);
+                self.mutation_bases(value, out);
+            }
+            ExprKind::Call { callee, arguments } => {
+                if let ExprKind::Member { target, .. } = &callee.kind
+                    && let Some(name) = self.root_base_name(target)
+                {
+                    out.push(name);
+                }
+                self.mutation_bases(callee, out);
+                for argument in arguments {
+                    self.mutation_bases(argument, out);
+                }
+            }
+            ExprKind::Index { target, index } => {
+                self.mutation_bases(target, out);
+                self.mutation_bases(index, out);
+            }
+            ExprKind::Member { target, .. } | ExprKind::TypeArguments { target, .. } => {
+                self.mutation_bases(target, out);
+            }
+            ExprKind::Array(items) | ExprKind::Tuple(items) => {
+                for item in items {
+                    self.mutation_bases(item, out);
+                }
+            }
+            ExprKind::Map(entries) => {
+                for entry in entries {
+                    self.mutation_bases(&entry.key, out);
+                    self.mutation_bases(&entry.value, out);
+                }
+            }
+            ExprKind::StructInit { fields, .. } => {
+                for field in fields {
+                    self.mutation_bases(&field.value, out);
+                }
+            }
+            ExprKind::Block(block) => {
+                for stmt in &block.statements {
+                    self.mutation_bases_stmt(stmt, out);
+                }
+            }
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.mutation_bases(condition, out);
+                for stmt in &then_branch.statements {
+                    self.mutation_bases_stmt(stmt, out);
+                }
+                match else_branch {
+                    Some(ElseBranch::Block(block)) => {
+                        for stmt in &block.statements {
+                            self.mutation_bases_stmt(stmt, out);
+                        }
+                    }
+                    Some(ElseBranch::If(inner)) => self.mutation_bases(inner, out),
+                    None => {}
+                }
+            }
+            ExprKind::Match { value, arms } => {
+                self.mutation_bases(value, out);
+                for arm in arms {
+                    match &arm.body {
+                        MatchArmBody::Expr(expr) => self.mutation_bases(expr, out),
+                        MatchArmBody::Block(block) => {
+                            for stmt in &block.statements {
+                                self.mutation_bases_stmt(stmt, out);
+                            }
+                        }
+                    }
+                }
+            }
+            ExprKind::Spawn { body } => {
+                for stmt in &body.statements {
+                    self.mutation_bases_stmt(stmt, out);
+                }
+            }
+            ExprKind::Fail { arguments, .. } => match arguments {
+                FailArguments::Tuple(items) => {
+                    for item in items {
+                        self.mutation_bases(item, out);
+                    }
+                }
+                FailArguments::Struct(fields) => {
+                    for field in fields {
+                        self.mutation_bases(&field.value, out);
+                    }
+                }
+            },
+            ExprKind::Panic { message } | ExprKind::Abort { message } => {
+                self.mutation_bases(message, out);
+            }
+        }
+    }
+
+    fn mutation_bases_stmt(&self, stmt: &Stmt, out: &mut Vec<String>) {
+        match &stmt.kind {
+            StmtKind::Let { value, .. } | StmtKind::Expr(value) => {
+                self.mutation_bases(value, out);
+            }
+            StmtKind::Return { value } => {
+                if let Some(value) = value {
+                    self.mutation_bases(value, out);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Defer(s) => self.mutation_bases_stmt(s, out),
+            StmtKind::While { condition, body } => {
+                self.mutation_bases(condition, out);
+                for stmt in &body.statements {
+                    self.mutation_bases_stmt(stmt, out);
+                }
+            }
+            StmtKind::For { iterable, body, .. } => {
+                self.mutation_bases(iterable, out);
+                for stmt in &body.statements {
+                    self.mutation_bases_stmt(stmt, out);
+                }
+            }
+            StmtKind::Scoped(s) => {
+                for stmt in &s.statements {
+                    self.mutation_bases_stmt(stmt, out);
+                }
+            }
+        }
+    }
+
+    /// Emits the root-slot stores for a value whose payload may have moved.
+    fn republish_mutations(&mut self, e: &Expr) {
+        let mut bases = Vec::new();
+        self.mutation_bases(e, &mut bases);
+        for base in bases {
+            self.republish_local(&base);
+        }
+    }
+
+    fn emit_frame_exit(&mut self) {
+        if let Some(frame) = &self.roots {
+            let var = frame.var.clone();
+            self.writeln_s(&format!("    astra_gc_frame_exit({var});"));
+        }
+    }
+
     fn emit_function(&mut self, f: &ast::FunctionDecl) {
         let sym = self.fn_symbol(&f.name);
         self.emit_function_named(f, &sym);
@@ -1188,12 +1593,34 @@ impl<'a> Emitter<'a> {
         self.cur_err = err.clone();
         let (ret_c, is_fallible) = self.fn_return_c(f);
         let params = self.fn_params_c(f);
+        let root_slots = self.count_root_slots(&f.body, &f.parameters);
         if self.linked {
             let _ = writeln!(self.out, "{ret_c} {sym}({params}) {{");
         } else {
             let _ = writeln!(self.out, "static {ret_c} {sym}({params}) {{");
         }
+        // One root region per frame (GC-001 §5.1): zeroed slots for every
+        // managed local and temporary, restored before every return.
+        self.roots = Some(RootFrame {
+            var: "_rf".to_string(),
+            used: 0,
+            locals: Vec::new(),
+        });
+        let _ = writeln!(
+            self.out,
+            "    size_t _rf = astra_gc_frame_enter({root_slots});"
+        );
+        for parameter in &f.parameters {
+            let ty = to_type(&parameter.ty);
+            let c_name = format!("v_{}", sanitize(&parameter.name));
+            let first = self.roots.as_ref().map_or(0, |frame| frame.used);
+            let slots = self.publish_local(&c_name, &ty, first);
+            self.record_local(c_name, ty, first, slots);
+        }
+        self.writeln_s("    astra_gc_maybe_collect();");
         self.emit_block_body(&f.body, true, is_fallible);
+        self.emit_frame_exit();
+        self.roots = None;
         self.out.push_str("}\n");
     }
 
@@ -1240,6 +1667,7 @@ impl<'a> Emitter<'a> {
 
     fn emit_implicit_tail_return(&mut self, is_fallible: bool) {
         self.emit_all_defers();
+        self.emit_frame_exit();
         if is_fallible {
             let ret_c = self.fn_result_c();
             let _ = writeln!(self.out, "    return ({ret_c}){{ .ok = true }};");
@@ -1278,6 +1706,7 @@ impl<'a> Emitter<'a> {
         if is_fallible {
             let ret_c = self.fn_result_c();
             self.emit_all_defers();
+            self.emit_frame_exit();
             let _ = writeln!(
                 self.out,
                 "    return ({ret_c}){{ .ok = true, .value = {v} }};"
@@ -1287,6 +1716,7 @@ impl<'a> Emitter<'a> {
             self.emit_all_defers();
         } else {
             self.emit_all_defers();
+            self.emit_frame_exit();
             let _ = writeln!(self.out, "    return {v};");
         }
     }
@@ -1376,7 +1806,10 @@ impl<'a> Emitter<'a> {
             } => self.emit_let(name, ty.as_ref(), value),
             StmtKind::Return { value } => self.emit_return(value.as_ref()),
             StmtKind::Break => self.writeln_s("    break;"),
-            StmtKind::Continue => self.writeln_s("    continue;"),
+            StmtKind::Continue => {
+                self.writeln_s("    astra_gc_maybe_collect();");
+                self.writeln_s("    continue;");
+            }
             StmtKind::Defer(s) => {
                 if let Some(scope) = self.defers.last_mut() {
                     scope.push((**s).clone());
@@ -1420,6 +1853,10 @@ impl<'a> Emitter<'a> {
         self.flush_pre();
         let ty_c = self.tcx.c_type(&val_ty);
         let _ = writeln!(self.out, "    {ty_c} v_{} = {v};", sanitize(name));
+        let c_name = format!("v_{}", sanitize(name));
+        let first = self.roots.as_ref().map_or(0, |frame| frame.used);
+        let slots = self.publish_local(&c_name, &val_ty, first);
+        self.record_local(c_name, val_ty, first, slots);
     }
 
     fn emit_return(&mut self, value: Option<&Expr>) {
@@ -1427,6 +1864,7 @@ impl<'a> Emitter<'a> {
         match value {
             None => {
                 self.emit_all_defers();
+                self.emit_frame_exit();
                 if is_fallible {
                     let ret_c = self.fn_result_c();
                     let _ = writeln!(self.out, "    return ({ret_c}){{ .ok = true }};");
@@ -1445,6 +1883,7 @@ impl<'a> Emitter<'a> {
                 let v = self.expr_with_expected(e, &expected);
                 self.flush_pre();
                 self.emit_all_defers();
+                self.emit_frame_exit();
                 if is_fallible {
                     let ret_c = self.fn_result_c();
                     let _ = writeln!(
@@ -1462,8 +1901,10 @@ impl<'a> Emitter<'a> {
         self.pre.clear();
         let cond = self.expr(condition);
         self.flush_pre();
+        self.republish_mutations(condition);
         let _ = writeln!(self.out, "    while ({cond}) {{");
         self.emit_block_body(body, false, false);
+        self.writeln_s("        astra_gc_maybe_collect();");
         self.writeln_s("    }");
     }
 
@@ -1492,6 +1933,11 @@ impl<'a> Emitter<'a> {
         let iter_var = self.fresh_id("it");
         let iter_c_ty = self.tcx.c_type(&iter_ty);
         let _ = writeln!(self.out, "    {iter_c_ty} {iter_var} = {iter};");
+        // The iterable copy holds managed payload; publish it before the body
+        // can allocate.
+        let first = self.roots.as_ref().map_or(0, |frame| frame.used);
+        let slots = self.publish_local(&iter_var, &iter_ty, first);
+        self.record_local(iter_var.clone(), iter_ty, first, slots);
         let elem_c = self.tcx.c_type(&elem_ty);
         let idx = self.fresh_id("i");
         let _ = writeln!(
@@ -1521,7 +1967,12 @@ impl<'a> Emitter<'a> {
                 );
             }
         }
+        let binding_c = format!("v_{}", sanitize(binding));
+        let first = self.roots.as_ref().map_or(0, |frame| frame.used);
+        let slots = self.publish_local(&binding_c, &elem_ty, first);
+        self.record_local(binding_c, elem_ty, first, slots);
         self.emit_block_body(body, false, false);
+        self.writeln_s("        astra_gc_maybe_collect();");
         self.writeln_s("    }");
     }
 
@@ -1546,6 +1997,7 @@ impl<'a> Emitter<'a> {
         let v = self.expr(e);
         self.flush_pre();
         self.emit_value_stmt(e, v, &ty);
+        self.republish_mutations(e);
     }
 
     fn emit_if_stmt(
@@ -1557,6 +2009,7 @@ impl<'a> Emitter<'a> {
         self.pre.clear();
         let cond = self.expr(condition);
         self.flush_pre();
+        self.republish_mutations(condition);
         let _ = writeln!(self.out, "    if ({cond}) {{");
         for stmt in &then_branch.statements {
             self.emit_stmt(stmt);
@@ -3761,6 +4214,12 @@ impl<'a> Emitter<'a> {
             PatternKind::Identifier(name) => {
                 let ty_c = self.tcx.c_type(ty);
                 let _ = writeln!(self.out, "        {ty_c} v_{} = {c_expr};", sanitize(name));
+                // Pattern bindings are managed locals too (GC-001 §5.1): a
+                // payload copy bound by `match` must be a root.
+                let c_name = format!("v_{}", sanitize(name));
+                let first = self.roots.as_ref().map_or(0, |frame| frame.used);
+                let slots = self.publish_local(&c_name, ty, first);
+                self.record_local(c_name, ty.clone(), first, slots);
             }
             PatternKind::Tuple(subpats) => {
                 let element_tys = match ty {
@@ -3819,9 +4278,14 @@ impl<'a> Emitter<'a> {
         let tmp = self.freshid("p");
         let _ = writeln!(self.pre, "    {result_c} {tmp} = {inner_c};");
         let fn_result_c = self.fn_result_c();
+        let exit = self
+            .roots
+            .as_ref()
+            .map(|frame| format!("astra_gc_frame_exit({}); ", frame.var))
+            .unwrap_or_default();
         let _ = writeln!(
             self.pre,
-            "    if (!{tmp}.ok) {{ return ({fn_result_c}){{ .ok = false, .error = {tmp}.error }}; }}"
+            "    if (!{tmp}.ok) {{ {exit}return ({fn_result_c}){{ .ok = false, .error = {tmp}.error }}; }}"
         );
         format!("{tmp}.value")
     }
@@ -3841,6 +4305,7 @@ impl<'a> Emitter<'a> {
         let name = error.segments.join(".");
         let err_val = self.construct_error(&name, arguments);
         let fn_result_c = self.fn_result_c();
+        self.emit_frame_exit();
         let _ = writeln!(
             self.out,
             "    return ({fn_result_c}){{ .ok = false, .error = {err_val} }};"

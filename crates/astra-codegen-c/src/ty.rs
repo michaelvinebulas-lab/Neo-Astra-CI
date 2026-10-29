@@ -898,6 +898,118 @@ impl TyCtxt {
         format!("&{name}")
     }
 
+    /// C expressions that publish one root slot each for an inline value of
+    /// `ty` (GC-001 §5.2). `base` is a C expression naming the value; each
+    /// returned expression yields a payload pointer (or `NULL` for a tagged
+    /// value whose active variant has no managed payload). Scalars, `Ptr` and
+    /// `Region` produce no slot. The slot count matches the number of
+    /// pointer-bearing leaves in `shape_ref`'s shape.
+    pub fn root_exprs(&mut self, base: &str, ty: &Type) -> Vec<String> {
+        if let Type::Generic(name) = ty
+            && let Some(concrete) = self.subst.get(name).cloned()
+        {
+            return self.root_exprs(base, &concrete);
+        }
+        if let Type::Named(name, arguments) = ty
+            && arguments.is_empty()
+            && let Some(concrete) = self.subst.get(name).cloned()
+            && concrete != *ty
+        {
+            return self.root_exprs(base, &concrete);
+        }
+        match ty {
+            Type::Str | Type::Bytes => vec![format!("(void*)(({base}).data)")],
+            Type::Array(_) | Type::Slice(_) => vec![format!("(void*)(({base}).data)")],
+            Type::Map(_, _) => vec![
+                format!("(void*)(({base}).keys)"),
+                format!("(void*)(({base}).values)"),
+            ],
+            Type::Option(inner) => self
+                .root_exprs(&format!("({base}).value"), inner)
+                .into_iter()
+                .map(|slot| format!("(({base}).some ? {slot} : NULL)"))
+                .collect(),
+            Type::Result(ok, error) => {
+                let mut slots = self
+                    .root_exprs(&format!("({base}).value"), ok)
+                    .into_iter()
+                    .map(|slot| format!("(({base}).ok ? {slot} : NULL)"))
+                    .collect::<Vec<_>>();
+                slots.extend(
+                    self.root_exprs(&format!("({base}).error"), error)
+                        .into_iter()
+                        .map(|slot| format!("(({base}).ok ? NULL : {slot})")),
+                );
+                slots
+            }
+            Type::Named(name, args) => match name.as_str() {
+                "Ptr" | "Region" => Vec::new(),
+                // A `Channel<T>` value is the `NS_Channel*` handle itself.
+                "Channel" => vec![format!("(void*)({base})")],
+                "Task" => {
+                    let inner = args.first().cloned().unwrap_or(Type::Unit);
+                    self.root_exprs(&format!("({base}).value"), &inner)
+                }
+                "SliceError" | "ParseIntError" | "OverflowError" => {
+                    vec![format!("(void*)(({base})._0.data)")]
+                }
+                "ChannelError" => Vec::new(),
+                _ => {
+                    if !args.is_empty() {
+                        return Vec::new();
+                    }
+                    match self.env.shape(name).cloned() {
+                        Some(DeclShape::Struct(shape)) => {
+                            let mut slots = Vec::new();
+                            for (field, field_ty) in &shape.fields {
+                                slots.extend(
+                                    self.root_exprs(&format!("({base}).{field}"), field_ty),
+                                );
+                            }
+                            slots
+                        }
+                        Some(DeclShape::Enum(shape)) => {
+                            let mut slots = Vec::new();
+                            for variant in &shape.variants {
+                                if variant.fields.is_empty() {
+                                    continue;
+                                }
+                                let Some(tag) = self.enum_tag(name, &variant.name) else {
+                                    continue;
+                                };
+                                let mut variant_slots = Vec::new();
+                                if variant.fields.len() == 1 {
+                                    variant_slots.extend(self.root_exprs(
+                                        &format!("({base}).payload.{}", variant.name),
+                                        &variant.fields[0],
+                                    ));
+                                } else {
+                                    for (index, field_ty) in variant.fields.iter().enumerate() {
+                                        variant_slots.extend(self.root_exprs(
+                                            &format!("({base}).payload.{}._{index}", variant.name),
+                                            field_ty,
+                                        ));
+                                    }
+                                }
+                                slots.extend(variant_slots.into_iter().map(|slot| {
+                                    format!("(({base}).tag == {tag} ? {slot} : NULL)")
+                                }));
+                            }
+                            slots
+                        }
+                        _ => Vec::new(),
+                    }
+                }
+            },
+            _ => Vec::new(),
+        }
+    }
+
+    /// Number of root slots an inline value of `ty` needs (see `root_exprs`).
+    pub fn root_slot_count(&mut self, ty: &Type) -> usize {
+        self.root_exprs("_", ty).len()
+    }
+
     fn user_typedef(&mut self, name: &str) -> String {
         let cname = format!("NS_{}{}", self.type_prefix, sanitize(name));
         // A dependency module declares this type: its translation unit and

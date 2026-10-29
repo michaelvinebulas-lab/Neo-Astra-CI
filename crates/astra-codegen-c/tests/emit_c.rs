@@ -22,7 +22,7 @@ use astra_core::parser::parse;
 use astra_core::resolver::resolve_module;
 use astra_core::type_surface::{ProjectModule, check_module_graph};
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 fn compile_and_emit(source: &str) -> String {
     compile_and_emit_mode(source, Mode::Core)
@@ -150,6 +150,15 @@ fn assert_clang_ok(c_source: &str) {
 /// returns (success, stdout, stderr).
 /// Returns `None` when no hosted-capable compiler is available.
 fn hosted_build_and_run(c_source: &str) -> Option<(bool, String, String)> {
+    hosted_build_and_run_with_env(c_source, &[])
+}
+
+/// Like [`hosted_build_and_run`], but runs the executable with extra
+/// environment variables (used to turn on `ASTRA_GC_STRESS`).
+fn hosted_build_and_run_with_env(
+    c_source: &str,
+    env: &[(&str, &str)],
+) -> Option<(bool, String, String)> {
     let compiler = hosted_compiler()?;
     let dir = tempfile::tempdir().expect("tempdir");
     let src_path = dir.path().join("module.c");
@@ -168,15 +177,17 @@ fn hosted_build_and_run(c_source: &str) -> Option<(bool, String, String)> {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         return Some((false, String::new(), stderr));
     }
-    let run_output = std::process::Command::new(&exe_path)
-        .output()
-        .expect("failed to run compiled executable");
+    let mut run = std::process::Command::new(&exe_path);
+    for (key, value) in env {
+        run.env(key, value);
+    }
+    let run_output = run.output().expect("failed to run compiled executable");
     let stdout = String::from_utf8_lossy(&run_output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&run_output.stderr).into_owned();
     Some((run_output.status.success(), stdout, stderr))
 }
 
-/// Compiles a multi-module project (key → source, in any order) through the
+/// Compiles a multi-module project (key â†’ source, in any order) through the
 /// shared graph frontend and emits one translation unit per module.
 ///
 /// Returns the emitted sources keyed by module, plus the header for each.
@@ -310,7 +321,7 @@ fn assert_project_compiles(emitted: &[(String, String, Option<String>)]) {
     }
 }
 
-// ─── tests ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn empty_module_emits_valid_header() {
@@ -669,7 +680,7 @@ fn manual_memory_requires_system_mode_in_checker() {
     );
 }
 
-/// `ptr.read(i)` / `ptr.write(i, v)` (spec §8.4) lower to plain C indexing on
+/// `ptr.read(i)` / `ptr.write(i, v)` (spec Â§8.4) lower to plain C indexing on
 /// the `T*` that `Ptr<T>` already maps to, so a write is visible to a later
 /// read and to a `Memory.free` that follows. Unchecked by design.
 #[test]
@@ -828,7 +839,7 @@ fn region_api_requires_system_mode_in_checker() {
 
 #[test]
 fn unsupported_target_map_emits_ns_map() {
-    // Maps are now supported — the backend must emit NS_Map via astra_map_new.
+    // Maps are now supported â€” the backend must emit NS_Map via astra_map_new.
     use astra_core::checker::{CheckOptions, check_source};
     let src = "pub fn mm() { let m = {\"a\": 1} }\n";
     let checked = match check_source(src, CheckOptions::new(Mode::Core)) {
@@ -1024,7 +1035,7 @@ fn host_shim_is_a_complete_hosted_translation_unit() {
 /// `NS_Gc_Head` before its payload) so `astra_runtime_shutdown` can release the
 /// whole run, while the manual family (`astra_manual_alloc`) keeps its own
 /// counters that shutdown never touches. Pins the two-family split of proposal
-/// §5.7 plus the leak check the native gate needs.
+/// Â§5.7 plus the leak check the native gate needs.
 #[test]
 fn managed_arena_is_released_at_shutdown() {
     let harness = r#"
@@ -1072,7 +1083,9 @@ int main(void) {
     return 0;
 }
 "#;
-    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(harness, &[("ASTRA_GC_STRESS", "0")])
+    else {
         eprintln!("skipping managed_arena_is_released_at_shutdown: no hosted compiler");
         return;
     };
@@ -1086,7 +1099,7 @@ int main(void) {
 /// GC-001 Phase A: every managed payload is preceded by an `NS_Gc_Head`
 /// carrying the payload extent and the compiler-emitted shape, payloads are
 /// zeroed on allocation, and growth zeroes the tail while preserving the old
-/// bytes. This is the object model (§5.5) the collector in later phases reads.
+/// bytes. This is the object model (Â§5.5) the collector in later phases reads.
 #[test]
 fn gc_blocks_carry_headers_shapes_and_zeroed_payloads() {
     let harness = r#"
@@ -1292,8 +1305,12 @@ int main(void) {
     return 0;
 }
 "#;
-    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
-        eprintln!("skipping collector_frees_unrooted_blocks_and_keeps_published_roots: no hosted compiler");
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(harness, &[("ASTRA_GC_STRESS", "0")])
+    else {
+        eprintln!(
+            "skipping collector_frees_unrooted_blocks_and_keeps_published_roots: no hosted compiler"
+        );
         return;
     };
     assert!(ok, "roots harness did not run:\n{stderr}");
@@ -1302,7 +1319,7 @@ int main(void) {
 
 /// GC-001 Phase B: tracing follows the compiler-emitted shapes (a `RECORD` slot
 /// keeps its target alive), resolves interior pointers to their containing
-/// block (spec §5.6 slices), and dispatches `VARIANT` payloads on the tag so an
+/// block (spec Â§5.6 slices), and dispatches `VARIANT` payloads on the tag so an
 /// inactive slot is never followed.
 #[test]
 fn collector_traces_shapes_interior_pointers_and_variants() {
@@ -1387,12 +1404,114 @@ int main(void) {
     return 0;
 }
 "#;
-    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
-        eprintln!("skipping collector_traces_shapes_interior_pointers_and_variants: no hosted compiler");
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(harness, &[("ASTRA_GC_STRESS", "0")])
+    else {
+        eprintln!(
+            "skipping collector_traces_shapes_interior_pointers_and_variants: no hosted compiler"
+        );
         return;
     };
     assert!(ok, "trace harness did not run:\n{stderr}");
-    assert!(stdout.contains("TRACE_OK"), "shape tracing broken: {stdout}");
+    assert!(
+        stdout.contains("TRACE_OK"),
+        "shape tracing broken: {stdout}"
+    );
+}
+
+/// GC-001 Phase B: every function gets a root frame - enter, publish after each
+/// managed local and parameter binding, a safepoint at entry and at loop
+/// back-edges, and a frame exit before each return.
+#[test]
+fn frame_roots_are_emitted_for_parameters_locals_and_loops() {
+    let src = r#"
+fn describe(name: str) -> str {
+    return name
+}
+
+pub fn main() -> i32 {
+    let text = "hi"
+    println(describe(text))
+    let rows = [1, 2]
+    let mut i: usize = 0
+    while i < rows.len() {
+        i = i + 1
+    }
+    println(rows.len())
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("size_t _rf = astra_gc_frame_enter(1);"),
+        "expected a one-slot frame for the str parameter:\n{out}"
+    );
+    assert!(
+        out.contains("astra_gc_publish(_rf + 0, (void*)((v_name).data));"),
+        "expected the managed parameter to be published:\n{out}"
+    );
+    assert!(
+        out.contains("astra_gc_publish(_rf + 0, (void*)((v_text).data));")
+            && out.contains("astra_gc_publish(_rf + 1, (void*)((v_rows).data));"),
+        "expected managed locals to be published in declaration order:\n{out}"
+    );
+    assert!(
+        out.matches("astra_gc_maybe_collect();").count() >= 2,
+        "expected an entry safepoint and a loop back-edge safepoint:\n{out}"
+    );
+    assert!(
+        out.contains("astra_gc_frame_exit(_rf);"),
+        "expected frame exits before returns:\n{out}"
+    );
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        eprintln!(
+            "skipping frame_roots_are_emitted_for_parameters_locals_and_loops: no hosted compiler"
+        );
+        return;
+    };
+    assert!(ok, "program failed:\n{stderr}");
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["hi", "2"]);
+}
+
+/// GC-001 Phase B stress mode (Â§5.4 amendment, Â§8.1): with
+/// `ASTRA_GC_STRESS=1` a collection runs before every managed allocation and at
+/// every safepoint. A loop that grows a live array and allocates a scratch
+/// array per iteration must keep the live array intact, including across the
+/// push growth that moves its buffer.
+#[test]
+fn roots_survive_stress_collection_at_every_allocation() {
+    let src = r#"
+pub fn main() -> i32 {
+    let mut keep = [3, 1, 4]
+    let mut i = 0
+    while i < 4 {
+        let scratch = [i, i + 1]
+        keep.push(scratch[1])
+        i = i + 1
+    }
+    println(keep.len())
+    println(keep[0])
+    println(keep[6])
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(&out, &[("ASTRA_GC_STRESS", "1")])
+    else {
+        eprintln!(
+            "skipping roots_survive_stress_collection_at_every_allocation: no hosted compiler"
+        );
+        return;
+    };
+    assert!(ok, "stress program failed:\n{stderr}");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["7", "3", "4"],
+        "a live root was collected under stress"
+    );
 }
 
 /// Array growth must route its old buffer through the managed family
@@ -1720,7 +1839,7 @@ pub fn main() {
     }
 }
 
-// ─── Map literal emission ─────────────────────────────────────────────────────
+// â”€â”€â”€ Map literal emission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn test_map_literal_emits_map_new_and_set() {
@@ -1871,7 +1990,7 @@ fn iterate_array() {
     assert_clang_ok(&out);
 }
 
-// ─── Byte literals ────────────────────────────────────────────────────────────
+// â”€â”€â”€ Byte literals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn test_bytes_literal_emits_ns_bytes() {
@@ -1961,13 +2080,13 @@ fn write() -> u8 {
 
 #[test]
 fn str_slice_lowers_to_result_with_bounds_check() {
-    // `str.slice` is fallible (spec §6.2): it lowers to the bounds-checking
-    // runtime helper and a `Result<str, SliceError>` built at the call site —
+    // `str.slice` is fallible (spec Â§6.2): it lowers to the bounds-checking
+    // runtime helper and a `Result<str, SliceError>` built at the call site â€”
     // never a bare substring and never a rejected `SliceError` type.
     let src = r#"
 fn take(s: str) -> bool {
     return match s.slice(1, 3) {
-        Ok(piece) => piece == "é",
+        Ok(piece) => piece == "Ã©",
         Err(_) => false,
     }
 }
@@ -2013,7 +2132,7 @@ fn failure(s: str) -> bool {
 fn propagate_materializes_fallible_builtin_results() {
     // `expr!` on a fallible builtin call: the checker annotates the call with
     // its base type, so propagation must materialize `Result<base, E>` before
-    // reading `.ok`/`.error` — including when the enclosing function's own
+    // reading `.ok`/`.error` â€” including when the enclosing function's own
     // Result wraps a different base type.
     let src = r#"
 fn count(s: str) -> i32 ! SliceError {
@@ -2035,7 +2154,7 @@ fn count(s: str) -> i32 ! SliceError {
 
 #[test]
 fn str_to_int_and_integer_checked_arithmetic_lower_to_results() {
-    // Spec §6.2 `to_int` and §6.1 `checked_*`: fallible builtins lower to a
+    // Spec Â§6.2 `to_int` and Â§6.1 `checked_*`: fallible builtins lower to a
     // Result at the call site (strict decimal parse / overflow verdicts), and
     // wrapping arithmetic stays infallible.
     let src = r#"
@@ -2094,7 +2213,7 @@ fn wrap(a: i8, b: i8) -> i8 {
 
 #[test]
 fn str_scalar_and_sequence_methods_lower_to_runtime_helpers() {
-    // Spec §6.2: byte/scalar indexing, scalar counting, and the byte/char
+    // Spec Â§6.2: byte/scalar indexing, scalar counting, and the byte/char
     // sequence views all lower to the UTF-8-aware runtime helpers.
     let src = r#"
 fn inspect(text: str) -> bool {
@@ -2103,7 +2222,7 @@ fn inspect(text: str) -> bool {
         None => false,
     }
     let second = match text.char_at(1) {
-        Some(character) => character == "é",
+        Some(character) => character == "Ã©",
         None => false,
     }
     let count = text.char_count()
@@ -2492,7 +2611,7 @@ module test.script_js
     assert_eq!(err.code, "NS7002");
 }
 
-// ─── multi-module (linked) project emission ──────────────────────────────────
+// â”€â”€â”€ multi-module (linked) project emission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[test]
 fn project_resolves_cross_module_call_to_dependency_symbol() {
@@ -2659,8 +2778,8 @@ fn project_rejects_cross_module_value_reference() {
 #[test]
 fn project_emits_cross_module_struct_types() {
     // A struct imported from a dependency lowers to the dependency's qualified
-    // typedef (`NS_lib_Point`). The typedef stays in the dependency — its
-    // translation unit and header — and this module includes that header.
+    // typedef (`NS_lib_Point`). The typedef stays in the dependency â€” its
+    // translation unit and header â€” and this module includes that header.
     let emitted = compile_project_and_emit(&[
         ("lib", "pub struct Point { x: i32, y: i32 }\n"),
         (
@@ -2700,8 +2819,8 @@ fn project_emits_cross_module_struct_types() {
 #[test]
 fn project_emits_cross_module_enum_construction_and_match() {
     // Constructing and matching an imported enum must use the dependency's tag
-    // constants (`NS_lib_Status_TAG_*`) — the exact names its own translation
-    // unit declares — and its qualified enum type.
+    // constants (`NS_lib_Status_TAG_*`) â€” the exact names its own translation
+    // unit declares â€” and its qualified enum type.
     let emitted = compile_project_and_emit(&[
         ("lib", "pub enum Status { Active, Idle }\n"),
         (

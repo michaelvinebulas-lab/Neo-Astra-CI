@@ -379,7 +379,19 @@ void astra_gc_frame_exit(size_t rf) {
 }
 
 void astra_gc_publish(size_t index, void* payload) {
-    if (index >= astra_root_count) { astra_panic("gc root slot out of range"); }
+    // Slots are assigned per declaration site, so a declaring statement inside
+    // a loop re-publishes the same index each iteration. Growing on demand is
+    // therefore idempotent and keeps the frame bound independent of any static
+    // pre-pass over the body.
+    if (index >= astra_root_count) {
+        astra_gc_reserve(index + 1);
+        memset(
+            astra_roots + astra_root_count,
+            0,
+            (index + 1 - astra_root_count) * sizeof(void*)
+        );
+        astra_root_count = index + 1;
+    }
     astra_roots[index] = payload;
 }
 
