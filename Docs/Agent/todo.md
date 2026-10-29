@@ -1401,10 +1401,15 @@ by a production native target.
         allocates); not observed in the corpus. (5) Slots are never cleared on
         scope exit, so a dead local's payload stays alive until the frame
         returns - the §5.1 design has no per-scope clearing, this is accepted.
-        (6) A channels/spawn test failed once in the very first stress run,
-        before pattern bindings were published; it has not reproduced in 30+
-        isolated runs or repeated full stress suites, and no root gap was found
-        for that program - recorded rather than claimed fixed.
+        (6) the channels/spawn failure seen in the first stress run is
+        explained and fixed: `astra_channel_new` allocated the handle and then
+        the message buffer, and under stress the second allocation collected
+        the not-yet-reachable handle (run 23 reproduced it on Windows/macOS).
+        The helper now roots the handle across the second allocation, and
+        `channel_creation_keeps_the_handle_across_the_data_allocation` pins it
+        deterministically (live count 2 after creation, message round-trip under
+        stress); tuple literals are materialised like array/struct literals for
+        the same reason.
 - [x] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
       error" - **was unimplemented, now enforced as `NS6001`.** A probe test
       confirmed the gap was real: system mode accepted `Memory.alloc` with no

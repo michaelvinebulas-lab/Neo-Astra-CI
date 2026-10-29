@@ -6,8 +6,10 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `18fc3fa` plus this docs entry (2026-10-29),
-> working tree clean, full `npm run ci` green at the `GC-001` Phase B slice.
+> **Snapshot:** `master` at `1b6fa85` plus this docs entry (2026-10-29),
+> working tree clean, full `npm run ci` green at the `GC-001` Phase B slice
+> (including the follow-up `1b6fa85`, which roots the channel handle while its
+> message buffer is allocated - the bug run 23 exposed on Windows/macOS).
 > Since the previous snapshot this work landed Phase B of `GC-001`: a root
 > array with per-frame snapshots, type-directed root extraction, materialised
 > managed arguments before calls, safepoints at function entry and loop

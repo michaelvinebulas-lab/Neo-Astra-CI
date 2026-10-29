@@ -19,6 +19,16 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-29 - GC-001 Phase B follow-up: the channel handle root (run 23)
+
+- Command: reads of `astra_channel_new` and the stress run, `cargo test -p astra-codegen-c --test emit_c -- channel`, the conformance suite with `ASTRA_GC_STRESS=1`, `npm run ci` (green).
+- Result: run 23 (`18fc3fa`) failed on Windows and macOS - not Ubuntu - in the new stress leg: the `channels` conformance case printed empty messages. Cause: `astra_channel_new` allocates the handle block and then the message buffer, and under stress the *second* `astra_gc_alloc` collects at entry. The handle is not yet reachable from any language root (the call has not returned, so `let channel` has nothing to publish), so it was freed and its memory reused - which is why only some heap layouts failed. This is the same class the first stress run hinted at; the earlier note that it "did not reproduce" was wrong about the cause, not about the symptom.
+- What: the helper now enters a temporary root slot, publishes the handle, allocates the data buffer, then exits the temporary. General rule recorded: any runtime helper that allocates more than one managed block must root the intermediate ones (channel creation is currently the only such helper). Tuple literals now materialise their elements like array/struct literals, closing the same two-allocation window for managed tuple elements.
+- Tests: `channel_creation_keeps_the_handle_across_the_data_allocation` is deterministic under stress (live count must be exactly 2 right after creation, then a message round-trip); the existing channels/spawn corpus test now also runs its program under `ASTRA_GC_STRESS=1`. 95 `emit_c` tests and the conformance corpus are green with and without stress.
+- Verification: full local gate green, including the stress leg. Run 23 is a failed run on Windows/macOS, run 24 (`9a4d97a`) inherits the same failure; the fix is `1b6fa85`, whose run is polled by the next entry.
+
+---
+
 ### 2026-10-29 - GC-001 Phase B: root frames, snapshots, materialisation, safepoints under stress
 
 - Command: `cargo test -p astra-codegen-c` (iterated on the collector harnesses and root emission), the same suite with `ASTRA_GC_STRESS=1` (repeated full runs, plus 30 isolated runs of the channels case), `cargo fmt --all`, `npm run ci` (final gate, green: `[ci] all checks passed`), then push to `ci` for Tier-1.
