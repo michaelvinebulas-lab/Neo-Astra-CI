@@ -187,6 +187,56 @@ fn hosted_build_and_run_with_env(
     Some((run_output.status.success(), stdout, stderr))
 }
 
+/// Builds one emitted library module plus a hand-written C consumer as a single
+/// hosted program, runs it, and returns (success, stdout, stderr). Used by the
+/// GC-001 §5.8 boundary tests, where the consumer holds a returned managed
+/// value across an explicit collection.
+/// Returns `None` when no hosted-capable compiler is available.
+fn hosted_build_library_and_consumer(
+    emitted: &[(String, String, Option<String>)],
+    module_key: &str,
+    consumer: &str,
+) -> Option<(bool, String, String)> {
+    let compiler = hosted_compiler()?;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let stem = module_key
+        .strip_suffix(".ns")
+        .unwrap_or(module_key)
+        .replace(['/', '.', '-'], "_");
+    let module_c = dir.path().join(format!("{stem}.c"));
+    std::fs::write(&module_c, project_source(emitted, module_key)).expect("write module");
+    std::fs::write(
+        dir.path().join(format!("{stem}.h")),
+        project_header(emitted, module_key),
+    )
+    .expect("write header");
+    let consumer_c = dir.path().join("consumer.c");
+    std::fs::write(&consumer_c, consumer).expect("write consumer");
+    let host_c = dir.path().join("astra_host.c");
+    std::fs::write(&host_c, astra_codegen_c::runtime::host_shim()).expect("write host shim");
+    let exe_path = dir.path().join("prog.exe");
+    let output = std::process::Command::new(&compiler)
+        .args(["-std=c17", "-Wall", "-Wno-unused-variable", "-I"])
+        .arg(dir.path())
+        .arg("-o")
+        .arg(&exe_path)
+        .arg(&module_c)
+        .arg(&host_c)
+        .arg(&consumer_c)
+        .output()
+        .expect("hosted compiler failed to start");
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Some((false, String::new(), stderr));
+    }
+    let run_output = std::process::Command::new(&exe_path)
+        .output()
+        .expect("failed to run compiled executable");
+    let stdout = String::from_utf8_lossy(&run_output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&run_output.stderr).into_owned();
+    Some((run_output.status.success(), stdout, stderr))
+}
+
 /// Compiles a multi-module project (key â†’ source, in any order) through the
 /// shared graph frontend and emits one translation unit per module.
 ///
@@ -1949,6 +1999,124 @@ fn library_emission_omits_main_and_exports_public_functions() {
         "library header must expose the public symbol"
     );
     assert_clang_ok(lib_src);
+}
+
+/// GC-001 §5.8: a managed value returned across the C ABI is pinned for the
+/// run, so it survives a collection while the foreign module still holds it.
+#[test]
+fn library_pins_values_returned_across_the_c_boundary() {
+    let modules = &[(
+        "src/lib.ns",
+        r#"module demo.lib
+
+pub fn numbers() -> [i32] {
+    return [10, 20, 30]
+}
+
+pub fn first(xs: [i32]) -> i32 {
+    return xs.get(0).unwrap_or(-1)
+}
+"#,
+    )];
+    let library = try_compile_project_kind(modules, EmitKind::Library).expect("library emission");
+    let src = project_source(&library, "src/lib.ns");
+    assert_eq!(
+        src.matches("    astra_gc_pin(").count(),
+        1,
+        "only the exported managed return may pin:\n{src}"
+    );
+    assert_clang_ok(src);
+
+    let consumer = r#"#include <stdio.h>
+#include "src_lib.h"
+
+int main(void) {
+    NS_Array xs = ns_src_lib_numbers();
+    astra_gc_collect();
+    const int32_t* items = (const int32_t*)xs.data;
+    printf("%zu %d %d %d\n", xs.len, items[0], items[1], items[2]);
+    printf("%zu\n", astra_gc_pin_count());
+    /* Borrowed by the foreign module: passing the value back in is not a
+       return and must not add another pin. */
+    size_t before = astra_gc_pin_count();
+    printf("%d\n", ns_src_lib_first(xs));
+    printf("%zu\n", astra_gc_pin_count() - before);
+    astra_runtime_shutdown();
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) =
+        hosted_build_library_and_consumer(&library, "src/lib.ns", consumer)
+    else {
+        return;
+    };
+    assert!(ok, "consumer failed:\n{stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["3 10 20 30", "1", "10", "0"]);
+}
+
+/// GC-001 §5.8: pinning is a library-ABI rule. Executable builds and private
+/// helpers return values that never cross the boundary, so they never pin;
+/// every exported managed return — including a constructed `Err` payload — does.
+#[test]
+fn only_library_exports_pin_managed_returns() {
+    let modules = &[(
+        "src/lib.ns",
+        r#"module demo.lib
+
+pub struct Bad(str)
+
+fn helper() -> [i32] {
+    return [1]
+}
+
+pub fn exported() -> [i32] {
+    return helper()
+}
+
+pub fn reject() -> i32 ! Bad {
+    return !Bad("boom")
+}
+"#,
+    )];
+    let library = try_compile_project_kind(modules, EmitKind::Library).expect("library emission");
+    let executable =
+        try_compile_project_kind(modules, EmitKind::Executable).expect("executable emission");
+    let lib_src = project_source(&library, "src/lib.ns");
+    let exe_src = project_source(&executable, "src/lib.ns");
+    // `exported` pins its array; `reject` pins the managed `str` in its error.
+    // `helper` is private and pins nothing.
+    assert_eq!(
+        lib_src.matches("    astra_gc_pin(").count(),
+        2,
+        "expected one pin for the exported return and one for the error:\n{lib_src}"
+    );
+    assert!(
+        !exe_src.contains("    astra_gc_pin("),
+        "executable builds have no C ABI, so nothing may pin:\n{exe_src}"
+    );
+    assert_clang_ok(lib_src);
+
+    let consumer = r#"#include <stdio.h>
+#include "src_lib.h"
+
+int main(void) {
+    NS_Result_i32_src_lib_Bad r = ns_src_lib_reject();
+    astra_gc_collect();
+    printf("%d %.*s\n", r.ok, (int)r.error._0.len, r.error._0.data);
+    printf("%zu\n", astra_gc_pin_count());
+    astra_runtime_shutdown();
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) =
+        hosted_build_library_and_consumer(&library, "src/lib.ns", consumer)
+    else {
+        return;
+    };
+    assert!(ok, "consumer failed:\n{stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines, vec!["0 boom", "1"]);
 }
 
 /// CONC-001 first slice: bounded single-threaded channels and eager `spawn`.

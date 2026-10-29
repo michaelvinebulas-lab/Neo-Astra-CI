@@ -118,8 +118,9 @@ ASTRA_NORETURN extern void astra_panic(const char* msg);
 ASTRA_NORETURN extern void astra_abort(const char* msg);
 
 /* Managed allocation and containers. Managed blocks carry an NS_Gc_Head and
-   are recorded so the whole run can be released at exit (GC-001 Phase A:
-   tracked and headered, but not yet collected). */
+   are recorded: unreachable blocks are reclaimed by the collector (GC-001
+   Phase B; collection is off by default until Phase C), and whatever remains
+   is released at exit. */
 extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
 /* Frees one managed block (no-op for NULL). Panics when the pointer is not a
    block this allocator handed out: the manual and managed families must not be
@@ -164,6 +165,12 @@ extern void astra_gc_maybe_collect(void);
 extern void astra_gc_collect(void);
 extern size_t astra_gc_collected_count(void);
 extern size_t astra_gc_root_count(void);
+/* Boundary pins (GC-001 §5.8): a managed payload returned from an exported
+   symbol is pinned for the rest of the run, so the `11-c-abi.md` §5 promise
+   ("valid until the process exits") keeps holding once collection is on.
+   Pinning is monotone (release is post-V1); NULL is ignored. */
+extern void astra_gc_pin(void* payload);
+extern size_t astra_gc_pin_count(void);
 extern NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src, const NS_Gc_Shape* shape);
 extern void astra_array_push(NS_Array* arr, size_t elem_size, const void* value, const NS_Gc_Shape* shape);
 extern void* astra_array_index(NS_Array* arr, size_t i, size_t elem_size);
@@ -346,6 +353,12 @@ static size_t astra_manual_total = 0;
 static void** astra_roots = NULL;
 static size_t astra_roots_cap = 0;
 static size_t astra_root_count = 0;
+/* Permanent root set for values returned across the C ABI (§5.8). Unlike a
+   frame slot, a pin is never released until shutdown; the set is monotone by
+   design for V1. */
+static void** astra_gc_pins = NULL;
+static size_t astra_gc_pins_cap = 0;
+static size_t astra_gc_pins_len = 0;
 static int astra_gc_stress = -1;
 static size_t astra_gc_collections = 0;
 
@@ -409,6 +422,20 @@ void astra_gc_temp_exit(size_t index) {
 
 size_t astra_gc_root_count(void) { return astra_root_count; }
 size_t astra_gc_collected_count(void) { return astra_gc_collections; }
+
+void astra_gc_pin(void* payload) {
+    if (!payload) { return; }
+    if (astra_gc_pins_len == astra_gc_pins_cap) {
+        size_t cap = astra_gc_pins_cap == 0 ? 32 : astra_gc_pins_cap * 2;
+        void** fresh = (void**)realloc(astra_gc_pins, cap * sizeof(void*));
+        if (!fresh) { astra_panic("out of memory"); }
+        astra_gc_pins = fresh;
+        astra_gc_pins_cap = cap;
+    }
+    astra_gc_pins[astra_gc_pins_len++] = payload;
+}
+
+size_t astra_gc_pin_count(void) { return astra_gc_pins_len; }
 
 static NS_Gc_Head* astra_gc_head(void* payload) {
     return ((NS_Gc_Head*)payload) - 1;
@@ -597,9 +624,13 @@ void astra_gc_collect(void) {
     }
     astra_gc_dir = dir;
     astra_gc_dir_count = count;
-    /* Mark: roots, then everything reachable through the shapes. */
+    /* Mark: roots, then pinned boundary values, then everything reachable
+       through the shapes. */
     for (size_t i = 0; i < astra_root_count; i++) {
         astra_gc_mark_pointer(astra_roots[i]);
+    }
+    for (size_t i = 0; i < astra_gc_pins_len; i++) {
+        astra_gc_mark_pointer(astra_gc_pins[i]);
     }
     while (astra_mark_len > 0) {
         void* payload = astra_mark_stack[--astra_mark_len];
@@ -691,6 +722,10 @@ void astra_runtime_shutdown(void) {
     astra_roots = NULL;
     astra_roots_cap = 0;
     astra_root_count = 0;
+    free(astra_gc_pins);
+    astra_gc_pins = NULL;
+    astra_gc_pins_cap = 0;
+    astra_gc_pins_len = 0;
     free(astra_mark_stack);
     astra_mark_stack = NULL;
     astra_mark_len = 0;

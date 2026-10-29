@@ -147,6 +147,8 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         default_imports: HashSet::new(),
         dep_headers: Vec::new(),
         emit_main_entry: true,
+        library: false,
+        pin_returns: false,
         out: String::new(),
         pre: String::new(),
         fresh: 0,
@@ -269,6 +271,8 @@ pub fn emit_project(
             // Only the entry (last) module emits the `int main(void)` wrapper,
             // and only for executable builds.
             emit_main_entry: emit_main && last_key.as_deref() == Some(entry.key.as_str()),
+            library: !emit_main,
+            pin_returns: false,
             out: String::new(),
             pre: String::new(),
             fresh: 0,
@@ -604,6 +608,13 @@ struct Emitter<'a> {
     /// When `false`, the module's `main` wrapper is suppressed (linked builds
     /// emit `int main(void)` only for the entry module).
     emit_main_entry: bool,
+    /// When `true`, the project is emitted as a library: exported functions
+    /// return values across the C ABI, so their managed returns are pinned
+    /// (GC-001 §5.8).
+    library: bool,
+    /// Whether the function currently being emitted pins managed return
+    /// values (§5.8). Set per function; never set outside a function body.
+    pin_returns: bool,
     out: String,
     pre: String,
     fresh: usize,
@@ -1585,6 +1596,30 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Whether this function's managed returns cross the C ABI and must be
+    /// pinned for the run (GC-001 §5.8). Only exported, non-generic functions
+    /// in a library build have a foreign consumer.
+    fn returns_across_abi(&self, f: &ast::FunctionDecl) -> bool {
+        self.library
+            && f.type_parameters.is_empty()
+            && self
+                .module
+                .hir
+                .items
+                .iter()
+                .any(|item| item.name == f.name && item.exported)
+    }
+
+    /// Pins every managed leaf reachable through `base` (GC-001 §5.8). The
+    /// caller materializes `base` first so each leaf expression is evaluated
+    /// exactly once; `Option`/`Result` guards yield `NULL` for inactive
+    /// payloads, which `astra_gc_pin` ignores.
+    fn emit_pin_roots(&mut self, base: &str, ty: &Type) {
+        for slot in self.tcx.root_exprs(base, ty) {
+            let _ = writeln!(self.out, "    astra_gc_pin({slot});");
+        }
+    }
+
     fn emit_function(&mut self, f: &ast::FunctionDecl) {
         let sym = self.fn_symbol(&f.name);
         self.emit_function_named(f, &sym);
@@ -1598,6 +1633,7 @@ impl<'a> Emitter<'a> {
         let err = errs.into_iter().next();
         self.cur_ret = ret.clone();
         self.cur_err = err.clone();
+        self.pin_returns = self.returns_across_abi(f);
         let (ret_c, is_fallible) = self.fn_return_c(f);
         let params = self.fn_params_c(f);
         let root_slots = self.count_root_slots(&f.body, &f.parameters);
@@ -1628,6 +1664,7 @@ impl<'a> Emitter<'a> {
         self.emit_block_body(&f.body, true, is_fallible);
         self.emit_frame_exit();
         self.roots = None;
+        self.pin_returns = false;
         self.out.push_str("}\n");
     }
 
@@ -1712,19 +1749,48 @@ impl<'a> Emitter<'a> {
         self.flush_pre();
         if is_fallible {
             let ret_c = self.fn_result_c();
-            self.emit_all_defers();
-            self.emit_frame_exit();
-            let _ = writeln!(
-                self.out,
-                "    return ({ret_c}){{ .ok = true, .value = {v} }};"
+            let result_ty = Type::Result(
+                Box::new(self.cur_ret.clone()),
+                Box::new(
+                    self.cur_err
+                        .clone()
+                        .expect("fallible function has an error"),
+                ),
             );
+            self.emit_all_defers();
+            if self.pin_returns {
+                let tmp = self.freshid("ret");
+                let _ = writeln!(
+                    self.out,
+                    "    {ret_c} {tmp} = ({ret_c}){{ .ok = true, .value = {v} }};"
+                );
+                self.emit_pin_roots(&tmp, &result_ty);
+                self.emit_frame_exit();
+                let _ = writeln!(self.out, "    return {tmp};");
+            } else {
+                self.emit_frame_exit();
+                let _ = writeln!(
+                    self.out,
+                    "    return ({ret_c}){{ .ok = true, .value = {v} }};"
+                );
+            }
         } else if self.cur_ret == Type::Unit {
             self.emit_value_stmt(e, v, &ty);
             self.emit_all_defers();
         } else {
             self.emit_all_defers();
-            self.emit_frame_exit();
-            let _ = writeln!(self.out, "    return {v};");
+            if self.pin_returns {
+                let ret_ty = self.cur_ret.clone();
+                let ret_c = self.tcx.c_type(&ret_ty);
+                let tmp = self.freshid("ret");
+                let _ = writeln!(self.out, "    {ret_c} {tmp} = {v};");
+                self.emit_pin_roots(&tmp, &ret_ty);
+                self.emit_frame_exit();
+                let _ = writeln!(self.out, "    return {tmp};");
+            } else {
+                self.emit_frame_exit();
+                let _ = writeln!(self.out, "    return {v};");
+            }
         }
     }
 
@@ -1890,14 +1956,42 @@ impl<'a> Emitter<'a> {
                 let v = self.expr_with_expected(e, &expected);
                 self.flush_pre();
                 self.emit_all_defers();
-                self.emit_frame_exit();
                 if is_fallible {
                     let ret_c = self.fn_result_c();
-                    let _ = writeln!(
-                        self.out,
-                        "    return ({ret_c}){{ .ok = true, .value = {v} }};"
+                    let result_ty = Type::Result(
+                        Box::new(self.cur_ret.clone()),
+                        Box::new(
+                            self.cur_err
+                                .clone()
+                                .expect("fallible function has an error"),
+                        ),
                     );
+                    if self.pin_returns {
+                        let tmp = self.freshid("ret");
+                        let _ = writeln!(
+                            self.out,
+                            "    {ret_c} {tmp} = ({ret_c}){{ .ok = true, .value = {v} }};"
+                        );
+                        self.emit_pin_roots(&tmp, &result_ty);
+                        self.emit_frame_exit();
+                        let _ = writeln!(self.out, "    return {tmp};");
+                    } else {
+                        self.emit_frame_exit();
+                        let _ = writeln!(
+                            self.out,
+                            "    return ({ret_c}){{ .ok = true, .value = {v} }};"
+                        );
+                    }
+                } else if self.pin_returns && self.cur_ret != Type::Unit {
+                    let ret_ty = self.cur_ret.clone();
+                    let ret_c = self.tcx.c_type(&ret_ty);
+                    let tmp = self.freshid("ret");
+                    let _ = writeln!(self.out, "    {ret_c} {tmp} = {v};");
+                    self.emit_pin_roots(&tmp, &ret_ty);
+                    self.emit_frame_exit();
+                    let _ = writeln!(self.out, "    return {tmp};");
                 } else {
+                    self.emit_frame_exit();
                     let _ = writeln!(self.out, "    return {v};");
                 }
             }
@@ -4330,12 +4424,13 @@ impl<'a> Emitter<'a> {
     fn propagate_c(&mut self, inner: &Expr) -> String {
         // `expr!`: evaluate the fallible inner, and if it failed, return the
         // error from the enclosing function.
+        let result_ty = self.materialized_result_type(inner);
         let inner_c = self.expr(inner);
         // A fallible call is annotated with its base type only, so the
         // propagation temp must materialize `Result<base, E>` — the enclosing
         // function's Result may wrap a different base type.
-        let result_c = match self.materialized_result_type(inner) {
-            Some(ty) => self.tcx.c_type(&ty),
+        let result_c = match &result_ty {
+            Some(ty) => self.tcx.c_type(ty),
             None => self.fn_result_c(),
         };
         let tmp = self.freshid("p");
@@ -4346,9 +4441,22 @@ impl<'a> Emitter<'a> {
             .as_ref()
             .map(|frame| format!("astra_gc_frame_exit({}); ", frame.var))
             .unwrap_or_default();
+        // The error payload is copied into the enclosing Result, which may
+        // leave the compilation unit, so pin its managed leaves (§5.8).
+        let mut pins = String::new();
+        if self.pin_returns
+            && let Some(err_ty) = match &result_ty {
+                Some(Type::Result(_, error)) => Some((**error).clone()),
+                _ => self.cur_err.clone(),
+            }
+        {
+            for slot in self.tcx.root_exprs(&format!("{tmp}.error"), &err_ty) {
+                pins.push_str(&format!("astra_gc_pin({slot}); "));
+            }
+        }
         let _ = writeln!(
             self.pre,
-            "    if (!{tmp}.ok) {{ {exit}return ({fn_result_c}){{ .ok = false, .error = {tmp}.error }}; }}"
+            "    if (!{tmp}.ok) {{ {pins}{exit}return ({fn_result_c}){{ .ok = false, .error = {tmp}.error }}; }}"
         );
         format!("{tmp}.value")
     }
@@ -4366,13 +4474,29 @@ impl<'a> Emitter<'a> {
         // Full path so an imported error type (`lib.MyError`) resolves to the
         // declaring dependency instead of being rejected.
         let name = error.segments.join(".");
+        let err_ty = self
+            .cur_err
+            .clone()
+            .unwrap_or_else(|| Type::Named(name.clone(), Vec::new()));
         let err_val = self.construct_error(&name, arguments);
         let fn_result_c = self.fn_result_c();
-        self.emit_frame_exit();
-        let _ = writeln!(
-            self.out,
-            "    return ({fn_result_c}){{ .ok = false, .error = {err_val} }};"
-        );
+        if self.pin_returns {
+            let err_c = self.tcx.c_type(&err_ty);
+            let tmp = self.freshid("err");
+            let _ = writeln!(self.out, "    {err_c} {tmp} = {err_val};");
+            self.emit_pin_roots(&tmp, &err_ty);
+            self.emit_frame_exit();
+            let _ = writeln!(
+                self.out,
+                "    return ({fn_result_c}){{ .ok = false, .error = {tmp} }};"
+            );
+        } else {
+            self.emit_frame_exit();
+            let _ = writeln!(
+                self.out,
+                "    return ({fn_result_c}){{ .ok = false, .error = {err_val} }};"
+            );
+        }
         "((void*)0)".into()
     }
 
