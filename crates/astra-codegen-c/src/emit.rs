@@ -158,6 +158,7 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         emitted_instantiations: HashSet::new(),
         defers: Vec::new(),
         roots: None,
+        hoist: true,
     };
     e.emit_program();
     // Emission can reject constructs that only surface inside a body (an
@@ -279,6 +280,7 @@ pub fn emit_project(
             emitted_instantiations: HashSet::new(),
             defers: Vec::new(),
             roots: None,
+            hoist: true,
         };
         e.emit_program_linked(&dep_headers);
         if e.tcx.rejected() {
@@ -623,6 +625,11 @@ struct Emitter<'a> {
     /// Root slots for the function being emitted (GC-001 §5.1). `None` outside
     /// a function body (constants, the `main` wrapper).
     roots: Option<RootFrame>,
+    /// Whether managed subvalues may be hoisted into published temporaries at
+    /// the current point (GC-001 §5.3). Cleared inside short-circuit right
+    /// operands and loop conditions, where hoisting would change when the
+    /// expression runs.
+    hoist: bool,
 }
 
 /// Frame root state: the C variable holding the frame base, the next free slot
@@ -1899,7 +1906,12 @@ impl<'a> Emitter<'a> {
 
     fn emit_while(&mut self, condition: &Expr, body: &ast::Block) {
         self.pre.clear();
+        // The condition re-runs each iteration, so nothing may be hoisted out
+        // of it (§5.3 amendment).
+        let saved = self.hoist;
+        self.hoist = false;
         let cond = self.expr(condition);
+        self.hoist = saved;
         self.flush_pre();
         self.republish_mutations(condition);
         let _ = writeln!(self.out, "    while ({cond}) {{");
@@ -2314,16 +2326,21 @@ impl<'a> Emitter<'a> {
 
     fn binary_c(&mut self, op: BinaryOp, left: &Expr, right: &Expr, _e: &Expr) -> String {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
-            let l = self.expr(left);
+            // The right operand runs conditionally, so nothing may be hoisted
+            // out of it (§5.3 amendment).
+            let l = self.materialize(left);
+            let saved = self.hoist;
+            self.hoist = false;
             let r = self.expr(right);
+            self.hoist = saved;
             return if op == BinaryOp::And {
                 format!("({l} && {r})")
             } else {
                 format!("({l} || {r})")
             };
         }
-        let l = self.expr(left);
-        let r = self.expr(right);
+        let l = self.materialize(left);
+        let r = self.materialize(right);
         match op {
             BinaryOp::Equal | BinaryOp::NotEqual => {
                 let ty = self.type_of(left).cloned();
@@ -2669,9 +2686,52 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// GC-001 §5.3: evaluates a managed subvalue into an emitter temporary and
+    /// publishes it as a root, so it survives an allocation performed by the
+    /// call itself or by a later argument. Scalars stay inline, and references
+    /// to rooted locals need no copy. Disabled where hoisting would change when
+    /// the expression runs (short-circuit right operands, loop conditions).
+    fn materialize(&mut self, e: &Expr) -> String {
+        if !self.hoist {
+            return self.expr(e);
+        }
+        let Some(ty) = self.type_of(e).cloned() else {
+            return self.expr(e);
+        };
+        if self.tcx.root_slot_count(&ty) == 0 || self.root_base_name(e).is_some() {
+            return self.expr(e);
+        }
+        let ty_c = self.tcx.c_type(&ty);
+        let tmp = self.freshid("arg");
+        let value = self.expr(e);
+        let _ = writeln!(self.pre, "    {ty_c} {tmp} = {value};");
+        self.publish_temp_in_pre(&tmp, &ty);
+        tmp
+    }
+
+    /// Publishes a compiler temporary's root slots in the `pre` buffer (GC-001
+    /// §5.3). Temporaries are immutable, so they are never re-published.
+    fn publish_temp_in_pre(&mut self, name: &str, ty: &Type) {
+        let Some(var) = self.roots.as_ref().map(|frame| frame.var.clone()) else {
+            return;
+        };
+        let first = self.roots.as_ref().map_or(0, |frame| frame.used);
+        let slots = self.tcx.root_exprs(name, ty);
+        for (offset, slot) in slots.iter().enumerate() {
+            let _ = writeln!(
+                self.pre,
+                "    astra_gc_publish({var} + {}, {slot});",
+                first + offset
+            );
+        }
+        if let Some(frame) = self.roots.as_mut() {
+            frame.used += slots.len();
+        }
+    }
+
     fn args_c(&mut self, args: &[Expr]) -> String {
         args.iter()
-            .map(|a| self.expr(a))
+            .map(|a| self.materialize(a))
             .collect::<Vec<_>>()
             .join(", ")
     }
@@ -3379,7 +3439,7 @@ impl<'a> Emitter<'a> {
             .unwrap_or(Type::I32);
         let elem_c = self.tcx.c_type(&elem_ty);
         let shape = self.tcx.block_shape_ref(&elem_ty);
-        let vals: Vec<String> = elements.iter().map(|el| self.expr(el)).collect();
+        let vals: Vec<String> = elements.iter().map(|el| self.materialize(el)).collect();
         let n = vals.len();
         let joined = vals.join(", ");
         format!(
@@ -3408,9 +3468,12 @@ impl<'a> Emitter<'a> {
             self.pre,
             "    NS_Map {tmp} = astra_map_new(sizeof({key_c}), sizeof({val_c}), {key_is_str}, {key_shape}, {val_shape});"
         );
+        // The map value is a managed temporary: publish it before any entry
+        // expression can allocate.
+        self.publish_temp_in_pre(&tmp, &ty);
         for entry in entries {
-            let k = self.expr(&entry.key);
-            let v = self.expr(&entry.value);
+            let k = self.materialize(&entry.key);
+            let v = self.materialize(&entry.value);
             let ktmp = self.freshid("mk");
             let vtmp = self.freshid("mv");
             let _ = writeln!(self.pre, "    {key_c} {ktmp} = {k};");
@@ -3465,13 +3528,13 @@ impl<'a> Emitter<'a> {
         };
         if shape.tuple {
             // Tuple-struct construction: positional fields.
-            let vals: Vec<String> = fields.iter().map(|f| self.expr(&f.value)).collect();
+            let vals: Vec<String> = fields.iter().map(|f| self.materialize(&f.value)).collect();
             let joined = vals.join(", ");
             format!("({ty_c}){{ {joined} }}")
         } else {
             let mut inits = String::new();
             for f in fields {
-                let val = self.expr(&f.value);
+                let val = self.materialize(&f.value);
                 let _ = write!(inits, ".{} = {}, ", field_c(&f.name), val);
             }
             format!("({ty_c}){{ {inits}}}")

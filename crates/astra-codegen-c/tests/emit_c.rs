@@ -1514,6 +1514,49 @@ pub fn main() -> i32 {
     );
 }
 
+/// GC-001 Phase B §5.3: a managed argument is materialised into a published
+/// temporary before a later argument (or the call) can allocate. Without the
+/// hoist, the first array literal would be unreachable while the second one is
+/// built and would be collected under stress.
+#[test]
+fn managed_arguments_are_materialised_before_calls() {
+    let src = r#"
+fn take(first: [i32], second: [i32]) -> usize {
+    return first.len() + second.len()
+}
+
+pub fn main() -> i32 {
+    println(take([1, 2], [3, 4]))
+    let seed = [5]
+    println(take(seed, [6, 7, 8]))
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(
+        out.contains("__arg") && out.contains("astra_gc_publish(_rf + "),
+        "expected managed arguments to be hoisted into published temporaries:\n{out}"
+    );
+    // Scalars are not hoisted.
+    assert!(
+        !out.contains("int32_t __arg"),
+        "scalar arguments must not be materialised:\n{out}"
+    );
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(&out, &[("ASTRA_GC_STRESS", "1")])
+    else {
+        eprintln!("skipping managed_arguments_are_materialised_before_calls: no hosted compiler");
+        return;
+    };
+    assert!(ok, "stress program failed:\n{stderr}");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["4", "4"],
+        "an argument temporary was collected under stress"
+    );
+}
+
 /// Array growth must route its old buffer through the managed family
 /// (`astra_gc_realloc`/`astra_gc_free`), not bare `free`, so the tracker stays
 /// in sync across a growth pattern.
