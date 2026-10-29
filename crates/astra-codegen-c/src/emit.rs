@@ -2150,6 +2150,16 @@ impl<'a> Emitter<'a> {
                                 .unwrap_or_else(|| "NULL".to_owned());
                             return format!("(astra_free({ptr}), (NS_Unit){{0}})");
                         }
+                        // `Region.new(bytes)` (spec 8.4): reserve one
+                        // fixed-capacity block that `region.alloc` carves
+                        // bump-style and `region.free` releases whole.
+                        ("Region", "new") => {
+                            let bytes = args
+                                .first()
+                                .map(|a| self.expr(a))
+                                .unwrap_or_else(|| "0".to_owned());
+                            return format!("astra_region_new((size_t)({bytes}))");
+                        }
                         _ => {
                             // Namespace-import call: `alias.fn(...)`.
                             if let Some(dep_key) = self.namespaces.get(owner).cloned() {
@@ -2170,7 +2180,7 @@ impl<'a> Emitter<'a> {
                     }
                 }
                 // Method call.
-                self.method_c(target, member, args)
+                self.method_c(target, member, args, e)
             }
             _ => {
                 self.tcx.rejects.push(reject(
@@ -2280,7 +2290,10 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn method_c(&mut self, receiver: &Expr, name: &str, args: &[Expr]) -> String {
+    /// `call` is the full method-call expression, used where the result type
+    /// carries information the receiver does not (e.g. `region.alloc<T>`'s
+    /// element type lives on the call, since `Region` is not generic).
+    fn method_c(&mut self, receiver: &Expr, name: &str, args: &[Expr], call: &Expr) -> String {
         let rt = self.type_of(receiver).cloned();
         // Integer member methods (`checked_*`/`wrapping_*`) are generated per
         // receiver width, so they lower before the type-directed dispatch.
@@ -2382,6 +2395,34 @@ impl<'a> Emitter<'a> {
                     .map(|a| self.expr(a))
                     .unwrap_or_else(|| "0".into());
                 let _ = writeln!(self.pre, "    {receiver_c}[{index}] = {value};");
+                "(NS_Unit){0}".into()
+            }
+            // `region.alloc<T>(count)` / `region.free()` (spec 8.4): carve the
+            // next block bump-style out of the region's fixed capacity and
+            // release the whole region. The receiver lowers to `NS_Region*`,
+            // so the bump cursor is shared by every subsequent allocation.
+            (Some(Type::Named(type_name, _)), "alloc") if type_name == "Region" => {
+                let receiver_c = self.expr(receiver);
+                let ptr_ty = self
+                    .type_of(call)
+                    .cloned()
+                    .unwrap_or_else(|| Type::Named("Ptr".to_owned(), vec![Type::U8]));
+                let element = match &ptr_ty {
+                    Type::Named(_, arguments) => arguments.first().cloned().unwrap_or(Type::U8),
+                    _ => Type::U8,
+                };
+                let elem_c = self.tcx.c_type(&element);
+                let count = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".to_owned());
+                format!(
+                    "(({elem_c}*)astra_region_alloc({receiver_c}, (size_t)({count}) * sizeof({elem_c})))"
+                )
+            }
+            (Some(Type::Named(type_name, _)), "free") if type_name == "Region" => {
+                let receiver_c = self.expr(receiver);
+                let _ = writeln!(self.pre, "    astra_region_free({receiver_c});");
                 "(NS_Unit){0}".into()
             }
             (Some(Type::Str), "len") => {

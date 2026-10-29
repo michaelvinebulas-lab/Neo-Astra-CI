@@ -610,6 +610,10 @@ impl TyCtxt {
                 "void*".into()
             }
             Type::Named(name, _) if name == "Channel" => "NS_Channel*".into(),
+            // A `Region` (spec 8.4): a header-plus-block handle, so
+            // `region.alloc`/`region.free` mutate one shared bump cursor the
+            // same way channel methods mutate their shared header.
+            Type::Named(name, _) if name == "Region" => "NS_Region*".into(),
             Type::Named(name, args) if name == "Ptr" => {
                 // A manual-memory pointer (`Memory.alloc<T>`): a raw `T*` into
                 // the arena. Dereference/indexing is a documented follow-up.

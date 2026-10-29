@@ -1,0 +1,11 @@
+pub fn make() -> Region {
+    return Region.new(16)
+}
+
+pub fn carve(buffer: Region, count: usize) -> Ptr<u8> {
+    return buffer.alloc<u8>(count)
+}
+
+pub fn release(buffer: Region) {
+    buffer.free()
+}

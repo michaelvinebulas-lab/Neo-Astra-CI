@@ -37,6 +37,10 @@ typedef struct { NS_Str _0; } NS_OverflowError;
    `NS_Channel*`; messages are copied by value using `elem_size`. */
 typedef struct { char _unit; } NS_ChannelError;
 typedef struct { void* data; size_t len; size_t cap; size_t elem_size; bool closed; } NS_Channel;
+/* Built-in `Region` (spec 8.4 manual API): a fixed-capacity block carved
+   bump-style. A region is a header-plus-block handle, so every pointer it
+   hands out stays valid until `region.free()`. */
+typedef struct { uint8_t* base; size_t cap; size_t offset; } NS_Region;
 
 /* Console builtins. Each `print`/`println` is typed by its argument type. */
 extern void astra_print_i8(int8_t x);
@@ -82,6 +86,10 @@ ASTRA_NORETURN extern void astra_abort(const char* msg);
 extern void* astra_alloc(size_t n);
 /* Frees one arena block (no-op for NULL). Used by manual-memory `Memory.free`. */
 extern void astra_free(void* p);
+/* Manual-memory `Region` (spec 8.4): a fixed block carved bump-style. */
+extern NS_Region* astra_region_new(size_t bytes);
+extern void* astra_region_alloc(NS_Region* r, size_t n);
+extern void astra_region_free(NS_Region* r);
 /* Managed-lifecycle hook: releases every arena block for the run. The emitted
    main entry point calls this before returning (freestanding object compiles
    only see the declaration; the hosted shim defines it). */
@@ -299,6 +307,42 @@ void* astra_realloc(void* p, size_t n) {
     astra_arena_live += 1;
     astra_arena_total += 1;
     return q;
+}
+
+/* `Region` (spec 8.4): a fixed-capacity manual block carved bump-style.
+   `Region.new(bytes)` reserves one block; `region.alloc<T>(n)` hands out the
+   next `n * sizeof(T)` bytes and panics when the block is exhausted (the spec
+   types this `! AllocError`; until the fallible entry-point policy lands,
+   allocation failure is a panic, matching `astra_alloc`). Every carv is
+   aligned to 8 bytes so sequential allocations of any scalar or struct the
+   language can form stay naturally aligned. `region.free()` returns the whole
+   block and zeroes the header, so a double-free is a no-op rather than a
+   crash (spec 8.4 makes double-free a programmer bug). Regions never move, so
+   every pointer handed out stays valid until the region is freed. */
+#define ASTRA_REGION_ALIGN 8
+
+NS_Region* astra_region_new(size_t bytes) {
+    NS_Region* r = (NS_Region*)astra_alloc(sizeof(NS_Region));
+    r->base = (uint8_t*)astra_alloc(bytes == 0 ? 1 : bytes);
+    r->cap = bytes;
+    r->offset = 0;
+    return r;
+}
+
+void* astra_region_alloc(NS_Region* r, size_t n) {
+    if (!r || !r->base) { astra_panic("allocation from a freed region"); }
+    size_t start = (r->offset + (ASTRA_REGION_ALIGN - 1)) & ~(size_t)(ASTRA_REGION_ALIGN - 1);
+    if (n > r->cap || start > r->cap - n) { astra_panic("region capacity exceeded"); }
+    r->offset = start + n;
+    return r->base + start;
+}
+
+void astra_region_free(NS_Region* r) {
+    if (!r || !r->base) { return; }
+    astra_free(r->base);
+    r->base = NULL;
+    r->cap = 0;
+    r->offset = 0;
 }
 
 void astra_runtime_shutdown(void) {

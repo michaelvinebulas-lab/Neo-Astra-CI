@@ -757,6 +757,75 @@ fn pointer_write_checks_the_element_type() {
     );
 }
 
+/// `Region.new(bytes)` / `region.alloc<T>(n)` / `region.free()` (spec 8.4)
+/// lower to the bump-arena helpers: two carvings from one region return
+/// distinct addresses, a write through one is read back through the other
+/// without clobbering it, and `region.free()` releases the whole block.
+#[test]
+fn region_bump_arena_lowers_and_runs() {
+    use astra_capabilities::Mode;
+    let src = r#"
+pub fn main() -> i32 {
+    let region = Region.new(64)
+    let first = region.alloc<i32>(2)
+    first.write(0, 20)
+    first.write(1, 22)
+    let second = region.alloc<i32>(2)
+    second.write(0, 100)
+    println(first.read(0))
+    println(first.read(1))
+    println(second.read(0))
+    region.free()
+    return 0
+}
+"#;
+    let out = compile_and_emit_mode(src, Mode::System);
+    assert!(
+        out.contains("astra_region_new"),
+        "expected Region.new to lower to astra_region_new:\n{out}"
+    );
+    assert!(
+        out.contains("astra_region_alloc"),
+        "expected region.alloc to lower to astra_region_alloc:\n{out}"
+    );
+    assert!(
+        out.contains("astra_region_free"),
+        "expected region.free to lower to astra_region_free:\n{out}"
+    );
+    assert!(
+        out.contains("NS_Region*"),
+        "expected Region to map to NS_Region*:\n{out}"
+    );
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        eprintln!("skipping region_bump_arena_lowers_and_runs: no hosted compiler");
+        return;
+    };
+    assert!(ok, "program failed:\n{stderr}");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["20", "22", "100"],
+        "carvings from one region must be distinct and stable until region.free"
+    );
+}
+
+/// The Region API is manual memory, so the frontend gate rejects it in core
+/// mode with NS5004 before the backend ever sees it - the same gate
+/// `Memory.alloc` and `ptr.*` carry.
+#[test]
+fn region_api_requires_system_mode_in_checker() {
+    use astra_capabilities::Mode;
+    use astra_core::checker::CheckOptions;
+    use astra_core::checker::check_source;
+    let src = "pub fn f() { let r = Region.new(8)\n    r.free() }\n";
+    let diagnostics = check_source(src, CheckOptions::new(Mode::Core))
+        .expect_err("core mode should reject Region.new");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "NS5004"),
+        "expected NS5004 for the Region API in core mode: {diagnostics:?}"
+    );
+}
+
 #[test]
 fn unsupported_target_map_emits_ns_map() {
     // Maps are now supported — the backend must emit NS_Map via astra_map_new.

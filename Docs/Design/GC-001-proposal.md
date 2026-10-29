@@ -332,8 +332,10 @@ Recorded because they are honest gaps, not part of this proposal:
    containment can see the body and can also reject an allocation made after a
    block closes. Only `alloc` is scoped, because §8.4 names only `alloc`.
 2. **`Region.new` / `region.alloc` / `region.free`** (spec §8.4, spec
-   1308-1310) have no implementation reference anywhere in `crates/`,
-   `orchestrator/packages/`, or `conformance/`.
+   1308-1310) **were unimplemented; since resolved - the Region API is landed
+   with a fixed-block bump-arena strategy (user decision), so this
+   proposal's manual/managed allocator split now has a decided second §8.4
+   surface to align with.** See the Region entry in `Docs/Agent/todo.md`.
 3. **Fallible `Memory.alloc`** needs an entry-point error policy first; recorded
    in `Docs/Agent/c001-handoff.md`.
 

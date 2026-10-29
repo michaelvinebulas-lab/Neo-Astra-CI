@@ -1407,6 +1407,21 @@ impl<'a> Checker<'a> {
                     Box::new(arguments[1].clone()),
                 );
             }
+            // `Region` (spec 8.4 manual API) is a non-generic handle: one
+            // fixed block, no element type. `region.alloc<T>` supplies the
+            // element type at the allocation site instead.
+            "Region" => {
+                if !arguments.is_empty() {
+                    self.error(
+                        INVALID_TYPE_ARGUMENT,
+                        "'Region' takes no type arguments.",
+                        path.span,
+                        "Use 'Region' on its own.",
+                    );
+                    return Type::Error;
+                }
+                return Type::Named("Region".to_owned(), Vec::new());
+            }
             "Task" | "Ptr" | "MutSlice" | "Channel" => {
                 if arguments.len() != 1 {
                     self.error(
@@ -2483,6 +2498,32 @@ impl<'a> Checker<'a> {
                     }));
                 }
             }
+            // `Region.new(bytes)` (spec 8.4): a fixed-capacity manual block.
+            // Like `Memory.*`, region use is manual memory and needs a mode
+            // that grants system capability. The scope rule in spec 8.4 names
+            // only `Memory.alloc`, so `Region.new` carries the mode gate
+            // alone; whether it should also require an `@memory:manual` scope
+            // is recorded as a design question in Docs/Agent/todo.md.
+            if name == "Region" && member == "new" && self.resolve_struct(name).is_none() {
+                if !self.mode.allows(Mode::System) {
+                    self.error(
+                        MEMORY_REQUIREMENT,
+                        format!(
+                            "Manual memory requires system mode, but the active mode is '{}'.",
+                            self.mode.as_str()
+                        ),
+                        span,
+                        "Use 'Region' only inside a system-mode boundary.",
+                    );
+                    return ExprInfo::value(Type::Error);
+                }
+                return ExprInfo::value(Type::Function(FunctionType {
+                    type_parameters: Vec::new(),
+                    parameters: vec![Type::Usize],
+                    return_type: Box::new(Type::Named("Region".to_owned(), Vec::new())),
+                    errors: Vec::new(),
+                }));
+            }
         }
 
         let target_info = self.check_expr(target, None);
@@ -2591,6 +2632,25 @@ impl<'a> Checker<'a> {
                         ),
                         span,
                         "Use pointer access only inside a system-mode boundary.",
+                    );
+                    return Type::Error;
+                }
+                // Region methods are manual memory too: `region.alloc` hands
+                // out raw pointers and `region.free` releases manual blocks,
+                // so both carry the same system-mode gate as `Memory.alloc`
+                // and `ptr.*` (usage, not only allocation).
+                if name == "Region"
+                    && matches!(member, "alloc" | "free")
+                    && !self.mode.allows(Mode::System)
+                {
+                    self.error(
+                        MEMORY_REQUIREMENT,
+                        format!(
+                            "Manual memory requires system mode, but the active mode is '{}'.",
+                            self.mode.as_str()
+                        ),
+                        span,
+                        "Use region allocation only inside a system-mode boundary.",
                     );
                     return Type::Error;
                 }
@@ -4204,6 +4264,29 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                 _ => return None,
             }
         }
+        Type::Named(name, _) if name == "Region" => match member {
+            // `region.alloc<T>(count)` / `region.free()` (spec 8.4). A region
+            // is a fixed block, so `alloc` is fallible in the spec (`!
+            // AllocError`); like `Memory.alloc`, the frontend does not track
+            // that effect yet and the C backend panics on exhaustion until
+            // the fallible entry-point policy lands.
+            "alloc" => FunctionType {
+                type_parameters: vec!["T".to_owned()],
+                parameters: vec![Type::Usize],
+                return_type: Box::new(Type::Named(
+                    "Ptr".to_owned(),
+                    vec![Type::Generic("T".to_owned())],
+                )),
+                errors: Vec::new(),
+            },
+            "free" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Unit),
+                errors: Vec::new(),
+            },
+            _ => return None,
+        },
         Type::Named(name, arguments) if name == "Channel" => {
             let element = arguments.first().cloned().unwrap_or(Type::Unknown);
             match member {
@@ -5528,6 +5611,75 @@ pub fn main() -> i32 {
         assert!(
             codes.contains(&"NS5004".to_owned()) && !codes.contains(&"NS6001".to_owned()),
             "expected only NS5004, got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn region_api_type_checks_in_system_mode() {
+        // Spec 8.4's Region surface: one fixed block carved bump-style. The
+        // scope rule names only `Memory.alloc`, so Region use needs system
+        // mode but no `@memory:manual` block - that boundary is deliberate,
+        // not an oversight (see the NS6001 entry in Docs/Agent/todo.md).
+        let source = r#"
+pub fn main() -> i32 {
+    let region = Region.new(64)
+    let first = region.alloc<i32>(2)
+    first.write(0, 20)
+    let second = region.alloc<u8>(4)
+    second.write(0, 7)
+    region.free()
+    return 0
+}
+"#;
+        check_with_mode(source, Mode::System).expect("system mode accepts the Region API");
+
+        // `Region` is a non-generic handle and resolves in type position.
+        let annotated = r#"
+pub fn main() -> i32 {
+    let region: Region = Region.new(16)
+    region.free()
+    return 0
+}
+"#;
+        check_with_mode(annotated, Mode::System).expect("Region resolves as an annotation");
+
+        // `Region<T>` is rejected: the element type belongs at the allocation
+        // site (`region.alloc<T>`), not on the handle.
+        let generic = "pub fn f(r: Region<u8>) { r.free() }\n";
+        check_with_mode(generic, Mode::System)
+            .expect_err("Region<u8> should be rejected as a type-argument error");
+    }
+
+    #[test]
+    fn rejects_region_api_outside_system_mode() {
+        // `Region.new` is manual memory, so a core-mode program is rejected
+        // with NS5004 before the backend ever sees it.
+        let new_source =
+            "pub fn main() -> i32 { let r = Region.new(16)\n    r.free()\n    return 0 }\n";
+        let codes = check_with_mode(new_source, Mode::Core)
+            .expect_err("core mode should reject Region.new");
+        assert!(
+            codes.contains(&"NS5004".to_owned()),
+            "expected NS5004 for Region.new in core mode, got {codes:?}"
+        );
+
+        // The gate is on region *usage*, not only construction: a core-mode
+        // function that merely receives a Region and allocates from it (the
+        // same shape as the pointer-access gate) is rejected too.
+        let carve = "pub fn carve(r: Region, count: usize) -> Ptr<u8> {\n    return r.alloc<u8>(count)\n}\n";
+        let codes = check_with_mode(carve, Mode::Core)
+            .expect_err("core mode should reject region allocation");
+        assert!(
+            codes.contains(&"NS5004".to_owned()),
+            "expected NS5004 for region.alloc in core mode, got {codes:?}"
+        );
+
+        let release = "pub fn release(r: Region) { r.free() }\n";
+        let codes =
+            check_with_mode(release, Mode::Core).expect_err("core mode should reject region.free");
+        assert!(
+            codes.contains(&"NS5004".to_owned()),
+            "expected NS5004 for region.free in core mode, got {codes:?}"
         );
     }
 

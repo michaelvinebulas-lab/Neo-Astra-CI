@@ -29,7 +29,7 @@ recoverable errors, integer policies, eager tasks, bounded channels, UTF-8
 string/byte operations, source maps, `.d.ts`, and the shared `conformance/`
 suite — now merged into `master`. `TS-001` is complete (shared-emitter TS mode,
 `astra build --target ts`, and the pinned `@script:ts` transpiler), and the
-conformance suite (19 positive + 12 negative cases) runs green on JavaScript,
+conformance suite (19 positive + 13 negative cases) runs green on JavaScript,
 TypeScript, and Nova with empty backend gap ledgers. The
 `INTEROP-001` inline-script design is complete in
 `Docs/Design/V1/10-inline-script-interop.md`; the C/C++ emission slice and the
@@ -1216,10 +1216,37 @@ by a production native target.
       profile where the mode condition is what fails, making `NS6001`
       unreachable there. Pinned by the checker test
       `rejects_manual_alloc_outside_a_manual_scope`.
-- [ ] `Region.new`, `region.alloc`, and `region.free` (spec §8.4, spec lines
-      1308-1310) are unimplemented: no reference exists in `crates/`,
-      `orchestrator/packages/`, or `conformance/`. Same discovery pass as the
-      manual-scope finding.
+- [x] `Region.new`, `region.alloc`, and `region.free` (spec §8.4, spec lines
+      1308-1310) - **were unimplemented, now landed with the user-decided
+      fixed-block bump-arena strategy.** `Region.new(bytes)` reserves one
+      block; `region.alloc<T>(count)` carves `count * sizeof(T)` bytes
+      bump-style (8-byte aligned carvings) and panics on exhaustion, like
+      `Memory.alloc` does on OOM, until the fallible entry-point policy
+      covers both; `region.free()` releases the whole block and zeroes the
+      header so a double-free is a no-op. `Region` maps to `NS_Region*` (a
+      header-plus-block handle, same shape as `Channel`), so the bump cursor
+      is shared by every allocation from that handle. Frontend: `Region` is a
+      non-generic builtin type (`Region<T>` is a type-argument error), the
+      `Region.new` path and the `region.alloc`/`region.free` members all carry
+      the NS5004 system-mode gate, and `method_c` gained the call expression
+      so `region.alloc<T>` can read its element type off the call (the
+      receiver carries no type arguments). The spec's scope rule names only
+      `Memory.alloc`, so Region use needs system mode but no
+      `@memory:manual` block - that literal reading is deliberate; whether
+      Region should also require the manual scope is recorded below as an
+      open design question. Verified by
+      `checker::tests::region_api_type_checks_in_system_mode`,
+      `checker::tests::rejects_region_api_outside_system_mode`,
+      `emit_c::region_bump_arena_lowers_and_runs` (hosted compile-and-run:
+      two carvings distinct, writes stable until `region.free()`), and the
+      conformance reject case `conformance/rejects/region_api_requires_system`
+      (discovery proven by failing it with a wrong expectation first).
+- [ ] Design question (spec surface): should `Region.new` and `region.alloc`
+      also require an `@memory:manual` scope, like `Memory.alloc` does via
+      `NS6001`? §8.4's rule names only `Memory.alloc`, so the implementation
+      gates Region on system mode alone. Region allocation is manual
+      allocation in all but name, so the omission reads like an oversight,
+      but fixing it is a spec change - proposed, not decided.
 - [ ] Full structured concurrency (OS-threaded runtime). The single-threaded
       eager slice (`spawn`/`Task`, bounded `Channel`, `ChannelError`) is the
       landed V1 scope and matches the JS/Nova model (deadlock panics). Moving to
@@ -1469,7 +1496,7 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [-] `WASM-001` Wasm target (deliberately deferred until the target ABI and runtime design land)
 - [ ] `FFI-001` Polymorphic FFI
 - [~] `CONC-001` Structured concurrency runtime — single-threaded eager `spawn`/`Task<T>`, bounded `Channel<T>` with `ChannelError`, close, and deadlock panics are done and the `channels` corpus case passes on C, JS, TS, and Nova; OS-thread scheduling, cancellation safepoints, and task-local heaps remain
-- [x] `CONF-001` Conformance suite - 19 positive + 12 negative cases; JavaScript, TypeScript, Nova, frontend-reject, and C runners are wired and green with empty gap ledgers (C executes every case when a hosted compiler is available)
+- [x] `CONF-001` Conformance suite - 19 positive + 13 negative cases; JavaScript, TypeScript, Nova, frontend-reject, and C runners are wired and green with empty gap ledgers (C executes every case when a hosted compiler is available)
 - [ ] `HARD-001` v0.1 hardening
 
 ---

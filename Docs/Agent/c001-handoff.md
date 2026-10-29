@@ -6,18 +6,21 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `d0d7bf9` plus this docs entry (2026-10-28),
-> working tree clean, full `npm run ci` green. This session landed package
-> linking (path + NoPM-installed), the managed arena, the Tier-1 CI workflow,
-> the `Memory.alloc`/`free` first cut and `Ptr` pointer access (sections 6.B,
-> 6.C, 6.F), and the first recorded Tier-1 runs: `40677187427` is green on
-> Linux, macOS, and Windows.
+> **Snapshot:** `master` at `7451eda` plus this docs entry (2026-10-29),
+> working tree clean, full `npm run ci` green. Since the previous snapshot this
+> work landed the `NS6001` enforcement of spec §8.4's manual-scope rule, the
+> conformance reject case `pointer_access_requires_system`, and the `Region`
+> manual-memory API (fixed-block bump arena, section 6.C). Tier-1 runs through
+> run 11 (`40690850075`) are green on Linux, macOS, and Windows.
 >
 > **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
-> (`GC-001`, 6.C), the unspecced `MutSlice` surface behind `ptr.as_slice` (6.C),
-> and OS-threaded structured concurrency (`CONC-001`, 6.D). All three are
-> design-gated; see the section notes before starting. `Ptr` pointer access
-> (spec §8.4) and recorded Linux/macOS/Windows CI evidence are closed (6.C, 6.F).
+> (`GC-001`, 6.C; a proposal with eleven tagged choices awaits approval in
+> `Docs/Design/GC-001-proposal.md`), the unspecced `MutSlice` surface behind
+> `ptr.as_slice` (6.C), the fallible `Memory.alloc`/`region.alloc` entry-point
+> policy (6.C), and OS-threaded structured concurrency (`CONC-001`, 6.D). All
+> are design-gated; see the section notes before starting. `Ptr` pointer
+> access, the `Region` API, `NS6001`, and recorded Linux/macOS/Windows CI
+> evidence are closed (6.C, 6.F).
 
 ---
 
@@ -90,9 +93,10 @@ and section 6.A (the generics design) before touching code.
 
 - `master = 483caae`; tree clean; `npm run ci` green.
 - `astra-codegen-c`: **77** emission tests + 1 conformance gate.
-- Corpus: **19 positive** cases, **12 negative** rejects (including
+- Corpus: **19 positive** cases, **13 negative** rejects (including
   `pointer_access_requires_system`, which pins the `NS5004` gate on raw pointer
-  usage backend-neutrally).
+  usage backend-neutrally, and `region_api_requires_system`, which pins the
+  same gate on the `Region` API).
 - C emits, compiles, links, **and runs** **all 19** cases when a hosted-capable
   compiler is present; the C `KNOWN_GAPS` ledger is empty.
 - Native execution is verified on this Windows host through **gcc**
@@ -368,6 +372,18 @@ cannot collide with importer stems (namespace prefix).
   function that merely receives a `Ptr` cannot read raw memory; that gate is
   pinned backend-neutrally by
   `conformance/rejects/pointer_access_requires_system`.
+- Manual-memory **`Region` API** (spec 8.4): `Region.new(bytes) -> Region`,
+  `region.alloc<T>(count) -> Ptr<T>`, and `region.free()` are landed with the
+  user-decided fixed-block bump-arena strategy - one reserved block, carvings
+  bump-style with 8-byte alignment, whole-block free, panic on exhaustion (the
+  same V1 stance as `Memory.alloc`'s OOM panic until the fallible entry-point
+  policy covers both). `Region` is a non-generic builtin type mapping to
+  `NS_Region*` (header-plus-block, like `Channel`), every member carries the
+  `NS5004` system-mode gate, and the mode gate is pinned backend-neutrally by
+  `conformance/rejects/region_api_requires_system`. The spec's scope rule
+  names only `Memory.alloc`, so Region use needs system mode but no
+  `@memory:manual` block; whether that is an oversight is recorded as an open
+  design question in `Docs/Agent/todo.md`.
 
 **Remaining (honest handoff).**
 - `ptr.as_slice(count) -> MutSlice<T>` — spec §8.4 lists the row, but `MutSlice`

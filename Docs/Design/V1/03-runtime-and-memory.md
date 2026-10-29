@@ -178,6 +178,13 @@ Rules:
 - Use-after-free is undefined behavior in manual mode unless a checked mode is enabled.
 - Manual values cannot be captured by GC-managed closures without an explicit boundary.
 
+Region strategy (decided for V1): `Region.new(bytes)` reserves one
+fixed-capacity block; `region.alloc<T>(count)` carves `count * sizeof(T)`
+bytes from it bump-style (each carv 8-byte aligned, so sequential carvings of
+any scalar or struct stay naturally aligned) and fails when the block is
+exhausted; `region.free()` releases the whole block. A region never moves, so
+every pointer it hands out stays valid until the region is freed.
+
 ### 5.3 Ownership at boundaries
 
 - Passing a manual pointer to FFI remains owned by the caller unless the mapping says otherwise.
