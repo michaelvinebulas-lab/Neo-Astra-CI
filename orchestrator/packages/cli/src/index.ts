@@ -1734,12 +1734,24 @@ function runBuild(args: readonly string[], cwd: string): number {
 
         const compileObject = (source: string, object: string): void => {
           const isCpp = source.endsWith(".cpp");
+          // A shared object on ELF must be position independent. The shim now
+          // exports data symbols (the builtin GC shapes), so non-PIC objects
+          // fail to link with "relocation ... can not be used when making a
+          // shared object". Static archives and executables keep the plain
+          // objects; MSVC has no -fPIC.
+          const pic =
+            emitKind === "cdylib" &&
+            process.platform !== "win32" &&
+            compilerFlavor(compilerBin) !== "msvc"
+              ? ["-fPIC"]
+              : [];
           const proc = spawnSync(
             compilerBin,
             [
               isCpp ? "-std=c++17" : "-std=c17",
               "-Wall",
               "-Wno-unused-variable",
+              ...pic,
               ...cflags,
               "-c",
               "-o",
