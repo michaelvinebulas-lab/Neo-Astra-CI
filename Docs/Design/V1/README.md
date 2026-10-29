@@ -151,6 +151,11 @@ The support matrix must be explicit in the manifest and diagnostics. A target th
 | [`10-inline-script-interop.md`](./10-inline-script-interop.md) | Inline `@script` foreign-language blocks, typed export surfaces, raw capture, and target support |
 | [`11-c-abi.md`](./11-c-abi.md) | C symbol naming, value layouts, library artifacts, linking contract, and ownership |
 
+Proposals under review live in [`Docs/Design/`](../) alongside this baseline,
+outside it, and are not authoritative until approved: the current one is
+[`GC-001-proposal.md`](../GC-001-proposal.md) for precise roots and
+mark-sweep. Nothing in a proposal changes the documents above.
+
 ---
 
 ## 8. V1 release criteria

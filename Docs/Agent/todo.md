@@ -1193,6 +1193,22 @@ by a production native target.
       "arena per run released at exit" first step is landed and tested; the real
       collector needs frontend-generated precise roots (multi-week `GC-001`, and
       conservative scanning would contradict the design's precise-roots rule).
+      A proposal now exists in `Docs/Design/GC-001-proposal.md` covering the
+      root mechanism, object shapes, interior-pointer resolution, and the
+      manual/managed split, with eleven choices tagged `[P1]`-`[P11]` for
+      approval. It implements nothing; per `agent.md` rule 10 it stays a
+      proposal until those are decided.
+- [ ] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
+      error" appears unimplemented. `manual_memory_scopes` is pushed at
+      `checker.rs:1192` but no diagnostic reads it (only a test at `5418` and
+      Nova's own rejection do), and every `Memory.alloc` test sits inside
+      `@memory:manual` or checks the core-mode `NS5004` gate. Needs a probe
+      test first - the finding is static, not yet user-visible behaviour
+      confirmed. Found while writing the GC-001 proposal.
+- [ ] `Region.new`, `region.alloc`, and `region.free` (spec §8.4, spec lines
+      1308-1310) are unimplemented: no reference exists in `crates/`,
+      `orchestrator/packages/`, or `conformance/`. Same discovery pass as the
+      manual-scope finding.
 - [ ] Full structured concurrency (OS-threaded runtime). The single-threaded
       eager slice (`spawn`/`Task`, bounded `Channel`, `ChannelError`) is the
       landed V1 scope and matches the JS/Nova model (deadlock panics). Moving to
