@@ -1850,6 +1850,21 @@ lockfiles:
 
 These codes are provisional until the V1 NoPM diagnostics table is frozen.
 
+### 14.9 Memory diagnostics
+
+The `NS6xxx` range declared in §14.3 covers memory-policy violations:
+
+| Code | Meaning |
+|---|---|
+| `NS6001` | Manual allocation outside a manual-memory scope |
+
+`Memory.alloc` used where the file or block policy is not `manual` is rejected
+with `NS6001`, which is how the rule in §8.4 that "`Memory.alloc` in a
+GC-managed scope is a compile-time error" is reported. A program whose mode
+does not grant manual memory reports `NS5004` instead: the mode condition is
+checked first, so one program reports the single condition it actually
+violates.
+
 ---
 
 ## 15. Conformance

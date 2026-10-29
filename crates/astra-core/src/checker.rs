@@ -38,6 +38,7 @@ const MODE_WIDENING: &str = "NS5002";
 const CAPABILITY_REQUIREMENT: &str = "NS5003";
 const MEMORY_REQUIREMENT: &str = "NS5004";
 const INVALID_CAPABILITY_ANNOTATION: &str = "NS5005";
+const MANUAL_ALLOC_IN_GC_SCOPE: &str = "NS6001";
 const UNSUPPORTED_SCRIPT_TARGET: &str = "NS7002";
 const INVALID_SCRIPT_SIGNATURE: &str = "NS7005";
 
@@ -110,9 +111,12 @@ pub struct CheckResult {
     pub module: hir::Module,
     /// Expression annotations in deterministic source order.
     pub annotations: Vec<TypeAnnotation>,
-    /// Spans of `@memory:manual` scopes.
+    /// Spans of `@memory:manual` blocks. Each covers the whole
+    /// `{@memory:manual; ...}` block, not just its header, so containment
+    /// checks see the body as well.
     ///
-    /// Nova rejects these even when the selected mode grants manual memory
+    /// Used to reject `Memory.alloc` outside such a block (`NS6001`). Nova
+    /// rejects manual blocks even when the selected mode grants manual memory
     /// because its first engine has no checked development allocator.
     pub manual_memory_scopes: Vec<Span>,
 }
@@ -987,7 +991,8 @@ impl<'a> Checker<'a> {
         for item in items {
             match &item.kind {
                 ast::ItemKind::ScopedItems(scoped) => {
-                    let scoped_mode = self.check_scope_annotation(&scoped.annotation, current_mode);
+                    let scoped_mode =
+                        self.check_scope_annotation(&scoped.annotation, scoped.span, current_mode);
                     self.check_item_modes(&scoped.items, scoped_mode);
                 }
                 ast::ItemKind::Function(function) => {
@@ -1156,9 +1161,27 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// True when `span` starts inside an `@memory:manual` block.
+    ///
+    /// Recorded scope spans cover the whole block, so this is a plain offset
+    /// test. Scopes from other functions can never match: module spans are
+    /// disjoint, and a scope is only reachable from code the checker visited
+    /// while inside it.
+    fn in_manual_memory_scope(&self, span: Span) -> bool {
+        self.manual_memory_scopes
+            .iter()
+            .any(|scope| scope.contains(span.start))
+    }
+
+    /// Validates a scope header and returns the mode it selects.
+    ///
+    /// `scope_span` covers the whole `{@...; ...}` block, not just the header
+    /// line: memory scopes are recorded against it so containment checks for
+    /// manual-memory calls see the body too.
     fn check_scope_annotation(
         &mut self,
         annotation: &ast::ScopeAnnotation,
+        scope_span: Span,
         current_mode: Mode,
     ) -> Mode {
         match annotation.kind {
@@ -1189,7 +1212,7 @@ impl<'a> Checker<'a> {
             }
             ast::ScopeKind::Memory => {
                 if annotation.value == "manual" {
-                    self.manual_memory_scopes.push(annotation.span);
+                    self.manual_memory_scopes.push(scope_span);
                 }
                 if annotation.value == "manual" && !current_mode.allows(Mode::System) {
                     self.error(
@@ -1714,7 +1737,8 @@ impl<'a> Checker<'a> {
             }
             ast::StmtKind::Scoped(scoped) => {
                 let previous_mode = self.mode;
-                self.mode = self.check_scope_annotation(&scoped.annotation, previous_mode);
+                self.mode =
+                    self.check_scope_annotation(&scoped.annotation, scoped.span, previous_mode);
                 self.push_scope();
                 for statement in &scoped.statements {
                     let info = self.check_stmt(statement, None);
@@ -2422,6 +2446,21 @@ impl<'a> Checker<'a> {
                     return ExprInfo::value(Type::Error);
                 }
                 if member == "alloc" {
+                    // Spec 8.4: "`Memory.alloc` in a GC-managed scope is a
+                    // compile-time error." The mode gate above covers *which
+                    // mode* grants manual memory; this covers *where* it may be
+                    // used. Only `alloc` is named by the rule - `Memory.free`
+                    // and `ptr.*` have no scope requirement in the spec.
+                    if !self.in_manual_memory_scope(span) {
+                        self.error(
+                            MANUAL_ALLOC_IN_GC_SCOPE,
+                            "Memory.alloc is only allowed inside an '@memory:manual' scope, \
+                             but this expression is in a GC-managed scope.",
+                            span,
+                            "Wrap this statement in {@memory:manual; ...} inside a system-mode boundary.",
+                        );
+                        return ExprInfo::value(Type::Error);
+                    }
                     return ExprInfo::value(Type::Function(FunctionType {
                         type_parameters: vec!["T".to_owned()],
                         parameters: vec![Type::Usize],
@@ -5416,6 +5455,80 @@ fn main() {
         )
         .expect("system mode accepts manual memory");
         assert_eq!(result.manual_memory_scopes.len(), 1);
+    }
+
+    #[test]
+    fn rejects_manual_alloc_outside_a_manual_scope() {
+        // Spec 8.4: "Memory.alloc in a GC-managed scope is a compile-time
+        // error" -> NS6001, reported only when the mode itself is fine.
+        let outside = r#"
+pub fn main() -> i32 {
+    let buffer = Memory.alloc<u8>(16)
+    Memory.free(buffer)
+    return 0
+}
+"#;
+        let codes = check_with_mode(outside, Mode::System)
+            .expect_err("alloc outside any @memory:manual block must be rejected");
+        assert!(
+            codes.contains(&"NS6001".to_owned()),
+            "expected NS6001, got {codes:?}"
+        );
+
+        // The block has to *contain* the call: an allocation made after the
+        // manual block closes is still in a GC-managed scope.
+        let after_block = r#"
+pub fn main() -> i32 {
+    {@memory:manual;
+        let inside = Memory.alloc<u8>(4)
+        Memory.free(inside)
+    }
+    let outside = Memory.alloc<u8>(4)
+    Memory.free(outside)
+    return 0
+}
+"#;
+        let codes = check_with_mode(after_block, Mode::System)
+            .expect_err("alloc after the manual block closes must be rejected");
+        assert!(
+            codes.contains(&"NS6001".to_owned()),
+            "expected NS6001, got {codes:?}"
+        );
+
+        // Same code inside the block is accepted.
+        let inside = r#"
+pub fn main() -> i32 {
+    {@memory:manual;
+        let buffer = Memory.alloc<u8>(16)
+        Memory.free(buffer)
+    }
+    return 0
+}
+"#;
+        check_with_mode(inside, Mode::System).expect("alloc inside @memory:manual is allowed");
+
+        // The item-level form is recorded by the mode pre-pass, which runs
+        // before any body is checked (run(): check_mode_annotations before
+        // check_functions). If that ordering ever reverses, this fails.
+        let item_level = r#"
+{@memory:manual;
+    pub fn make() -> Ptr<u8> {
+        let buffer = Memory.alloc<u8>(8)
+        return buffer
+    }
+}
+"#;
+        check_with_mode(item_level, Mode::System)
+            .expect("an item-level manual block accepts alloc in its functions");
+
+        // When the mode is what fails, NS5004 is the reported condition and
+        // NS6001 stays silent: one program, one violated condition.
+        let codes =
+            check_with_mode(outside, Mode::Core).expect_err("core mode rejects manual memory");
+        assert!(
+            codes.contains(&"NS5004".to_owned()) && !codes.contains(&"NS6001".to_owned()),
+            "expected only NS5004, got {codes:?}"
+        );
     }
 
     #[test]
