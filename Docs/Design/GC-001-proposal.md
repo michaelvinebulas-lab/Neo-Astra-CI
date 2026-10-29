@@ -18,7 +18,11 @@
 > assignment and the rule landed 2026-10-29 in spec §8.4 (rule line) and
 > §14.9 (code row); `[P11]`'s review has not started. Phase 0 (`NS6002`) and
 > Phase A (block header, shape grammar, allocator split) are landed as of
-> 2026-10-29; Phase B is next.
+> 2026-10-29; Phase B (root frames, snapshots, materialisation, safepoints
+> behind `ASTRA_GC_STRESS=1`, stress leg in the CI gate) is landed as well.
+> Before Phase C turns collection on by default: §5.8 boundary pinning, §5.9
+> FFI root registration (signature still open in `11-c-abi.md`), and the §8.2
+> poison oracle.
 >
 > Written 2026-10-29 under the `GC-001` backlog item in `Docs/Agent/todo.md`.
 
@@ -428,7 +432,7 @@ implemented. The mechanism (§5.1-§5.4) does not depend on the signature.
 |---|---|---|
 | 0 | `NS6002`: forbid managed element types in `Memory.alloc<T>`/`region.alloc<T>` (§11, condition 2) | **Landed 2026-10-29** (code confirmed by user): checker rule + spec §8.4 line + §14.9 row, ahead of Phase A so the footgun class is closed before any allocator split makes it observable |
 | A | Header + shapes, allocator split, no collection yet | **Landed 2026-10-29**: `NS_Gc_Head` + `NS_Gc_Shape` grammar in the runtime, compiler-emitted shape tables threaded through every managed allocation (`astra_gc_alloc`), manual family split out (`astra_manual_alloc` for `Memory.alloc`/`Region`), zero-on-alloc applied to growth. Pure refactor: the arena keeps its current behaviour and its leak tests (`managed_arena_is_released_at_shutdown` now pins both families, plus a header/shape zeroing harness) |
-| B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | Default off; §8 proves correctness |
+| B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | **Landed 2026-10-29** (slices: root array + collector, frame roots + republish, materialisation; stress reruns the whole hosted gate in CI). Default off; §8 proves correctness. Not part of the row but still required before default collection: §5.8 boundary pinning, §5.9 FFI registration (signature deferred to `11-c-abi.md`), and the §8.2 poison oracle |
 | C | Turn collection on by default; re-point `astra_arena_live_count`-based tests at the new accounting | |
 | D | Wasm: needs a managed allocator in linear memory before any of this can run there | Sequencing decision, [P10] |
 

@@ -1333,6 +1333,78 @@ by a production native target.
         (harmless, same convention as typedefs); Wasm still has no managed
         allocator (Phase D). `11-c-abi.md` §5 now documents the two families,
         and the proposal's mechanism references say `astra_gc_alloc`.
+- [x] Phase B of GC-001: frame regions, eager root snapshots, materialisation
+      before calls, and safepoints behind `ASTRA_GC_STRESS=1`, with the
+      collector now exercised end to end (proposal §5.1-§5.4, §7, §8.1-§8.5).
+      **Landed 2026-10-29** in four commits:
+      - *Runtime (`3e9893b`)*: one growable root array of payload pointers per
+        execution context; `astra_gc_frame_enter/exit`, `astra_gc_publish`
+        (absolute slot index; grows the live region on demand, so a declaration
+        inside a loop re-publishes the same site idempotently and no static
+        pre-pass can under-allocate), `astra_gc_temp_enter/exit` for
+        materialised arguments; a directory of live blocks rebuilt and sorted
+        once per collection so interior pointers (slices) resolve by
+        containment (§5.6); an explicit mark stack tracing by the emitted
+        shapes (LEAF stops, ARRAY strides, RECORD follows pointer fields,
+        VARIANT reads the tag and never touches the inactive payload); sweep
+        frees unmarked blocks and clears survivors' marks;
+        `astra_gc_maybe_collect` is the safepoint hook and `astra_gc_alloc`
+        collects first under stress. Collection stays off by default.
+      - *Frame roots (`0233ce2`)*: every function opens a frame (a cheap
+        pre-pass over-approximates the size; publish grows if a site was
+        missed), publishes managed parameters, `let` bindings, the for-loop
+        iterable copy and iteration binding, and match/pattern bindings
+        (payload copies bound by `match` are managed locals too - found by
+        inspection, not by a failing test). `TyCtxt::root_exprs` implements the
+        §5.2 table next to `shape_ref`: `str`/`bytes` and arrays/slices publish
+        `data`, maps publish `keys` and `values`, a channel publishes its
+        handle, `Option`/`Result`/enums publish payload slots behind the tag
+        conditional, structs recurse, `Ptr`/`Region`/scalars publish nothing.
+        After a statement that can move a payload (assignment target, method
+        receiver such as `push`/`insert` growth) the affected local is
+        republished; the §5.1 amendment's over-approximation is applied per
+        statement. Safepoints at entry and at while/for back-edges (and before
+        `continue`); frame exit before every return - ordinary, fallible, unit,
+        implicit tail, `?` propagation, and `fail` - plus a tail exit for
+        falling off the end.
+      - *Materialisation (`18fc3fa`)*: managed subvalues are hoisted into
+        published temporaries before function/method arguments, array-literal
+        elements, map-literal keys/values (the map temporary itself is
+        published), struct-initialiser fields, and both operands of
+        non-short-circuit binary operators; scalars stay inline and rooted
+        locals are not copied. Per the §5.3 amendment hoisting is disabled in
+        the right operand of `&&`/`||` and in `while` conditions, where it
+        would change when the expression runs.
+      - *CI*: `scripts/ci.mjs` gains a stress leg that reruns `emit_c` and the
+        conformance corpus with `ASTRA_GC_STRESS=1` (§8.1), so a missing or
+        stale root fails the gate while collection is still off by default.
+      - **Tests**: §8.3 (bounded live set: 64 unrooted allocations leave 1
+        live block and 64 collections), §8.4 (growth-then-collect across a
+        `push` realloc), §8.5 (interior `bytes` slice keeps its block alive
+        after the owner is reassigned), plus argument-materialisation,
+        frame-root emission, collector mark/sweep/interior/VARIANT harnesses.
+        94 `emit_c` tests green with and without `ASTRA_GC_STRESS=1`; the
+        corpus and the whole gate are stress-clean.
+      - **Honest limits, recorded**: (1) §5.8 boundary pinning and §5.9 FFI
+        root registration are not implemented yet - values returned to C are
+        promised valid for the run by `11-c-abi.md` §5, and until pinning lands
+        that promise holds only because collection is off; both are
+        prerequisites for Phase C, and `[P9]`'s signature is still open.
+        (2) The §8.2 poison oracle is not implemented; §8.6's boundary-pinning
+        test cannot be written before (1). (3) Residual hoisting gaps: a call
+        whose managed argument is *built inside* a short-circuit right operand
+        or a `while` condition can still allocate while that temporary is
+        unrooted (the corpus does not exercise it; stress runs are clean).
+        (4) Republishing is statement-level: a mutation nested inside one
+        statement that is followed by an allocation *within that same
+        statement* is not republished (e.g. a nested `push` argument that
+        allocates); not observed in the corpus. (5) Slots are never cleared on
+        scope exit, so a dead local's payload stays alive until the frame
+        returns - the §5.1 design has no per-scope clearing, this is accepted.
+        (6) A channels/spawn test failed once in the very first stress run,
+        before pattern bindings were published; it has not reproduced in 30+
+        isolated runs or repeated full stress suites, and no root gap was found
+        for that program - recorded rather than claimed fixed.
 - [x] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
       error" - **was unimplemented, now enforced as `NS6001`.** A probe test
       confirmed the gap was real: system mode accepted `Memory.alloc` with no

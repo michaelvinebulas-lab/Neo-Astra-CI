@@ -1557,6 +1557,82 @@ pub fn main() -> i32 {
     );
 }
 
+/// GC-001 §8.3: the first proof that collection actually happens - a loop that
+/// allocates without publishing keeps the live count bounded while the total
+/// grows. Against the pre-GC arena the live count would equal the total.
+#[test]
+fn stress_collection_keeps_the_live_set_bounded() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+extern size_t astra_arena_live_count(void);
+extern size_t astra_arena_total_count(void);
+extern size_t astra_gc_collected_count(void);
+int main(void) {
+    for (int i = 0; i < 64; i++) {
+        void* block = astra_gc_alloc(&NS_SHAPE_LEAF, 32);
+        if (!block) { printf("ALLOC_FAIL\n"); return 1; }
+    }
+    if (astra_arena_total_count() != 64) { printf("TOTAL_FAIL\n"); return 2; }
+    if (astra_arena_live_count() != 1) { printf("LIVE_FAIL\n"); return 3; }
+    if (astra_gc_collected_count() != 64) { printf("COLLECT_FAIL\n"); return 4; }
+    printf("BOUNDED_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(harness, &[("ASTRA_GC_STRESS", "1")])
+    else {
+        eprintln!("skipping stress_collection_keeps_the_live_set_bounded: no hosted compiler");
+        return;
+    };
+    assert!(ok, "bounded harness did not run:\n{stderr}");
+    assert!(
+        stdout.contains("BOUNDED_OK"),
+        "collection did not bound the live set: {stdout}"
+    );
+}
+
+/// GC-001 §8.5: a `bytes` slice is an interior pointer. Once the owning local
+/// is reassigned, only the slice keeps the block alive; the directory resolves
+/// the interior pointer on every collection, so the view stays readable.
+#[test]
+fn interior_slice_keeps_its_block_alive_under_stress() {
+    let src = r#"
+pub fn main() -> i32 {
+    let mut buffer = bytes.new(4)
+    buffer[0] = 65
+    buffer[1] = 66
+    buffer[2] = 67
+    let part = buffer.slice(1, 3)
+    buffer = bytes.new(1)
+    let scratch = bytes.new(8)
+    println(part[0])
+    println(part.len())
+    println(scratch.len())
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(&out, &[("ASTRA_GC_STRESS", "1")])
+    else {
+        eprintln!("skipping interior_slice_keeps_its_block_alive_under_stress: no hosted compiler");
+        return;
+    };
+    assert!(ok, "stress program failed:\n{stderr}");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["66", "2", "8"],
+        "an interior slice lost its block under stress"
+    );
+}
+
 /// Array growth must route its old buffer through the managed family
 /// (`astra_gc_realloc`/`astra_gc_free`), not bare `free`, so the tracker stays
 /// in sync across a growth pattern.

@@ -6,28 +6,31 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `c54bd5f` plus this docs entry (2026-10-29),
-> working tree clean, full `npm run ci` green at the `GC-001` Phase A slice.
-> Since the previous snapshot this work landed Phase A of `GC-001`: every
-> managed payload now carries an `NS_Gc_Head` (payload extent + compiler-emitted
-> `NS_Gc_Shape`; grammar `LEAF`/`ARRAY`/`RECORD`/`VARIANT`), allocation is split
-> into the `astra_gc_*` (headered, tracked, zeroed, shaped) and `astra_manual_*`
-> (plain malloc, untracked, untraced - `Memory.alloc`, `Region` block) families,
-> and the compiler emits a deduped shape table behind every managed allocation
-> site. Nothing collects yet. Phase 0 (`NS6002`, `cf1056a`) remains as landed.
-> Tier-1 runs are green on Linux, macOS, and Windows through run 19 (`c54bd5f`);
-> `40690850075` is run 10, not run 11, per the API's own `run_number`.
+> **Snapshot:** `master` at `18fc3fa` plus this docs entry (2026-10-29),
+> working tree clean, full `npm run ci` green at the `GC-001` Phase B slice.
+> Since the previous snapshot this work landed Phase B of `GC-001`: a root
+> array with per-frame snapshots, type-directed root extraction, materialised
+> managed arguments before calls, safepoints at function entry and loop
+> back-edges, and a precise mark-sweep collector (sorted block directory,
+> interior-pointer resolution, shape-driven marking, explicit mark stack) that
+> runs only under `ASTRA_GC_STRESS=1` - which the CI gate now always does.
+> Phase A (headers, shapes, allocator split) and Phase 0 (`NS6002`) stand.
+> Tier-1 runs are green on Linux, macOS, and Windows through run 22
+> (`0233ce2`); `40690850075` is run 10, not run 11, per the API's own
+> `run_number`.
 >
 > **Remaining (honest handoff):** the rest of precise mark-sweep GC (`GC-001`,
-> 6.C; design approved 2026-10-29, Phases 0 and A landed - next is Phase B:
-> frame regions, eager snapshots, materialisation before calls, safepoints
-> behind `ASTRA_GC_STRESS=1`, default off; only `[P9]`'s FFI push/pop signature
-> stays open as a `11-c-abi.md` ABI decision), the unspecced `MutSlice` surface
-> behind `ptr.as_slice` (6.C), the fallible `Memory.alloc`/`region.alloc`
-> entry-point policy (6.C), and OS-threaded structured concurrency (`CONC-001`,
-> 6.D). All are design-gated; see the section notes before starting. `Ptr`
-> pointer access, the `Region` API, `NS6001`, `NS6002`, and recorded
-> Linux/macOS/Windows CI evidence are closed (6.C, 6.F).
+> 6.C; design approved 2026-10-29, Phases 0/A/B landed). Before collection can
+> be on by default (Phase C): §5.8 boundary pinning (managed values returned to
+> a foreign module pinned for the run, the promise `11-c-abi.md` §5 makes),
+> §5.9 FFI root registration (concept approved, `[P9]`'s exact signature still
+> open in `11-c-abi.md`), and the §8.2 poison-on-free oracle. Phase D (Wasm)
+> needs a managed allocator in linear memory. Also still open: the unspecced
+> `MutSlice` surface behind `ptr.as_slice` (6.C), the fallible
+> `Memory.alloc`/`region.alloc` entry-point policy (6.C), and OS-threaded
+> structured concurrency (`CONC-001`, 6.D). `Ptr` pointer access, the `Region`
+> API, `NS6001`, `NS6002`, and recorded Linux/macOS/Windows CI evidence are
+> closed (6.C, 6.F).
 
 ---
 
@@ -377,7 +380,27 @@ cannot collide with importer stems (namespace prefix).
   `VARIANT(tag_offset, shapes[])`); the compiler emits a deduped shape table
   (`shape_ref` in `ty.rs`) for every type that can hold pointers and threads the
   block shape through array literals, `.push`, map creation (stored in `NS_Map`
-  for growth), `Channel.create` and `str_chars`. Nothing collects yet.
+  for growth), `Channel.create` and `str_chars`.
+- **Precise roots and collection (GC-001 Phase B, 2026-10-29).** One growable
+  root array of payload pointers per execution context: `astra_gc_frame_enter`
+  opens a frame, `astra_gc_publish` writes an absolute slot (growing the live
+  region on demand, so a declaration inside a loop is idempotent),
+  `astra_gc_frame_exit` restores the count before every return. The emitter
+  publishes managed parameters, `let` bindings, for-loop bindings and match
+  bindings via `TyCtxt::root_exprs` (the §5.2 table: `data` for str/bytes and
+  arrays, `keys`/`values` for maps, the handle for channels, tag-conditional
+  payload slots for Option/Result/enums, field recursion for structs, nothing
+  for Ptr/Region/scalars), republishes a local after an assignment or a
+  receiving method call that can move its payload, and materialises managed
+  subvalues into published temporaries before calls, array/map/struct
+  construction and binary operands (§5.3; hoisting is suppressed in
+  short-circuit right operands and `while` conditions). Safepoints sit at
+  function entry and at while/for back-edges. The collector marks from the
+  roots through a sorted block directory (interior slice pointers resolve by
+  containment), traces by the emitted shapes, sweeps unmarked blocks, and runs
+  only under `ASTRA_GC_STRESS=1` - which `scripts/ci.mjs` now exercises over the
+  whole hosted suite and the conformance corpus. Collection is **off by
+  default** until Phase C.
 - Manual-memory allocation subset: `Memory.alloc<T>(n) -> Ptr<T>` and
   `Memory.free(p)` are checker builtins (system-mode gated — `NS5004` in core),
   `Ptr<T>` maps to `T*`, and they lower to `astra_manual_alloc`/
@@ -411,14 +434,15 @@ cannot collide with importer stems (namespace prefix).
   method surface, indexing contract, or lifetime rule. It needs a design
   decision, not codegen; deliberately not invented here.
 - **Precise mark-sweep GC** with compiler-generated stack maps (§4.1/§4.3). The
-  design is approved (`Docs/Design/GC-001-proposal.md`, 2026-10-29): Phase 0
-  (`NS6002`) and Phase A (block header, shape grammar, allocator split) are
-  landed. Next is Phase B — frame regions, eager value snapshots and
-  materialisation before calls (§5.1-§5.3), safepoints at function entry and loop
-  back-edges behind `ASTRA_GC_STRESS=1` (§5.4), default off — then Phase C
-  (collection on by default) and Phase D (Wasm). The arena is not a collector;
-  conservative scanning would contradict the design's precise-roots
-  requirement, so it is not the chosen path.
+  design is approved (`Docs/Design/GC-001-proposal.md`, 2026-10-29): Phases 0
+  (`NS6002`), A (headers/shapes/allocator split) and B (roots, materialisation,
+  collector under `ASTRA_GC_STRESS=1`) are landed. Before Phase C turns
+  collection on by default: §5.8 boundary pinning (returned managed values are
+  pinned for the run), §5.9 FFI root registration (`[P9]`'s signature is still
+  open in `11-c-abi.md`), and the §8.2 poison-on-free oracle. Then Phase C owns
+  the `bytes_since_gc` threshold and re-points the `astra_arena_live_count`
+  tests; Phase D is Wasm. Conservative scanning would contradict the design's
+  precise-roots requirement, so it is not the chosen path.
 - Fallible `Memory.alloc` returning `Result<Ptr<T>, AllocError>` (the design's
   `!` form) vs. the current infallible allocator (panics on OOM). This is
   blocked on a policy decision, not codegen: `!` at the call site propagates
