@@ -322,11 +322,15 @@ a spec change, not an implementation detail (see §10).
 Recorded because they are honest gaps, not part of this proposal:
 
 1. **Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time error"
-   appears unimplemented.** `manual_memory_scopes` is pushed at
-   `checker.rs:1192` and read only by a test (`checker.rs:5418`) and by Nova for
-   its own rejection; no diagnostic consumes it, and every `Memory.alloc` test
-   either sits inside `@memory:manual` or checks the core-mode `NS5004` gate.
-   Needs a probe test to confirm the user-visible behaviour.
+   was unimplemented - now enforced as `NS6001`.** A probe test confirmed the
+   gap was user-visible (system mode accepted `Memory.alloc` with no manual
+   block anywhere); the checker now rejects it with `NS6001` "Manual allocation
+   outside a manual-memory scope", the first code in the `NS6xxx` Memory range
+   that §14.3 declares but had never populated, added here as spec §14.9.
+   Making it testable required fixing what is recorded: scope spans now cover
+   the whole `{@memory:manual; ...}` block instead of only its header line, so
+   containment can see the body and can also reject an allocation made after a
+   block closes. Only `alloc` is scoped, because §8.4 names only `alloc`.
 2. **`Region.new` / `region.alloc` / `region.free`** (spec §8.4, spec
    1308-1310) have no implementation reference anywhere in `crates/`,
    `orchestrator/packages/`, or `conformance/`.

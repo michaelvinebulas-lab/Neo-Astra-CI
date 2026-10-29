@@ -1198,13 +1198,24 @@ by a production native target.
       manual/managed split, with eleven choices tagged `[P1]`-`[P11]` for
       approval. It implements nothing; per `agent.md` rule 10 it stays a
       proposal until those are decided.
-- [ ] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
-      error" appears unimplemented. `manual_memory_scopes` is pushed at
-      `checker.rs:1192` but no diagnostic reads it (only a test at `5418` and
-      Nova's own rejection do), and every `Memory.alloc` test sits inside
-      `@memory:manual` or checks the core-mode `NS5004` gate. Needs a probe
-      test first - the finding is static, not yet user-visible behaviour
-      confirmed. Found while writing the GC-001 proposal.
+- [x] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
+      error" - **was unimplemented, now enforced as `NS6001`.** A probe test
+      confirmed the gap was real: system mode accepted `Memory.alloc` with no
+      `@memory:manual` anywhere, because `manual_memory_scopes` had no
+      diagnostic reader. The checker now rejects it with `NS6001` "Manual
+      allocation outside a manual-memory scope", the first code assigned in
+      the `NS6xxx` Memory range that the spec declares in §14.3 but had never
+      populated (added as spec §14.9). Two details mattered: recorded scope
+      spans now cover the whole `{@memory:manual; ...}` block instead of only
+      its header, so containment sees the body and correctly rejects an
+      allocation made *after* a manual block closes; and the mode gate runs
+      first, so a core-mode program reports `NS5004` only - one program, one
+      violated condition. Boundary: only `alloc` is scoped, because §8.4 names
+      only `alloc` (`Memory.free` and `ptr.*` have no scope rule), and there is
+      no conformance reject case because the corpus runs the default core
+      profile where the mode condition is what fails, making `NS6001`
+      unreachable there. Pinned by the checker test
+      `rejects_manual_alloc_outside_a_manual_scope`.
 - [ ] `Region.new`, `region.alloc`, and `region.free` (spec §8.4, spec lines
       1308-1310) are unimplemented: no reference exists in `crates/`,
       `orchestrator/packages/`, or `conformance/`. Same discovery pass as the
