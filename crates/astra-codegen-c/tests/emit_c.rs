@@ -1250,6 +1250,151 @@ pub fn main() -> i32 {
     );
 }
 
+/// GC-001 Phase B: the collector marks exactly the blocks reachable from the
+/// published root slots, frees the rest, is stable across repeated collections,
+/// and returns a frame's slots to the live count so a returning frame stops
+/// pinning its locals.
+#[test]
+fn collector_frees_unrooted_blocks_and_keeps_published_roots() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+extern void astra_gc_collect(void);
+extern size_t astra_arena_live_count(void);
+extern size_t astra_gc_frame_enter(size_t slots);
+extern void astra_gc_frame_exit(size_t rf);
+extern void astra_gc_publish(size_t index, void* payload);
+extern size_t astra_gc_collected_count(void);
+int main(void) {
+    size_t rf = astra_gc_frame_enter(2);
+    void* a = astra_gc_alloc(&NS_SHAPE_LEAF, 16);
+    void* b = astra_gc_alloc(&NS_SHAPE_LEAF, 16);
+    void* c = astra_gc_alloc(&NS_SHAPE_LEAF, 16);
+    (void)b;
+    astra_gc_publish(rf + 0, a);
+    astra_gc_publish(rf + 1, c);
+    astra_gc_collect();
+    if (astra_arena_live_count() != 2) { printf("MARK_FAIL\n"); return 1; }
+    if (astra_gc_collected_count() != 1) { printf("COUNT_FAIL\n"); return 2; }
+    /* A second collection keeps survivors and frees nothing new. */
+    astra_gc_collect();
+    if (astra_arena_live_count() != 2) { printf("STABLE_FAIL\n"); return 3; }
+    if (astra_gc_collected_count() != 2) { printf("COUNT2_FAIL\n"); return 4; }
+    /* Frame return releases its slots; the next collection frees everything. */
+    astra_gc_frame_exit(rf);
+    astra_gc_collect();
+    if (astra_arena_live_count() != 0) { printf("RELEASE_FAIL\n"); return 5; }
+    printf("ROOTS_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
+        eprintln!("skipping collector_frees_unrooted_blocks_and_keeps_published_roots: no hosted compiler");
+        return;
+    };
+    assert!(ok, "roots harness did not run:\n{stderr}");
+    assert!(stdout.contains("ROOTS_OK"), "root marking broken: {stdout}");
+}
+
+/// GC-001 Phase B: tracing follows the compiler-emitted shapes (a `RECORD` slot
+/// keeps its target alive), resolves interior pointers to their containing
+/// block (spec §5.6 slices), and dispatches `VARIANT` payloads on the tag so an
+/// inactive slot is never followed.
+#[test]
+fn collector_traces_shapes_interior_pointers_and_variants() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+typedef struct { size_t offset; const NS_Gc_Shape* shape; } NS_Gc_Shape_Field;
+struct NS_Gc_Shape {
+    int kind;
+    size_t elem_size;
+    const NS_Gc_Shape* elem;
+    const NS_Gc_Shape_Field* fields;
+    size_t field_count;
+    size_t tag_offset;
+    const NS_Gc_Shape* const* variants;
+    size_t variant_count;
+};
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern const NS_Gc_Shape NS_SHAPE_STR;
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+extern void astra_gc_collect(void);
+extern size_t astra_arena_live_count(void);
+extern size_t astra_gc_frame_enter(size_t slots);
+extern void astra_gc_frame_exit(size_t rf);
+extern void astra_gc_publish(size_t index, void* payload);
+
+/* RECORD { 0: NS_SHAPE_STR } - an object whose first field points at a LEAF
+   buffer (what an inline `NS_Str` value looks like). */
+static const NS_Gc_Shape_Field holder_fields[] = { { 0, &NS_SHAPE_STR } };
+static const NS_Gc_Shape holder_shape = { 2, 0, NULL, holder_fields, 1, 0, NULL, 0 };
+/* VARIANT { tag at 0; tag 1's payload is a pointer slot at offset 8 } */
+static const NS_Gc_Shape_Field payload_fields[] = { { 8, &NS_SHAPE_LEAF } };
+static const NS_Gc_Shape payload_shape = { 2, 0, NULL, payload_fields, 1, 0, NULL, 0 };
+static const NS_Gc_Shape* variant_slots[] = { NULL, &payload_shape };
+static const NS_Gc_Shape variant_shape = { 3, 0, NULL, NULL, 0, 0, variant_slots, 2 };
+
+int main(void) {
+    size_t rf = astra_gc_frame_enter(2);
+
+    /* Interior pointer: publishing `text + 2` must keep the containing block. */
+    void* text = astra_gc_alloc(&NS_SHAPE_LEAF, 5);
+    astra_gc_publish(rf, (char*)text + 2);
+    astra_gc_collect();
+    if (astra_arena_live_count() != 1) { printf("INTERIOR_FAIL\n"); return 1; }
+    astra_gc_publish(rf, NULL);
+    astra_gc_collect();
+    if (astra_arena_live_count() != 0) { printf("INTERIOR_RELEASE_FAIL\n"); return 2; }
+
+    /* RECORD: the holder reaches its `str` buffer through the shape. */
+    void* field = astra_gc_alloc(&NS_SHAPE_LEAF, 5);
+    void* holder = astra_gc_alloc(&holder_shape, sizeof(void*));
+    *(void**)holder = field;
+    astra_gc_publish(rf + 0, holder);
+    astra_gc_collect();
+    if (astra_arena_live_count() != 2) { printf("RECORD_FAIL\n"); return 3; }
+
+    /* VARIANT, inactive tag: the payload slot is not followed. */
+    void* payload = astra_gc_alloc(&NS_SHAPE_LEAF, 5);
+    void* variant = astra_gc_alloc(&variant_shape, 16);
+    memset(variant, 0, 16);
+    *(int*)variant = 0;
+    *(void**)((char*)variant + 8) = payload;
+    astra_gc_publish(rf + 1, variant);
+    astra_gc_collect();
+    /* variant + holder + field survive; the untagged payload is collected. */
+    if (astra_arena_live_count() != 3) { printf("VARIANT_SKIP_FAIL\n"); return 4; }
+
+    /* VARIANT, active tag: now the payload is traced. */
+    void* payload2 = astra_gc_alloc(&NS_SHAPE_LEAF, 5);
+    *(int*)variant = 1;
+    *(void**)((char*)variant + 8) = payload2;
+    astra_gc_collect();
+    if (astra_arena_live_count() != 4) { printf("VARIANT_MARK_FAIL\n"); return 5; }
+
+    astra_gc_frame_exit(rf);
+    astra_gc_collect();
+    if (astra_arena_live_count() != 0) { printf("RELEASE_FAIL\n"); return 6; }
+    printf("TRACE_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
+        eprintln!("skipping collector_traces_shapes_interior_pointers_and_variants: no hosted compiler");
+        return;
+    };
+    assert!(ok, "trace harness did not run:\n{stderr}");
+    assert!(stdout.contains("TRACE_OK"), "shape tracing broken: {stdout}");
+}
+
 /// Array growth must route its old buffer through the managed family
 /// (`astra_gc_realloc`/`astra_gc_free`), not bare `free`, so the tracker stays
 /// in sync across a growth pattern.

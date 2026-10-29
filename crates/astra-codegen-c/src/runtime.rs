@@ -142,6 +142,28 @@ extern void astra_region_free(NS_Region* r);
    main entry point calls this before returning (freestanding object compiles
    only see the declaration; the hosted shim defines it). */
 extern void astra_runtime_shutdown(void);
+/* GC roots and collection (GC-001 §5.1-§5.6, Phase B). One root array per
+   execution context: the runtime is single-threaded and `spawn` evaluates
+   inline, so there is exactly one array today. Slots hold payload pointers
+   (values, not addresses) so the array may realloc while frames are live.
+   `astra_gc_frame_enter` reserves `slots` zeroed entries and returns the frame
+   base; `astra_gc_publish` writes a payload into an absolute slot index;
+   `astra_gc_frame_exit` restores the live count before every return.
+   `astra_gc_temp_enter`/`astra_gc_temp_exit` extend the same region for
+   materialised call arguments (LIFO). `astra_gc_maybe_collect` is the
+   safepoint hook - a no-op unless ASTRA_GC_STRESS=1, which collects there and
+   inside every managed allocation; default collection stays off until the
+   Phase C threshold and roots are fully exercised. */
+extern size_t astra_gc_frame_enter(size_t slots);
+extern void astra_gc_frame_exit(size_t rf);
+extern void astra_gc_publish(size_t index, void* payload);
+extern size_t astra_gc_temp_enter(void);
+extern void astra_gc_temp_exit(size_t index);
+extern void astra_gc_maybe_collect(void);
+/* Collects now. Exposed for tests and for the stress hook itself. */
+extern void astra_gc_collect(void);
+extern size_t astra_gc_collected_count(void);
+extern size_t astra_gc_root_count(void);
 extern NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src, const NS_Gc_Shape* shape);
 extern void astra_array_push(NS_Array* arr, size_t elem_size, const void* value, const NS_Gc_Shape* shape);
 extern void* astra_array_index(NS_Array* arr, size_t i, size_t elem_size);
@@ -314,11 +336,77 @@ static size_t astra_arena_total = 0;
 static size_t astra_manual_live = 0;
 static size_t astra_manual_total = 0;
 
+/* GC roots and collection (GC-001 §5.1-§5.6). One root array per execution
+   context: the runtime is single-threaded and `spawn` evaluates inline, so
+   there is exactly one array today; CONC-001 makes it one per task. Slots hold
+   payload pointers (values, not addresses), so the array may realloc while
+   frames are live. Frames reserve zeroed slots and restore the count before
+   every return; `astra_gc_temp_enter`/`exit` extend the same region for
+   materialised call arguments. */
+static void** astra_roots = NULL;
+static size_t astra_roots_cap = 0;
+static size_t astra_root_count = 0;
+static int astra_gc_stress = -1;
+static size_t astra_gc_collections = 0;
+
+static void astra_gc_init_stress(void) {
+    if (astra_gc_stress >= 0) { return; }
+    const char* value = getenv("ASTRA_GC_STRESS");
+    astra_gc_stress = (value && value[0] == '1' && value[1] == '\0') ? 1 : 0;
+}
+
+static void astra_gc_reserve(size_t need) {
+    if (need <= astra_roots_cap) { return; }
+    size_t cap = astra_roots_cap == 0 ? 64 : astra_roots_cap;
+    while (cap < need) { cap *= 2; }
+    void** fresh = (void**)realloc(astra_roots, cap * sizeof(void*));
+    if (!fresh) { astra_panic("out of memory"); }
+    astra_roots = fresh;
+    astra_roots_cap = cap;
+}
+
+size_t astra_gc_frame_enter(size_t slots) {
+    astra_gc_init_stress();
+    size_t rf = astra_root_count;
+    astra_gc_reserve(rf + slots);
+    memset(astra_roots + rf, 0, slots * sizeof(void*));
+    astra_root_count = rf + slots;
+    return rf;
+}
+
+void astra_gc_frame_exit(size_t rf) {
+    if (rf < astra_root_count) { astra_root_count = rf; }
+}
+
+void astra_gc_publish(size_t index, void* payload) {
+    if (index >= astra_root_count) { astra_panic("gc root slot out of range"); }
+    astra_roots[index] = payload;
+}
+
+size_t astra_gc_temp_enter(void) {
+    size_t index = astra_root_count;
+    astra_gc_reserve(index + 1);
+    astra_roots[index] = NULL;
+    astra_root_count = index + 1;
+    return index;
+}
+
+void astra_gc_temp_exit(size_t index) {
+    if (index < astra_root_count) { astra_root_count = index; }
+}
+
+size_t astra_gc_root_count(void) { return astra_root_count; }
+size_t astra_gc_collected_count(void) { return astra_gc_collections; }
+
 static NS_Gc_Head* astra_gc_head(void* payload) {
     return ((NS_Gc_Head*)payload) - 1;
 }
 
 void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
+    /* Under stress, collect before the new block exists: everything the caller
+       still needs must already be published (§5.4 amendment, §8.1). */
+    astra_gc_init_stress();
+    if (astra_gc_stress) { astra_gc_collect(); }
     size_t bytes = sizeof(NS_Gc_Head) + (n == 0 ? 1 : n);
     NS_Gc_Head* head = (NS_Gc_Head*)calloc(bytes, 1);
     if (!head) { astra_panic("out of memory"); }
@@ -395,6 +483,147 @@ void astra_manual_free(void* p) {
     free(p);
 }
 
+/* Directory of live blocks, rebuilt and sorted once per collection so an
+   interior pointer (a `str`/`bytes` slice, spec §5.6) resolves to its block by
+   containment instead of by exact base match. */
+typedef struct { void* payload; size_t bytes; } NS_Gc_Dir_Entry;
+static NS_Gc_Dir_Entry* astra_gc_dir = NULL;
+static size_t astra_gc_dir_count = 0;
+
+static int astra_gc_dir_cmp(const void* a, const void* b) {
+    uintptr_t x = (uintptr_t)((const NS_Gc_Dir_Entry*)a)->payload;
+    uintptr_t y = (uintptr_t)((const NS_Gc_Dir_Entry*)b)->payload;
+    return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* Mark stack: explicit, so deep object graphs cannot overflow the C stack. */
+static void** astra_mark_stack = NULL;
+static size_t astra_mark_len = 0;
+static size_t astra_mark_cap = 0;
+
+static void astra_gc_mark_push(void* payload) {
+    NS_Gc_Head* head = astra_gc_head(payload);
+    if (head->marks != 0) { return; }
+    head->marks = 1;
+    if (astra_mark_len == astra_mark_cap) {
+        size_t cap = astra_mark_cap == 0 ? 64 : astra_mark_cap * 2;
+        void** fresh = (void**)realloc(astra_mark_stack, cap * sizeof(void*));
+        if (!fresh) { astra_panic("out of memory"); }
+        astra_mark_stack = fresh;
+        astra_mark_cap = cap;
+    }
+    astra_mark_stack[astra_mark_len++] = payload;
+}
+
+/* Resolves a slot value to its block: an exact base pointer, or the block that
+   contains the interior pointer (slices). A value outside every live block is
+   ignored: only real pointers are followed (precise roots, §4.1). */
+static void astra_gc_mark_pointer(void* value) {
+    if (!value) { return; }
+    size_t lo = 0;
+    size_t hi = astra_gc_dir_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((uintptr_t)astra_gc_dir[mid].payload <= (uintptr_t)value) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    if (lo == 0) { return; }
+    const NS_Gc_Dir_Entry* entry = &astra_gc_dir[lo - 1];
+    uintptr_t base = (uintptr_t)entry->payload;
+    uintptr_t pointer = (uintptr_t)value;
+    if (pointer == base || pointer < base + entry->bytes) {
+        astra_gc_mark_push(entry->payload);
+    }
+}
+
+static void astra_gc_trace(const NS_Gc_Shape* shape, unsigned char* base, size_t bytes) {
+    if (!shape) { return; }
+    switch (shape->kind) {
+    case NS_SHAPE_KIND_LEAF:
+        break;
+    case NS_SHAPE_KIND_ARRAY: {
+        if (shape->elem_size == 0) { break; }
+        size_t elements = bytes / shape->elem_size;
+        for (size_t i = 0; i < elements; i++) {
+            astra_gc_trace(shape->elem, base + i * shape->elem_size, 0);
+        }
+        break;
+    }
+    case NS_SHAPE_KIND_RECORD:
+        for (size_t i = 0; i < shape->field_count; i++) {
+            void* slot = *(void**)(base + shape->fields[i].offset);
+            astra_gc_mark_pointer(slot);
+        }
+        break;
+    case NS_SHAPE_KIND_VARIANT: {
+        if (shape->variant_count == 0) { break; }
+        int tag = *(const int*)(base + shape->tag_offset);
+        if (tag >= 0 && (size_t)tag < shape->variant_count && shape->variants[tag]) {
+            astra_gc_trace(shape->variants[tag], base, 0);
+        }
+        break;
+    }
+    }
+}
+
+void astra_gc_collect(void) {
+    size_t count = astra_arena_live;
+    NS_Gc_Dir_Entry* dir = NULL;
+    if (count > 0) {
+        dir = (NS_Gc_Dir_Entry*)malloc(count * sizeof(NS_Gc_Dir_Entry));
+        if (!dir) { astra_panic("out of memory"); }
+        size_t i = 0;
+        for (NS_Arena_Node* node = astra_arena_head; node; node = node->next) {
+            dir[i].payload = node->ptr;
+            dir[i].bytes = astra_gc_head(node->ptr)->bytes;
+            i++;
+        }
+        qsort(dir, count, sizeof(NS_Gc_Dir_Entry), astra_gc_dir_cmp);
+    }
+    astra_gc_dir = dir;
+    astra_gc_dir_count = count;
+    /* Mark: roots, then everything reachable through the shapes. */
+    for (size_t i = 0; i < astra_root_count; i++) {
+        astra_gc_mark_pointer(astra_roots[i]);
+    }
+    while (astra_mark_len > 0) {
+        void* payload = astra_mark_stack[--astra_mark_len];
+        NS_Gc_Head* head = astra_gc_head(payload);
+        astra_gc_trace(head->shape, (unsigned char*)payload, head->bytes);
+    }
+    /* Sweep: unmarked blocks are garbage; survivors keep their storage and
+       lose the mark for the next collection. */
+    NS_Arena_Node** cur = &astra_arena_head;
+    while (*cur) {
+        NS_Arena_Node* node = *cur;
+        NS_Gc_Head* head = astra_gc_head(node->ptr);
+        if (head->marks == 0) {
+            *cur = node->next;
+            free(head);
+            free(node);
+            astra_arena_live -= 1;
+        } else {
+            head->marks = 0;
+            cur = &node->next;
+        }
+    }
+    astra_gc_dir = NULL;
+    astra_gc_dir_count = 0;
+    free(dir);
+    astra_gc_collections += 1;
+}
+
+/* Safepoint hook: default off until Phase C turns collection on by default.
+   ASTRA_GC_STRESS=1 collects here and inside every managed allocation, so the
+   whole gate can prove the root discipline (§5.4/§8.1). */
+void astra_gc_maybe_collect(void) {
+    astra_gc_init_stress();
+    if (astra_gc_stress) { astra_gc_collect(); }
+}
+
 /* `Region` (spec 8.4): a fixed-capacity manual block carved bump-style.
    `Region.new(bytes)` reserves one block; `region.alloc<T>(n)` hands out the
    next `n * sizeof(T)` bytes and panics when the block is exhausted (the spec
@@ -443,6 +672,17 @@ void astra_runtime_shutdown(void) {
     }
     astra_arena_head = NULL;
     astra_arena_live = 0;
+    /* The root array and mark stack are plain libc memory, not managed blocks;
+       release them here so a long-lived host that runs several programs does
+       not keep the last program's bookkeeping. */
+    free(astra_roots);
+    astra_roots = NULL;
+    astra_roots_cap = 0;
+    astra_root_count = 0;
+    free(astra_mark_stack);
+    astra_mark_stack = NULL;
+    astra_mark_len = 0;
+    astra_mark_cap = 0;
 }
 
 /* Test/observability accessors for both families (leak checks in the native
