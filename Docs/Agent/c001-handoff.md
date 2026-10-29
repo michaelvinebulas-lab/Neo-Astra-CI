@@ -6,7 +6,7 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `0280749` plus this docs entry (2026-10-29),
+> **Snapshot:** `master` at `cf1056a` plus this docs entry (2026-10-29),
 > working tree clean, full `npm run ci` green at the `NS6002` slice. Since the
 > previous snapshot this work recorded the `GC-001` design decision (all eleven
 > `[P1]`-`[P11]` choices approved with amendments applied inline in
@@ -14,7 +14,7 @@
 > answered in §11) and landed its Phase 0: `NS6002` forbids managed element
 > types in `Memory.alloc<T>`/`region.alloc<T>` (spec §8.4 rule line, §14.9 code
 > row; code confirmed by the user). Tier-1 runs are green on Linux, macOS, and
-> Windows through run 17 (`40852443464`, `0280749`); `40690850075` is run 10,
+> Windows through run 18 (`40858504156`, `cf1056a`); `40690850075` is run 10,
 > not run 11, per the API's own `run_number`.
 >
 > **Remaining (honest handoff):** precise mark-sweep GC with compiler stack maps
