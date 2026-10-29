@@ -1238,178 +1238,20 @@ by a production native target.
       parameter - is silent until the element type is concrete at the
       definition site, the same instantiation model the whole checker uses
       (bodies are not re-checked per call instantiation).
-- [x] Phase A of GC-001: block header + shape grammar + allocator split,
-      **no collection yet** (proposal §7: "pure refactor; arena keeps its
-      current behaviour and its leak tests"). Concretely: `NS_Gc_Head`
-      (marks/bytes/shape) immediately preceding every managed payload;
-      `NS_Shape` with the approved grammar (`LEAF`, `ARRAY(elem, elem_size)`,
-      `RECORD({offset, shape}[])`, `VARIANT(tag_offset, shapes[])`, shapes
-      compose); `astra_gc_alloc(shape, n)` (header + zeroed payload + arena
-      record) versus `astra_manual_alloc`/`astra_manual_free` (plain
-      malloc/free, never recorded, never traced - `Memory.alloc`, `Memory.free`
-      and the `Region` base block move here per [P7]); compiler-emitted shape
-      tables (`shape_of(ty)` recursion over every expressible type, emitted
-      static constants, structural dedupe) with builtin runtime shapes for the
-      runtime's own `str`/`bytes`/array-of-str containers. Zero-on-alloc is
-      the allocator's side of the [P5] amendment (grows zero their tail on
-      realloc; length-aware shapes deferred as the recorded revisit).
-      Accounting note to verify: `Region.new` today records two arena blocks
-      (handle + base) and becomes one managed (handle, LEAF - its `base` is
-      manual and never traced) plus one untracked manual block, so the
-      `astra_arena_live_count`-based assertions and the `managed_arena_*`
-      harness move to the new two-family API; §7's "keeps its leak tests"
-      means their purpose (count, free-drops-one, shutdown-zeroes) survives,
-      with `astra_manual_live_count`/`astra_manual_total_count` added as the
-      manual family's mirror. Ends with the full gate green and the mirror
-      re-synced; §8 items 2-7 (poison oracle, live-during-run proofs) belong
-      to Phase C and are explicitly not part of this slice.
-      **Landed 2026-10-29.** What the implementation pinned down:
-      - Runtime types are `NS_Gc_Head`, `NS_Gc_Shape`, `NS_Gc_Shape_Kind`
-        (`LEAF`/`ARRAY`/`RECORD`/`VARIANT`), `NS_Gc_Shape_Field`, plus the
-        builtin shapes `NS_SHAPE_LEAF`, `NS_SHAPE_STR` (an inline
-        `NS_Str`/`NS_Bytes` value: `data` points at a LEAF buffer) and
-        `NS_SHAPE_ARRAY_OF_STR` (what `str_chars` builds). The types carry the
-        `Gc_` infix because a user enum named `Shape` emits `NS_Shape` and
-        collided with the sketch's name - found by the existing
-        `enum_with_payload_emits_union` test the moment the first VARIANT shape
-        was emitted, which is the right time to have found it.
-      - `astra_gc_alloc(shape, n)` calloc's header + payload (zero-on-alloc for
-        free), fills the header (`marks = 0`, `bytes = n`, `shape`) and records
-        the payload exactly where `astra_alloc` did, so `astra_runtime_shutdown`
-        only had to learn to free `payload - sizeof(NS_Gc_Head)`.
-        `astra_gc_realloc` keeps the list pointer in sync, preserves the old
-        bytes and zeroes the grown tail (the [P5] amendment's option 1 applied
-        to growth); a NULL argument creates, using the shape the caller passes,
-        which is how a map's first growth and `str_chars`' empty start work.
-        `astra_gc_free` is strict: a pointer it did not hand out panics, because
-        the old "foreign pointers are plain-freed" fallback now belongs to
-        `astra_manual_free` (this is the §5.7 "families are not crossed"
-        stance; the manual side stays an unchecked plain `free`, so a manual
-        double-free remains a programmer bug, exactly as before).
-      - The manual family is `astra_manual_alloc`/`astra_manual_free` plus
-        `astra_manual_live_count`/`astra_manual_total_count`.
-        `Memory.alloc`/`Memory.free` and the `Region` base block use it; the
-        `Region` *handle* stays a managed LEAF block (its `base` points at
-        manual memory, which the collector will never follow), so
-        `region.free()`'s double-free no-op survives and the handle is released
-        at shutdown as before. `astra_bytes_new` moved from untracked `calloc`
-        onto `astra_gc_alloc(&NS_SHAPE_LEAF, ..)` - same zeroing, but bytes
-        buffers are now counted, which is the one accounting change that is not
-        a straight rename.
-      - Compiler-emitted shapes live in `TyCtxt` (`shapes` + dedupe by
-        definition text, emitted in dependency order, flushed after the
-        typedefs in both the standalone and linked assembly paths, `static const`
-        per translation unit). `shape_ref` recurses over `str`/`bytes`,
-        `Array`/`Slice` (data slot -> block shape), `Map` (keys/values slots),
-        `Option`/`Result` (`VARIANT` over the `some`/`ok` tag so an inactive
-        payload is never read), `Channel` (pointer slot -> handle RECORD whose
-        `data` field -> message buffer), `Task`, the builtin error nominals,
-        user structs (RECORD over pointer-bearing fields only) and user enums
-        (`VARIANT` with `offsetof(payload.Variant[_j])` payload records);
-        `Ptr`, `Region` and scalars are LEAF. The rule that mattered most: a
-        slot pointing at a LEAF *block* is still a pointer and must stay in the
-        RECORD - only scalar-typed slots are dropped - otherwise the first
-        `Array<u8>` inside another object would not mark its buffer.
-      - Shapes reach allocation through: array literals and `.push`
-        (`astra_array_new_lit`/`astra_array_push` gained a shape argument), map
-        literals (`astra_map_new` gained key/val buffer shapes, stored in
-        `NS_Map` so growth can re-head the buffers), `Channel.create`
-        (handle + data shapes), `str_chars` (builtin array-of-str shape).
-        `Memory.alloc` now emits `astra_manual_alloc`.
-      - Tests: `managed_arena_is_released_at_shutdown` was rewritten to pin both
-        families (counts, free-drops-one, shutdown-zeroes, shutdown never
-        touching manual); new `gc_blocks_carry_headers_shapes_and_zeroed_payloads`
-        (header fields, zeroed payload, realloc tail zeroing, preserved bytes)
-        and `shapes_are_emitted_for_managed_containers_and_still_run` (all four
-        grammar forms emitted, shapes threaded into the calls, hosted run
-        unchanged). 87 `emit_c` tests + the conformance corpus green, full
-        `npm run ci` green (the gate needed one `cargo fmt` pass first).
-      - Honest limits, recorded rather than hidden: nothing *reads* the shapes
-        yet - their content is only proven by inspection and by the Phase B/C
-        mark loop that consumes them; the manual family has no ownership check
-        (plain `free`); the enum tag is assumed `int`-sized (true for
-        gcc/clang/MSVC, but implementation-defined in C17) for the future mark
-        loop; shape tables are per-TU statics, duplicated across linked modules
-        (harmless, same convention as typedefs); Wasm still has no managed
-        allocator (Phase D). `11-c-abi.md` §5 now documents the two families,
-        and the proposal's mechanism references say `astra_gc_alloc`.
-- [x] Phase B of GC-001: frame regions, eager root snapshots, materialisation
-      before calls, and safepoints behind `ASTRA_GC_STRESS=1`, with the
-      collector now exercised end to end (proposal §5.1-§5.4, §7, §8.1-§8.5).
-      **Landed 2026-10-29** in four commits:
-      - *Runtime (`3e9893b`)*: one growable root array of payload pointers per
-        execution context; `astra_gc_frame_enter/exit`, `astra_gc_publish`
-        (absolute slot index; grows the live region on demand, so a declaration
-        inside a loop re-publishes the same site idempotently and no static
-        pre-pass can under-allocate), `astra_gc_temp_enter/exit` for
-        materialised arguments; a directory of live blocks rebuilt and sorted
-        once per collection so interior pointers (slices) resolve by
-        containment (§5.6); an explicit mark stack tracing by the emitted
-        shapes (LEAF stops, ARRAY strides, RECORD follows pointer fields,
-        VARIANT reads the tag and never touches the inactive payload); sweep
-        frees unmarked blocks and clears survivors' marks;
-        `astra_gc_maybe_collect` is the safepoint hook and `astra_gc_alloc`
-        collects first under stress. Collection stays off by default.
-      - *Frame roots (`0233ce2`)*: every function opens a frame (a cheap
-        pre-pass over-approximates the size; publish grows if a site was
-        missed), publishes managed parameters, `let` bindings, the for-loop
-        iterable copy and iteration binding, and match/pattern bindings
-        (payload copies bound by `match` are managed locals too - found by
-        inspection, not by a failing test). `TyCtxt::root_exprs` implements the
-        §5.2 table next to `shape_ref`: `str`/`bytes` and arrays/slices publish
-        `data`, maps publish `keys` and `values`, a channel publishes its
-        handle, `Option`/`Result`/enums publish payload slots behind the tag
-        conditional, structs recurse, `Ptr`/`Region`/scalars publish nothing.
-        After a statement that can move a payload (assignment target, method
-        receiver such as `push`/`insert` growth) the affected local is
-        republished; the §5.1 amendment's over-approximation is applied per
-        statement. Safepoints at entry and at while/for back-edges (and before
-        `continue`); frame exit before every return - ordinary, fallible, unit,
-        implicit tail, `?` propagation, and `fail` - plus a tail exit for
-        falling off the end.
-      - *Materialisation (`18fc3fa`)*: managed subvalues are hoisted into
-        published temporaries before function/method arguments, array-literal
-        elements, map-literal keys/values (the map temporary itself is
-        published), struct-initialiser fields, and both operands of
-        non-short-circuit binary operators; scalars stay inline and rooted
-        locals are not copied. Per the §5.3 amendment hoisting is disabled in
-        the right operand of `&&`/`||` and in `while` conditions, where it
-        would change when the expression runs.
-      - *CI*: `scripts/ci.mjs` gains a stress leg that reruns `emit_c` and the
-        conformance corpus with `ASTRA_GC_STRESS=1` (§8.1), so a missing or
-        stale root fails the gate while collection is still off by default.
-      - **Tests**: §8.3 (bounded live set: 64 unrooted allocations leave 1
-        live block and 64 collections), §8.4 (growth-then-collect across a
-        `push` realloc), §8.5 (interior `bytes` slice keeps its block alive
-        after the owner is reassigned), plus argument-materialisation,
-        frame-root emission, collector mark/sweep/interior/VARIANT harnesses.
-        94 `emit_c` tests green with and without `ASTRA_GC_STRESS=1`; the
-        corpus and the whole gate are stress-clean.
-      - **Honest limits, recorded**: (1) §5.8 boundary pinning and §5.9 FFI
-        root registration are not implemented yet - values returned to C are
-        promised valid for the run by `11-c-abi.md` §5, and until pinning lands
-        that promise holds only because collection is off; both are
-        prerequisites for Phase C, and `[P9]`'s signature is still open.
-        (2) The §8.2 poison oracle is not implemented; §8.6's boundary-pinning
-        test cannot be written before (1). (3) Residual hoisting gaps: a call
-        whose managed argument is *built inside* a short-circuit right operand
-        or a `while` condition can still allocate while that temporary is
-        unrooted (the corpus does not exercise it; stress runs are clean).
-        (4) Republishing is statement-level: a mutation nested inside one
-        statement that is followed by an allocation *within that same
-        statement* is not republished (e.g. a nested `push` argument that
-        allocates); not observed in the corpus. (5) Slots are never cleared on
-        scope exit, so a dead local's payload stays alive until the frame
-        returns - the §5.1 design has no per-scope clearing, this is accepted.
-        (6) the channels/spawn failure seen in the first stress run is
-        explained and fixed: `astra_channel_new` allocated the handle and then
-        the message buffer, and under stress the second allocation collected
-        the not-yet-reachable handle (run 23 reproduced it on Windows/macOS).
-        The helper now roots the handle across the second allocation, and
-        `channel_creation_keeps_the_handle_across_the_data_allocation` pins it
-        deterministically (live count 2 after creation, message round-trip under
-        stress); tuple literals are materialised like array/struct literals for
-        the same reason.
+- [x] Phase A of GC-001 (object model + allocator split) - landed 2026-10-29
+      in `a7c3b58` (Tier-1 run 20 red on Ubuntu, fixed by `753c54f`).
+      Details: `Docs/Agent/gc-001-workstream.md` section 6 (landing records).
+- [x] Phase B of GC-001 (root frames, snapshots, materialisation, collector
+      under `ASTRA_GC_STRESS=1`) - landed 2026-10-29 in `3e9893b`,
+      `0233ce2`, `18fc3fa`, with helper-root follow-ups (`1b6fa85`,
+      map growth). Collection is still off by default. Details, open bugs and
+      the honest limits: `Docs/Agent/gc-001-workstream.md` sections 2 and 6.
+- [ ] GC-001 Phase C prerequisites, in order (see
+      `Docs/Agent/gc-001-workstream.md` section 5): S1 a green stress run on all
+      three OSes; S2 section 5.8 boundary pinning; S3 section 8.2 poison oracle;
+      S4 section 5.9 FFI signature proposal for user approval (`11-c-abi.md`
+      section 5); then Phase C (collection on by default) and Phase D (Wasm,
+      deferred).
 - [x] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
       error" - **was unimplemented, now enforced as `NS6001`.** A probe test
       confirmed the gap was real: system mode accepted `Memory.alloc` with no

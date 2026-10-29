@@ -6,10 +6,12 @@
 > and `Docs/Agent/state-log.md` (chronological history); when they disagree with
 > this document, the task queue and spec win.
 >
-> **Snapshot:** `master` at `1b6fa85` plus this docs entry (2026-10-29),
-> working tree clean, full `npm run ci` green at the `GC-001` Phase B slice
-> (including the follow-up `1b6fa85`, which roots the channel handle while its
-> message buffer is allocated - the bug run 23 exposed on Windows/macOS).
+> **Snapshot:** `master` at `1b6fa85` plus the map-growth stress fix and this
+> docs entry (2026-10-29), working tree clean, full `npm run ci` green at the
+> `GC-001` Phase B slice. Live GC status - phases, open bugs, open decisions,
+> the §8 verification matrix and the next slices - is owned by
+> `Docs/Agent/gc-001-workstream.md`; this document keeps the transfer notes and
+> the architecture pointers, not a second copy of that board.
 > Since the previous snapshot this work landed Phase B of `GC-001`: a root
 > array with per-frame snapshots, type-directed root extraction, materialised
 > managed arguments before calls, safepoints at function entry and loop
@@ -384,25 +386,21 @@ cannot collide with importer stems (namespace prefix).
   block shape through array literals, `.push`, map creation (stored in `NS_Map`
   for growth), `Channel.create` and `str_chars`.
 - **Precise roots and collection (GC-001 Phase B, 2026-10-29).** One growable
-  root array of payload pointers per execution context: `astra_gc_frame_enter`
-  opens a frame, `astra_gc_publish` writes an absolute slot (growing the live
-  region on demand, so a declaration inside a loop is idempotent),
-  `astra_gc_frame_exit` restores the count before every return. The emitter
-  publishes managed parameters, `let` bindings, for-loop bindings and match
-  bindings via `TyCtxt::root_exprs` (the §5.2 table: `data` for str/bytes and
-  arrays, `keys`/`values` for maps, the handle for channels, tag-conditional
-  payload slots for Option/Result/enums, field recursion for structs, nothing
-  for Ptr/Region/scalars), republishes a local after an assignment or a
-  receiving method call that can move its payload, and materialises managed
-  subvalues into published temporaries before calls, array/map/struct
-  construction and binary operands (§5.3; hoisting is suppressed in
+  root array of payload pointers per execution context (`astra_gc_frame_enter`,
+  `astra_gc_publish` - which grows the live region on demand so a declaration
+  inside a loop is idempotent - and `astra_gc_frame_exit`); the emitter
+  publishes parameters, `let`/for/match bindings via `TyCtxt::root_exprs`
+  (§5.2), republishes a local after a payload-moving assignment or mutation,
+  and materialises managed subvalues into published temporaries before calls,
+  array/map/struct/tuple literals and binary operands (§5.3, suppressed in
   short-circuit right operands and `while` conditions). Safepoints sit at
-  function entry and at while/for back-edges. The collector marks from the
-  roots through a sorted block directory (interior slice pointers resolve by
-  containment), traces by the emitted shapes, sweeps unmarked blocks, and runs
-  only under `ASTRA_GC_STRESS=1` - which `scripts/ci.mjs` now exercises over the
-  whole hosted suite and the conformance corpus. Collection is **off by
-  default** until Phase C.
+  function entry and loop back-edges. The collector marks from the roots
+  through a sorted block directory (interior slice pointers resolve by
+  containment), traces by the emitted shapes, and sweeps; it runs only under
+  `ASTRA_GC_STRESS=1`, which `scripts/ci.mjs` exercises over the hosted suite
+  and the conformance corpus. Collection is **off by default** until Phase C.
+  Multi-block runtime helpers (map growth, channel creation) root their
+  intermediate blocks - see `Docs/Agent/gc-001-workstream.md` §2 for why.
 - Manual-memory allocation subset: `Memory.alloc<T>(n) -> Ptr<T>` and
   `Memory.free(p)` are checker builtins (system-mode gated — `NS5004` in core),
   `Ptr<T>` maps to `T*`, and they lower to `astra_manual_alloc`/
@@ -436,15 +434,13 @@ cannot collide with importer stems (namespace prefix).
   method surface, indexing contract, or lifetime rule. It needs a design
   decision, not codegen; deliberately not invented here.
 - **Precise mark-sweep GC** with compiler-generated stack maps (§4.1/§4.3). The
-  design is approved (`Docs/Design/GC-001-proposal.md`, 2026-10-29): Phases 0
-  (`NS6002`), A (headers/shapes/allocator split) and B (roots, materialisation,
-  collector under `ASTRA_GC_STRESS=1`) are landed. Before Phase C turns
-  collection on by default: §5.8 boundary pinning (returned managed values are
-  pinned for the run), §5.9 FFI root registration (`[P9]`'s signature is still
-  open in `11-c-abi.md`), and the §8.2 poison-on-free oracle. Then Phase C owns
-  the `bytes_since_gc` threshold and re-points the `astra_arena_live_count`
-  tests; Phase D is Wasm. Conservative scanning would contradict the design's
-  precise-roots requirement, so it is not the chosen path.
+  design is approved (`Docs/Design/GC-001-proposal.md`, 2026-10-29); Phases 0,
+  A and B are landed and collection is still off by default. The ordered
+  remaining work - boundary pinning (§5.8), the poison oracle (§8.2), the
+  `[P9]` FFI signature proposal (`11-c-abi.md`), Phase C (collection on by
+  default) and Phase D (Wasm) - is tracked in
+  `Docs/Agent/gc-001-workstream.md` §5. Conservative scanning would contradict
+  the design's precise-roots requirement, so it is not the chosen path.
 - Fallible `Memory.alloc` returning `Result<Ptr<T>, AllocError>` (the design's
   `!` form) vs. the current infallible allocator (panics on OOM). This is
   blocked on a policy decision, not codegen: `!` at the call site propagates

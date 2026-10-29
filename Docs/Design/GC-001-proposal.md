@@ -408,8 +408,16 @@ API for hand-written `@script:c` blocks — a push/pop root registration pair �
 and have the inline-script boundary emit it around calls, since foreign frames
 are opaque to the emitter. The names used in this document (`astra_gc_push` /
 `astra_gc_pop`) are placeholders: **the exact signature stays open as an ABI
-decision for `11-c-abi.md`** and must be settled there before the FFI half is
-implemented. The mechanism (§5.1-§5.4) does not depend on the signature.
+decision for `11-c-abi.md`** and must be approved as an `11-c-abi.md` change
+before any `@script:c` boundary emits registration calls. The mechanism
+(§5.1-§5.4) does not depend on the signature.
+
+Roots registered through that API are released at pop; a foreign module that
+retains a borrowed pointer past the call violates spec §8.5 - the same
+borrowed-value rule as the §5.8 pinning pair, stated here so the registration
+and ownership rules sit together. The **emitter**, not the script author, owns
+the pairing: it brackets the whole call, so an early `return` inside a script
+block cannot leave a registration unpopped.
 
 ---
 
@@ -427,6 +435,11 @@ implemented. The mechanism (§5.1-§5.4) does not depend on the signature.
 ---
 
 ## 7. Sequencing
+
+> Live status (which phases are landed, open bugs, open decisions, the §8
+> verification matrix and the ordered next slices) is owned by
+> `Docs/Agent/gc-001-workstream.md`; this table is the approved sequence, not a
+> status board.
 
 | Phase | Content | Note |
 |---|---|---|
