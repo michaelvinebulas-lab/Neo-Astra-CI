@@ -1229,11 +1229,15 @@ by a production native target.
       plus a §14.9 row and explanation. Tests: reject matrix (7 simple forms +
       3 composites + region site), accept matrix (11 pointer-free forms incl.
       generic instantiation and fixed arrays), and the ordering test. Honest
-      limitations: (1) **no negative-conformance case is possible** - the
-      rejects corpus runs at the default core mode, so `NS5004` always fires
-      first (the same reason `NS6001` has no corpus case); per-case mode
-      selection in the runner would close this and is recorded as an open
-      infrastructure question, not decided; (2) **generic forwarding** -
+      limitations: (1) **no negative-conformance case was possible** at
+      landing - the rejects corpus ran at the default core mode, so `NS5004`
+      always fired first (the same reason `NS6001` had no corpus case);
+      **closed 2026-10-30**: the rejects runner supports a per-case
+      `// conformance: mode=<mode>` directive (test infrastructure only, not
+      language surface), and three corpus cases now pin the rules -
+      `manual_alloc_in_gc_scope` (`NS6001`), `managed_element_in_memory_alloc`
+      and `managed_element_in_region_alloc` (`NS6002` at both sites);
+      (2) **generic forwarding** -
       `Memory.alloc<Wrap<T>>` inside a function whose own `T` is still a type
       parameter - is silent until the element type is concrete at the
       definition site, the same instantiation model the whole checker uses
