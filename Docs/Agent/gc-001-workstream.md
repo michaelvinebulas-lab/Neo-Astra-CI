@@ -76,7 +76,8 @@ channel creation. Single-block helpers are safe by construction.
   does not emit registration yet: the first `@script:c` boundary that passes
   managed values into a foreign frame emits it, and the §7 boundary-rooting
   test lands with that slice.
-- **S5 - Phase C. Done** (2026-10-30; see the landing record). `astra_gc_alloc`
+- **S5 - Phase C. Done** (2026-10-30, Tier-1 run 33 green on all three OSes;
+  see the landing record). `astra_gc_alloc`
   bumps `bytes_since_gc`; `astra_gc_maybe_collect` - already emitted at
   function entry and loop back-edges - collects once the threshold (fixed 1
   MiB constant, runtime-only, not language surface) is reached. Stress mode is
