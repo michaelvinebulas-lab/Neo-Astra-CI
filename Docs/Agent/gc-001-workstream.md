@@ -16,7 +16,7 @@ Last updated: 2026-10-30.
 | 0 | `NS6002`: managed element types forbidden in `Memory.alloc`/`region.alloc` | **Landed** `cf1056a` (checker + spec §8.4/§14.9); Tier-1 run 18 |
 | A | Block header (`NS_Gc_Head`), shape grammar (`NS_Gc_Shape`), compiler-emitted shape tables, manual/managed allocator split | **Landed** `a7c3b58` (Tier-1 run 20 red on Ubuntu, fixed by `753c54f`) |
 | B | Root frames, type-directed snapshots, materialisation, safepoints, mark-sweep collector under `ASTRA_GC_STRESS=1`, stress leg in CI | **Landed** `3e9893b`, `0233ce2`, `18fc3fa`, follow-ups `1b6fa85` + `463ff54`; collection still **off by default**. Verified by Tier-1 run 27 (`97e1475`): green on Linux, macOS and Windows |
-| C | Collection on by default (`bytes_since_gc` threshold), re-point arena-accounting tests | **Ready** - open bugs fixed, decisions recorded, and all three prerequisites landed (S2 pinning, S3 poison oracle, S4 signature); Phase C is the next slice |
+| C | Collection on by default (`bytes_since_gc` threshold), re-point arena-accounting tests | **Done** (2026-10-30) - `astra_gc_maybe_collect` collects once 1 MiB (`ASTRA_GC_DEFAULT_THRESHOLD`) of managed bytes have been allocated since the last collection; the direct-runtime arena-accounting harnesses never reach a safepoint, so they needed no re-pointing |
 | D | Wasm managed allocator in linear memory | Deferred by design (proposal §7, `[P10]`) |
 
 ## 2. Open bugs
@@ -49,11 +49,11 @@ channel creation. Single-block helpers are safe by construction.
 |---|---|
 | 1. Stress mode over the gate + corpus | **Done** - `scripts/ci.mjs` stress leg: `emit_c` + `conformance` with `ASTRA_GC_STRESS=1` |
 | 2. Poison-on-free oracle | **Done** - `swept_payloads_are_poisoned_for_the_use_after_free_oracle`: the fill itself is asserted on a still-owned block (pattern + full extent) and both free paths (explicit and sweep) are asserted to run it via the poison counter. Reading freed memory back proved non-portable (macOS unmaps fully freed regions - run 30 - or reclaims them zero-filled - run 31), so the test verifies the oracle without it. Debug builds only; `#define NDEBUG` skips the fill |
-| 3. Bounded live set while total grows | **Done** - `stress_collection_keeps_the_live_set_bounded` |
+| 3. Bounded live set while total grows | **Done** - `stress_collection_keeps_the_live_set_bounded` (stress mode) and `default_collection_keeps_the_live_set_bounded` (Phase C default mode: no collection below the threshold, bounded live peak past it) |
 | 4. Growth-then-collect (push realloc) | **Done** - `roots_survive_stress_collection_at_every_allocation` |
 | 5. Interior-root (`bytes` slice after owner reassigned) | **Done** - `interior_slice_keeps_its_block_alive_under_stress`; harness-level interior/VARIANT test |
 | 6. Boundary pinning test | **Done (returned half)** - `library_pins_values_returned_across_the_c_boundary` returns an array to C, collects, and reads it; `only_library_exports_pin_managed_returns` covers an `Err` payload and asserts executable builds/private helpers never pin. The borrowed-not-pinned half is the §5.8 pair stated in `11-c-abi.md` §5 and asserted by the pass-back/no-new-pin check; FFI frame registration remains S4 |
-| 7. Runtime budget vs `03` §12 (32 KB) | **Not measured** - root array, directory, mark stack |
+| 7. Runtime budget vs `03` §12 (32 KB) | **Done** (2026-10-30) - static GC state is 116 B of globals (4 pointers, 10 `size_t`, 1 `int`; +24 B shared arena bookkeeping), ~0.4% of the budget; per-collection transients (directory 16 B/live block, mark stack 8 B/entry, roots 8 B/slot, pins 8 B/pin) are freed at the end of the collection. Shape tables are emitted per-program data, not runtime state |
 | 8. Tier-1 across Linux/macOS/Windows | **Done for Phase B** - run 27 (`97e1475`) green on all three OSes (runs 23-25 caught the channel and map root bugs first); re-verified locally 2026-10-29 (full `npm run ci`, 96 `emit_c` tests, 19/19 conformance cases executed under `ASTRA_GC_STRESS=1`) |
 
 ## 5. Next slices (in order)
@@ -76,8 +76,13 @@ channel creation. Single-block helpers are safe by construction.
   does not emit registration yet: the first `@script:c` boundary that passes
   managed values into a foreign frame emits it, and the §7 boundary-rooting
   test lands with that slice.
-- **S5 - Phase C.** `bytes_since_gc` threshold at safepoints, collection on by
-  default, re-point `astra_arena_live_count` tests, record the budget (§8.7).
+- **S5 - Phase C. Done** (2026-10-30; see the landing record). `astra_gc_alloc`
+  bumps `bytes_since_gc`; `astra_gc_maybe_collect` - already emitted at
+  function entry and loop back-edges - collects once the threshold (fixed 1
+  MiB constant, runtime-only, not language surface) is reached. Stress mode is
+  unchanged. No emitter change was needed and no arena-accounting harness
+  needed re-pointing: they call the runtime directly and never reach a
+  safepoint.
 - **S6 - Phase D (Wasm).** Deferred; needs a managed allocator in linear memory.
 
 ## 6. Landing records
@@ -193,3 +198,33 @@ assumed `int`-sized for the future mark loop; shape tables are per-TU statics.
   Runs under `ASTRA_GC_STRESS=1`; failure diagnostics print to stderr.
 - Effect on the verification plan: §8 items 2-6 are now all done; §8.7 (the
   budget measurement) and the per-slice Tier-1 runs remain.
+
+### S5 - Phase C: collection on by default (2026-10-30)
+
+- Runtime: `astra_gc_alloc` and `astra_gc_realloc` bump a new
+  `astra_gc_bytes_since_gc` counter; `astra_gc_maybe_collect` - which the
+  emitter already emits at function entry (after `frame_enter`) and at loop
+  back-edges (`while`, `for`, `continue`) - now collects when that counter
+  reaches `ASTRA_GC_DEFAULT_THRESHOLD`, a fixed 1 MiB constant reset at every
+  collection and at shutdown. The threshold is a runtime constant, not
+  language surface: tuning it (or making it adaptive to the surviving heap)
+  is post-V1. `ASTRA_GC_STRESS=1` is unchanged (collect at every safepoint
+  and allocation).
+- No emitter change and no re-pointed tests: the arena-accounting harnesses
+  call the runtime directly and never reach a safepoint, and the whole gate -
+  19 positive + 13 reject conformance cases plus every hosted harness -
+  passed with default collection on, which the stress leg had already made
+  safe.
+- Test: `default_collection_keeps_the_live_set_bounded` - the §8.3 proof in
+  default mode: below the threshold nothing collects (16 x 4 KiB), past it a
+  2000-iteration loop's safepoints keep the live peak bounded while the total
+  keeps growing (the assertion that fails against the old arena), and the one
+  rooted survivor is untouched. Stress mode skips the gating phase.
+- Budget (§8.7): static GC state is 116 B of globals (4 pointers, 10 `size_t`,
+  1 `int`, plus 24 B of shared arena bookkeeping) - ~0.4% of `03` §12's 32 KB
+  native budget. Per-collection transients (directory 16 B per live block,
+  mark stack 8 B per entry, root array 8 B per frame slot, pins 8 B per pin)
+  are freed at the end of the collection; shape tables are emitted per-program
+  data, not runtime state.
+- Verification-plan status: §8 items 1-7 are now all done; only §8 Tier-1
+  (the per-slice runs) remains, per slice.

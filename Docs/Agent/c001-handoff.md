@@ -25,12 +25,10 @@
 > `run_number`.
 >
 > **Remaining (honest handoff):** the rest of precise mark-sweep GC (`GC-001`,
-> 6.C; design approved 2026-10-29, Phases 0/A/B landed). Before collection can
-> be on by default (Phase C): nothing - §5.8 boundary pinning landed
-> (`25763da`), §5.9's signature is decided and landed as `11-c-abi.md` §5.1
-> (scoped handle; emitted with the first foreign-frame boundary), and the §8.2
-> poison oracle landed 2026-10-30, so Phase C (collection on by default) is the
-> next slice. Phase D (Wasm)
+> 6.C; design approved 2026-10-29, Phases 0/A/B/C landed - collection is on by
+> default as of 2026-10-30: safepoints collect once 1 MiB of managed bytes has
+> been allocated since the last collection, after S2 pinning + S3 poison
+> oracle + S4 signature landed). Only Phase D (Wasm)
 > needs a managed allocator in linear memory. Also still open: the unspecced
 > `MutSlice` surface behind `ptr.as_slice` (6.C), the fallible
 > `Memory.alloc`/`region.alloc` entry-point policy (6.C), and OS-threaded

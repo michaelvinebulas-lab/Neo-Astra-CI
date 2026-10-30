@@ -25,10 +25,11 @@ suite (19 positive + 13 reject cases) is green on JavaScript, TypeScript, Nova,
 and C with empty gap ledgers. `C-001` is the workstream: the managed C17 slice,
 multi-module and package linking, generics, native libraries, the
 single-threaded concurrency slice, and the Tier-1 Linux/macOS/Windows matrix are
-landed; what remains is design-gated. `GC-001` Phases 0/A/B are landed (Phase B
-verified by Tier-1 run 27) with collection still off by default; S2 (§5.8
-boundary pinning), S3 (§8.2 poison oracle), and S4 (§5.9 signature) are all
-landed, so the active slice is **Phase C — collection on by default**. Live
+landed; what remains is design-gated. `GC-001` Phases 0/A/B/C are landed
+(Phase C - collection on by default at a 1 MiB safepoint threshold - landed
+2026-10-30 after S2 pinning, S3 poison oracle, and S4 signature; Tier-1 runs
+29/32 green on all three OSes). Only GC-001's Phase D (Wasm) remains,
+deferred until a managed allocator in linear memory lands. Live
 GC status, open bugs, and the ordered slices are owned by
 `Docs/Agent/gc-001-workstream.md`.
 Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
