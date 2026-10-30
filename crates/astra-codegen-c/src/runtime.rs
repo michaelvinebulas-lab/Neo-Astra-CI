@@ -172,6 +172,11 @@ extern size_t astra_gc_root_count(void);
    Pinning is monotone (release is post-V1); NULL is ignored. */
 extern void astra_gc_pin(void* payload);
 extern size_t astra_gc_pin_count(void);
+/* Debug oracle hooks (GC-001 §8.2): poison a live managed payload with the
+   fill the free paths use, and count fills so a test can assert both free
+   paths poison without reading freed memory. */
+extern void astra_gc_poison_payload(void* payload);
+extern size_t astra_gc_poison_count(void);
 extern NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src, const NS_Gc_Shape* shape);
 extern void astra_array_push(NS_Array* arr, size_t elem_size, const void* value, const NS_Gc_Shape* shape);
 extern void* astra_array_index(NS_Array* arr, size_t i, size_t elem_size);
@@ -446,14 +451,28 @@ static NS_Gc_Head* astra_gc_head(void* payload) {
    filled with 0xDD, so a stale read of a collected block shows the poison
    pattern instead of plausible-looking data. Release builds (#define NDEBUG)
    skip the fill. Manual blocks are not poisoned: they carry no size header,
-   and spec §8.4 already leaves their use-after-free undefined. */
+   and spec §8.4 already leaves their use-after-free undefined.
+   Every fill is counted: reading freed memory is not portable (macOS reclaims
+   freed pages and returns them zero-filled), so tests assert the fill on a
+   still-owned block plus this counter instead. */
+static size_t astra_gc_poison_fills = 0;
 static void astra_gc_poison(NS_Gc_Head* head) {
 #ifndef NDEBUG
     memset((unsigned char*)(head + 1), 0xDD, head->bytes);
+    astra_gc_poison_fills += 1;
 #else
     (void)head;
 #endif
 }
+
+/* Debug oracle hooks: poison a live managed payload with the same fill the
+   free paths use, and report how many fills happened. */
+void astra_gc_poison_payload(void* payload) {
+    if (!payload) { return; }
+    astra_gc_poison(astra_gc_head(payload));
+}
+
+size_t astra_gc_poison_count(void) { return astra_gc_poison_fills; }
 
 void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
     /* Under stress, collect before the new block exists: everything the caller

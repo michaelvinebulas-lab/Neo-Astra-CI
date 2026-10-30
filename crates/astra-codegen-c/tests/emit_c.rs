@@ -1592,14 +1592,13 @@ int main(void) {
     );
 }
 
-/// GC-001 §8.2 poison oracle: a block freed by the sweep - and one freed
-/// explicitly - has its payload filled with 0xDD in debug builds, so a stale
-/// read of a collected block shows the poison pattern instead of
-/// plausible-looking data. Two rooted guard blocks keep the heap region
-/// alive (macOS returns a fully freed tiny region to the OS, which would
-/// unmap the block under test), and only the middle of the payload is
-/// checked because allocators scribble free-list metadata into the chunk's
-/// first and last words.
+/// GC-001 §8.2 poison oracle: freed managed payloads are filled with 0xDD in
+/// debug builds. Reading freed memory back is not portable (macOS reclaims
+/// freed pages and returns them zero-filled - run 31 - or unmaps them - run
+/// 30), so the test verifies the two things that are portable: the fill
+/// itself on a still-owned block (pattern and full payload extent), and that
+/// both free paths (explicit `astra_gc_free` and the collector's sweep) run
+/// that fill, via the poison counter.
 #[test]
 fn swept_payloads_are_poisoned_for_the_use_after_free_oracle() {
     let harness = r#"
@@ -1611,6 +1610,8 @@ extern const NS_Gc_Shape NS_SHAPE_LEAF;
 extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
 extern void astra_gc_free(void* p);
 extern void astra_gc_collect(void);
+extern void astra_gc_poison_payload(void* p);
+extern size_t astra_gc_poison_count(void);
 extern size_t astra_gc_frame_enter(size_t slots);
 extern void astra_gc_publish(size_t index, void* payload);
 int main(void) {
@@ -1619,20 +1620,23 @@ int main(void) {
     astra_gc_publish(rf + 0, g1);
     unsigned char* g2 = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
     astra_gc_publish(rf + 1, g2);
-    /* No root publishes `stale`, so the sweep must free and poison it. */
+    /* The fill itself, on a still-owned block: pattern and full extent. */
+    unsigned char* live = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
+    for (size_t i = 0; i < 256; i++) { live[i] = (unsigned char)(i & 0x7F); }
+    astra_gc_poison_payload(live);
+    for (size_t i = 0; i < 256; i++) {
+        if (live[i] != 0xDD) { fprintf(stderr, "POISON_FILL_FAIL at %zu: %02X\n", i, live[i]); return 1; }
+    }
+    /* The explicit free path must run the same fill. */
+    size_t before = astra_gc_poison_count();
+    astra_gc_free(live);
+    if (astra_gc_poison_count() != before + 1) { fprintf(stderr, "POISON_FREE_COUNT_FAIL\n"); return 2; }
+    /* No root publishes `stale`, so the sweep frees and poisons exactly it. */
     unsigned char* stale = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
     for (size_t i = 0; i < 256; i++) { stale[i] = (unsigned char)(i & 0x7F); }
+    before = astra_gc_poison_count();
     astra_gc_collect();
-    for (size_t i = 64; i < 192; i++) {
-        if (stale[i] != 0xDD) { fprintf(stderr, "POISON_SWEEP_FAIL at %zu: %02X\n", i, stale[i]); return 1; }
-    }
-    /* The explicit free path poisons the same way. */
-    unsigned char* direct = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
-    for (size_t i = 0; i < 256; i++) { direct[i] = 0x11; }
-    astra_gc_free(direct);
-    for (size_t i = 64; i < 192; i++) {
-        if (direct[i] != 0xDD) { fprintf(stderr, "POISON_FREE_FAIL at %zu: %02X\n", i, direct[i]); return 2; }
-    }
+    if (astra_gc_poison_count() != before + 1) { fprintf(stderr, "POISON_SWEEP_COUNT_FAIL\n"); return 3; }
     printf("POISON_OK\n");
     return 0;
 }

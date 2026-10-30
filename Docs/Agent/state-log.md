@@ -19,6 +19,14 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-30 - Run 31: poison test pivoted to a portable oracle (no freed-memory read)
+
+- Result: run 31 (`a87cdca`) is again red on macOS only, and the new diagnostics say exactly why: `POISON_SWEEP_FAIL at 64: 00`. The guard blocks fixed the unmap (run 30's segfault), but macOS reclaimed the freed page and returned it **zero-filled** - libmalloc's MADV_FREE-style behavior under memory pressure. Reading freed memory back is therefore not a portable oracle on macOS: it can segfault, read zeros, or read the poison, depending on the allocator's mood. The poison implementation was never at fault; the observation method was.
+- Pivot (runtime + test): `astra_gc_poison` now counts every fill, and two debug hooks are exported - `astra_gc_poison_payload(payload)` poisons a **still-owned** block with the same fill the free paths use, `astra_gc_poison_count()` reports the total. The test asserts (a) the fill on a live block: every byte `0xDD` across the full 256-byte payload, deterministic and UB-free, and (b) that both free paths run the fill, via the counter (exactly +1 for the explicit free, exactly +1 for the sweep). The stale-read amplification that motivated §8.2 stays as what it always was - a best-effort diagnostic for humans debugging a suspected root bug, not something a unit test can portably observe.
+- Verification: local test green; full gate green. Tier-1 for this commit polls and is recorded by the next entry.
+
+---
+
 ### 2026-10-30 - Run 30 fix: keep the oracle test's block mapped on macOS
 
 - Result: run 29 (`174715c`, S2 pinning + the four decision records) is green on all three OSes. Run 30 (`b983290`, S3) is red on macOS only - and the culprit is the S3 oracle test itself, not the poison implementation: `swept_payloads_are_poisoned_for_the_use_after_free_oracle` read through a freed block that macOS's libmalloc had already returned to the OS. A tiny region whose last live chunk is freed is unmapped on macOS; glibc and Windows keep freed chunks mapped, which is why only macOS segfaulted (empty stderr, non-zero exit).
