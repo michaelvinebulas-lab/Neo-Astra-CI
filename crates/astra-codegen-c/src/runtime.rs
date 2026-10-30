@@ -153,9 +153,10 @@ extern void astra_runtime_shutdown(void);
    `astra_gc_frame_exit` restores the live count before every return.
    `astra_gc_temp_enter`/`astra_gc_temp_exit` extend the same region for
    materialised call arguments (LIFO). `astra_gc_maybe_collect` is the
-   safepoint hook - a no-op unless ASTRA_GC_STRESS=1, which collects there and
-   inside every managed allocation; default collection stays off until the
-   Phase C threshold and roots are fully exercised. */
+   safepoint hook: it collects once ASTRA_GC_DEFAULT_THRESHOLD managed bytes
+   have been allocated since the last collection (Phase C); under
+   ASTRA_GC_STRESS=1 it collects at every safepoint and inside every managed
+   allocation instead (§8.1). */
 extern size_t astra_gc_frame_enter(size_t slots);
 extern void astra_gc_frame_exit(size_t rf);
 extern void astra_gc_publish(size_t index, void* payload);
@@ -367,6 +368,9 @@ static size_t astra_gc_pins_cap = 0;
 static size_t astra_gc_pins_len = 0;
 static int astra_gc_stress = -1;
 static size_t astra_gc_collections = 0;
+/* Managed bytes allocated since the last collection; safepoints collect when
+   this reaches ASTRA_GC_DEFAULT_THRESHOLD (Phase C, §5.4). */
+static size_t astra_gc_bytes_since_gc = 0;
 
 static void astra_gc_init_stress(void) {
     if (astra_gc_stress >= 0) { return; }
@@ -492,6 +496,7 @@ void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
     astra_arena_head = node;
     astra_arena_live += 1;
     astra_arena_total += 1;
+    astra_gc_bytes_since_gc += n;
     return (void*)(head + 1);
 }
 
@@ -524,6 +529,7 @@ void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n) {
     if (!p) { return astra_gc_alloc(shape, n); }
     NS_Gc_Head* head = astra_gc_head(p);
     size_t old_bytes = head->bytes;
+    astra_gc_bytes_since_gc += n;
     NS_Gc_Head* fresh = (NS_Gc_Head*)realloc(head, sizeof(NS_Gc_Head) + (n == 0 ? 1 : n));
     if (!fresh) { astra_panic("out of memory"); }
     fresh->bytes = n;
@@ -692,14 +698,22 @@ void astra_gc_collect(void) {
     astra_gc_dir_count = 0;
     free(dir);
     astra_gc_collections += 1;
+    astra_gc_bytes_since_gc = 0;
 }
 
-/* Safepoint hook: default off until Phase C turns collection on by default.
-   ASTRA_GC_STRESS=1 collects here and inside every managed allocation, so the
-   whole gate can prove the root discipline (§5.4/§8.1). */
+/* Safepoint hook (Phase C, §5.4): collection runs when the managed bytes
+   allocated since the last collection reach the threshold - the Phase C
+   default - or, under ASTRA_GC_STRESS=1, at every safepoint and inside every
+   managed allocation (the §8.1 root-discipline stress mode). The threshold is
+   a runtime constant, not language surface: tuning it (or making it adaptive
+   to the surviving heap) is post-V1 work recorded on the workstream board. */
+#define ASTRA_GC_DEFAULT_THRESHOLD (1024u * 1024u)
 void astra_gc_maybe_collect(void) {
     astra_gc_init_stress();
-    if (astra_gc_stress) { astra_gc_collect(); }
+    if (astra_gc_stress) { astra_gc_collect(); return; }
+    if (astra_gc_bytes_since_gc >= ASTRA_GC_DEFAULT_THRESHOLD) {
+        astra_gc_collect();
+    }
 }
 
 /* `Region` (spec 8.4): a fixed-capacity manual block carved bump-style.
@@ -765,6 +779,7 @@ void astra_runtime_shutdown(void) {
     astra_mark_stack = NULL;
     astra_mark_len = 0;
     astra_mark_cap = 0;
+    astra_gc_bytes_since_gc = 0;
 }
 
 /* Test/observability accessors for both families (leak checks in the native

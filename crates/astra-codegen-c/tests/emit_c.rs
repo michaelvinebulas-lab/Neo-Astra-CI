@@ -1659,6 +1659,71 @@ int main(void) {
     );
 }
 
+/// Phase C (GC-001): collection is on by default - a safepoint collects once
+/// ASTRA_GC_DEFAULT_THRESHOLD (1 MiB) managed bytes have been allocated since
+/// the last collection. The harness allocates in a loop and calls the
+/// safepoint hook where generated code does, then asserts (a) nothing
+/// collects below the threshold, (b) the live-block peak stays bounded while
+/// the total keeps growing - the §8.3 proof without stress mode, and the
+/// assertion that fails against the old arena, where live could never fall -
+/// and (c) the one rooted survivor is untouched. The stress leg skips the
+/// threshold-gating phase (there every safepoint collects).
+#[test]
+fn default_collection_keeps_the_live_set_bounded() {
+    let harness = r#"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stddef.h>
+#include <stdint.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+extern void astra_gc_maybe_collect(void);
+extern size_t astra_gc_collected_count(void);
+extern size_t astra_arena_live_count(void);
+extern size_t astra_arena_total_count(void);
+extern size_t astra_gc_frame_enter(size_t slots);
+extern void astra_gc_publish(size_t index, void* payload);
+int main(void) {
+    const char* stress = getenv("ASTRA_GC_STRESS");
+    int is_stress = (stress && stress[0] == '1' && stress[1] == '\0');
+    size_t rf = astra_gc_frame_enter(1);
+    unsigned char* keep = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
+    keep[0] = 7;
+    astra_gc_publish(rf + 0, keep);
+    if (!is_stress) {
+        size_t before = astra_gc_collected_count();
+        for (int i = 0; i < 16; i++) {
+            unsigned char* t = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 4096);
+            t[0] = 1;
+            astra_gc_maybe_collect();
+        }
+        if (astra_gc_collected_count() != before) { printf("EARLY_COLLECT_FAIL\n"); return 1; }
+    }
+    for (int i = 0; i < 2000; i++) {
+        unsigned char* t = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 4096);
+        t[0] = (unsigned char)i;
+        astra_gc_maybe_collect();
+    }
+    if (astra_arena_total_count() < 1500) { printf("TOTAL_FAIL\n"); return 2; }
+    if (astra_arena_live_count() > 500) { printf("UNBOUNDED_FAIL\n"); return 3; }
+    if (astra_gc_collected_count() == 0) { printf("NO_COLLECTION_FAIL\n"); return 4; }
+    if (keep[0] != 7) { printf("SURVIVOR_FAIL\n"); return 5; }
+    printf("DEFAULT_BOUNDED_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
+        eprintln!("skipping default_collection_keeps_the_live_set_bounded: no hosted compiler");
+        return;
+    };
+    assert!(ok, "default-collection harness did not run:\n{stderr}");
+    assert!(
+        stdout.contains("DEFAULT_BOUNDED_OK"),
+        "default collection did not bound the live set: {stdout}"
+    );
+}
+
 #[test]
 fn roots_survive_stress_collection_at_every_allocation() {
     let src = r#"
