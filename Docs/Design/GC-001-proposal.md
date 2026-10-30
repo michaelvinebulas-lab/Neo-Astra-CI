@@ -25,7 +25,8 @@
 > FFI root registration's signature is **decided** (2026-10-30, landed in
 > `11-c-abi.md` §5.1; the emitter emits it with the first `@script:c` boundary
 > that passes managed values into a foreign frame), and the §8.2
-> poison oracle remains.
+> poison oracle landed 2026-10-30 (S3) — the Phase C prerequisites are
+> complete.
 >
 > Written 2026-10-29 under the `GC-001` backlog item in `Docs/Agent/todo.md`.
 
@@ -451,7 +452,7 @@ block cannot leave a registration unpopped.
 |---|---|---|
 | 0 | `NS6002`: forbid managed element types in `Memory.alloc<T>`/`region.alloc<T>` (§11, condition 2) | **Landed 2026-10-29** (code confirmed by user): checker rule + spec §8.4 line + §14.9 row, ahead of Phase A so the footgun class is closed before any allocator split makes it observable |
 | A | Header + shapes, allocator split, no collection yet | **Landed 2026-10-29**: `NS_Gc_Head` + `NS_Gc_Shape` grammar in the runtime, compiler-emitted shape tables threaded through every managed allocation (`astra_gc_alloc`), manual family split out (`astra_manual_alloc` for `Memory.alloc`/`Region`), zero-on-alloc applied to growth. Pure refactor: the arena keeps its current behaviour and its leak tests (`managed_arena_is_released_at_shutdown` now pins both families, plus a header/shape zeroing harness) |
-| B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | **Landed 2026-10-29** (slices: root array + collector, frame roots + republish, materialisation; stress reruns the whole hosted gate in CI). Default off; §8 proves correctness. Not part of the row but still required before default collection: §5.8 boundary pinning, §5.9 FFI registration (signature decided 2026-10-30, `11-c-abi.md` §5.1; landed as S2/poison-adjacent slices), and the §8.2 poison oracle |
+| B | Frame regions, snapshots, materialisation (§5.1-5.3), safepoints behind `ASTRA_GC_STRESS=1` (collect at every safepoint) | **Landed 2026-10-29** (slices: root array + collector, frame roots + republish, materialisation; stress reruns the whole hosted gate in CI). Default off; §8 proves correctness. Not part of the row: the three prerequisites for default collection have all landed - §5.8 boundary pinning (`25763da`), §5.9 FFI registration (signature decided 2026-10-30, `11-c-abi.md` §5.1), and the §8.2 poison oracle (2026-10-30) |
 | C | Turn collection on by default; re-point `astra_arena_live_count`-based tests at the new accounting | |
 | D | Wasm: needs a managed allocator in linear memory before any of this can run there | Sequencing decision, [P10] |
 

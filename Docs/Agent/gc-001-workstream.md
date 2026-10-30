@@ -16,7 +16,7 @@ Last updated: 2026-10-30.
 | 0 | `NS6002`: managed element types forbidden in `Memory.alloc`/`region.alloc` | **Landed** `cf1056a` (checker + spec §8.4/§14.9); Tier-1 run 18 |
 | A | Block header (`NS_Gc_Head`), shape grammar (`NS_Gc_Shape`), compiler-emitted shape tables, manual/managed allocator split | **Landed** `a7c3b58` (Tier-1 run 20 red on Ubuntu, fixed by `753c54f`) |
 | B | Root frames, type-directed snapshots, materialisation, safepoints, mark-sweep collector under `ASTRA_GC_STRESS=1`, stress leg in CI | **Landed** `3e9893b`, `0233ce2`, `18fc3fa`, follow-ups `1b6fa85` + `463ff54`; collection still **off by default**. Verified by Tier-1 run 27 (`97e1475`): green on Linux, macOS and Windows |
-| C | Collection on by default (`bytes_since_gc` threshold), re-point arena-accounting tests | **Blocked** on §2 and §3 below |
+| C | Collection on by default (`bytes_since_gc` threshold), re-point arena-accounting tests | **Ready** - open bugs fixed, decisions recorded, and all three prerequisites landed (S2 pinning, S3 poison oracle, S4 signature); Phase C is the next slice |
 | D | Wasm managed allocator in linear memory | Deferred by design (proposal §7, `[P10]`) |
 
 ## 2. Open bugs
@@ -48,7 +48,7 @@ channel creation. Single-block helpers are safe by construction.
 | Item | State |
 |---|---|
 | 1. Stress mode over the gate + corpus | **Done** - `scripts/ci.mjs` stress leg: `emit_c` + `conformance` with `ASTRA_GC_STRESS=1` |
-| 2. Poison-on-free oracle | **Not implemented** - next slice (S3) |
+| 2. Poison-on-free oracle | **Done** - `swept_payloads_are_poisoned_for_the_use_after_free_oracle`: swept and explicitly freed payloads read back `0xDD` past the header (debug builds; `#define NDEBUG` skips the fill) |
 | 3. Bounded live set while total grows | **Done** - `stress_collection_keeps_the_live_set_bounded` |
 | 4. Growth-then-collect (push realloc) | **Done** - `roots_survive_stress_collection_at_every_allocation` |
 | 5. Interior-root (`bytes` slice after owner reassigned) | **Done** - `interior_slice_keeps_its_block_alive_under_stress`; harness-level interior/VARIANT test |
@@ -65,8 +65,11 @@ channel creation. Single-block helpers are safe by construction.
   payloads) into a monotone run-scoped set; `11-c-abi.md` §5 now states the
   returned-pinned / borrowed-not pair. Covered by two `emit_c` tests, one of
   which runs a hand-written C consumer across an explicit `astra_gc_collect()`.
-- **S3 - §8.2 poison oracle.** Fill freed payloads with `0xDD` in debug builds
-  so a live read of a collected block fails loudly; rerun the stress leg.
+- **S3 - §8.2 poison oracle. Done** (2026-10-30; see the landing record).
+  Freed managed payloads are filled with `0xDD` in debug builds on both free
+  paths (sweep and explicit), so a stale read of a collected block fails
+  loudly instead of returning plausible-looking data. The stress leg reruns
+  over it.
 - **S4 - §5.9 FFI signature. Done** (2026-10-30): the scoped-handle triple
   (`astra_gc_scope_enter`/`astra_gc_root`/`astra_gc_scope_exit`) is landed as
   `11-c-abi.md` §5.1 before any call site, per the §5.9 trigger. The emitter
@@ -171,3 +174,20 @@ assumed `int`-sized for the future mark loop; shape tables are per-TU statics.
   types; a pinned pointer can still be invalidated by `astra_gc_realloc` if the
   exporter later grows the same buffer (aliasing, not collector loss); release
   is post-V1.
+
+### S3 - §8.2 poison oracle (2026-10-30)
+
+- Runtime: `astra_gc_poison` fills the payload extent with `0xDD` before both
+  managed free paths - the collector's sweep and the strict `astra_gc_free` -
+  behind `#ifndef NDEBUG`, so release builds that define `NDEBUG` skip the
+  fill. Manual blocks are deliberately *not* poisoned: they carry no size
+  header, and spec §8.4 already leaves their use-after-free undefined (the
+  debug double-free detection there is a separate MAY).
+- Test: `swept_payloads_are_poisoned_for_the_use_after_free_oracle` seeds
+  non-poison bytes into a managed block, keeps a raw pointer with no root,
+  collects, and asserts every byte from offset 16 onward (past the block
+  header, where a debug allocator may scribble free-list metadata) reads back
+  `0xDD`; the same harness covers the explicit-free path. Runs under
+  `ASTRA_GC_STRESS=1`.
+- Effect on the verification plan: §8 items 2-6 are now all done; §8.7 (the
+  budget measurement) and the per-slice Tier-1 runs remain.

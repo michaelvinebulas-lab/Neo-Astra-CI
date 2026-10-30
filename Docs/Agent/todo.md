@@ -27,9 +27,10 @@ multi-module and package linking, generics, native libraries, the
 single-threaded concurrency slice, and the Tier-1 Linux/macOS/Windows matrix are
 landed; what remains is design-gated. `GC-001` Phases 0/A/B are landed (Phase B
 verified by Tier-1 run 27) with collection still off by default; S2 (§5.8
-boundary pinning) is implemented and locally verified, and the active slice is
-**S3 — §8.2 poison-on-free oracle**. Live GC status, open bugs, and the ordered
-slices S2-S6 are owned by `Docs/Agent/gc-001-workstream.md`.
+boundary pinning), S3 (§8.2 poison oracle), and S4 (§5.9 signature) are all
+landed, so the active slice is **Phase C — collection on by default**. Live
+GC status, open bugs, and the ordered slices are owned by
+`Docs/Agent/gc-001-workstream.md`.
 Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
 ---
@@ -1247,7 +1248,7 @@ by a production native target.
 - [ ] GC-001 Phase C prerequisites, in order (see
       `Docs/Agent/gc-001-workstream.md` section 5): S1 a green stress run on all
       three OSes (**done**, run 27); S2 section 5.8 boundary pinning (**done**
-      2026-10-29, locally verified); S3 section 8.2 poison oracle (**next**);
+      2026-10-29); S3 section 8.2 poison oracle (**done** 2026-10-30);
       S4 section 5.9 FFI signature (**done** 2026-10-30: scoped handle landed
       as `11-c-abi.md` section 5.1; the emitter emits it with the first
       foreign-frame boundary); then Phase C (collection on by
