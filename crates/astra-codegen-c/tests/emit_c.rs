@@ -1595,10 +1595,11 @@ int main(void) {
 /// GC-001 §8.2 poison oracle: a block freed by the sweep - and one freed
 /// explicitly - has its payload filled with 0xDD in debug builds, so a stale
 /// read of a collected block shows the poison pattern instead of
-/// plausible-looking data. The harness seeds non-poison bytes, keeps a raw
-/// pointer with no root, collects, and reads from offset 16 onward (past the
-/// block header, where a debug allocator may scribble its own free-list
-/// metadata).
+/// plausible-looking data. Two rooted guard blocks keep the heap region
+/// alive (macOS returns a fully freed tiny region to the OS, which would
+/// unmap the block under test), and only the middle of the payload is
+/// checked because allocators scribble free-list metadata into the chunk's
+/// first and last words.
 #[test]
 fn swept_payloads_are_poisoned_for_the_use_after_free_oracle() {
     let harness = r#"
@@ -1610,20 +1611,27 @@ extern const NS_Gc_Shape NS_SHAPE_LEAF;
 extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
 extern void astra_gc_free(void* p);
 extern void astra_gc_collect(void);
+extern size_t astra_gc_frame_enter(size_t slots);
+extern void astra_gc_publish(size_t index, void* payload);
 int main(void) {
+    size_t rf = astra_gc_frame_enter(2);
+    unsigned char* g1 = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
+    astra_gc_publish(rf + 0, g1);
+    unsigned char* g2 = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
+    astra_gc_publish(rf + 1, g2);
+    /* No root publishes `stale`, so the sweep must free and poison it. */
     unsigned char* stale = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
     for (size_t i = 0; i < 256; i++) { stale[i] = (unsigned char)(i & 0x7F); }
-    /* No root publishes `stale`, so the sweep must free and poison it. */
     astra_gc_collect();
-    for (size_t i = 16; i < 256; i++) {
-        if (stale[i] != 0xDD) { printf("POISON_SWEEP_FAIL at %zu: %02X\n", i, stale[i]); return 1; }
+    for (size_t i = 64; i < 192; i++) {
+        if (stale[i] != 0xDD) { fprintf(stderr, "POISON_SWEEP_FAIL at %zu: %02X\n", i, stale[i]); return 1; }
     }
     /* The explicit free path poisons the same way. */
-    unsigned char* direct = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 64);
-    for (size_t i = 0; i < 64; i++) { direct[i] = 0x11; }
+    unsigned char* direct = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
+    for (size_t i = 0; i < 256; i++) { direct[i] = 0x11; }
     astra_gc_free(direct);
-    for (size_t i = 16; i < 64; i++) {
-        if (direct[i] != 0xDD) { printf("POISON_FREE_FAIL at %zu: %02X\n", i, direct[i]); return 2; }
+    for (size_t i = 64; i < 192; i++) {
+        if (direct[i] != 0xDD) { fprintf(stderr, "POISON_FREE_FAIL at %zu: %02X\n", i, direct[i]); return 2; }
     }
     printf("POISON_OK\n");
     return 0;
@@ -1637,10 +1645,13 @@ int main(void) {
         );
         return;
     };
-    assert!(ok, "poison harness did not run:\n{stderr}");
+    assert!(
+        ok,
+        "poison harness did not run: stdout={stdout} stderr={stderr}"
+    );
     assert!(
         stdout.contains("POISON_OK"),
-        "freed payload was not poisoned: {stdout}"
+        "freed payload was not poisoned: stdout={stdout} stderr={stderr}"
     );
 }
 

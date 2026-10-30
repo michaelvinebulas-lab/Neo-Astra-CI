@@ -19,6 +19,14 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-30 - Run 30 fix: keep the oracle test's block mapped on macOS
+
+- Result: run 29 (`174715c`, S2 pinning + the four decision records) is green on all three OSes. Run 30 (`b983290`, S3) is red on macOS only - and the culprit is the S3 oracle test itself, not the poison implementation: `swept_payloads_are_poisoned_for_the_use_after_free_oracle` read through a freed block that macOS's libmalloc had already returned to the OS. A tiny region whose last live chunk is freed is unmapped on macOS; glibc and Windows keep freed chunks mapped, which is why only macOS segfaulted (empty stderr, non-zero exit).
+- Fix (test-only, the runtime is unchanged): two rooted guard blocks keep the region alive across the free, only the payload's middle window (offsets 64-192) is checked because allocators scribble free-list metadata into the chunk's first and last words, failure diagnostics go to stderr, and the assertion message includes stdout. Local test green; full gate green.
+- Lesson recorded on the board: a harness that reads freed memory must (a) keep the region mapped with other live chunks and (b) avoid the chunk's first and last words. Verification plan §8 items 1-6 stand; Tier-1 for this fix is polled and recorded by the next entry.
+
+---
+
 ### 2026-10-30 - GC-001 S3: poison-on-free oracle (§8.2)
 
 - Command: reads of the runtime free paths, four runtime edits, one new `emit_c` harness test, `cargo fmt --all`, `cargo test -p astra-codegen-c --test emit_c -- swept_payloads_are_poisoned`, full gate, commit + push, Tier-1 poll (the poll for the S2 head `174715c` was cancelled by a local server restart; its run is recorded together with this slice's run by the next entry).

@@ -48,7 +48,7 @@ channel creation. Single-block helpers are safe by construction.
 | Item | State |
 |---|---|
 | 1. Stress mode over the gate + corpus | **Done** - `scripts/ci.mjs` stress leg: `emit_c` + `conformance` with `ASTRA_GC_STRESS=1` |
-| 2. Poison-on-free oracle | **Done** - `swept_payloads_are_poisoned_for_the_use_after_free_oracle`: swept and explicitly freed payloads read back `0xDD` past the header (debug builds; `#define NDEBUG` skips the fill) |
+| 2. Poison-on-free oracle | **Done** - `swept_payloads_are_poisoned_for_the_use_after_free_oracle`: swept and explicitly freed payloads read back `0xDD` in the payload's middle window (debug builds; `#define NDEBUG` skips the fill). Two rooted guard blocks keep the region mapped: macOS returns a fully freed tiny region to the OS, which unmaps the block under test (run 30) |
 | 3. Bounded live set while total grows | **Done** - `stress_collection_keeps_the_live_set_bounded` |
 | 4. Growth-then-collect (push realloc) | **Done** - `roots_survive_stress_collection_at_every_allocation` |
 | 5. Interior-root (`bytes` slice after owner reassigned) | **Done** - `interior_slice_keeps_its_block_alive_under_stress`; harness-level interior/VARIANT test |
@@ -185,9 +185,13 @@ assumed `int`-sized for the future mark loop; shape tables are per-TU statics.
   debug double-free detection there is a separate MAY).
 - Test: `swept_payloads_are_poisoned_for_the_use_after_free_oracle` seeds
   non-poison bytes into a managed block, keeps a raw pointer with no root,
-  collects, and asserts every byte from offset 16 onward (past the block
-  header, where a debug allocator may scribble free-list metadata) reads back
-  `0xDD`; the same harness covers the explicit-free path. Runs under
-  `ASTRA_GC_STRESS=1`.
+  collects, and asserts the payload's middle window (offsets 64-192) reads
+  back `0xDD`; the same harness covers the explicit-free path. Runs under
+  `ASTRA_GC_STRESS=1`. Two portability hardenings after run 30 failed on
+  macOS: two rooted guard blocks keep the heap region mapped (macOS returns a
+  fully freed tiny region to the OS, so the freed block under test was being
+  unmapped), and only the middle of the payload is checked because allocators
+  scribble free-list metadata into the chunk's first and last words. Failure
+  diagnostics print to stderr and the assertion includes stdout.
 - Effect on the verification plan: §8 items 2-6 are now all done; §8.7 (the
   budget measurement) and the per-slice Tier-1 runs remain.
