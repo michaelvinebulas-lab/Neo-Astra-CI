@@ -21,18 +21,63 @@ Only one item may be `[~]` at a time.
 **Phase 7 — Backends**
 
 `JS-001`, `TS-001`, and `INTEROP-001` are complete, and the shared conformance
-suite (19 positive + 13 reject cases) is green on JavaScript, TypeScript, Nova,
+suite (19 positive + 16 reject cases) is green on JavaScript, TypeScript, Nova,
 and C with empty gap ledgers. `C-001` is the workstream: the managed C17 slice,
 multi-module and package linking, generics, native libraries, the
 single-threaded concurrency slice, and the Tier-1 Linux/macOS/Windows matrix are
 landed; what remains is design-gated. `GC-001` Phases 0/A/B/C are landed
 (Phase C - collection on by default at a 1 MiB safepoint threshold - landed
 2026-10-30 after S2 pinning, S3 poison oracle, and S4 signature; Tier-1 runs
-29/32 green on all three OSes). Only GC-001's Phase D (Wasm) remains,
-deferred until a managed allocator in linear memory lands. Live
-GC status, open bugs, and the ordered slices are owned by
+29-36 green on all three OSes, including the per-case conformance-mode
+directive that closed the `NS6001`/`NS6002` corpus gap). Only GC-001's
+Phase D (Wasm) remains, deferred until a managed allocator in linear memory
+lands. Live GC status, open bugs, and the ordered slices are owned by
 `Docs/Agent/gc-001-workstream.md`.
 Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
+
+---
+
+## In progress and up next
+
+Every item that is **not** done, in queue order. Detail and acceptance
+criteria live in each item's section further down; this table is the map.
+`[~]` in-progress is empty: the last slice (per-case conformance mode) closed
+green at run 36.
+
+**Up next (`[ ]`)**
+
+1. `[ ]` `PLAY-001` Browser playground — not started; the expanded plan
+   (slices A-E + acceptance) is in the `PLAY-001` section. One keep-or-drop
+   decision is pending on the unmerged `work/play-001-a` bridge scaffold.
+2. `[ ]` `FFI-001` Polymorphic FFI — not started; design-first (no proposal
+   exists yet). The one unblocked near-term slice inside it: the first
+   `@script:c` foreign-frame boundary emits the `11-c-abi.md` §5.1 root
+   registration triple and its test.
+3. `[ ]` `CONC-001` OS-threaded structured concurrency — the single-threaded
+   eager slice is landed; the second slice is design-gated behind a proposal.
+4. `[ ]` `HARD-001` v0.1 hardening — scope not yet defined; needs a definition
+   before it can be worked (rule 6: queue, not brainstorm).
+
+**Open design questions (`[ ]`, decided by the user, not by code)**
+
+5. `[ ]` Should `Region.new`/`region.alloc` also require `@memory:manual`
+   (like `Memory.alloc` via `NS6001`)? §8.4 names only `Memory.alloc`;
+   proposed, not decided.
+6. `[ ]` `[P11]` call-argument evaluation order — split out of GC-001 for its
+   own spec review.
+7. `[ ]` Generic-forwarding instantiation gap (checker model) — silent until
+   the element type is concrete at the definition site.
+
+**Deferred (`[-]`, deliberately not scheduled)**
+
+8. `[-]` `GC-001` Phase D (Wasm) — needs a managed allocator in linear memory.
+9. `[-]` `WASM-001` C-to-Wasm path — needs the target ABI and runtime design.
+10. `[-]` Fallible `Memory.alloc`/`region.alloc` entry-point policy — until
+    then OOM panics, like `astra_gc_alloc`.
+11. `[-]` `MutSlice<T>` surface behind `ptr.as_slice` — the spec names the
+    type but defines no surface; building it would mean inventing semantics.
+12. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
+    embeddings (Python, Wasm, Java).
 
 ---
 
@@ -1187,29 +1232,21 @@ by a production native target.
       no surface for it, so building it would mean inventing semantics. Pinned
       by `emit_c` tests (including a hosted compile-and-run) and by the
       backend-neutral reject case `conformance/rejects/pointer_access_requires_system`.
-- [~] Precise mark-sweep GC with compiler stack maps (`GC-001`) — the same
-      queue item as the `GC-001` backlog line. The managed
-      "arena per run released at exit" first step is landed and tested; the real
-      collector needs frontend-generated precise roots (multi-week `GC-001`, and
-      conservative scanning would contradict the design's precise-roots rule).
-      `Docs/Design/GC-001-proposal.md` is no longer a proposal: the user decided
-      all eleven choices on 2026-10-29 (`[P1]`-`[P10]` approved, several with
-      amendments now applied inline - re-snapshot triggers after push growth /
-      `&mut` calls / field stores, short-circuit-safe hoisting, the
-      non-looping-function starvation note, `ASTRA_GC_STRESS` collecting at
-      every allocation, `VARIANT` shapes, zeroed-or-length-aware payloads, the
-      explicit heap-allocated mark stack counted against the 32 KB budget, and
-      the unbounded-pin V1 acceptance with a release API as follow-up; `[P11]`
-      split out for its own spec review). Both implementation-gating conditions
-      are answered in proposal §11: tasks run on the caller's stack (eager
-      inline spawn, no second stack), and managed element types in
-      `Memory.alloc<T>`/`region.alloc<T>` are to be **forbidden** (probe showed
-      `str`, `[u8]`, `Channel<T>`, and structs with `str` fields all pass
-      through today). Phases 0, A, and B are landed (see below), S2 is implemented
-      and locally verified, and the next slice is S3
-      (`Docs/Agent/gc-001-workstream.md` section 5). The `[P9]` signature is
-      decided (scoped handle, `Docs/Design/V1/11-c-abi.md` section 5.1, 2026-10-30);
-      it gated only the FFI half.
+- [x] Precise mark-sweep GC with compiler stack maps (`GC-001`, C backend) —
+      **complete on the C backend 2026-10-30.** Phases 0/A/B/C and slices
+      S1-S5 are landed and Tier-1 verified (runs 29-36 green on Linux, macOS,
+      and Windows): the NS6002 manual-element gate, the `NS_Gc_Head`/shape
+      object model, root frames + snapshots + materialisation, the collector
+      with the stress leg, §5.8 boundary pinning, the §8.2 poison oracle, the
+      `[P9]` scoped-handle signature (`11-c-abi.md` §5.1, before any call
+      site), and **collection on by default** at a 1 MiB safepoint threshold
+      with the §8.7 budget measured (116 B static). Verification-plan §8
+      items 1-7 are all done. The design decisions (`[P1]`-`[P11]`, user-
+      decided 2026-10-29-30 with amendments) and the landing records live in
+      `Docs/Design/GC-001-proposal.md` and `Docs/Agent/gc-001-workstream.md`
+      section 6. Only Phase D (Wasm) remains and is deferred (`[-]`, needs a
+      managed allocator in linear memory); `[P11]`'s spec review stays open
+      as its own item below.
 - [x] Phase 0 of GC-001: forbid managed element types in manual allocation as
       `NS6002` "Manual allocation of a GC-managed element type" - **landed
       2026-10-29; the code number was confirmed by the user ("ok do it"), so it
@@ -1250,14 +1287,14 @@ by a production native target.
       `0233ce2`, `18fc3fa`, with helper-root follow-ups (`1b6fa85`,
       map growth). Collection is still off by default. Details, open bugs and
       the honest limits: `Docs/Agent/gc-001-workstream.md` sections 2 and 6.
-- [ ] GC-001 Phase C prerequisites, in order (see
-      `Docs/Agent/gc-001-workstream.md` section 5): S1 a green stress run on all
-      three OSes (**done**, run 27); S2 section 5.8 boundary pinning (**done**
-      2026-10-29); S3 section 8.2 poison oracle (**done** 2026-10-30);
-      S4 section 5.9 FFI signature (**done** 2026-10-30: scoped handle landed
-      as `11-c-abi.md` section 5.1; the emitter emits it with the first
-      foreign-frame boundary); then Phase C (collection on by
-      default) and Phase D (Wasm, deferred).
+- [x] GC-001 Phase C prerequisites, in order (see
+      `Docs/Agent/gc-001-workstream.md` section 5) - **all landed 2026-10-30**:
+      S1 a green stress run on all three OSes (run 27); S2 §5.8 boundary
+      pinning (`25763da`, run 29); S3 §8.2 poison oracle (`2fe0784` + the
+      portable pivot `16f2e52`, run 32); S4 §5.9 FFI signature (scoped handle,
+      `11-c-abi.md` §5.1). Phase C itself then landed the same day (`8fd881f`,
+      run 33): collection is on by default at a 1 MiB safepoint threshold.
+      Only Phase D (Wasm) remains, deferred.
 - [x] Spec §8.4 rule "Memory.alloc in a GC-managed scope is a compile-time
       error" - **was unimplemented, now enforced as `NS6001`.** A probe test
       confirmed the gap was real: system mode accepted `Memory.alloc` with no
@@ -1542,32 +1579,79 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `TS-001` TypeScript backend (complete at `df4ffc9`: shared-emitter TS mode, `astra build --target ts`, pinned `@script:ts` transpiler)
 - [x] `INTEROP-001` Inline `@script` foreign-language blocks (JS, TS, and C/C++
   emission slices done; native C/C++ script linking verified end to end)
-- [ ] `PLAY-001` Browser playground (expanded plan above; an unmerged
-  `work/play-001-a` branch carries a bridge scaffold — keep-or-drop decision
-  pending)
-- [ ] `C-001` C backend — managed first slice, multi-module project linking,
+- [ ] `PLAY-001` Browser playground — **not started** (see the expanded
+  `PLAY-001` section above: slices A-E with full acceptance). No design
+  decision blocks it; the `ast`/`explain` API methods it wants are still
+  stubs, and an unmerged `work/play-001-a` branch carries a bridge scaffold
+  with a keep-or-drop decision pending. Marked here as the first up-next
+  item in the queue map at the top.
+- [x] `C-001` C backend — managed first slice, multi-module project linking,
   generics monomorphization, hosted runtime shim, native compile-and-run
   verification, `Array.get`, native library output/ABI, the single-threaded
   concurrency slice, path/installed package linking, the managed arena,
-  manual-memory alloc/free plus `ptr.read`/`ptr.write`, and the Tier-1
-  Linux/macOS/Windows matrix (green on run `40677187427`) landed. Remaining
-  work is design-gated and tracked by the `GC-001`, `CONC-001`, and `FFI-001`
-  items plus the unspecced `MutSlice` surface and the fallible
-  `Memory.alloc` entry-point policy.
-- [~] `GC-001` Precise mark-sweep GC — Phases 0/A/B landed and Phase B
-  verified by Tier-1 run 27 (`97e1475`); collection is still off by default.
-  S2 (§5.8 boundary pinning) is implemented and locally verified; active slice
-  is **S3, §8.2 poison-on-free oracle**. Live status, open bugs, and the
-  ordered slices S2-S6: `Docs/Agent/gc-001-workstream.md`.
+  manual-memory alloc/free plus `ptr.read`/`ptr.write`, the precise
+  mark-sweep collector (`GC-001` Phases 0/A/B/C, collection on by default),
+  and the Tier-1 Linux/macOS/Windows matrix (green through run 36) are
+  landed. Remaining C work is design-gated and tracked by the `CONC-001`
+  and `FFI-001` items plus the unspecced `MutSlice` surface and the
+  fallible `Memory.alloc` entry-point policy.
+- [x] `GC-001` Precise mark-sweep GC (C backend) — Phases 0/A/B/C and
+  slices S1-S5 landed and Tier-1 verified (runs 27-36 across the workstream;
+  Phase C run 33, mode-directive run 35). Collection is on by default at a
+  1 MiB safepoint threshold; the §8.7 budget is measured (116 B static).
+  Live status and landing records: `Docs/Agent/gc-001-workstream.md`.
+- [-] `GC-001` Phase D (Wasm) — deferred until a managed allocator in linear
+  memory exists (`WASM-001` territory); the §5.1 FFI root-registration triple
+  is landed and emitted at the first foreign-frame boundary whenever that is.
 - [-] `WASM-001` Wasm target (deliberately deferred until the target ABI and runtime design land)
-- [ ] `FFI-001` Polymorphic FFI
-- [ ] `CONC-001` Structured concurrency runtime — single-threaded eager
-  `spawn`/`Task<T>`, bounded `Channel<T>` with `ChannelError`, close, and
-  deadlock panics are landed and the `channels` corpus case passes on C, JS,
-  TS, and Nova. OS-thread scheduling, cancellation safepoints, and
-  task-local heaps remain, design-gated behind a `CONC-001` decision.
-- [x] `CONF-001` Conformance suite - 19 positive + 13 negative cases; JavaScript, TypeScript, Nova, frontend-reject, and C runners are wired and green with empty gap ledgers (C executes every case when a hosted compiler is available)
-- [ ] `HARD-001` v0.1 hardening
+- [ ] `FFI-001` Polymorphic FFI — **not started; design-first.** No proposal
+  exists yet, and rule 10 applies: nothing here may be implemented before the
+  user decides it. Recorded sub-questions, all traceable to existing docs:
+  - How a generic `pub fn f<T>` crosses the C ABI: monomorphize each used
+    instantiation under a mangled symbol, refuse the export with a
+    diagnostic, or emit runtime type descriptors (`11-c-abi.md` §5 pins the
+    concrete returned-value pinning; the generic case is open).
+  - The generic-forwarding instantiation gap (checker model, listed as its
+    own open item above) must be answered before cross-boundary generics can
+    be trusted.
+  - **Unblocked near-term slice, ready to do today:** the first `@script:c`
+    boundary that passes managed values into a foreign frame emits the
+    `11-c-abi.md` §5.1 registration triple
+    (`astra_gc_scope_enter`/`astra_gc_root`/`astra_gc_scope_exit`) and lands
+    the proposal §7 boundary-rooting test with it. The signature is decided;
+    only the call site is missing.
+  - Acceptance once a proposal is approved: the chosen export/import form is
+    implemented on C and pinned by a hand-written C consumer test, documented
+    in `11-c-abi.md`, and covered by accept/reject conformance cases.
+- [ ] `CONC-001` OS-threaded structured concurrency (second slice) — the
+  single-threaded eager `spawn`/`Task<T>`, bounded `Channel<T>` with
+  `ChannelError`, close, and deadlock panics are landed and the `channels`
+  corpus case passes on C, JS, TS, and Nova. The second slice is design-gated
+  and must open with a proposal that decides, at minimum:
+  - Threading model: pthreads/C11 threads vs a pool, and join semantics.
+  - Deadlock semantics change: full/empty channel waits become blocking, so
+    the `channels` conformance case and its `.expected` output must be
+    re-pinned per target or the case gains a mode directive.
+  - Task-local heaps: GC-001 collects one task heap with one root-frame
+    stack; a second task on another thread needs its own frames/directory or
+    a stop-the-world protocol - the collector's single-heap assumption is
+    recorded, not accidental.
+  - Cancellation safepoints: where cancellation is observed (the safepoint
+    hook already exists at function entry and loop back-edges).
+  - Acceptance: proposal approved; single-threaded semantics unchanged by
+    default; the OS-threaded mode is pinned by tests on all three OSes; spec
+    §9 and the JS/Nova model are updated or explicitly scoped out.
+- [x] `CONF-001` Conformance suite - 19 positive + 16 negative cases (the three
+  2026-10-30 additions cover `NS6001` and `NS6002` via the per-case mode
+  directive); JavaScript, TypeScript, Nova, frontend-reject, and C runners are
+  wired and green with empty gap ledgers (C executes every case when a hosted
+  compiler is available)
+- [ ] `HARD-001` v0.1 hardening — **scope not yet defined.** Nothing
+  implements it and nothing blocks it; per rule 6 it stays an undefined
+  placeholder until a scope is written down (the nearest recorded material is
+  the defect-trail pattern in the run evidence: every Tier-1 failure became a
+  deterministic regression test, which is the method any hardening pass
+  should extend). Do not start it without a definition.
 
 ---
 

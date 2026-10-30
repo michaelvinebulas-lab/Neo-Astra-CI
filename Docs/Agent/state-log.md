@@ -19,6 +19,15 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-30 - Todo restructure: done/not-done made explicit, open tasks expanded
+
+- Result: `Docs/Agent/todo.md` now opens with an **In progress and up next** map listing every not-done item in queue order, grouped into three honest bands: up next (`[ ]` - `PLAY-001`, `FFI-001`, `CONC-001` second slice, `HARD-001`), open design questions (the `Region` manual-scope question, `[P11]`, the generic-forwarding gap), and deferred (`[-]` - GC-001 Phase D, `WASM-001`, the fallible entry-point policy, `MutSlice`, post-V1 follow-ups). `[~]` in-progress is empty: the last slice closed green at run 36.
+- Stale markers corrected against reality: the GC-001 queue item and backlog line flip `[~]` to `[x]` (Phases 0/A/B/C landed, runs 29-36 verified), the Phase C prerequisites checklist flips to `[x]`, `C-001` flips to `[x]` (V1 scope complete; design-gated remainder tracked by the other items), and `CONF-001`'s count updates to 19 positive + 16 negative cases.
+- Expansions (no invented scope, per rule 10): `FFI-001` gains its recorded sub-questions (generic exports across the C ABI, the generic-forwarding gap) plus the one unblocked near-term slice - the first `@script:c` foreign-frame boundary emitting the `11-c-abi.md` §5.1 registration triple with its §7 test. `CONC-001`'s second slice gains the proposal's required decision list (threading model, the `channels` case's deadlock-semantics re-pin, task-local heaps vs the collector's single-heap assumption, cancellation safepoints) and acceptance. `HARD-001` stays an honest placeholder: scope undefined, do not start without one.
+- Verification: docs-only change; structure and counts re-checked after editing (the 15-vs-16 reject count was caught and fixed before commit). `npm run ci` green. Tier-1 polls and is recorded by the next entry.
+
+---
+
 ### 2026-10-30 - Run 35 green: the per-case mode directive verified on all three OSes
 
 - Result: run 35 (`27bc714`, the rejects-runner mode directive plus its three `NS6001`/`NS6002` corpus cases) is green on Linux, macOS, and Windows. Every decision from 2026-10-30 is now implemented and Tier-1 verified: `[P9]` signature (run 29), poison oracle (run 32), Phase C (run 33), per-case mode directive (run 35). This entry is docs-only; its head polls and is recorded by the next entry if red.
