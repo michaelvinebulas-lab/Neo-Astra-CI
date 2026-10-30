@@ -124,7 +124,8 @@ ASTRA_NORETURN extern void astra_abort(const char* msg);
 extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
 /* Frees one managed block (no-op for NULL). Panics when the pointer is not a
    block this allocator handed out: the manual and managed families must not be
-   crossed (proposal §5.7, spec §8.4 double-free stance). */
+   crossed (proposal §5.7, spec §8.4 double-free stance). In debug builds the
+   payload is poisoned with 0xDD on the way out (§8.2 use-after-free oracle). */
 extern void astra_gc_free(void* p);
 /* Grows or creates a managed block, zeroing the grown tail. NULL creates. */
 extern void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n);
@@ -441,6 +442,19 @@ static NS_Gc_Head* astra_gc_head(void* payload) {
     return ((NS_Gc_Head*)payload) - 1;
 }
 
+/* Use-after-free oracle (GC-001 §8.2): in debug builds a freed payload is
+   filled with 0xDD, so a stale read of a collected block shows the poison
+   pattern instead of plausible-looking data. Release builds (#define NDEBUG)
+   skip the fill. Manual blocks are not poisoned: they carry no size header,
+   and spec §8.4 already leaves their use-after-free undefined. */
+static void astra_gc_poison(NS_Gc_Head* head) {
+#ifndef NDEBUG
+    memset((unsigned char*)(head + 1), 0xDD, head->bytes);
+#else
+    (void)head;
+#endif
+}
+
 void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
     /* Under stress, collect before the new block exists: everything the caller
        still needs must already be published (§5.4 amendment, §8.1). */
@@ -472,6 +486,7 @@ void astra_gc_free(void* p) {
         if ((*cur)->ptr == p) {
             NS_Arena_Node* dead = *cur;
             *cur = dead->next;
+            astra_gc_poison(astra_gc_head(dead->ptr));
             free(astra_gc_head(dead->ptr));
             free(dead);
             astra_arena_live -= 1;
@@ -645,6 +660,7 @@ void astra_gc_collect(void) {
         NS_Gc_Head* head = astra_gc_head(node->ptr);
         if (head->marks == 0) {
             *cur = node->next;
+            astra_gc_poison(head);
             free(head);
             free(node);
             astra_arena_live -= 1;

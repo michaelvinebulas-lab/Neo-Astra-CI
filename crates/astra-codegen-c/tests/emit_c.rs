@@ -1592,6 +1592,58 @@ int main(void) {
     );
 }
 
+/// GC-001 §8.2 poison oracle: a block freed by the sweep - and one freed
+/// explicitly - has its payload filled with 0xDD in debug builds, so a stale
+/// read of a collected block shows the poison pattern instead of
+/// plausible-looking data. The harness seeds non-poison bytes, keeps a raw
+/// pointer with no root, collects, and reads from offset 16 onward (past the
+/// block header, where a debug allocator may scribble its own free-list
+/// metadata).
+#[test]
+fn swept_payloads_are_poisoned_for_the_use_after_free_oracle() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+extern void astra_gc_free(void* p);
+extern void astra_gc_collect(void);
+int main(void) {
+    unsigned char* stale = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 256);
+    for (size_t i = 0; i < 256; i++) { stale[i] = (unsigned char)(i & 0x7F); }
+    /* No root publishes `stale`, so the sweep must free and poison it. */
+    astra_gc_collect();
+    for (size_t i = 16; i < 256; i++) {
+        if (stale[i] != 0xDD) { printf("POISON_SWEEP_FAIL at %zu: %02X\n", i, stale[i]); return 1; }
+    }
+    /* The explicit free path poisons the same way. */
+    unsigned char* direct = (unsigned char*)astra_gc_alloc(&NS_SHAPE_LEAF, 64);
+    for (size_t i = 0; i < 64; i++) { direct[i] = 0x11; }
+    astra_gc_free(direct);
+    for (size_t i = 16; i < 64; i++) {
+        if (direct[i] != 0xDD) { printf("POISON_FREE_FAIL at %zu: %02X\n", i, direct[i]); return 2; }
+    }
+    printf("POISON_OK\n");
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(harness, &[("ASTRA_GC_STRESS", "1")])
+    else {
+        eprintln!(
+            "skipping swept_payloads_are_poisoned_for_the_use_after_free_oracle: no hosted compiler"
+        );
+        return;
+    };
+    assert!(ok, "poison harness did not run:\n{stderr}");
+    assert!(
+        stdout.contains("POISON_OK"),
+        "freed payload was not poisoned: {stdout}"
+    );
+}
+
 #[test]
 fn roots_survive_stress_collection_at_every_allocation() {
     let src = r#"
