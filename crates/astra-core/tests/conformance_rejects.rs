@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 use astra_core::checker::{CheckOptions, check_resolved};
 use astra_core::diagnostic::Diagnostic;
+use astra_core::mode::Mode;
 use astra_core::parser::parse;
 use astra_core::resolver::resolve_module;
 
@@ -28,9 +29,47 @@ fn codes(diagnostics: Vec<Diagnostic>) -> BTreeSet<String> {
         .collect()
 }
 
+/// Runner-parsed per-case conformance directive (test infrastructure only -
+/// the frontend sees an ordinary `//` comment, so this is not language
+/// surface). A case may declare the capability mode the frontend must run it
+/// in with `// conformance: mode=<core|app|web|system>`; without one the case
+/// runs at the default core mode, which is what every pre-directive reject
+/// case expects. Malformed directives fail the run loudly instead of silently
+/// falling back to core, so a typo cannot mask a regression.
+fn conformance_mode(source: &str, name: &str) -> Mode {
+    let mut selected = None;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("//") else {
+            continue;
+        };
+        let Some(rest) = rest.trim().strip_prefix("conformance:") else {
+            continue;
+        };
+        let directive = rest.trim();
+        let Some(value) = directive.strip_prefix("mode=") else {
+            panic!(
+                "{name}: unknown conformance directive '{directive}'; \
+                 only 'mode=<core|app|web|system>' exists"
+            );
+        };
+        if selected.is_some() {
+            panic!("{name}: more than one 'conformance:' directive in one case");
+        }
+        let value = value.trim();
+        selected = Some(Mode::parse(value).unwrap_or_else(|| {
+            panic!(
+                "{name}: unknown mode '{value}' in conformance directive; \
+                 expected core, app, web, or system"
+            )
+        }));
+    }
+    selected.unwrap_or_default()
+}
+
 /// Runs the frontend pipeline and returns the reported codes, or `None` when
 /// the program was accepted.
-fn frontend_codes(source: &str) -> Option<BTreeSet<String>> {
+fn frontend_codes(source: &str, mode: Mode) -> Option<BTreeSet<String>> {
     let module = match parse(source) {
         Ok(module) => module,
         Err(diagnostics) => return Some(codes(diagnostics)),
@@ -41,7 +80,7 @@ fn frontend_codes(source: &str) -> Option<BTreeSet<String>> {
         Err(diagnostics) => return Some(codes(diagnostics)),
     };
 
-    match check_resolved(&module, &resolved, CheckOptions::default()) {
+    match check_resolved(&module, &resolved, CheckOptions::new(mode)) {
         Ok(_) => None,
         Err(diagnostics) => Some(codes(diagnostics)),
     }
@@ -97,7 +136,7 @@ fn frontend_rejects_the_negative_conformance_corpus() {
             codes_path.display()
         );
 
-        match frontend_codes(&source) {
+        match frontend_codes(&source, conformance_mode(&source, &name)) {
             None => failures.push(format!(
                 "{name}: expected rejection with {expected:?} but the frontend accepted it"
             )),
@@ -134,5 +173,44 @@ fn frontend_rejects_the_negative_conformance_corpus() {
         "{} negative conformance problem(s):\n\n{}",
         failures.len(),
         failures.join("\n\n")
+    );
+}
+
+#[test]
+fn conformance_mode_defaults_to_core_and_honours_the_directive() {
+    let plain = "pub fn main() -> i32 {\n    return 0\n}\n";
+    assert_eq!(conformance_mode(plain, "plain"), Mode::Core);
+
+    let system = "// conformance: mode=system\npub fn main() -> i32 {\n    return 0\n}\n";
+    assert_eq!(conformance_mode(system, "system"), Mode::System);
+
+    // The directive may sit anywhere a comment can, and indented among code.
+    let embedded = "pub fn main() -> i32 {\n    // conformance: mode=app\n    return 0\n}\n";
+    assert_eq!(conformance_mode(embedded, "embedded"), Mode::App);
+
+    // Ordinary comments are not directives.
+    let comments =
+        "// just a comment\n// conformance-ish note\npub fn main() -> i32 { return 0 }\n";
+    assert_eq!(conformance_mode(comments, "comments"), Mode::Core);
+}
+
+#[test]
+#[should_panic(expected = "unknown mode 'unsafe'")]
+fn conformance_mode_rejects_unknown_mode_names() {
+    conformance_mode("// conformance: mode=unsafe\n", "bad-mode");
+}
+
+#[test]
+#[should_panic(expected = "unknown conformance directive 'target=c'")]
+fn conformance_mode_rejects_unknown_directive_keys() {
+    conformance_mode("// conformance: target=c\n", "bad-key");
+}
+
+#[test]
+#[should_panic(expected = "more than one")]
+fn conformance_mode_rejects_duplicate_directives() {
+    conformance_mode(
+        "// conformance: mode=system\n// conformance: mode=core\n",
+        "duplicate",
     );
 }

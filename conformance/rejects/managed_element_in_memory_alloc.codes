@@ -1,0 +1,3 @@
+# The element-type rule's code; region carries no scope rule (NS6001 stays
+# silent by design).
+NS6002

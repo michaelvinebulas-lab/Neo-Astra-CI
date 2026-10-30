@@ -1,0 +1,10 @@
+// conformance: mode=system
+// Spec 8.4 / NS6002 at the second manual site: `region.alloc<T>` needs system
+// mode but no `@memory:manual` block - the element-type rule is independent of
+// the scope rule, so `str` here is rejected for holding managed references.
+pub fn main() -> i32 {
+    let r = Region.new(64)
+    let p = r.alloc<str>(4)
+    r.free()
+    return 0
+}

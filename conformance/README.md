@@ -115,12 +115,24 @@ Programs that must be rejected live in `conformance/rejects`:
   listed code must appear.
 - `crates/astra-core/tests/conformance_rejects.rs` runs the whole frontend
   pipeline for each case, so the contract is backend-neutral.
+- A case may declare the capability mode the frontend must run it in with a
+  `// conformance: mode=<core|app|web|system>` comment anywhere in the file.
+  Without one the case runs at the default core mode. This is **test
+  infrastructure only**, not language surface: the frontend sees an ordinary
+  comment, and only the reject runner parses the directive. It exists because
+  some rules are ordered - at core mode the mode requirement (`NS5004`) fires
+  before the scope (`NS6001`) and element-type (`NS6002`) rules, so those
+  rules' cases must run at system mode to pin them ("one program, one violated
+  condition"). Malformed or duplicate directives fail the run loudly rather
+  than silently falling back to core.
 
 The current rejects cover lexical/parse failure (`NS2001`), visibility
 (`NS3001`, `NS3002`, `NS3005`, `NS3010`, `NS3011`), exports (`NS3003`), types
-(`NS4001`, `NS4002`), effects (`NS4011`), and mode requirements (`NS5001`,
-`NS5004` — the latter for raw pointer access, which is manual memory and so
-needs system mode even when the pointer arrives as a parameter).
+(`NS4001`, `NS4002`), effects (`NS4011`), mode requirements (`NS5001`,
+`NS5004` - the latter for raw pointer access, which is manual memory and so
+needs system mode even when the pointer arrives as a parameter), the manual
+scope rule (`NS6001`, via the mode directive), and the manual element-type
+rule (`NS6002`, at both the `Memory.alloc` and `region.alloc` sites).
 
 ## Adding a case
 
