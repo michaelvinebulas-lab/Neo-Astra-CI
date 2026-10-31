@@ -19,6 +19,16 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-31 - Lead slice: NS5007 system-mode side-effect rule (2adaab6); run 42 green
+
+- Result: the P1 side-effect detection pass is landed as `2adaab6` - the frontend now rejects, in system mode, an expression that runs two or more state-changing calls in a target-native-order position (binary operands, array elements, struct fields, map entries) with `NS5007` and a "hoist the calls into bindings" hint. Call arguments stay ordered and are exempt (D27).
+- Also recorded: Tier-1 run 42 (`c9c533d`, the §5.1/D27/NS6002 landing) is green on Linux, macOS, and Windows.
+- Implementation notes: the check runs at `check_expr_inner` behind a suppression counter so nested violations report once at the outermost node; the effect probe counts calls and spawned blocks, including inside block/if/match/composite wrappers. One legacy system-mode test (`manual_memory_pointer_access_runs`) used `read() + read()` and now hoists the reads - the rule caught its own first real case.
+- Tests: 8 new checker unit tests (binary/array/struct/map reject; one-call accept; call-argument exemption; core-mode exemption; single diagnostic for nested operands), the new reject case `native_order_side_effects` in the corpus, and the NS5007 row in spec §14.3.
+- Verification: `cargo test --workspace`, `cargo clippy --workspace --all-targets -D warnings`, and the `ASTRA_GC_STRESS=1` emit_c leg all green. The orchestrator half of the gate is currently red **from Kilo's in-flight D26** (parallel mode: the manifest split enforces the new key placement while his fixture migration is still running) - not from this slice; CI on the pushed commit tests the committed tree and is the authoritative check.
+- Parallel mode is now in force: Kilo owns `orchestrator/**`, the lead owns `crates/**` and `conformance/**`; see `Docs/Report/Task.md` for the ownership map.
+
+---
 ### 2026-10-31 - Landed: §5.1 scope slice, D27 pinning, NS6002 hybrid (2b8de7a)
 
 - Result: the first Kilo pass is reviewed, fixed, and landed as `2b8de7a` after the lead's F1–F11 round. The gate is green on the exact committed tree (`npm run ci`, 101 emit_c tests, stress leg), `cargo fmt --all` clean.

@@ -75,9 +75,9 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
 5. `[ ]` `@export_as` implementation — surface decided (P2); spec §11.5 and
    `11-c-abi.md` §3 written by the lead; checker (`NS7010`–`NS7013`),
    parser/formatter, C emission of the named instance symbols, consumer test.
-6. `[ ]` System-mode side-effect detection pass (P1) — frontend pass; rejects
-   `a() + b()`-style combinations in target-native positions with a "hoist the
-   calls" diagnostic; normative text in §3.10; conformance coverage.
+6. `[x]` System-mode side-effect detection pass (P1) — landed as `2adaab6`
+   (`NS5007`): rejects two or more state-changing calls in target-native
+   positions with a hoist hint; call arguments exempt; corpus case + spec row.
 7. `[ ]` **D26 manifest split** — `build.*` implementation: manifest package,
    formatter, CLI discovery, wrong-file-key diagnostics, fixture migration.
    Blocks NOPM-005 and TOOLCHAIN-001a.

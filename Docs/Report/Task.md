@@ -383,3 +383,25 @@ lead). This is the implementation of D26; no design left open.
 - No dual-read compatibility layer (clean break, D26).
 
 **Report back** in `## Kilo log` (files, tests, gate tail, deviations).
+
+---
+
+# PARALLEL MODE (2026-10-31) — two workers, disjoint files
+
+- **Kilo:** TASK-002 (D26 manifest split) — owns `orchestrator/packages/manifest/**`,
+  `orchestrator/packages/cli/**`, `orchestrator/packages/nopm/**` and the
+  orchestrator test fixtures. Do not edit `crates/**`.
+- **Lead:** P1 system-mode side-effect pass — owns `crates/astra-core/**` and one
+  new file under `conformance/rejects/`. Do not edit `orchestrator/**`.
+- Neither side commits. The lead commits only its own files, with explicit paths.
+  If a change needs a file owned by the other side, write it here as a request.
+- Both may run `npm run ci`; cargo may block while the other build holds the
+  lock — that is expected, not a failure.
+
+## Lead slice: P1 side-effect detection pass (frontend)
+
+Rule (spec §3.10, D27): in **system mode**, an expression that combines two or
+more state-changing subexpressions in a target-native-order position — binary
+operands, array-literal elements, struct-initializer fields, map-literal
+entries — is rejected with a diagnostic that tells the developer to hoist the
+calls into named bindings. Call arguments are exempt (they are ordered).
