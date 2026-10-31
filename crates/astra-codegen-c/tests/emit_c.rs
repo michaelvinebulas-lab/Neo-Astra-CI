@@ -744,7 +744,9 @@ pub fn main() -> i32 {
         buf.write(1, 22)
         println(buf.read(0))
         println(buf.read(1))
-        println(buf.read(0) + buf.read(1))
+        let a = buf.read(0)
+        let b = buf.read(1)
+        println(a + b)
         Memory.free(buf)
     }
     return 0

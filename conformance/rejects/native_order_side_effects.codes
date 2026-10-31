@@ -1,0 +1,4 @@
+# Two state-changing calls in a target-native-order position (binary operands)
+# are rejected in system mode: hoist the calls into named bindings (spec 3.10,
+# D27). NS5007.
+NS5007

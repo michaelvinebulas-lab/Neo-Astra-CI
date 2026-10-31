@@ -42,6 +42,10 @@ const MANUAL_ALLOC_IN_GC_SCOPE: &str = "NS6001";
 const MANAGED_ELEMENT_IN_MANUAL_ALLOC: &str = "NS6002";
 const UNSUPPORTED_SCRIPT_TARGET: &str = "NS7002";
 const INVALID_SCRIPT_SIGNATURE: &str = "NS7005";
+/// D27 system-mode side-effect rule: two or more state-changing subexpressions
+/// in a target-native-order position (binary operands, array elements, struct
+/// fields, map entries). Call arguments are exempt — they are ordered.
+const NATIVE_ORDER_EFFECTS: &str = "NS5007";
 
 /// Type-checker options.
 #[derive(Debug, Clone, Default)]
@@ -343,6 +347,9 @@ struct Checker<'a> {
     /// and scope gates passed, so `check_call` can apply `NS6002` to the
     /// element type bound for `T` (spec 8.4; GC-001 proposal §11).
     manual_alloc_spans: Vec<Span>,
+    /// Non-zero while checking inside a node that already reported NS5007, so
+    /// nested order-sensitive nodes do not duplicate the diagnostic.
+    native_order_suppress: usize,
     /// Hybrid NS6002 micro-pass: alloc nodes whose element type depends on a
     /// generic parameter, recorded per generic function (by name) at definition
     /// time so they can be re-checked at instantiation time.
@@ -376,6 +383,7 @@ impl<'a> Checker<'a> {
             annotations: Vec::new(),
             manual_memory_scopes: Vec::new(),
             manual_alloc_spans: Vec::new(),
+            native_order_suppress: 0,
             deferred_alloc_checks: BTreeMap::new(),
             pending_generic_call_checks: Vec::new(),
             mode,
@@ -2014,7 +2022,73 @@ impl<'a> Checker<'a> {
         info
     }
 
+    /// D27: reject two or more state-changing subexpressions in a
+    /// target-native-order position while checking in system mode. Reports at
+    /// the outermost violating node and suppresses nested duplicates.
+    fn check_native_order_effects(&mut self, expression: &ast::Expr) -> bool {
+        if self.mode != Mode::System || self.native_order_suppress > 0 {
+            return false;
+        }
+        let (effects, span) = match &expression.kind {
+            ast::ExprKind::Binary { left, right, .. } => {
+                let count = usize::from(expr_has_call(left)) + usize::from(expr_has_call(right));
+                (count, expression.span)
+            }
+            ast::ExprKind::Array(elements) | ast::ExprKind::Tuple(elements) => (
+                elements
+                    .iter()
+                    .filter(|element| expr_has_call(element))
+                    .count(),
+                expression.span,
+            ),
+            ast::ExprKind::Map(entries) => (
+                entries
+                    .iter()
+                    .filter(|entry| expr_has_call(&entry.key) || expr_has_call(&entry.value))
+                    .count(),
+                expression.span,
+            ),
+            ast::ExprKind::StructInit { fields, .. } => (
+                fields
+                    .iter()
+                    .filter(|field| expr_has_call(&field.value))
+                    .count(),
+                expression.span,
+            ),
+            _ => return false,
+        };
+        if effects < 2 {
+            return false;
+        }
+        self.error(
+            NATIVE_ORDER_EFFECTS,
+            "This expression runs more than one state-changing call in a position \
+             whose evaluation order is target-native, so the order is not portable \
+             (spec 3.10).",
+            span,
+            "Hoist each call into its own `let` binding first; the bindings run in \
+             source order on every backend.",
+        );
+        true
+    }
+
     fn check_expr_inner(&mut self, expression: &ast::Expr, expected: Option<&Type>) -> ExprInfo {
+        let flagged = self.check_native_order_effects(expression);
+        if flagged {
+            self.native_order_suppress += 1;
+        }
+        let info = self.check_expr_inner_body(expression, expected);
+        if flagged {
+            self.native_order_suppress -= 1;
+        }
+        info
+    }
+
+    fn check_expr_inner_body(
+        &mut self,
+        expression: &ast::Expr,
+        expected: Option<&Type>,
+    ) -> ExprInfo {
         match &expression.kind {
             ast::ExprKind::Literal(literal) => {
                 ExprInfo::value(self.literal_type(literal, expected, expression.span))
@@ -4882,6 +4956,85 @@ fn integer_fits(value: u128, ty: &Type) -> bool {
     }
 }
 
+/// True when evaluating `expression` can run user code (a call, a spawned
+/// block, or a block/control-flow expression containing one). Used by the D27
+/// system-mode side-effect rule.
+fn expr_has_call(expression: &ast::Expr) -> bool {
+    match &expression.kind {
+        ast::ExprKind::Call { .. } => true,
+        ast::ExprKind::Unary { operand, .. } => expr_has_call(operand),
+        ast::ExprKind::Binary { left, right, .. } => expr_has_call(left) || expr_has_call(right),
+        ast::ExprKind::Assign { target, value } => expr_has_call(target) || expr_has_call(value),
+        ast::ExprKind::Index { target, index } => expr_has_call(target) || expr_has_call(index),
+        ast::ExprKind::Member { target, .. } => expr_has_call(target),
+        ast::ExprKind::TypeArguments { target, .. } => expr_has_call(target),
+        ast::ExprKind::Propagate(inner) => expr_has_call(inner),
+        ast::ExprKind::Array(elements) | ast::ExprKind::Tuple(elements) => {
+            elements.iter().any(expr_has_call)
+        }
+        ast::ExprKind::Map(entries) => entries
+            .iter()
+            .any(|entry| expr_has_call(&entry.key) || expr_has_call(&entry.value)),
+        ast::ExprKind::StructInit { fields, .. } => {
+            fields.iter().any(|field| expr_has_call(&field.value))
+        }
+        ast::ExprKind::Block(block) | ast::ExprKind::Spawn { body: block } => {
+            block_has_calls(block)
+        }
+        ast::ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            expr_has_call(condition)
+                || block_has_calls(then_branch)
+                || match else_branch {
+                    Some(ast::ElseBranch::Block(block)) => block_has_calls(block),
+                    Some(ast::ElseBranch::If(inner)) => expr_has_call(inner),
+                    None => false,
+                }
+        }
+        ast::ExprKind::Match { value, arms } => {
+            expr_has_call(value)
+                || arms.iter().any(|arm| match &arm.body {
+                    ast::MatchArmBody::Expr(inner) => expr_has_call(inner),
+                    ast::MatchArmBody::Block(block) => block_has_calls(block),
+                })
+        }
+        ast::ExprKind::Fail { arguments, .. } => match arguments {
+            ast::FailArguments::Tuple(values) => values.iter().any(expr_has_call),
+            ast::FailArguments::Struct(fields) => {
+                fields.iter().any(|field| expr_has_call(&field.value))
+            }
+        },
+        ast::ExprKind::Panic { message } | ast::ExprKind::Abort { message } => {
+            expr_has_call(message)
+        }
+        ast::ExprKind::Literal(_) | ast::ExprKind::Identifier(_) => false,
+    }
+}
+
+fn block_has_calls(block: &ast::Block) -> bool {
+    block.statements.iter().any(stmt_has_calls)
+}
+
+fn stmt_has_calls(statement: &ast::Stmt) -> bool {
+    match &statement.kind {
+        ast::StmtKind::Let { value, .. } => expr_has_call(value),
+        ast::StmtKind::Return { value } => value.as_ref().is_some_and(expr_has_call),
+        ast::StmtKind::Break | ast::StmtKind::Continue => false,
+        ast::StmtKind::Defer(inner) => stmt_has_calls(inner),
+        ast::StmtKind::While { condition, body } => {
+            expr_has_call(condition) || block_has_calls(body)
+        }
+        ast::StmtKind::For { iterable, body, .. } => {
+            expr_has_call(iterable) || block_has_calls(body)
+        }
+        ast::StmtKind::Expr(inner) => expr_has_call(inner),
+        ast::StmtKind::Scoped(scoped) => scoped.statements.iter().any(stmt_has_calls),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::diagnostic::Diagnostic;
@@ -6383,5 +6536,107 @@ pub fn main() -> i32 {
 }
 "#;
         check_with_mode(source, Mode::System).expect("pointer-free instantiation must be accepted");
+    }
+
+    #[test]
+    fn native_order_rejects_two_calls_in_binary_operands() {
+        let source = r#"
+fn side(x: i32) -> i32 { return x }
+pub fn main() -> i32 { return side(1) + side(2) }
+"#;
+        let codes = check_with_mode(source, Mode::System)
+            .expect_err("two calls in binary operands must be rejected");
+        assert!(
+            codes.contains(&"NS5007".to_owned()),
+            "expected NS5007, got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn native_order_accepts_one_call_plus_literal() {
+        let source = r#"
+fn side(x: i32) -> i32 { return x }
+pub fn main() -> i32 { return side(1) + 2 }
+"#;
+        check_with_mode(source, Mode::System).expect("one call is order-independent");
+    }
+
+    #[test]
+    fn native_order_rejects_two_calls_in_array_literal() {
+        let source = r#"
+fn side(x: i32) -> i32 { return x }
+pub fn main() -> i32 {
+    let xs = [side(1), side(2)]
+    return xs.len()
+}
+"#;
+        let codes = check_with_mode(source, Mode::System)
+            .expect_err("two calls in an array literal must be rejected");
+        assert!(codes.contains(&"NS5007".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn native_order_rejects_two_calls_in_struct_fields() {
+        let source = r#"
+struct Pair { a: i32, b: i32 }
+fn side(x: i32) -> i32 { return x }
+pub fn main() -> i32 {
+    let p = Pair { a: side(1), b: side(2) }
+    return p.a + p.b
+}
+"#;
+        let codes = check_with_mode(source, Mode::System)
+            .expect_err("two calls in struct fields must be rejected");
+        assert!(codes.contains(&"NS5007".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn native_order_rejects_two_calls_in_map_entries() {
+        let source = r#"
+fn side(x: i32) -> i32 { return x }
+pub fn main() -> i32 {
+    let m: {str: i32} = {"a": side(1), "b": side(2)}
+    return 0
+}
+"#;
+        let codes = check_with_mode(source, Mode::System)
+            .expect_err("two calls in map entries must be rejected");
+        assert!(codes.contains(&"NS5007".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn native_order_accepts_call_arguments() {
+        let source = r#"
+fn side(x: i32) -> i32 { return x }
+fn add(a: i32, b: i32) -> i32 { return a + b }
+pub fn main() -> i32 { return add(side(1), side(2)) }
+"#;
+        check_with_mode(source, Mode::System).expect("call arguments are ordered");
+    }
+
+    #[test]
+    fn native_order_is_system_mode_only() {
+        let source = r#"
+fn side(x: i32) -> i32 { return x }
+pub fn main() -> i32 { return side(1) + side(2) }
+"#;
+        check_with_mode(source, Mode::Core).expect("core mode keeps target-native order");
+    }
+
+    #[test]
+    fn native_order_reports_once_for_nested_operators() {
+        let source = r#"
+fn side(x: i32) -> i32 { return x }
+pub fn main() -> i32 { return (side(1) + side(2)) + side(3) }
+"#;
+        let codes = check_with_mode(source, Mode::System).expect_err("nested operands rejected");
+        assert_eq!(
+            codes
+                .iter()
+                .filter(|code| code.as_str() == "NS5007")
+                .count(),
+            1,
+            "expected exactly one NS5007, got {codes:?}"
+        );
     }
 }

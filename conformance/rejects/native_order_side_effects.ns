@@ -1,0 +1,8 @@
+// conformance: mode=system
+fn side(x: i32) -> i32 {
+    return x
+}
+
+pub fn main() -> i32 {
+    return side(1) + side(2)
+}

@@ -1897,6 +1897,7 @@ Codes are stable and MUST NOT be reused for different meanings.
 | `NS5004` | Manual memory requires system mode |
 | `NS5005` | Invalid capability or mode annotation |
 | `NS5006` | No single built-in mode satisfies a project requirement |
+| `NS5007` | System mode: two or more state-changing calls in a target-native-order position (binary operands, array elements, struct fields, map entries) - hoist the calls into bindings |
 
 ### 14.7 Nova runtime diagnostics
 
