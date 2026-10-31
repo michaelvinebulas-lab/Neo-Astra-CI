@@ -1,10 +1,9 @@
 # Pending decisions — 2026-10-31
 
-**Status: every item below is proposed, none decided** (agent rule 10: do not
-invent decisions). Each item gives its context from existing docs, the
-options, and a proposed recommendation. Answer by quoting the numbers, e.g.
-`1A 2B 3A 4A 5A 6A 7aC 7bB 8A`. Verdicts get recorded here and in
-`Docs/Agent/state-log.md` **before** any implementation starts.
+**Status: DECIDED 2026-10-31 — all eight answered by the user.** Each
+verdict is recorded below in its section. Agent recommendations were marked
+`Proposed` at writing time and are **not** the verdicts unless they match.
+Implementation follows the queue order recorded at the bottom of this file.
 
 ---
 
@@ -36,6 +35,10 @@ left-to-right because those languages do.
 **Proposed recommendation: A.** Every backend already does or can cheaply do
 it; B is a documented portability hazard. Cost: one spec paragraph plus one
 pinning test per backend.
+
+> **Verdict (2026-10-31): A — left-to-right normative for all arguments.**
+> Implementation: spec §2 paragraph + one pinning test per backend (call with
+> two side-effecting arguments, assert order).
 
 ---
 
@@ -75,6 +78,36 @@ never sees a concrete type. Recorded in `todo.md` (C-001 limitations) and
 soundness hole while keeping the checker's model intact. C is the
 principled long-term fix but is a checker redesign, not a gate fix.
 
+> **Verdict (2026-10-31): Custom hybrid — B as the baseline + lazy
+> monomorphization verification (target-specific rule-checking, a
+> micro-pass).** The user's reasoning, recorded:
+>
+> 1. **Why B alone falls short:** rejecting any generic forwarding at the
+>    definition site punishes developers writing fluid reusable low-level
+>    data structures (custom generic arenas, vectors, allocators) and forces
+>    code duplication per concrete type — it kills expressiveness in system
+>    mode.
+> 2. **Why C alone is overkill:** re-checking entire function bodies and all
+>    type rules per monomorphization bloats build times and complicates
+>    error reporting (one deep dependency error could throw dozens of
+>    duplicate diagnostics).
+> 3. **The mechanism:** an *Instantiation Validation Pass* for
+>    safety-critical invariants only (memory-allocation element types):
+>    - **Definition site:** generic forwarding is accepted; the compiler
+>      marks the alloc call site with a *deferred validation flag*,
+>      assuming a valid type arrives later.
+>    - **Instantiation site:** the compiler does **not** re-typecheck the
+>      body — it substitutes the concrete type into that specific
+>      `Memory.alloc<Wrap<T>>` node and re-runs only the `NS6002` check.
+> 4. **Outcome:** soundness of C (managed data can never sneak into manual
+>    memory through a generic wrapper) with the performance of B (no
+>    checker rewrite) — the compiler stays fast, safe, and expressive.
+>
+> Implementation scope: checker records flagged alloc nodes per generic
+> function; monomorphization invokes the targeted `NS6002` re-check on
+> flagged nodes with substituted types; diagnostics at the instantiation
+> site, not duplicated per body rule.
+
 ---
 
 ## 3. `FFI-001` — generic functions across the C ABI
@@ -110,6 +143,12 @@ what is implemented — with **B recorded as the post-V1 candidate** if a real
 C consumer ever asks. If you want B now, it opens with spec surface, not
 code.
 
+> **Verdict (2026-10-31): B — explicit instantiation exports via
+> attributes, implemented cleanly for V1.** This is **new language surface**:
+> the attribute syntax and export semantics get specced (spec + `11-c-abi.md`
+> §3 mangling rules) before any implementation code, per rule 10's spirit.
+> The current §3 refusal stays in force until the specced form lands.
+
 ---
 
 ## 4. The unblocked `@script:c` boundary slice (near-term FFI work)
@@ -136,6 +175,10 @@ boundary-rooting test are unwritten.
 
 **Proposed recommendation: A.** Decided design waiting for its first call
 site; landing it closes the "signature landed, call site missing" gap.
+
+> **Verdict (2026-10-31): A — do it now.** Build the test case: a
+> `@script:c` block receiving a managed value, emit the registration triple,
+> land the §7 boundary-rooting test. This is the first item of the queue.
 
 ---
 
@@ -168,6 +211,10 @@ vs GC-001's single-heap collector, and cancellation safepoints.
 on paper. C only if OS threads are a launch requirement — that is a product
 call, not an engineering one.
 
+> **Verdict (2026-10-31): B — write the proposal — but sequenced last and
+> inside V1.** CONC-001's proposal (the four decision areas with options) is
+> the last work item of the V1 queue; implementation follows its approval.
+
 ---
 
 ## 6. `HARD-001` — what "v0.1 hardening" means
@@ -196,6 +243,12 @@ method), with B becoming its own task when a release is actually planned.
 If neither is wanted now, choose C — but then the backlog line should say
 "post-v0.1", not "undefined".
 
+> **Verdict (2026-10-31): A + B hybrid — "Structural Fuzzing Pass with
+> Distributed Release Tooling".** `HARD-001`'s scope is now defined as both
+> halves: (A) the structural/property fuzzing pass over the frontend and
+> (B) distributed release tooling. The backlog line stops being an
+> undefined placeholder.
+
 ---
 
 ## 7. `PLAY-001` — two questions
@@ -215,6 +268,14 @@ bridge scaffold") forked from an old master, before all of C-001/GC-001.
 
 **Proposed: C.** The branch costs nothing where it is.
 
+> **Verdict (2026-10-31): inspect the tree; if important, merge it; if not,
+> don't — and remove the branch once done.** **Executed 2026-10-31:**
+> inspected `work/play-001-a` — one commit (`a1ec67c`, the 390-line browser
+> bridge over the wasm ABI, which it matches exactly), valuable slice-A work
+> → **merged** (cherry-picked as `61a5163`, wired into the workspace build:
+> root `tsconfig.json` reference + lockfile; `tsc -b` and the full gate
+> green). **Branch deleted** (`work/play-001-a` no longer exists).
+
 **7b — Start PLAY-001 now, or later?**
 
 - **A — Start now** (it is first in the up-next queue; the `ast`/`explain`
@@ -224,6 +285,10 @@ bridge scaffold") forked from an old master, before all of C-001/GC-001.
 
 **Proposed: B** — item 4 first regardless; PLAY-001 follows as the
 multi-slice feature.
+
+> **Verdict (2026-10-31): later — start PLAY-001 only once all the work
+> currently in queue is done.** The merged bridge sits ready as slice A;
+> active playground work begins after the queue clears.
 
 ---
 
@@ -240,6 +305,39 @@ surface, post-V1 pin release API, GC threshold adaptivity.
   next round.
 
 **Proposed: A.**
+
+> **Verdict (2026-10-31): A — all six deferrals confirmed** exactly where
+> they are: GC-001 Phase D (Wasm allocator), `WASM-001`, fallible
+> `Memory.alloc`/`region.alloc` entry-point policy, `MutSlice<T>` surface,
+> post-V1 pin release API, GC threshold adaptivity.
+
+---
+
+## V1 implementation queue (order fixed by the verdicts where they named one)
+
+The user fixed positions for items 4, 5, and 7; the arrangement of 1/2/3/6
+between those anchors is the agent's proposed scheduling (reorderable on
+request):
+
+1. **`@script:c` §5.1 boundary slice** (decision 4: do it now) — emit the
+   registration triple at the first foreign-frame boundary passing managed
+   values + the proposal §7 test.
+2. **`[P11]` left-to-right** (decision 1: A) — spec §2 paragraph + one
+   pinning test per backend. Small; closes an honesty gap in the spec.
+3. **Generic-forwarding hybrid** (decision 2) — deferred-validation flag +
+   instantiation-site `NS6002` micro-pass.
+4. **Explicit instantiation exports via attributes** (decision 3: B) —
+   spec surface first (spec + `11-c-abi.md` §3), then implementation;
+   builds on the monomorphization machinery from item 3.
+5. **`HARD-001`** (decision 6: A+B hybrid) — structural fuzzing pass +
+   distributed release tooling; late in the queue so it hardens what exists.
+6. **`CONC-001` proposal** (decision 5: B) — **last in V1**.
+7. **`PLAY-001`** (decision 7b) — starts only after the queue clears;
+   slice A is already merged and waiting.
+
+Deferred (decision 8: A): GC-001 Phase D, `WASM-001`, fallible alloc
+policy, `MutSlice<T>`, pin release API, threshold adaptivity — all stay
+`[-]`.
 
 ---
 

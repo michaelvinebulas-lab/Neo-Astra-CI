@@ -25,14 +25,17 @@ suite (19 positive + 16 reject cases) is green on JavaScript, TypeScript, Nova,
 and C with empty gap ledgers. `C-001` is the workstream: the managed C17 slice,
 multi-module and package linking, generics, native libraries, the
 single-threaded concurrency slice, and the Tier-1 Linux/macOS/Windows matrix are
-landed; what remains is design-gated. `GC-001` Phases 0/A/B/C are landed
+landed; what remains was design-gated until **2026-10-31, when the user
+answered all eight pending decisions** (`Docs/Design/pending-decisions.md`
+— verdicts + the fixed V1 implementation queue; queue item 1, the `@script:c`
+§5.1 boundary slice, is next to start). `GC-001` Phases 0/A/B/C are landed
 (Phase C - collection on by default at a 1 MiB safepoint threshold - landed
-2026-10-30 after S2 pinning, S3 poison oracle, and S4 signature; Tier-1 runs
-29-36 green on all three OSes, including the per-case conformance-mode
-directive that closed the `NS6001`/`NS6002` corpus gap). Only GC-001's
-Phase D (Wasm) remains, deferred until a managed allocator in linear memory
-lands. Live GC status, open bugs, and the ordered slices are owned by
-`Docs/Agent/gc-001-workstream.md`.
+2026-10-30 after S2 pinning, S3 poison oracle, and S4 signature; every
+Tier-1 run from 32 onward is green on all three OSes, including the
+per-case conformance-mode directive that closed the `NS6001`/`NS6002`
+corpus gap). Only GC-001's Phase D (Wasm) remains, deferred until a managed
+allocator in linear memory lands. Live GC status, open bugs, and the
+ordered slices are owned by `Docs/Agent/gc-001-workstream.md`.
 Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
 ---
@@ -41,51 +44,57 @@ Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
 Every item that is **not** done, in queue order. Detail and acceptance
 criteria live in each item's section further down; this table is the map.
-`[~]` in-progress is empty: the last slice (per-case conformance mode) closed
-green at run 36.
+**All eight pending decisions were answered 2026-10-31** — verdicts in
+`Docs/Design/pending-decisions.md`; `[~]` in-progress is empty until the
+first queue item starts.
 
-**Up next (`[ ]`)**
+**The V1 queue (decided 2026-10-31, in order)**
 
-1. `[ ]` `PLAY-001` Browser playground — not started; the expanded plan
-   (slices A-E + acceptance) is in the `PLAY-001` section. Two decisions
-   pending (`pending-decisions.md` item 7): keep-or-drop the unmerged
-   `work/play-001-a` bridge scaffold, and start now vs later.
-2. `[ ]` `FFI-001` Polymorphic FFI — not started; design-first (no proposal
-   exists yet). Decisions 3 and 4 of `pending-decisions.md` cover the
-   generic-export question and the unblocked near-term slice: the first
-   `@script:c` foreign-frame boundary emitting the `11-c-abi.md` §5.1 root
-   registration triple and its test.
-3. `[ ]` `CONC-001` OS-threaded structured concurrency — the single-threaded
-   eager slice is landed; the second slice is design-gated behind a proposal.
-   **Options:** decision 5 of `pending-decisions.md`.
-4. `[ ]` `HARD-001` v0.1 hardening — scope not yet defined; needs a definition
-   before it can be worked (rule 6: queue, not brainstorm). **Candidate
-   scopes:** decision 6 of `pending-decisions.md`.
+1. `[ ]` `@script:c` §5.1 boundary slice (decision 4: **do it now**) —
+   the first foreign-frame boundary passing managed values emits the
+   `11-c-abi.md` §5.1 registration triple
+   (`astra_gc_scope_enter`/`astra_gc_root`/`astra_gc_scope_exit`) and lands
+   the proposal §7 boundary-rooting test. **Next to start.**
+2. `[ ]` `[P11]` call-argument evaluation order (decision 1: **A**) —
+   left-to-right becomes normative in spec §2; one pinning test per
+   backend (two side-effecting args, assert order).
+3. `[ ]` Generic-forwarding `NS6002` gap (decision 2: **custom hybrid**) —
+   definition site accepts generic forwarding but flags the alloc node
+   with a deferred validation; monomorphization substitutes the concrete
+   type into that node and re-runs only `NS6002` (no full body re-check).
+   Soundness of C, performance of B, expressiveness preserved.
+4. `[ ]` Explicit instantiation exports via attributes (decision 3: **B,
+   new language surface**) — spec the attribute syntax + `11-c-abi.md` §3
+   mangling first, then implement; §3's current refusal stays in force
+   until the specced form lands.
+5. `[ ]` `HARD-001` (decision 6: **A+B hybrid** — scope now defined) —
+   "Structural Fuzzing Pass with Distributed Release Tooling": the
+   defect-trail fuzzing pass plus release tooling; positioned late so it
+   hardens what exists.
+6. `[ ]` `CONC-001` proposal (decision 5: **B, sequenced last in V1**) —
+   the four-area proposal (threading model, deadlock semantics +
+   `channels` re-pin, task-local heaps vs the collector's single-heap
+   assumption, cancellation safepoints) is the last V1 work item.
+7. `[-]` `PLAY-001` (decision 7b: **after the queue clears**) — starts
+   only once everything above is done. Slice A already exists: the
+   `work/play-001-a` bridge was judged valuable and **merged as
+   `61a5163`**; the branch was deleted (decision 7a, executed).
 
-**Open design questions (`[ ]`, decided by the user, not by code)**
+**Deferred (`[-]`, all confirmed by decision 8: A)**
 
-5. `[ ]` `[P11]` call-argument evaluation order — split out of GC-001 for its
-   own spec review. **Now with options:** item 1 of
-   `Docs/Design/pending-decisions.md`.
-6. `[ ]` Generic-forwarding instantiation gap (checker model) — silent until
-   the element type is concrete at the definition site. **Now with options:**
-   item 2 of `Docs/Design/pending-decisions.md`.
-
-> The `Region` `@memory:manual` question that used to live here was decided
-> 2026-10-30 (no gate; spec §8.4 clarification) — its stale entry is closed.
-> Every remaining open decision has an options write-up in
-> `Docs/Design/pending-decisions.md` awaiting the user's answer.
-
-**Deferred (`[-]`, deliberately not scheduled)**
-
-7. `[-]` `GC-001` Phase D (Wasm) — needs a managed allocator in linear memory.
-8. `[-]` `WASM-001` C-to-Wasm path — needs the target ABI and runtime design.
-9. `[-]` Fallible `Memory.alloc`/`region.alloc` entry-point policy — until
-   then OOM panics, like `astra_gc_alloc`.
-10. `[-]` `MutSlice<T>` surface behind `ptr.as_slice` — the spec names the
+8. `[-]` `GC-001` Phase D (Wasm) — needs a managed allocator in linear memory.
+9. `[-]` `WASM-001` C-to-Wasm path — needs the target ABI and runtime design.
+10. `[-]` Fallible `Memory.alloc`/`region.alloc` entry-point policy — until
+    then OOM panics, like `astra_gc_alloc`.
+11. `[-]` `MutSlice<T>` surface behind `ptr.as_slice` — the spec names the
     type but defines no surface; building it would mean inventing semantics.
-11. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
+12. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
     embeddings (Python, Wasm, Java).
+
+> Both former "open design questions" (`[P11]` and the generic-forwarding
+> gap) are decided and now sit as queue items 2 and 3. The `Region`
+> `@memory:manual` question was already decided 2026-10-30 (no gate; spec
+> §8.4 clarification) — its stale entry is closed.
 
 ---
 
@@ -1454,7 +1463,7 @@ by a production native target.
 
 ## PLAY-001 — Browser playground
 
-**Status:** Not started. Backlog entry expanded into a runnable plan. No design decision blocks it, but two API methods it needs (`ast`, `explain`) are still stubs.
+**Status:** Not started, queued last (decision 7b: starts once the V1 queue clears). Backlog entry expanded into a runnable plan; slice A (the wasm bridge) already merged from `work/play-001-a` as `61a5163` (decision 7a, executed 2026-10-31). No design decision blocks it, but two API methods it needs (`ast`, `explain`) are still stubs.
 
 **Goal**
 
@@ -1589,12 +1598,12 @@ These are intentionally high-level. Break them into smaller tasks when their pha
 - [x] `TS-001` TypeScript backend (complete at `df4ffc9`: shared-emitter TS mode, `astra build --target ts`, pinned `@script:ts` transpiler)
 - [x] `INTEROP-001` Inline `@script` foreign-language blocks (JS, TS, and C/C++
   emission slices done; native C/C++ script linking verified end to end)
-- [ ] `PLAY-001` Browser playground — **not started** (see the expanded
-  `PLAY-001` section above: slices A-E with full acceptance). No design
-  decision blocks it; the `ast`/`explain` API methods it wants are still
-  stubs, and an unmerged `work/play-001-a` branch carries a bridge scaffold
-  with a keep-or-drop decision pending. Marked here as the first up-next
-  item in the queue map at the top.
+- [ ] `PLAY-001` Browser playground — **not started, queued last** (decision
+  7b: starts only after the queue clears; see the expanded `PLAY-001`
+  section above for slices A-E with full acceptance). Decision 7a is
+  executed: the `work/play-001-a` bridge was inspected, judged valuable,
+  and merged as `61a5163` (slice A exists), and the branch was deleted.
+  The `ast`/`explain` API methods it wants are still stubs.
 - [x] `C-001` C backend — managed first slice, multi-module project linking,
   generics monomorphization, hosted runtime shim, native compile-and-run
   verification, `Array.get`, native library output/ABI, the single-threaded
@@ -1614,30 +1623,31 @@ These are intentionally high-level. Break them into smaller tasks when their pha
   memory exists (`WASM-001` territory); the §5.1 FFI root-registration triple
   is landed and emitted at the first foreign-frame boundary whenever that is.
 - [-] `WASM-001` Wasm target (deliberately deferred until the target ABI and runtime design land)
-- [ ] `FFI-001` Polymorphic FFI — **not started; design-first.** No proposal
-  exists yet, and rule 10 applies: nothing here may be implemented before the
-  user decides it. Recorded sub-questions, all traceable to existing docs:
-  - How a generic `pub fn f<T>` crosses the C ABI: monomorphize each used
-    instantiation under a mangled symbol, refuse the export with a
-    diagnostic, or emit runtime type descriptors (`11-c-abi.md` §5 pins the
-    concrete returned-value pinning; the generic case is open).
-  - The generic-forwarding instantiation gap (checker model, listed as its
-    own open item above) must be answered before cross-boundary generics can
-    be trusted.
-  - **Unblocked near-term slice, ready to do today:** the first `@script:c`
+- [ ] `FFI-001` Polymorphic FFI — **decided 2026-10-31** (`pending-decisions.md`
+  items 3 and 4); implementation queued as queue items 1 and 4:
+  - **Item 4 verdict — do it now (queue item 1):** the first `@script:c`
     boundary that passes managed values into a foreign frame emits the
     `11-c-abi.md` §5.1 registration triple
     (`astra_gc_scope_enter`/`astra_gc_root`/`astra_gc_scope_exit`) and lands
     the proposal §7 boundary-rooting test with it. The signature is decided;
     only the call site is missing.
-  - Acceptance once a proposal is approved: the chosen export/import form is
-    implemented on C and pinned by a hand-written C consumer test, documented
-    in `11-c-abi.md`, and covered by accept/reject conformance cases.
-- [ ] `CONC-001` OS-threaded structured concurrency (second slice) — the
-  single-threaded eager `spawn`/`Task<T>`, bounded `Channel<T>` with
-  `ChannelError`, close, and deadlock panics are landed and the `channels`
-  corpus case passes on C, JS, TS, and Nova. The second slice is design-gated
-  and must open with a proposal that decides, at minimum:
+  - **Item 3 verdict — explicit instantiation exports via attributes
+    (queue item 4):** new language surface for V1 — spec the attribute
+    syntax and `11-c-abi.md` §3 mangling before code; the current §3
+    refusal (exported generics not exposed in headers) stays in force until
+    the specced form lands.
+  - The generic-forwarding half was answered as decision 2 (queue item 3),
+    not here: definition-site flag + instantiation-site `NS6002` micro-pass.
+  - Acceptance when each piece lands: §5.1 slice pinned by the §7
+    boundary-root test; the attribute form implemented on C, pinned by a
+    hand-written C consumer test, documented in `11-c-abi.md`, and covered
+    by accept/reject conformance cases.
+- [ ] `CONC-001` OS-threaded structured concurrency (second slice) —
+  **decided 2026-10-31 (decision 5): write the proposal (option B), as the
+  last V1 work item.** The single-threaded eager `spawn`/`Task<T>`, bounded
+  `Channel<T>` with `ChannelError`, close, and deadlock panics are landed and
+  the `channels` corpus case passes on C, JS, TS, and Nova. The proposal
+  decides, at minimum:
   - Threading model: pthreads/C11 threads vs a pool, and join semantics.
   - Deadlock semantics change: full/empty channel waits become blocking, so
     the `channels` conformance case and its `.expected` output must be
@@ -1656,12 +1666,16 @@ These are intentionally high-level. Break them into smaller tasks when their pha
   directive); JavaScript, TypeScript, Nova, frontend-reject, and C runners are
   wired and green with empty gap ledgers (C executes every case when a hosted
   compiler is available)
-- [ ] `HARD-001` v0.1 hardening — **scope not yet defined.** Nothing
-  implements it and nothing blocks it; per rule 6 it stays an undefined
-  placeholder until a scope is written down (the nearest recorded material is
-  the defect-trail pattern in the run evidence: every Tier-1 failure became a
-  deterministic regression test, which is the method any hardening pass
-  should extend). Do not start it without a definition.
+- [ ] `HARD-001` v0.1 hardening — **scope decided 2026-10-31 (decision 6:
+  A+B hybrid): "Structural Fuzzing Pass with Distributed Release Tooling."**
+  Two halves now define the task: (A) the structural/property fuzzing pass
+  extending the defect-trail method (random and mutated input never panic
+  the lexer/parser/formatter, panic/OOM-path audit, deterministic repro of
+  every historical CI failure class), and (B) distributed release tooling
+  (versioning, packaging/distribution, install/upgrade docs, changelog
+  discipline). Queued as item 5 — positioned late so it hardens what
+  exists. Nothing implements it yet; it is no longer an undefined
+  placeholder.
 
 ---
 
