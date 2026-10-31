@@ -786,7 +786,50 @@ impl<'a> Emitter<'a> {
             self.tcx.clear_subst();
         }
     }
+    /// Registers every `@export_as` instantiation as a specialized body under
+    /// the author-chosen symbol (`spec §11.5`, `11-c-abi.md` §3). Runs before
+    /// any body emission so `emit_instantiations` drains them like call-site
+    /// instantiations.
+    fn register_exported_instantiations(&mut self) {
+        let items = self.module.ast.items.clone();
+        self.register_exported_items(&items);
+    }
+
+    fn register_exported_items(&mut self, items: &[ast::Item]) {
+        for item in items {
+            match &item.kind {
+                ast::ItemKind::Function(decl) if !decl.type_parameters.is_empty() => {
+                    for attribute in &item.attributes {
+                        let Some(spec) = &attribute.export_as else {
+                            continue;
+                        };
+                        let subst: BTreeMap<String, Type> = spec
+                            .bindings
+                            .iter()
+                            .map(|(parameter, ty)| (parameter.clone(), to_type(ty)))
+                            .collect();
+                        let symbol = spec.symbol.clone();
+                        if symbol.is_empty() || self.instantiations.contains_key(&symbol) {
+                            continue;
+                        }
+                        self.instantiations.insert(
+                            symbol.clone(),
+                            Instantiation {
+                                decl: decl.clone(),
+                                subst,
+                            },
+                        );
+                        self.pending_instantiations.push_back(symbol);
+                    }
+                }
+                ast::ItemKind::ScopedItems(scoped) => self.register_exported_items(&scoped.items),
+                _ => {}
+            }
+        }
+    }
+
     fn emit_program(&mut self) {
+        self.register_exported_instantiations();
         // The runtime header, typedefs, and prototypes are written *after* the
         // code is emitted: expression emission can ensure derived typedefs
         // (`Result<str, SliceError>` for `str.slice`) and discover generic
@@ -860,6 +903,7 @@ impl<'a> Emitter<'a> {
     /// includes the dep headers, skips the import-reject guard (already lifted
     /// by `emit_project`), and uses external linkage for functions.
     fn emit_program_linked(&mut self, dep_headers: &[String]) {
+        self.register_exported_instantiations();
         // As with `emit_program`: the runtime header, dependency includes,
         // typedefs, and prototypes are written after the code is emitted so
         // that derived typedefs and generic instantiations precede their use.
@@ -989,6 +1033,32 @@ impl<'a> Emitter<'a> {
                     let params = self.fn_params_c(f);
                     let _ = writeln!(h, "{ret_c} {}({params});", self.fn_symbol(&f.name));
                 }
+            }
+        }
+        // Exported generic instantiations (`@export_as`): the author-chosen
+        // symbol is the ABI entry point, so it belongs in the header
+        // (`11-c-abi.md` §3).
+        let mut exported_instances: Vec<String> = Vec::new();
+        for item in &self.module.ast.items.clone() {
+            if let ast::ItemKind::Function(_) = &item.kind {
+                for attribute in &item.attributes {
+                    if let Some(spec) = &attribute.export_as {
+                        exported_instances.push(spec.symbol.clone());
+                    }
+                }
+            }
+        }
+        if !exported_instances.is_empty() {
+            h.push_str("\n/* Exported generic instantiations. */\n");
+            for symbol in exported_instances {
+                let Some(instantiation) = self.instantiations.get(&symbol).cloned() else {
+                    continue;
+                };
+                self.tcx.set_subst(instantiation.subst);
+                let (ret_c, _) = self.fn_return_c(&instantiation.decl);
+                let params = self.fn_params_c(&instantiation.decl);
+                self.tcx.clear_subst();
+                let _ = writeln!(h, "{ret_c} {symbol}({params});");
             }
         }
         h.push('\n');

@@ -1,0 +1,5 @@
+// Each type parameter must be bound exactly once; a missing binding is NS7011.
+@export_as("ns_demo_identity")
+pub fn identity<T>(value: T) -> T {
+    return value
+}

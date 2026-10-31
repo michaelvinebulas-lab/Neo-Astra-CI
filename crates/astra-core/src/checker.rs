@@ -46,6 +46,14 @@ const INVALID_SCRIPT_SIGNATURE: &str = "NS7005";
 /// in a target-native-order position (binary operands, array elements, struct
 /// fields, map entries). Call arguments are exempt — they are ordered.
 const NATIVE_ORDER_EFFECTS: &str = "NS5007";
+/// `@export_as` applied to a non-generic or non-exported function.
+const EXPORT_AS_TARGET: &str = "NS7010";
+/// `@export_as` bindings do not bind every type parameter exactly once.
+const EXPORT_AS_BINDINGS: &str = "NS7011";
+/// A bound type is not C-boundary-safe.
+const EXPORT_AS_TYPE: &str = "NS7012";
+/// Duplicate symbol/binding list, or an invalid C identifier.
+const EXPORT_AS_SYMBOL: &str = "NS7013";
 
 /// Type-checker options.
 #[derive(Debug, Clone, Default)]
@@ -1097,6 +1105,25 @@ impl<'a> Checker<'a> {
 
     fn check_item_modes(&mut self, items: &[ast::Item], current_mode: Mode) {
         for item in items {
+            if !matches!(item.kind, ast::ItemKind::Function(_))
+                && item
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute.export_as.is_some())
+            {
+                let span = item
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.export_as.is_some())
+                    .map(|attribute| attribute.span)
+                    .unwrap_or(item.span);
+                self.error(
+                    EXPORT_AS_TARGET,
+                    "@export_as is only allowed on a generic function declaration.",
+                    span,
+                    "Move the attribute onto a `pub fn`/`export fn` with type parameters.",
+                );
+            }
             match &item.kind {
                 ast::ItemKind::ScopedItems(scoped) => {
                     let scoped_mode =
@@ -1106,6 +1133,7 @@ impl<'a> Checker<'a> {
                 ast::ItemKind::Function(function) => {
                     self.function_modes.insert(function.span, current_mode);
                     self.check_capability_attributes(&item.attributes, current_mode);
+                    self.check_export_as(item, function);
                 }
                 ast::ItemKind::Constant(constant) => {
                     self.function_modes.insert(constant.span, current_mode);
@@ -1188,6 +1216,156 @@ impl<'a> Checker<'a> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// `@export_as` (P2): validate the attribute and its instantiation
+    /// bindings. Emitting the specialized symbols is the C backend's job; the
+    /// diagnostics NS7010-NS7013 live here.
+    fn check_export_as(&mut self, item: &ast::Item, function: &ast::FunctionDecl) {
+        let specs: Vec<ast::ExportAsAttribute> = item
+            .attributes
+            .iter()
+            .filter_map(|attribute| attribute.export_as.clone())
+            .collect();
+        if specs.is_empty() {
+            return;
+        }
+        let exported = item.exported || item.visibility == ast::Visibility::Public;
+        let mut symbols = BTreeSet::new();
+        let mut instantiations = BTreeSet::new();
+        for spec in specs {
+            let span = spec.span;
+            if function.type_parameters.is_empty() {
+                self.error(
+                    EXPORT_AS_TARGET,
+                    "@export_as is only allowed on a generic function.",
+                    span,
+                    "Remove the attribute or add type parameters to the function.",
+                );
+                continue;
+            }
+            if !exported {
+                self.error(
+                    EXPORT_AS_TARGET,
+                    "@export_as is only allowed on an exported (`pub` or `export`) function.",
+                    span,
+                    "Mark the declaration `pub` or `export`, or remove the attribute.",
+                );
+                continue;
+            }
+            let mut bound: BTreeMap<&str, &ast::Type> = BTreeMap::new();
+            let mut valid = true;
+            for (parameter, ty) in &spec.bindings {
+                if !function
+                    .type_parameters
+                    .iter()
+                    .any(|candidate| candidate == parameter)
+                {
+                    self.error(
+                        EXPORT_AS_BINDINGS,
+                        format!("`@export_as` binds unknown type parameter '{parameter}'."),
+                        span,
+                        "Bind each type parameter of the function exactly once.",
+                    );
+                    valid = false;
+                    continue;
+                }
+                if bound.insert(parameter.as_str(), ty).is_some() {
+                    self.error(
+                        EXPORT_AS_BINDINGS,
+                        format!("`@export_as` binds type parameter '{parameter}' more than once."),
+                        span,
+                        "Bind each type parameter of the function exactly once.",
+                    );
+                    valid = false;
+                }
+            }
+            for parameter in &function.type_parameters {
+                if !bound.contains_key(parameter.as_str()) {
+                    self.error(
+                        EXPORT_AS_BINDINGS,
+                        format!(
+                            "`@export_as` is missing a binding for type parameter '{parameter}'."
+                        ),
+                        span,
+                        "Bind each type parameter of the function exactly once.",
+                    );
+                    valid = false;
+                }
+            }
+            if !valid {
+                continue;
+            }
+            let mut resolved: BTreeMap<String, Type> = BTreeMap::new();
+            for (parameter, ty) in &bound {
+                let resolved_ty = self.resolve_type(ty, &BTreeMap::new());
+                if matches!(resolved_ty, Type::Error | Type::Unknown) {
+                    valid = false;
+                    continue;
+                }
+                if contains_generic(&resolved_ty) {
+                    self.error(
+                        EXPORT_AS_TYPE,
+                        format!(
+                            "`@export_as` bound type '{resolved_ty}' mentions a type parameter; it must be concrete."
+                        ),
+                        span,
+                        "Bind a concrete, C-boundary-safe type.",
+                    );
+                    valid = false;
+                    continue;
+                }
+                resolved.insert((*parameter).to_string(), resolved_ty);
+            }
+            if !valid {
+                continue;
+            }
+            let mut boundary_ok = true;
+            for ty in resolved.values() {
+                if !self.is_boundary_safe(ty) {
+                    self.error(
+                        EXPORT_AS_TYPE,
+                        format!("`@export_as` bound type '{ty}' is not C-boundary-safe."),
+                        span,
+                        "Use primitives, structs, enums, and composites of those (spec 11.4).",
+                    );
+                    boundary_ok = false;
+                }
+            }
+            if !boundary_ok {
+                continue;
+            }
+            if !is_valid_c_identifier(&spec.symbol) {
+                self.error(
+                    EXPORT_AS_SYMBOL,
+                    format!("'{}' is not a valid C identifier.", spec.symbol),
+                    span,
+                    "Use letters, digits, and underscores, starting with a letter or underscore.",
+                );
+                continue;
+            }
+            if !symbols.insert(spec.symbol.clone()) {
+                self.error(
+                    EXPORT_AS_SYMBOL,
+                    format!("Duplicate exported symbol '{}'.", spec.symbol),
+                    span,
+                    "Each `@export_as` must name a unique symbol.",
+                );
+            }
+            let key: Vec<String> = function
+                .type_parameters
+                .iter()
+                .map(|parameter| resolved[parameter].to_string())
+                .collect();
+            if !instantiations.insert(key) {
+                self.error(
+                    EXPORT_AS_SYMBOL,
+                    "This instantiation is exported more than once.",
+                    span,
+                    "Remove the duplicate `@export_as`.",
+                );
             }
         }
     }
@@ -5018,6 +5196,16 @@ fn block_has_calls(block: &ast::Block) -> bool {
     block.statements.iter().any(stmt_has_calls)
 }
 
+/// A valid C identifier: `[A-Za-z_][A-Za-z0-9_]*`.
+fn is_valid_c_identifier(symbol: &str) -> bool {
+    let mut characters = symbol.chars();
+    match characters.next() {
+        Some(first) if first == '_' || first.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 fn stmt_has_calls(statement: &ast::Stmt) -> bool {
     match &statement.kind {
         ast::StmtKind::Let { value, .. } => expr_has_call(value),
@@ -6638,5 +6826,81 @@ pub fn main() -> i32 { return (side(1) + side(2)) + side(3) }
             1,
             "expected exactly one NS5007, got {codes:?}"
         );
+    }
+
+    #[test]
+    fn export_as_rejects_non_generic_and_non_exported_functions() {
+        let non_generic = r#"
+@export_as("ns_demo_f", T = i32)
+pub fn f() -> i32 { return 0 }
+"#;
+        let codes = check_with_mode(non_generic, Mode::System)
+            .expect_err("non-generic @export_as must be rejected");
+        assert!(codes.contains(&"NS7010".to_owned()), "got {codes:?}");
+
+        let non_exported = r#"
+@export_as("ns_demo_f", T = i32)
+fn f<T>(x: T) -> T { return x }
+"#;
+        let codes = check_with_mode(non_exported, Mode::System)
+            .expect_err("non-exported @export_as must be rejected");
+        assert!(codes.contains(&"NS7010".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn export_as_rejects_bad_bindings() {
+        let missing = r#"
+@export_as("ns_demo_f")
+pub fn f<T>(x: T) -> T { return x }
+"#;
+        let codes =
+            check_with_mode(missing, Mode::System).expect_err("missing binding must be rejected");
+        assert!(codes.contains(&"NS7011".to_owned()), "got {codes:?}");
+
+        let unknown = r#"
+@export_as("ns_demo_f", U = i32)
+pub fn f<T>(x: T) -> T { return x }
+"#;
+        let codes =
+            check_with_mode(unknown, Mode::System).expect_err("unknown binding must be rejected");
+        assert!(codes.contains(&"NS7011".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn export_as_rejects_non_boundary_safe_bindings() {
+        let source = r#"
+@export_as("ns_demo_f", T = {str: i32})
+pub fn f<T>(x: T) -> T { return x }
+"#;
+        let codes = check_with_mode(source, Mode::System)
+            .expect_err("pointer binding must be rejected as not boundary-safe");
+        assert!(codes.contains(&"NS7012".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn export_as_accepts_valid_instantiations_and_rejects_duplicates() {
+        let valid = r#"
+@export_as("ns_demo_id_i32", T = i32)
+@export_as("ns_demo_id_str", T = str)
+pub fn identity<T>(value: T) -> T { return value }
+"#;
+        check_with_mode(valid, Mode::System).expect("valid instantiations must typecheck");
+
+        let duplicate = r#"
+@export_as("ns_demo_id_i32", T = i32)
+@export_as("ns_demo_id_i32", T = str)
+pub fn identity<T>(value: T) -> T { return value }
+"#;
+        let codes = check_with_mode(duplicate, Mode::System)
+            .expect_err("duplicate symbol must be rejected");
+        assert!(codes.contains(&"NS7013".to_owned()), "got {codes:?}");
+
+        let invalid_symbol = r#"
+@export_as("1bad", T = i32)
+pub fn identity<T>(value: T) -> T { return value }
+"#;
+        let codes = check_with_mode(invalid_symbol, Mode::System)
+            .expect_err("invalid C identifier must be rejected");
+        assert!(codes.contains(&"NS7013".to_owned()), "got {codes:?}");
     }
 }

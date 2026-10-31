@@ -268,6 +268,52 @@ impl Parser {
             if self.eat_punct(Punctuation::LParen) {
                 self.skip_newlines();
 
+                if name == "export_as" {
+                    let symbol_expr = self.parse_expression();
+                    let symbol = match &symbol_expr.kind {
+                        ExprKind::Literal(Literal::String(value)) => value.clone(),
+                        _ => {
+                            self.error(
+                                EXPECTED,
+                                "The first argument of '@export_as' must be a string literal naming the exported symbol.",
+                                symbol_expr.span,
+                                "Write @export_as(\"ns_module_fn_type\", T = i32).",
+                            );
+                            String::new()
+                        }
+                    };
+                    let mut bindings = Vec::new();
+                    loop {
+                        if !self.eat_punct(Punctuation::Comma) {
+                            break;
+                        }
+                        self.skip_newlines();
+                        if self.at_punct(Punctuation::RParen) {
+                            break;
+                        }
+                        let Some(parameter) = self.expect_identifier() else {
+                            break;
+                        };
+                        self.expect_punct(Punctuation::Eq, "'='");
+                        let ty = self.parse_type();
+                        bindings.push((parameter, ty));
+                    }
+                    self.expect_punct(Punctuation::RParen, "')'");
+                    let span = self.span_from(start);
+                    attributes.push(Attribute {
+                        name,
+                        arguments: Vec::new(),
+                        export_as: Some(ExportAsAttribute {
+                            symbol,
+                            bindings,
+                            span,
+                        }),
+                        span,
+                    });
+                    self.skip_newlines();
+                    continue;
+                }
+
                 if !self.at_punct(Punctuation::RParen) {
                     loop {
                         arguments.push(self.parse_expression());
@@ -288,6 +334,7 @@ impl Parser {
             attributes.push(Attribute {
                 name,
                 arguments,
+                export_as: None,
                 span: self.span_from(start),
             });
             self.skip_newlines();

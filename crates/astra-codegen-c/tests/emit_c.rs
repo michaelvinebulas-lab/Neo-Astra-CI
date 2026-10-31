@@ -2135,6 +2135,47 @@ fn library_emission_omits_main_and_exports_public_functions() {
     assert_clang_ok(lib_src);
 }
 
+/// `@export_as` (spec §11.5): each listed instantiation is emitted as a
+/// concrete, externally visible function under the author-chosen symbol, the
+/// header exposes it, and a hand-written C consumer can call it.
+#[test]
+fn export_as_emits_named_instantiations_callable_from_c() {
+    let modules = &[(
+        "src/lib.ns",
+        r#"module demo.lib
+
+@export_as("ns_demo_identity_i32", T = i32)
+@export_as("ns_demo_identity_str", T = str)
+pub fn identity<T>(value: T) -> T {
+    return value
+}
+"#,
+    )];
+    let library = try_compile_project_kind(modules, EmitKind::Library).expect("library emission");
+    let src = project_source(&library, "src/lib.ns");
+    let header = project_header(&library, "src/lib.ns");
+
+    assert!(
+        src.contains("ns_demo_identity_i32"),
+        "the i32 instantiation must be emitted under the author symbol:\n{src}"
+    );
+    assert!(
+        src.contains("ns_demo_identity_str"),
+        "the str instantiation must be emitted under the author symbol:\n{src}"
+    );
+    assert!(
+        header.contains("ns_demo_identity_i32") && header.contains("ns_demo_identity_str"),
+        "the header must expose both instantiation symbols:\n{header}"
+    );
+    assert_clang_ok(src);
+
+    // A hand-written consumer calls the exported instantiation.
+    let consumer =
+        format!("{src}\nint main(void) {{ return ns_demo_identity_i32(41) == 41 ? 0 : 1; }}\n");
+    if let Some((ok, _stdout, stderr)) = hosted_build_and_run(&consumer) {
+        assert!(ok, "consumer failed to link or run:\n{stderr}");
+    }
+}
 /// GC-001 §5.8: a managed value returned across the C ABI is pinned for the
 /// run, so it survives a collection while the foreign module still holds it.
 #[test]

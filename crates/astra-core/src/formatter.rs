@@ -695,6 +695,18 @@ impl<'a> Formatter<'a> {
     fn write_attribute(&mut self, attribute: &Attribute, _indent: usize) {
         self.output.push('@');
         self.output.push_str(&attribute.name);
+        if let Some(spec) = &attribute.export_as {
+            self.output.push('(');
+            self.write_literal(&Literal::String(spec.symbol.clone()));
+            for (parameter, ty) in &spec.bindings {
+                self.output.push_str(", ");
+                self.output.push_str(parameter);
+                self.output.push_str(" = ");
+                self.write_type(ty);
+            }
+            self.output.push(')');
+            return;
+        }
         if !attribute.arguments.is_empty() {
             self.output.push('(');
             for (index, argument) in attribute.arguments.iter().enumerate() {
@@ -1512,5 +1524,27 @@ fn main() {
         let first = format_source(source).unwrap();
         let second = format_source(&first).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn formats_export_as_attributes() {
+        let source = r#"
+@export_as( "ns_demo_id_i32" , T=i32 )
+@export_as("ns_demo_id_str", T = str)
+pub fn identity<T>(value: T) -> T {
+    return value
+}
+"#;
+        let formatted = format_source(source).unwrap();
+        assert!(
+            formatted.contains("@export_as(\"ns_demo_id_i32\", T = i32)"),
+            "{formatted}"
+        );
+        assert!(
+            formatted.contains("@export_as(\"ns_demo_id_str\", T = str)"),
+            "{formatted}"
+        );
+        let second = format_source(&formatted).unwrap();
+        assert_eq!(formatted, second);
     }
 }
