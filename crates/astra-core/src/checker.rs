@@ -1099,6 +1099,9 @@ impl<'a> Checker<'a> {
         self.check_capability_attributes(&attributes, module_mode);
 
         let items = self.source.items.clone();
+        // `@export_as` symbols live in the C ABI verbatim, so they must be
+        // unique across the whole module, not just per declaration.
+        self.check_export_symbol_uniqueness(&items);
         self.check_item_modes(&items, module_mode);
         self.mode = module_mode;
     }
@@ -1220,6 +1223,57 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// Rejects one `@export_as` symbol used by two declarations in the module
+    /// (`NS7013`). The symbol is written into C verbatim, so a repeat would be
+    /// a duplicate definition rather than a mangled overload.
+    fn check_export_symbol_uniqueness(&mut self, items: &[ast::Item]) {
+        let mut symbols: BTreeMap<String, Span> = BTreeMap::new();
+        self.check_export_symbols_in(items, &mut symbols);
+    }
+
+    fn check_export_symbols_in(
+        &mut self,
+        items: &[ast::Item],
+        symbols: &mut BTreeMap<String, Span>,
+    ) {
+        for item in items {
+            match &item.kind {
+                ast::ItemKind::Function(function) => {
+                    let exported = item.exported || item.visibility == ast::Visibility::Public;
+                    if function.type_parameters.is_empty() || !exported {
+                        continue;
+                    }
+                    for attribute in &item.attributes {
+                        let Some(spec) = &attribute.export_as else {
+                            continue;
+                        };
+                        if !is_valid_c_identifier(&spec.symbol) {
+                            // Reported by the per-declaration pass.
+                            continue;
+                        }
+                        if symbols.contains_key(&spec.symbol) {
+                            self.error(
+                                EXPORT_AS_SYMBOL,
+                                format!(
+                                    "Exported symbol '{}' is already used by another `@export_as` in this module.",
+                                    spec.symbol
+                                ),
+                                spec.span,
+                                "Each exported symbol must be unique within the artifact.",
+                            );
+                        } else {
+                            symbols.insert(spec.symbol.clone(), spec.span);
+                        }
+                    }
+                }
+                ast::ItemKind::ScopedItems(scoped) => {
+                    self.check_export_symbols_in(&scoped.items, symbols);
+                }
+                _ => {}
+            }
+        }
+    }
+
     /// `@export_as` (P2): validate the attribute and its instantiation
     /// bindings. Emitting the specialized symbols is the C backend's job; the
     /// diagnostics NS7010-NS7013 live here.
@@ -1233,7 +1287,6 @@ impl<'a> Checker<'a> {
             return;
         }
         let exported = item.exported || item.visibility == ast::Visibility::Public;
-        let mut symbols = BTreeSet::new();
         let mut instantiations = BTreeSet::new();
         for spec in specs {
             let span = spec.span;
@@ -1346,14 +1399,7 @@ impl<'a> Checker<'a> {
                 );
                 continue;
             }
-            if !symbols.insert(spec.symbol.clone()) {
-                self.error(
-                    EXPORT_AS_SYMBOL,
-                    format!("Duplicate exported symbol '{}'.", spec.symbol),
-                    span,
-                    "Each `@export_as` must name a unique symbol.",
-                );
-            }
+
             let key: Vec<String> = function
                 .type_parameters
                 .iter()
@@ -6901,6 +6947,20 @@ pub fn identity<T>(value: T) -> T { return value }
 "#;
         let codes = check_with_mode(invalid_symbol, Mode::System)
             .expect_err("invalid C identifier must be rejected");
+        assert!(codes.contains(&"NS7013".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn export_as_rejects_cross_declaration_symbol_reuse() {
+        let source = r#"
+@export_as("ns_demo_shared", T = i32)
+pub fn first<T>(value: T) -> T { return value }
+
+@export_as("ns_demo_shared", T = str)
+pub fn second<T>(value: T) -> T { return value }
+"#;
+        let codes = check_with_mode(source, Mode::System)
+            .expect_err("a symbol shared by two declarations must be rejected");
         assert!(codes.contains(&"NS7013".to_owned()), "got {codes:?}");
     }
 }
