@@ -19,6 +19,14 @@ This is the agent's persistent memory. Update it at the end of every substantial
 
 ---
 
+### 2026-10-31 - Decision doc: every open design question written up with options
+
+- Result: `Docs/Design/pending-decisions.md` lands with all eight open decisions written as context + options + proposed recommendation, awaiting the user's verdict (rule 10: nothing in it is decided). The eight: (1) `[P11]` call-argument evaluation order (left-to-right normative / unspecified / managed-only); (2) the generic-forwarding `NS6002` gap (document / definition-site conservative reject / instantiate-time re-check); (3) `FFI-001` generics across the C ABI (confirm the existing refusal / explicit-instantiation exports as new surface / polymorphic entries); (4) the unblocked `@script:c` boundary slice emitting the `11-c-abi.md` §5.1 triple (do now / wait for a real caller); (5) `CONC-001` OS-threaded slice (defer / proposal now / implement now); (6) `HARD-001` scope (robustness-fuzz / release engineering / leave undefined); (7) `PLAY-001` twice (branch keep-drop-park; start now vs later); (8) confirm the six deferrals.
+- Also fixed: the todo's `Region` `@memory:manual` design question was stale - the decision landed 2026-10-30 (no gate, spec §8.4 clarification at line 1318) but the todo entry still said "proposed, not decided". Closed honestly, and the up-next map now points each open item at its `pending-decisions.md` number.
+- Verification: docs-only. `npm run ci` green; Tier-1 polls and is recorded by the next entry if red.
+
+---
+
 ### 2026-10-30 - Run 38 green: the run-37 record verified; docs chain ends here
 
 - Result: run 38 (`1c26000`, the run-37 state-log record itself) is green on Linux, macOS, and Windows, so every run today (27, 29, 32, 33, 34, 35, 36, 37, 38) is green on all three OSes; 30/31 remain the two diagnosed macOS poison-test failures fixed by the portable pivot before 32. This entry closes the docs-only commit/poll chain deliberately: no further record commits are made for green runs that contain no code change. Any future red run, or any new work slice, gets its own entry; the todo's in-progress/up-next map is the queue of record.

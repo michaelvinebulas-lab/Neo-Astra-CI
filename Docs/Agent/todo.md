@@ -47,36 +47,44 @@ green at run 36.
 **Up next (`[ ]`)**
 
 1. `[ ]` `PLAY-001` Browser playground — not started; the expanded plan
-   (slices A-E + acceptance) is in the `PLAY-001` section. One keep-or-drop
-   decision is pending on the unmerged `work/play-001-a` bridge scaffold.
+   (slices A-E + acceptance) is in the `PLAY-001` section. Two decisions
+   pending (`pending-decisions.md` item 7): keep-or-drop the unmerged
+   `work/play-001-a` bridge scaffold, and start now vs later.
 2. `[ ]` `FFI-001` Polymorphic FFI — not started; design-first (no proposal
-   exists yet). The one unblocked near-term slice inside it: the first
-   `@script:c` foreign-frame boundary emits the `11-c-abi.md` §5.1 root
+   exists yet). Decisions 3 and 4 of `pending-decisions.md` cover the
+   generic-export question and the unblocked near-term slice: the first
+   `@script:c` foreign-frame boundary emitting the `11-c-abi.md` §5.1 root
    registration triple and its test.
 3. `[ ]` `CONC-001` OS-threaded structured concurrency — the single-threaded
    eager slice is landed; the second slice is design-gated behind a proposal.
+   **Options:** decision 5 of `pending-decisions.md`.
 4. `[ ]` `HARD-001` v0.1 hardening — scope not yet defined; needs a definition
-   before it can be worked (rule 6: queue, not brainstorm).
+   before it can be worked (rule 6: queue, not brainstorm). **Candidate
+   scopes:** decision 6 of `pending-decisions.md`.
 
 **Open design questions (`[ ]`, decided by the user, not by code)**
 
-5. `[ ]` Should `Region.new`/`region.alloc` also require `@memory:manual`
-   (like `Memory.alloc` via `NS6001`)? §8.4 names only `Memory.alloc`;
-   proposed, not decided.
-6. `[ ]` `[P11]` call-argument evaluation order — split out of GC-001 for its
-   own spec review.
-7. `[ ]` Generic-forwarding instantiation gap (checker model) — silent until
-   the element type is concrete at the definition site.
+5. `[ ]` `[P11]` call-argument evaluation order — split out of GC-001 for its
+   own spec review. **Now with options:** item 1 of
+   `Docs/Design/pending-decisions.md`.
+6. `[ ]` Generic-forwarding instantiation gap (checker model) — silent until
+   the element type is concrete at the definition site. **Now with options:**
+   item 2 of `Docs/Design/pending-decisions.md`.
+
+> The `Region` `@memory:manual` question that used to live here was decided
+> 2026-10-30 (no gate; spec §8.4 clarification) — its stale entry is closed.
+> Every remaining open decision has an options write-up in
+> `Docs/Design/pending-decisions.md` awaiting the user's answer.
 
 **Deferred (`[-]`, deliberately not scheduled)**
 
-8. `[-]` `GC-001` Phase D (Wasm) — needs a managed allocator in linear memory.
-9. `[-]` `WASM-001` C-to-Wasm path — needs the target ABI and runtime design.
-10. `[-]` Fallible `Memory.alloc`/`region.alloc` entry-point policy — until
-    then OOM panics, like `astra_gc_alloc`.
-11. `[-]` `MutSlice<T>` surface behind `ptr.as_slice` — the spec names the
+7. `[-]` `GC-001` Phase D (Wasm) — needs a managed allocator in linear memory.
+8. `[-]` `WASM-001` C-to-Wasm path — needs the target ABI and runtime design.
+9. `[-]` Fallible `Memory.alloc`/`region.alloc` entry-point policy — until
+   then OOM panics, like `astra_gc_alloc`.
+10. `[-]` `MutSlice<T>` surface behind `ptr.as_slice` — the spec names the
     type but defines no surface; building it would mean inventing semantics.
-12. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
+11. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
     embeddings (Python, Wasm, Java).
 
 ---
@@ -1338,12 +1346,14 @@ by a production native target.
       two carvings distinct, writes stable until `region.free()`), and the
       conformance reject case `conformance/rejects/region_api_requires_system`
       (discovery proven by failing it with a wrong expectation first).
-- [ ] Design question (spec surface): should `Region.new` and `region.alloc`
+- [x] Design question (spec surface): should `Region.new` and `region.alloc`
       also require an `@memory:manual` scope, like `Memory.alloc` does via
-      `NS6001`? §8.4's rule names only `Memory.alloc`, so the implementation
-      gates Region on system mode alone. Region allocation is manual
-      allocation in all but name, so the omission reads like an oversight,
-      but fixing it is a spec change - proposed, not decided.
+      `NS6001`? **Decided 2026-10-30: no.** Spec §8.4 names only
+      `Memory.alloc`, matching the implementation; `Region` is scoped
+      allocation whose blocks are released by `region.free()`. The §8.4
+      clarification line landed with the verdict and records the hazard: a
+      region that is never freed leaks its blocks, and the GC never reclaims
+      manual memory. Closed when `Docs/Design/pending-decisions.md` landed.
 - [ ] Full structured concurrency (OS-threaded runtime). The single-threaded
       eager slice (`spawn`/`Task`, bounded `Channel`, `ChannelError`) is the
       landed V1 scope and matches the JS/Nova model (deadlock panics). Moving to
