@@ -1169,19 +1169,26 @@ impl<'a> Emitter<'a> {
             let ext = if s.language == "cpp" { "cpp" } else { "c" };
             let filename = format!("script_{}.{ext}", sanitize(&s.name));
             let mut content = String::new();
-            let _ = writeln!(
-                content,
-                "/* Neo Astra inline script: {} ({}) */",
+            content.push_str(&format!(
+                "/* Neo Astra inline script: {} ({}) */\n",
                 s.name, s.language
-            );
-            content.push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n");
+            ));
             if s.language == "cpp" {
                 content.push_str("extern \"C\" {\n");
+                content.push_str(crate::runtime::RUNTIME_HEADER);
+                content.push('\n');
+                content
+                    .push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n");
                 for exp in &s.exports {
                     let (ret_c, params_c) = self.script_export_signature(exp);
                     let _ = writeln!(content, "{ret_c} {}({params_c});", sanitize(&exp.name));
                 }
                 content.push_str("}\n\n");
+            } else {
+                content.push_str(crate::runtime::RUNTIME_HEADER);
+                content.push('\n');
+                content
+                    .push_str("#include <stdint.h>\n#include <stdbool.h>\n#include <stddef.h>\n\n");
             }
             content.push_str(&s.raw_source);
             if !content.ends_with('\n') {
@@ -2761,7 +2768,68 @@ impl<'a> Emitter<'a> {
                             }
                             // Inline script export call: `<script>.<func>(...)`.
                             if self.scripts.iter().any(|s| s.name == *owner) {
-                                let arg_c = self.args_c(args);
+                                // Managed arguments are borrowed pointers for the foreign frame
+                                // (GC-001 §5.9): register them as roots for the duration of the
+                                // call so a collection triggered inside the opaque body cannot
+                                // reclaim them. The emitter owns the pairing (scoped handle).
+                                let arg_strs: Vec<String> =
+                                    args.iter().map(|a| self.materialize(a)).collect();
+                                let arg_c = arg_strs.join(", ");
+                                let has_managed = {
+                                    let mut m = false;
+                                    for a in args {
+                                        if let Some(ty) = self.type_of(a).cloned()
+                                            && self.tcx.root_slot_count(&ty) > 0
+                                        {
+                                            m = true;
+                                            break;
+                                        }
+                                    }
+                                    m
+                                };
+                                if self.hoist && has_managed {
+                                    let scope_var = self.fresh_id("gc_scope");
+                                    let _ = writeln!(
+                                        self.pre,
+                                        "    size_t {scope_var} = astra_gc_scope_enter();"
+                                    );
+                                    for (arg, arg_str) in args.iter().zip(arg_strs.iter()) {
+                                        if let Some(ty) = self.type_of(arg).cloned() {
+                                            for slot in self.tcx.root_exprs(arg_str, &ty) {
+                                                let _ = writeln!(
+                                                    self.pre,
+                                                    "    astra_gc_root({scope_var}, {slot});"
+                                                );
+                                            }
+                                        }
+                                    }
+                                    let call_ty = self.type_of(e).cloned().unwrap_or(Type::Unit);
+                                    if matches!(call_ty, Type::Unit) {
+                                        let _ = writeln!(
+                                            self.pre,
+                                            "    {}({arg_c});",
+                                            sanitize(member)
+                                        );
+                                        let _ = writeln!(
+                                            self.pre,
+                                            "    astra_gc_scope_exit({scope_var});"
+                                        );
+                                        return "(NS_Unit){0}".to_string();
+                                    }
+                                    let call_c_ty = self.tcx.c_type(&call_ty);
+                                    let result_tmp = self.fresh_id("script_ret");
+                                    let _ = writeln!(
+                                        self.pre,
+                                        "    {call_c_ty} {result_tmp} = {}({arg_c});",
+                                        sanitize(member)
+                                    );
+                                    let _ =
+                                        writeln!(self.pre, "    astra_gc_scope_exit({scope_var});");
+                                    if self.tcx.root_slot_count(&call_ty) > 0 {
+                                        self.publish_temp_in_pre(&result_tmp, &call_ty);
+                                    }
+                                    return result_tmp;
+                                }
                                 return format!("{}({arg_c})", sanitize(member));
                             }
                         }
@@ -2792,7 +2860,23 @@ impl<'a> Emitter<'a> {
         let Some(ty) = self.type_of(e).cloned() else {
             return self.expr(e);
         };
-        if self.tcx.root_slot_count(&ty) == 0 || self.root_base_name(e).is_some() {
+        if self.tcx.root_slot_count(&ty) == 0 {
+            // Hoist expressions that can have observable side effects (calls,
+            // blocks, control flow) into a temporary so that call arguments — and
+            // other comma-separated expression lists — are evaluated left-to-right
+            // regardless of the C compiler's argument-evaluation order (spec §3.10,
+            // [P11]).
+            let side_effecting = matches!(
+                e.kind,
+                ExprKind::Call { .. }
+                    | ExprKind::Block(_)
+                    | ExprKind::If { .. }
+                    | ExprKind::Match { .. }
+            );
+            if !side_effecting || self.root_base_name(e).is_some() {
+                return self.expr(e);
+            }
+        } else if self.root_base_name(e).is_some() {
             return self.expr(e);
         }
         let ty_c = self.tcx.c_type(&ty);

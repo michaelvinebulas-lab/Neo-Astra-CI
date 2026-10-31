@@ -173,6 +173,15 @@ extern size_t astra_gc_root_count(void);
    Pinning is monotone (release is post-V1); NULL is ignored. */
 extern void astra_gc_pin(void* payload);
 extern size_t astra_gc_pin_count(void);
+/* Foreign-frame root registration (GC-001 §5.9): a hand-written @script:c
+   block runs in a frame the collector cannot see, so managed values it
+   borrows for the call must be registered as roots for the duration of the
+   call. The emitter owns the pairing (scoped handle), so a script author
+   cannot unbalance a region. NULL payloads are ignored. Regions nest LIFO
+   like function frames; a debug build may trap on an out-of-order exit. */
+extern size_t astra_gc_scope_enter(void);
+extern void astra_gc_root(size_t scope, const void* payload);
+extern void astra_gc_scope_exit(size_t scope);
 /* Debug oracle hooks (GC-001 §8.2): poison a live managed payload with the
    fill the free paths use, and count fills so a test can assert both free
    paths poison without reading freed memory. */
@@ -446,6 +455,47 @@ void astra_gc_pin(void* payload) {
 }
 
 size_t astra_gc_pin_count(void) { return astra_gc_pins_len; }
+
+/* Foreign-frame root registration (GC-001 §5.9). A scope records the live
+   root count at entry and restores it on exit, so every root appended while
+   the scope is open is released when it closes. Scopes nest LIFO; the handle
+   returned by scope_enter is the saved base count, which doubles as the
+   identity for scope_exit (out-of-order exits are a no-op on the count but
+   leave the scope stack unbalanced — a debug-only concern). */
+static size_t* astra_gc_scope_stack = NULL;
+static size_t astra_gc_scope_cap = 0;
+static size_t astra_gc_scope_len = 0;
+
+size_t astra_gc_scope_enter(void) {
+    astra_gc_init_stress();
+    size_t base = astra_root_count;
+    if (astra_gc_scope_len == astra_gc_scope_cap) {
+        size_t cap = astra_gc_scope_cap == 0 ? 8 : astra_gc_scope_cap * 2;
+        size_t* fresh = (size_t*)realloc(astra_gc_scope_stack, cap * sizeof(size_t));
+        if (!fresh) { astra_panic("out of memory"); }
+        astra_gc_scope_stack = fresh;
+        astra_gc_scope_cap = cap;
+    }
+    astra_gc_scope_stack[astra_gc_scope_len++] = base;
+    return base;
+}
+
+void astra_gc_root(size_t scope, const void* payload) {
+    if (!payload) { return; }
+    (void)scope;
+    astra_gc_reserve(astra_root_count + 1);
+    astra_roots[astra_root_count++] = payload;
+}
+
+void astra_gc_scope_exit(size_t scope) {
+    if (scope <= astra_root_count) {
+        astra_root_count = scope;
+    }
+    if (astra_gc_scope_len > 0
+        && astra_gc_scope_stack[astra_gc_scope_len - 1] == scope) {
+        astra_gc_scope_len--;
+    }
+}
 
 static NS_Gc_Head* astra_gc_head(void* payload) {
     return ((NS_Gc_Head*)payload) - 1;
@@ -775,6 +825,10 @@ void astra_runtime_shutdown(void) {
     astra_gc_pins = NULL;
     astra_gc_pins_cap = 0;
     astra_gc_pins_len = 0;
+    free(astra_gc_scope_stack);
+    astra_gc_scope_stack = NULL;
+    astra_gc_scope_cap = 0;
+    astra_gc_scope_len = 0;
     free(astra_mark_stack);
     astra_mark_stack = NULL;
     astra_mark_len = 0;

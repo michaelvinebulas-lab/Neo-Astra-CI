@@ -3063,10 +3063,72 @@ fn calculate(x: i32, y: i32) -> i32 {
         "missing call in:\n{}",
         generated.source
     );
+    assert!(
+        !generated.source.contains("= astra_gc_scope_enter();"),
+        "a scalar-argument script call must not open a root scope:\n{}",
+        generated.source
+    );
     assert_eq!(generated.script_sources.len(), 1);
     let (filename, content) = &generated.script_sources[0];
     assert_eq!(filename, "script_math.c");
     assert!(content.contains("int32_t mul(int32_t a, int32_t b)"));
+    assert_clang_ok(&generated.source);
+}
+
+#[test]
+fn test_script_c_scope_registration_for_managed_arg() {
+    let src = r#"
+module test.script_c_scope
+
+{@script:c as math;
+    @mode(system)
+    @exports {
+        fn echo(s: str) -> str
+    }
+
+    @impl
+    NS_Str echo(NS_Str s) {
+        return s;
+    }
+@end
+}
+
+fn run(s: str) -> str {
+    return math.echo(s)
+}
+"#;
+    let module = parse(src).expect("parse failed");
+    let resolved = resolve_module(&module).expect("resolve failed");
+    let checked = check_resolved(&module, &resolved, CheckOptions::new(Mode::System))
+        .expect("type check failed");
+    let c_module = CModule {
+        name: checked.module.name.clone(),
+        ast: module,
+        hir: checked.module,
+        annotations: checked.annotations,
+        manual_memory_scopes: checked.manual_memory_scopes,
+        integer_policy: IntegerPolicy::Wrapping,
+    };
+    let generated = generate(&c_module).expect("C generation failed");
+    assert!(
+        generated.source.contains("astra_gc_scope_enter()"),
+        "missing scope_enter in:\n{}",
+        generated.source
+    );
+    assert!(
+        generated.source.contains("astra_gc_root("),
+        "missing gc_root in:\n{}",
+        generated.source
+    );
+    let src_text = &generated.source;
+    let i_enter = src_text.find("astra_gc_scope_enter()").expect("enter");
+    let i_root = src_text[i_enter..].find("astra_gc_root(").expect("root") + i_enter;
+    let i_call = src_text[i_enter..].find("echo(").expect("call") + i_enter;
+    let i_exit = src_text[i_enter..]
+        .find("astra_gc_scope_exit(")
+        .expect("exit")
+        + i_enter;
+    assert!(i_enter < i_root && i_root < i_call && i_call < i_exit);
     assert_clang_ok(&generated.source);
 }
 

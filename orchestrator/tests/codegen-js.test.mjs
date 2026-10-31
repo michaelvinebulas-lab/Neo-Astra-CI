@@ -1562,6 +1562,95 @@ test("astra build --target native links an inline @script:c block", (t) => {
   }
 });
 
+test("astra build --target native roots managed args across a @script:c call", (t) => {
+  if (hostedCCompiler() === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-native-script-root-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+        {
+          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
+          build: { defaultTarget: "native", defaultMode: "system" },
+          nova: { entry: "src/main.ns" },
+          targets: {
+            native: { backend: "native", mode: "system", outDir: "dist/native" },
+          },
+          math: { integers: "wrapping" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        "{@script:c as math;",
+        "    @mode(system)",
+        "    @exports {",
+        "        fn first(xs: [i32]) -> i32",
+        "        fn root_count() -> usize",
+        "    }",
+        "",
+        "    @impl",
+        "    int32_t first(NS_Array xs) {",
+        "        astra_gc_collect();",
+        "        const int32_t* p = (const int32_t*)xs.data;",
+        "        return xs.len > 0 ? p[0] : -1;",
+        "    }",
+        "    size_t root_count(void) {",
+        "        return astra_gc_root_count();",
+        "    }",
+        "@end",
+        "}",
+        "",
+        "pub fn main() -> i32 {",
+        "    let xs = [10, 20, 30]",
+        "    let before = math.root_count()",
+        "    println(math.first(xs))",
+        "    let after = math.root_count()",
+        "    if before != after {",
+        "        println(999)",
+        "        return 1",
+        "    }",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built native/);
+
+    const exePath = join(
+      project,
+      "dist",
+      "native",
+      process.platform === "win32" ? "main.exe" : "main",
+    );
+    assert.ok(existsSync(exePath), `expected ${exePath} to exist`);
+
+    const run = spawnSync(exePath, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "10");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
 test("astra build --emit staticlib produces a linkable C library", (t) => {
   const compiler = hostedCCompiler();
   if (compiler === null) {

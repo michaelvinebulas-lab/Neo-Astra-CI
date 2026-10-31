@@ -1,0 +1,15 @@
+module conformance.arg_order
+
+fn side(x: i32) -> i32 {
+    println(x)
+    return x
+}
+
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+pub fn main() -> i32 {
+    println(add(side(1), side(2)))
+    return 0
+}

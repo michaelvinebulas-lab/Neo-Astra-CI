@@ -343,6 +343,14 @@ struct Checker<'a> {
     /// and scope gates passed, so `check_call` can apply `NS6002` to the
     /// element type bound for `T` (spec 8.4; GC-001 proposal §11).
     manual_alloc_spans: Vec<Span>,
+    /// Hybrid NS6002 micro-pass: alloc nodes whose element type depends on a
+    /// generic parameter, recorded per generic function (by name) at definition
+    /// time so they can be re-checked at instantiation time.
+    deferred_alloc_checks: BTreeMap<String, Vec<(Span, Type)>>,
+    /// Hybrid NS6002 micro-pass: call sites of generic functions recorded
+    /// during body checking, replayed after all bodies are checked so the
+    /// callee's deferred alloc checks are available.
+    pending_generic_call_checks: Vec<(Span, String, String, BTreeMap<String, Type>)>,
     mode: Mode,
     function_modes: HashMap<Span, Mode>,
     type_defs: BTreeMap<String, TypeDef>,
@@ -352,6 +360,7 @@ struct Checker<'a> {
     script_modes: BTreeMap<String, Mode>,
     scopes: Vec<BTreeMap<String, Local>>,
     current_function: Option<FunctionContext>,
+    current_type_parameters: Vec<String>,
     loop_depth: usize,
     alias_stack: Vec<String>,
 }
@@ -367,6 +376,8 @@ impl<'a> Checker<'a> {
             annotations: Vec::new(),
             manual_memory_scopes: Vec::new(),
             manual_alloc_spans: Vec::new(),
+            deferred_alloc_checks: BTreeMap::new(),
+            pending_generic_call_checks: Vec::new(),
             mode,
             function_modes: HashMap::new(),
             type_defs: BTreeMap::new(),
@@ -376,6 +387,7 @@ impl<'a> Checker<'a> {
             script_modes: BTreeMap::new(),
             scopes: Vec::new(),
             current_function: None,
+            current_type_parameters: Vec::new(),
             loop_depth: 0,
             alias_stack: Vec::new(),
         }
@@ -392,6 +404,7 @@ impl<'a> Checker<'a> {
         self.fill_type_definitions();
         self.check_constants();
         self.check_functions();
+        self.check_deferred_generic_allocs();
     }
 
     fn error(
@@ -864,6 +877,8 @@ impl<'a> Checker<'a> {
                 );
             }
 
+            self.current_type_parameters = declaration.type_parameters.clone();
+
             self.current_function = Some(FunctionContext {
                 name: declaration.name.clone(),
                 return_type: (*signature.return_type).clone(),
@@ -885,8 +900,87 @@ impl<'a> Checker<'a> {
             }
 
             self.current_function = None;
+            self.current_type_parameters.clear();
             self.pop_scope();
             self.mode = previous_mode;
+        }
+    }
+
+    fn check_deferred_generic_allocs(&mut self) {
+        // Group pending generic call sites by their enclosing function so that
+        // transitive forwarding can be replayed (P3: worklist to fixpoint).
+        type PendingCall = (Span, String, BTreeMap<String, Type>);
+        let mut by_enclosing: BTreeMap<String, Vec<PendingCall>> = BTreeMap::new();
+        for (span, callee_name, enclosing, subs) in
+            std::mem::take(&mut self.pending_generic_call_checks)
+        {
+            by_enclosing
+                .entry(enclosing)
+                .or_default()
+                .push((span, callee_name, subs));
+        }
+
+        // Worklist of (call_span, callee_name, substitution). Start with every
+        // recorded call site.
+        let mut worklist: Vec<(Span, String, BTreeMap<String, Type>)> = by_enclosing
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect();
+        let mut seen: std::collections::HashSet<(Span, String, BTreeMap<String, Type>)> =
+            std::collections::HashSet::new();
+
+        while let Some((call_span, callee_name, substitutions)) = worklist.pop() {
+            if !seen.insert((call_span, callee_name.clone(), substitutions.clone())) {
+                continue;
+            }
+            let all_concrete =
+                !substitutions.is_empty() && substitutions.values().all(|t| !contains_generic(t));
+
+            if all_concrete
+                && let Some(checks) = self.deferred_alloc_checks.get(&callee_name).cloned()
+            {
+                for (_alloc_span, element_type) in checks {
+                    let concrete_element = element_type.substitute(&substitutions);
+                    if matches!(concrete_element, Type::Error | Type::Unknown) {
+                        continue;
+                    }
+                    if contains_generic(&concrete_element) {
+                        continue;
+                    }
+                    if self.holds_managed_refs(&concrete_element) {
+                        self.error(
+                                MANAGED_ELEMENT_IN_MANUAL_ALLOC,
+                                format!(
+                                    "Manual allocation cannot use element type '{concrete_element}': it holds \
+                                     GC-managed references, and 'Ptr<T>' is never a GC root (spec 8.4), \
+                                     so a collection could reclaim data this pointer still points at."
+                                ),
+                                call_span,
+                                "Allocate pointer-free types here (scalars, Ptr<U>, or a struct/enum of \
+                                 those); str, bytes, [T], Map, Channel, Task, and composites containing \
+                                 them belong to GC-managed memory.",
+                            );
+                    }
+                }
+            }
+
+            // Transitive replay: if this callee is itself a generic function,
+            // compose this call's substitution onto its own recorded inner calls
+            // and enqueue them (P3 fixpoint).
+            if all_concrete && let Some(inner_calls) = by_enclosing.get(&callee_name).cloned() {
+                for (inner_span, inner_callee, inner_subs) in inner_calls {
+                    // Compose: apply outer substitution to inner's substitution.
+                    let mut composed = inner_subs.clone();
+                    for v in composed.values_mut() {
+                        *v = v.substitute(&substitutions);
+                    }
+                    // Also substitute any generic that maps directly via outer.
+                    for (k, v) in &substitutions {
+                        composed.entry(k.clone()).or_insert(v.clone());
+                    }
+                    worklist.push((inner_span, inner_callee, composed));
+                }
+            }
         }
     }
 
@@ -1204,7 +1298,16 @@ impl<'a> Checker<'a> {
         let Some(element) = arguments.first() else {
             return;
         };
-        if matches!(element, Type::Error | Type::Unknown | Type::Generic(_)) {
+        if matches!(element, Type::Error | Type::Unknown) {
+            return;
+        }
+        if contains_generic(element) {
+            if let Some(current) = &self.current_function {
+                self.deferred_alloc_checks
+                    .entry(current.name.clone())
+                    .or_default()
+                    .push((span, element.clone()));
+            }
             return;
         }
         if self.holds_managed_refs(element) {
@@ -2389,6 +2492,33 @@ impl<'a> Checker<'a> {
             }
         }
 
+        // Hybrid NS6002 micro-pass: record this generic call site so the
+        // deferred alloc checks of the callee can be re-run with the concrete
+        // substitution after all function bodies are checked.
+        if !function.type_parameters.is_empty() {
+            let callee_name = match &callee.kind {
+                ast::ExprKind::Identifier(name) => Some(name.clone()),
+                ast::ExprKind::TypeArguments { target, .. } => match &target.kind {
+                    ast::ExprKind::Identifier(name) => Some(name.clone()),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(name) = callee_name {
+                let enclosing = self
+                    .current_function
+                    .as_ref()
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default();
+                self.pending_generic_call_checks.push((
+                    span,
+                    name,
+                    enclosing,
+                    substitutions.clone(),
+                ));
+            }
+        }
+
         let return_type = function.return_type.substitute(&substitutions);
         let function_errors = function
             .errors
@@ -2409,9 +2539,10 @@ impl<'a> Checker<'a> {
 
     fn check_callee(&mut self, callee: &ast::Expr) -> (ExprInfo, Option<Vec<Type>>) {
         if let ast::ExprKind::TypeArguments { target, arguments } = &callee.kind {
+            let generics = generic_map(&self.current_type_parameters);
             let explicit = arguments
                 .iter()
-                .map(|argument| self.resolve_type(argument, &BTreeMap::new()))
+                .map(|argument| self.resolve_type(argument, &generics))
                 .collect::<Vec<_>>();
             let info = self.check_expr(target, None);
             return (info, Some(explicit));
@@ -6168,5 +6299,89 @@ fn bad() -> i32 {
 "#,
             "NS4015",
         );
+    }
+
+    #[test]
+    fn hybrid_ns6002_flags_generic_forwarding() {
+        let source = r#"
+fn alloc_wrap<T>(n: usize) -> i32 {
+    {@memory:manual;
+        let p = Memory.alloc<T>(n)
+        Memory.free(p)
+    }
+    return 0
+}
+
+pub fn main() -> i32 {
+    return alloc_wrap<str>(4)
+}
+"#;
+        let codes = check_with_mode(source, Mode::System)
+            .expect_err("generic forwarding of managed type must be rejected");
+        assert!(
+            codes.contains(&"NS6002".to_owned()),
+            "expected NS6002 at instantiation site, got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn hybrid_ns6002_flags_two_hop_forwarding() {
+        let source = r#"
+fn inner<T>(n: usize) -> i32 {
+    {@memory:manual;
+        let p = Memory.alloc<T>(n)
+        Memory.free(p)
+    }
+    return 0
+}
+
+fn outer<T>(n: usize) -> i32 {
+    return inner<T>(n)
+}
+
+pub fn main() -> i32 {
+    return outer<str>(4)
+}
+"#;
+        let codes = check_with_mode(source, Mode::System)
+            .expect_err("two-hop generic forwarding of managed type must be rejected");
+        assert!(
+            codes.contains(&"NS6002".to_owned()),
+            "expected NS6002 at outermost instantiation, got {codes:?}"
+        );
+    }
+
+    #[test]
+    fn hybrid_ns6002_check_callee_explicit_type_arg() {
+        let source = r#"
+fn g<T>(x: T) -> T { return x }
+
+fn f<U>(x: U) -> U {
+    return g<U>(x)
+}
+
+pub fn main() -> i32 {
+    let v = f<i32>(4)
+    return v
+}
+"#;
+        check_with_mode(source, Mode::System).expect("explicit type arg forwarding must typecheck");
+    }
+    #[test]
+    fn hybrid_ns6002_accepts_pointer_free_instantiation() {
+        let source = r#"
+fn alloc_wrap<T>(n: usize) -> i32 {
+    {@memory:manual;
+        let p = Memory.alloc<T>(n)
+        Memory.free(p)
+    }
+    return 0
+}
+
+pub fn main() -> i32 {
+    return alloc_wrap<i32>(4)
+}
+"#;
+        check_with_mode(source, Mode::System).expect("pointer-free instantiation must be accepted");
     }
 }
