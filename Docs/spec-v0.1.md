@@ -563,6 +563,12 @@ pattern_list    = pattern { "," pattern } ;
 
 `if_expr` and `match_expr` are expression forms of the control-flow constructs. A block used as an expression MUST end in an expression or be empty, in which case it evaluates to `()`.
 
+**Evaluation order (D27).** The arguments of a call — including constructor and `fail` calls — are evaluated strictly left-to-right before the callee is invoked. Backends MUST NOT reorder call arguments; a program MAY rely on their side effects occurring in source order, and that order is portable across all backends.
+
+Everywhere else — the operands of a binary operator, the elements of an array literal, the fields of a struct initializer, and the entries of a map literal — evaluation order is **target-native** and carries no portability guarantee. `&&` and `||` short-circuit the right operand when the result is already determined. To keep the portability trap out of systems code, the frontend's side-effect detection pass (system mode) rejects an expression that combines multiple state-changing subexpressions in a target-native-order position, such as `a() + b()`, and instructs the developer to hoist the calls into named bindings.
+
+> Implementation status: the call-argument rule is enforced by every backend and pinned by the `arg_order` conformance case. The system-mode side-effect rejection is the next frontend slice; until it lands, target-native positions evaluate in target order without a diagnostic.
+
 `fail_expr`:
 
 ```ebnf
@@ -698,7 +704,7 @@ The grammar is parsed with these deterministic rules:
 1. A `{` after a type path is a struct initializer; a `{` at a statement or expression position is a block or map literal according to context.
 2. `<` after a path in expression position is parsed as type arguments when it is immediately followed by a type argument list and a call; otherwise it is comparison.
 3. Prefix `!` followed by a type path and `(` or `{` is failure construction. Postfix `!` at the end of a postfix expression is propagation.
-4. `@mode:` and `@memory:` are scope annotations inside `{ ... }`. `@mode(...)`, `@requires(...)`, and `@tags(...)` are item attributes. `@memory(...)` is reserved and invalid in v0.1; use a file or block wrapper.
+4. `@mode:` and `@memory:` are scope annotations inside `{ ... }`. `@mode(...)`, `@requires(...)`, `@tags(...)`, and `@export_as(...)` are item attributes. `@memory(...)` is reserved and invalid in v0.1; use a file or block wrapper.
 5. `else` binds to the nearest unmatched `if`.
 6. `|` is only an error-set separator in v0.1; it is not a bitwise operator.
 7. `defer` binds the next statement.
@@ -1573,22 +1579,91 @@ Conversions MUST be explicit.
 
 ---
 
+### 11.5 Generic instantiation exports (FFI-001)
+
+A generic function is not callable across the C boundary by default
+(`11-c-abi.md` §3). A module may explicitly export concrete instantiations of
+a generic function with the `@export_as` attribute:
+
+```ns
+@export_as("ns_demo_identity_i32", T = i32)
+@export_as("ns_demo_identity_str", T = str)
+export fn identity<T>(value: T) -> T {
+    return value
+}
+
+@export_as("ns_demo_pair_i32_str", A = i32, B = str)
+export fn pair<A, B>(a: A, b: B) -> (A, B) {
+    return (a, b)
+}
+```
+
+Rules:
+
+- `@export_as(...)` is an item attribute (§3.1) and MAY be repeated on a
+  single declaration; each occurrence lists one instantiation.
+- It MAY only appear on a generic function declaration that is exported
+  (`export`/`pub`). Applying it to a non-generic function, or to a non-exported
+  function, is `NS7010`.
+- The first argument is a string literal naming the exported C symbol. It is
+  used verbatim (the compiler does not mangle it) and MUST be a valid C
+  identifier, unique within the artifact. A collision is `NS7013`.
+- The remaining arguments are `TypeParameter = type` bindings. Every type
+  parameter of the declaration MUST be bound exactly once, in any order; a
+  missing, extra, or duplicated binding is `NS7011`.
+- Every bound type MUST be a concrete type that is boundary-safe for the
+  active target's C ABI (§11.4): primitives, structs, enums, and composites of
+  those; no type parameter and no type that the C backend cannot represent. A
+  non-boundary-safe binding is `NS7012`.
+- Two attributes on the same declaration that name the same symbol or bind the
+  same type list are `NS7013`.
+- Each listed instantiation is emitted as a concrete, externally visible
+  function with exactly the given symbol and the substituted signature,
+  monomorphized exactly as an internal call site is. It obeys the declaration's
+  mode and capability requirements.
+- The attribute does not change the function's generic status: internal call
+  sites still monomorphize per call site, and the generic symbol itself remains
+  non-exported.
+- Without `@export_as`, a generic function remains outside the C
+  boundary, exactly as before.
+- The symbol named by the attribute is part of the ABI contract
+  (`11-c-abi.md` §3).
+
+Conversions at the boundary remain explicit (§11.4).
+
+---
+
 ## 12. Manifest and build
 
-### 12.1 Manifest rules
+### 12.1 Manifest files and rules
+
+Two manifests exist, split by purpose (D26):
+
+- `core.json` / `core.toml` — the **package manifest**: what the package is
+  and what it depends on. Exactly one of the two MUST exist.
+- `build.json` / `build.toml` — the **build manifest**: how the package is
+  built, run, and which toolchain it asks for. Optional; absent means the
+  documented defaults in §12.2.
+
+Rules:
 
 - Exactly one of `core.json` or `core.toml` MUST exist.
-- Both formats MUST use the same semantic schema.
+- At most one of `build.json` or `build.toml` MAY exist.
+- Both formats MUST use the same semantic schema per file.
+- Every key belongs to exactly one manifest. A key placed in the wrong file
+  MUST be rejected with a diagnostic naming the file it belongs in.
 - Unknown keys MUST be rejected.
 - Duplicate keys MUST be rejected.
 - Wrong value types MUST be rejected.
 - Paths MUST NOT escape the project root unless explicitly allowed.
 - Required FFI mappings MUST exist.
-- `astra check` MUST validate the manifest before building.
-- The manifest MUST be canonically formattable without changing semantics.
+- `astra check` MUST validate both manifests before building.
+- Each manifest MUST be canonically formattable without changing semantics.
 - `astra fmt` MUST preserve TOML `#` comments and reject duplicate keys.
 
-### 12.2 Required sections
+### 12.2 Sections
+
+`core.*` (required) — package identity and dependency information:
 
 ```json
 {
@@ -1597,40 +1672,52 @@ Conversions MUST be explicit.
     "version": "0.1.0",
     "edition": "2026"
   },
-  "build": {
-    "defaultTarget": "web",
-    "defaultMode": "app"
-  },
-  "targets": {
-    "web": {
-      "backend": "js",
-      "module": "esm",
-      "mode": "web"
-    }
-  }
+  "dependencies": {},
+  "packageSources": {},
+  "registry": {},
+  "ffi": {},
+  "capabilities": []
 }
 ```
 
-Optional sections:
+`capabilities` declares the package's privilege set and `ffi` its foreign
+contract; both are properties of the package, so they live here.
 
-- `nova`
-- `registry`
-- `math`
-- `strings`
-- `memory`
-- `dependencies`
-- `packageSources`
-- `ffi`
-- `capabilities`
+`build.*` (optional) — build directives and the compiler guide:
 
-`nova` configures the development entry point and watch roots. `registry`
-configures the optional universal registry gateway and default source policy.
-Neither creates a second manifest.
+```json
+{
+  "build": { "defaultTarget": "native" },
+  "targets": {
+    "native": { "backend": "native", "outDir": "dist/native" }
+  },
+  "nova": { "entry": "src/main.ns" },
+  "math": { "integers": "wrapping" },
+  "strings": {},
+  "memory": {},
+  "toolchain": { "c": "auto" }
+}
+```
+
+- `build` selects the default target and mode.
+- `targets` configures each target: `backend`, `mode`, `module`/`outDir`,
+  and emission options.
+- `nova` configures the development entry point and watch roots.
+- `math`, `strings`, and `memory` are the semantic policies that guide
+  codegen.
+- `toolchain` names the build toolchain policy (`auto` = resolve from the
+  environment, or a pinned toolchain id); the resolved toolchain is recorded
+  in the lockfile (§12.3).
+
+Defaults when `build.*` is absent (D26): `defaultTarget` = `native`;
+`defaultMode` omitted, so the mode is inferred least-privileged (§5); `targets.native`
+= `{ backend: "native", outDir: "dist/native" }`; `nova.entry` =
+`src/main.ns`; `math.integers` = `wrapping`; `toolchain.c` = `auto`.
 
 ### 12.3 Lockfile
 
-- The lockfile is `core.lock.json`.
-- It records resolved packages, source-qualified package IDs, target scoping, capabilities, integrity hashes, lifecycle-script policy, and compiler metadata.
+- The lockfile is `core.lock.json` and serves both manifests.
+- It records resolved packages, source-qualified package IDs, target scoping, capabilities, integrity hashes, lifecycle-script policy, compiler metadata, and the resolved toolchain.
 - CI SHOULD verify that the lockfile is current.
 - A release build SHOULD use `--locked` or `--frozen`.
 - The same lockfile serves Nova and compiled builds.
@@ -1877,6 +1964,19 @@ precise collector traces: `str`, `bytes`, `[T]`, maps, `Channel`, `Task`, and
 structs, enums, or tuples containing them; scalars, `Ptr<U>`, `Region`, and
 composites built only from pointer-free types are allowed.
 
+### 14.10 FFI diagnostics
+
+The `NS7xxx` range (§14.3) covers FFI. The `@script` block diagnostics are
+`NS7001`–`NS7008` (see `Design/V1/10-inline-script-interop.md` §6). The
+generic instantiation export diagnostics (§11.5) are:
+
+| Code | Meaning |
+|---|---|
+| `NS7010` | `@export_as` on a non-generic or non-exported function |
+| `NS7011` | `@export_as` binding list does not bind every type parameter exactly once |
+| `NS7012` | `@export_as` bound type is not C-boundary-safe |
+| `NS7013` | duplicate `@export_as` symbol or instantiation |
+
 ---
 
 ## 15. Conformance
@@ -2032,7 +2132,7 @@ The following choices are normative for v0.1 but should be reviewed before V1 fr
 5. `Channel.create<T>()` creates a bounded channel.
 6. Error handling uses `Ok`/`Err` patterns over fallible expressions.
 7. `Task<T>` is the return type of `spawn`.
-8. `@requires` and `@tags` are item/module attributes.
+8. `@requires`, `@tags`, and `@export_as` are item/module attributes.
 9. Scoped annotations use `{@mode:name; ...}` syntax.
 10. `core.json` schema URL is not yet finalized.
 

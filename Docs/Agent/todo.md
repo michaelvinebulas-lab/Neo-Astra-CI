@@ -26,9 +26,12 @@ and C with empty gap ledgers. `C-001` is the workstream: the managed C17 slice,
 multi-module and package linking, generics, native libraries, the
 single-threaded concurrency slice, and the Tier-1 Linux/macOS/Windows matrix are
 landed; what remains was design-gated until **2026-10-31, when the user
-answered all eight pending decisions** (`Docs/Design/pending-decisions.md`
-— verdicts + the fixed V1 implementation queue; queue item 1, the `@script:c`
-§5.1 boundary slice, is next to start). `GC-001` Phases 0/A/B/C are landed
+answered all eight pending decisions** (`Docs/Design/pending-decisions.md`)
+and added **D26** (two manifests: `core.*` + `build.*`), **D27** (evaluation
+order: call arguments normative, other positions target-native), the
+NoPM/toolchain plan (`Docs/Design/toolchain-and-packages.md`), and the V2
+machine-code roadmap. Queue item 1 (the `@script:c` §5.1 boundary slice) is
+implemented and **in review** with required fixes; nothing is committed yet. `GC-001` Phases 0/A/B/C are landed
 (Phase C - collection on by default at a 1 MiB safepoint threshold - landed
 2026-10-30 after S2 pinning, S3 poison oracle, and S4 signature; every
 Tier-1 run from 32 onward is green on all three OSes, including the
@@ -44,57 +47,68 @@ Open questions remain documented as proposals in `Docs/spec-v0.1.md` §17.
 
 Every item that is **not** done, in queue order. Detail and acceptance
 criteria live in each item's section further down; this table is the map.
-**All eight pending decisions were answered 2026-10-31** — verdicts in
-`Docs/Design/pending-decisions.md`; `[~]` in-progress is empty until the
-first queue item starts.
+Decisions made 2026-10-31: the eight pending verdicts (P1/P2/P3 included),
+**D26** (two manifests: ``core.*`` + ``build.*``), **D27** (evaluation order),
+the NoPM/toolchain plan (`Docs/Design/toolchain-and-packages.md`), and **V2**
+(first-party machine-code backend). Kilo's first pass is on disk and **in review**;
+nothing is committed yet. The package/CLI track (items 7–11) has its detailed
+slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
 
-**The V1 queue (decided 2026-10-31, in order)**
+**Landed 2026-10-31 (`[x]`)**
 
-1. `[ ]` `@script:c` §5.1 boundary slice (decision 4: **do it now**) —
-   the first foreign-frame boundary passing managed values emits the
-   `11-c-abi.md` §5.1 registration triple
-   (`astra_gc_scope_enter`/`astra_gc_root`/`astra_gc_scope_exit`) and lands
-   the proposal §7 boundary-rooting test. **Next to start.**
-2. `[ ]` `[P11]` call-argument evaluation order (decision 1: **A**) —
-   left-to-right becomes normative in spec §2; one pinning test per
-   backend (two side-effecting args, assert order).
-3. `[ ]` Generic-forwarding `NS6002` gap (decision 2: **custom hybrid**) —
-   definition site accepts generic forwarding but flags the alloc node
-   with a deferred validation; monomorphization substitutes the concrete
-   type into that node and re-runs only `NS6002` (no full body re-check).
-   Soundness of C, performance of B, expressiveness preserved.
-4. `[ ]` Explicit instantiation exports via attributes (decision 3: **B,
-   new language surface**) — spec the attribute syntax + `11-c-abi.md` §3
-   mangling first, then implement; §3's current refusal stays in force
-   until the specced form lands.
-5. `[ ]` `HARD-001` (decision 6: **A+B hybrid** — scope now defined) —
-   "Structural Fuzzing Pass with Distributed Release Tooling": the
-   defect-trail fuzzing pass plus release tooling; positioned late so it
-   hardens what exists.
-6. `[ ]` `CONC-001` proposal (decision 5: **B, sequenced last in V1**) —
-   the four-area proposal (threading model, deadlock semantics +
-   `channels` re-pin, task-local heaps vs the collector's single-heap
-   assumption, cancellation safepoints) is the last V1 work item.
-7. `[-]` `PLAY-001` (decision 7b: **after the queue clears**) — starts
-   only once everything above is done. Slice A already exists: the
-   `work/play-001-a` bridge was judged valuable and **merged as
-   `61a5163`**; the branch was deleted (decision 7a, executed).
+1. `[x]` `@script:c` §5.1 boundary slice — landed as `2b8de7a` after the lead's
+   review round (F1–F11): managed-arg script calls bracket enter/root/call/exit
+   and publish managed results; Unit returns handled; `const void*` matches
+   §5.1; hosted root-count pairing test; conditional positions keep the bare
+   call (recorded limitation).
+2. `[x]` `[P11]` — D27 dual rule in spec §3.10; the C emitter hoists
+   side-effecting call arguments; the `arg_order` conformance case pins order
+   across C/JS/TS/Nova. The system-mode side-effect rejection remains item 6.
+3. `[x]` Hybrid `NS6002` — definition-site deferral + instantiation replay +
+   transitive worklist fixpoint (P3); two-hop regression test (`2b8de7a`).
 
-**Deferred (`[-]`, all confirmed by decision 8: A)**
+**Queued (`[ ]`)**
+4. `[ ]` `HARD-001` — scope = A+B hybrid. Partial on disk: the parser fuzz
+   test (needs the F7 fix), CHANGELOG, release checklist. Remaining: full
+   fuzzing pass (panic/OOM audit, historical CI failure repros) + release
+   tooling.
+5. `[ ]` `@export_as` implementation — surface decided (P2); spec §11.5 and
+   `11-c-abi.md` §3 written by the lead; checker (`NS7010`–`NS7013`),
+   parser/formatter, C emission of the named instance symbols, consumer test.
+6. `[ ]` System-mode side-effect detection pass (P1) — frontend pass; rejects
+   `a() + b()`-style combinations in target-native positions with a "hoist the
+   calls" diagnostic; normative text in §3.10; conformance coverage.
+7. `[ ]` **D26 manifest split** — `build.*` implementation: manifest package,
+   formatter, CLI discovery, wrong-file-key diagnostics, fixture migration.
+   Blocks NOPM-005 and TOOLCHAIN-001a.
+8. `[ ]` `NOPM-005` `add`/`remove` with comment-preserving manifest edits.
+9. `[ ]` `NOPM-006` `sys:` system-package-manager source; `bootstrap.mjs`
+   becomes a caller.
+10. `[ ]` `TOOLCHAIN-001a` `[toolchain]` + resolution ladder (pin → cache →
+    PATH) + `astra doctor` + lockfile record — no network.
+11. `[ ]` `TOOLCHAIN-001b` pinned download/verify/unpack (Zig `zig cc`),
+    offline-safe, checksum table in-repo.
+12. `[ ]` `CONC-001` — proposal landed (`Docs/Design/CONC-001-proposal.md`,
+    four decision areas); awaiting the user's verdicts. Implementation is the
+    **last** V1 work item.
+13. `[-]` `PLAY-001` — starts after the queue; slice A (wasm bridge) merged as
+    `61a5163`.
 
-8. `[-]` `GC-001` Phase D (Wasm) — needs a managed allocator in linear memory.
-9. `[-]` `WASM-001` C-to-Wasm path — needs the target ABI and runtime design.
-10. `[-]` Fallible `Memory.alloc`/`region.alloc` entry-point policy — until
+**Deferred / V2 (`[-]`) — confirmed 2026-10-31 unless noted**
+
+14. `[-]` **V2:** first-party machine-code backend (`astra-codegen-llvm`
+    reserved slot). V1 uses the C toolchain (C → gcc/clang/MSVC → machine code).
+15. `[-]` `GC-001` Phase D (Wasm) — needs a managed allocator in linear memory.
+16. `[-]` `WASM-001` C-to-Wasm path — needs the target ABI and runtime design.
+17. `[-]` Fallible `Memory.alloc`/`region.alloc` entry-point policy — until
     then OOM panics, like `astra_gc_alloc`.
-11. `[-]` `MutSlice<T>` surface behind `ptr.as_slice` — the spec names the
+18. `[-]` `MutSlice<T>` surface behind `ptr.as_slice` — the spec names the
     type but defines no surface; building it would mean inventing semantics.
-12. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
-    embeddings (Python, Wasm, Java).
+19. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
+    embeddings (Python, Wasm, Java), `TOOLCHAIN-001c` cross-target triples.
 
-> Both former "open design questions" (`[P11]` and the generic-forwarding
-> gap) are decided and now sit as queue items 2 and 3. The `Region`
-> `@memory:manual` question was already decided 2026-10-30 (no gate; spec
-> §8.4 clarification) — its stale entry is closed.
+> The former "open design questions" are all answered. The `Region`
+> `@memory:manual` question was decided 2026-10-30 (no gate; spec §8.4).
 
 ---
 
@@ -1629,13 +1643,13 @@ These are intentionally high-level. Break them into smaller tasks when their pha
     boundary that passes managed values into a foreign frame emits the
     `11-c-abi.md` §5.1 registration triple
     (`astra_gc_scope_enter`/`astra_gc_root`/`astra_gc_scope_exit`) and lands
-    the proposal §7 boundary-rooting test with it. The signature is decided;
-    only the call site is missing.
-  - **Item 3 verdict — explicit instantiation exports via attributes
-    (queue item 4):** new language surface for V1 — spec the attribute
-    syntax and `11-c-abi.md` §3 mangling before code; the current §3
-    refusal (exported generics not exposed in headers) stays in force until
-    the specced form lands.
+    the proposal §7 boundary-rooting test with it. Implemented by Kilo; in
+    review with fixes F1–F6/F8 (see `Docs/Report/Task.md`).
+  - **Item 3 verdict — `@export_as("symbol", T = type)` (queue item 5):**
+    new language surface for V1 — spec §11.5 and `11-c-abi.md` §3 are written
+    (author-named symbols used verbatim, `NS7010`–`NS7013` gates);
+    implementation (checker, parser/formatter, C emission, consumer test) is
+    its own slice. The current §3 refusal stays in force until it lands.
   - The generic-forwarding half was answered as decision 2 (queue item 3),
     not here: definition-site flag + instantiation-site `NS6002` micro-pass.
   - Acceptance when each piece lands: §5.1 slice pinned by the §7
@@ -1676,6 +1690,13 @@ These are intentionally high-level. Break them into smaller tasks when their pha
   discipline). Queued as item 5 — positioned late so it hardens what
   exists. Nothing implements it yet; it is no longer an undefined
   placeholder.
+
+- [ ] `D26` Two manifests - split into `core.*` (package identity, dependencies, sources, registry, capabilities, ffi) and optional `build.*` (build directives, targets, nova, semantic policies, toolchain). Spec §12 rewritten; implementation (manifest package, formatter, CLI discovery, fixture migration) is queue item 7.
+- [ ] `NOPM-005` `add`/`remove` - npm-install UX that edits `core.*` dependencies (comment-preserving) and rewrites the lockfile. Queue item 8.
+- [ ] `NOPM-006` `sys:` source - system package manager integration (winget/brew/apt/dnf/zypper) as a NoPM adapter; `bootstrap.mjs` becomes a caller. Queue item 9.
+- [ ] `TOOLCHAIN-001a` Toolchain ladder - `[toolchain]` in `build.*`, pin -> `.tools` cache -> PATH resolution, `astra doctor`, lockfile record; no network. Queue item 10.
+- [ ] `TOOLCHAIN-001b` Pinned toolchain download - verify/unpack a pinned Zig `zig cc` (one artifact family, cross-compilation included), offline-safe; no implicit elevation. Queue item 11.
+- [-] V2: first-party machine-code backend (`astra-codegen-llvm` reserved slot). V1 uses the C toolchain (C -> gcc/clang/MSVC -> machine code).
 
 ---
 

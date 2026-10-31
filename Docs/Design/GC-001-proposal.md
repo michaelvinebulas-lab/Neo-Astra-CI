@@ -245,11 +245,12 @@ materialisation may fire, not *whether* it is sound: any expression that can
 allocate while holding an unhoisted managed value is still an error under I1.
 
 Note: materialising also pins left-to-right argument evaluation for managed
-arguments. `Docs/spec-v0.1.md` §2 (expressions) does not currently state an
-evaluation order for call arguments; per the `[P11]` verdict that is split out
-for its own spec review, and until that review concludes, left-to-right
-behaviour for managed arguments is an implementation detail of this mechanism,
-not a normative rule.
+arguments. `Docs/spec-v0.1.md` §3.10 now makes call-argument evaluation
+left-to-right normative (D27), so the mechanism above implements a spec
+guarantee rather than an implementation detail. Other expression positions
+(binary operands, array elements, struct fields, map entries) are target-native
+by decision; the frontend's system-mode side-effect pass is what keeps their
+ordering from becoming a portability trap.
 
 ### 5.4 [P4] Where collection runs: explicit safepoints — approved with amendment
 

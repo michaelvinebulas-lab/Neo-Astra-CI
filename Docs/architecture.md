@@ -2044,9 +2044,35 @@ Review these one by one. Record the chosen option and any notes.
 - [ ] A second parser or a second semantic implementation
 - [ ] A separate environment manifest
 
-**Decision:** Nova is a development runtime for direct `.ns` execution, REPL, watch mode, and tests. It reuses the Rust lexer, parser, resolver, and type checker and starts as a typed-HIR interpreter. Production artifacts remain compiled through `astra build`; Nova may become a deployment runtime later without changing the language contract. NoPM resolves dependencies for both Nova and Astra builds, supports path, Git, npm, and Cargo first, and records a universal package graph in `core.lock.json`. The universal registry gateway can proxy upstream ecosystems and host Neo Astra packages, but it is not required for local development. `core.json` / `core.toml` remains the only manifest, extended with `[nova]` and `[registry]` sections.  
+**Decision:** Nova is a development runtime for direct `.ns` execution, REPL, watch mode, and tests. It reuses the Rust lexer, parser, resolver, and type checker and starts as a typed-HIR interpreter. Production artifacts remain compiled through `astra build`; Nova may become a deployment runtime later without changing the language contract. NoPM resolves dependencies for both Nova and Astra builds, supports path, Git, npm, and Cargo first, and records a universal package graph in `core.lock.json`. The universal registry gateway can proxy upstream ecosystems and host Neo Astra packages, but it is not required for local development. `core.json` / `core.toml` was the only manifest, extended with `[nova]` and `[registry]` sections (superseded by D26: a separate optional `build.*` manifest now carries build directives and the `[toolchain]` section).  
 **Notes:** Nova is not a second language implementation. It always parses and resolves source, and type checking is on by default. “Any ecosystem” means any ecosystem with a package adapter; packages still need target-compatible bindings. Package lifecycle scripts are disabled by default. The zero-VM production promise still applies; Nova is a development interpreter, not the deployment VM.
+---
 
+### D26 — Two manifests: package core and build directives
+
+- [x] Split the manifest by purpose: `core.*` is the package manifest (identity, dependencies, package sources, registry, capabilities, ffi) and `build.*` is the build manifest (build, targets, nova, math, strings, memory, toolchain) *(confirmed 2026-10-31)*
+- [x] `build.*` is optional; absent means documented defaults *(confirmed)*
+- [x] The lockfile stays `core.lock.json` and records the resolved toolchain *(confirmed)*
+- [ ] Dual-read compatibility with the single-manifest layout
+- [ ] A third manifest
+
+**Decision:** Two manifests, split by purpose. `core.json`/`core.toml` (required) is what the package is: `[package]`, `[dependencies]`, `[packageSources]`, `[registry]`, `[capabilities]`, `[ffi]`. `build.json`/`build.toml` (optional) is how it is built and run: `[build]`, `[targets]`, `[nova]`, `[math]`, `[strings]`, `[memory]`, `[toolchain]`. A key lives in exactly one file; a wrong-file key is rejected with a diagnostic naming the right file. An absent `build.*` means the defaults in spec §12.2. The lockfile stays `core.lock.json`. Clean break: no dual-read compatibility layer (pre-1.0).
+**Notes:** Supersedes D25's "core.json / core.toml remains the only manifest" line. Package identity and dependency resolution are what get published and shared; build directives are environment- and machine-specific, so they must not travel inside the published package.
+
+---
+
+### D27 — Evaluation order: call arguments portable, everything else target-native
+
+- [x] Call arguments (including constructor and `fail` calls) evaluate strictly left-to-right on every backend *(confirmed 2026-10-31)*
+- [x] Binary operands, array elements, struct fields, and map entries use target-native order with no portability guarantee *(confirmed)*
+- [x] A frontend side-effect detection pass gated to system mode rejects expressions that combine multiple state-changing subexpressions in a target-native-order position and tells the developer to hoist the calls into named bindings *(confirmed; implementation queued)*
+- [ ] Normative ordering for every expression position
+- [ ] Relying on target-native order as a portability guarantee
+
+**Decision:** Call-argument evaluation is a portable, normative left-to-right rule. Every other expression position is target-native; the system-mode side-effect pass is the guard that keeps the difference from becoming a silent portability trap. Pinned by the `arg_order` conformance case (call arguments); the pass is its own queued slice with a diagnostic prompt to hoist calls.
+**Notes:** The C backend implements the call-argument rule by hoisting side-effecting arguments into temporaries in source order (materialisation, GC-001 §5.3). Target-native positions deliberately reorder nothing in the compiler; they simply do not promise an order.
+
+---
 ---
 
 ## 16. Proposed repository layout

@@ -80,8 +80,22 @@ The stem is the module key with `.ns` stripped and `/`, `.`, and `-` replaced by
 
 `pub` functions have external linkage. Non-`pub` functions stay `static`.
 Exported **generic** functions are not exposed in headers and cannot be called
-across the C boundary; each call site inside the project gets its own
-`ns_<fn>_<type args>` specialization.
+across the C boundary by default; each project-internal call site gets its own
+`ns_<fn>_<type args>` specialization. A module may opt into exporting concrete
+instantiations with the `@export_as("symbol", T = type, ...)` attribute
+(spec §11.5); each such instantiation is emitted as a concrete, externally
+visible function whose symbol is **exactly the string given in the attribute** —
+the compiler does not mangle or decorate it. The author chooses the symbol and is
+responsible for it being a valid, unique C identifier; a collision is `NS7013`.
+The recommended convention is `ns_<module stem>_<fn>_<type args>`, using the
+monomorphization suffix already used for internal specializations (one segment
+per type parameter in declaration order, C-side encoding: `i32`, `u8`, `str`,
+`NS_<stem>_<Name>` for structs and enums), but the attribute string wins. The
+exported instantiation's signature is the generic's signature with every type
+parameter substituted by its bound type. Because the symbol is author-authored,
+consumers treat it as the author-declared entry point rather than reconstructing
+it from a mangling scheme. The refusal above stays in force for any generic
+function that carries no `@export_as` attribute.
 
 ---
 
@@ -170,10 +184,22 @@ void   astra_gc_scope_exit(size_t scope);
   whole foreign call, so an early `return` inside a script block cannot leave a
   registration unpopped.
 
-No emitter site calls this API yet: no `@script:c` boundary passes managed
-values into a foreign frame today. This subsection is the approved contract,
-landed before the first call site per the proposal §5.9 trigger; §7 gains the
-boundary-rooting test with the first emitter site that emits it.
+The emitter now emits the triple at every inline `@script:` call that passes
+managed arguments, in positions whose evaluation is unconditional: it opens a
+scope, registers each managed argument's payload slots (§5.2 table), calls the
+foreign body, closes the scope, and then publishes a managed result as a caller
+frame root. Two limits are recorded rather than hidden:
+
+- **Conditional positions are not bracketed.** In a loop condition or under the
+  right operand of `&&`/`||` the emitter has no unconditional point to hoist the
+  bracket to, so the call is emitted without registration — the same class of
+  limitation as §5.3's materialisation rules. Arguments there are covered only
+  by whatever caller-frame roots already hold them.
+- **Released at scope close, not pinned.** A value borrowed by the foreign frame
+  is valid only for the call; a script that keeps the pointer afterwards
+  violates spec §8.5, which is the intended consequence.
+
+§7 lists the boundary-rooting test that pins this behavior.
 
 ---
 
@@ -196,10 +222,17 @@ The contract is pinned by:
   `library_emission_omits_main_and_exports_public_functions`,
   `library_pins_values_returned_across_the_c_boundary`,
   `only_library_exports_pin_managed_returns`,
-  `array_get_returns_bounded_option`, and the hosted execution tests.
+  `array_get_returns_bounded_option`,
+  `test_script_c_scope_registration_for_managed_arg` (the §5.1 triple is
+  emitted in order: enter < root < call < exit), and the hosted
+  boundary-rooting test (a managed `@script:c` argument survives a collection
+  forced inside the foreign frame, and the root count returns to its baseline
+  after the call).
 - `orchestrator/tests/codegen-js.test.mjs`:
   `astra build --emit staticlib produces a linkable C library` and
   `astra build --emit cdylib produces a runnable shared library`, which build a
-  library from `.ns`, compile a hand-written consumer, and run it.
+  library from `.ns`, compile a hand-written consumer, and run it; and
+  `astra build --target native roots managed args across a @script:c call`,
+  which links and runs a program whose script collects inside the foreign frame.
 - The conformance gate exercises the same runtime layouts for every case whose
   backend lowering exists.
