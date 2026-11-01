@@ -9,6 +9,7 @@ targets. Source files use `.ns`; the CLI is `astra`.
 - [`Docs/syntax-legend.md`](Docs/syntax-legend.md) — plain-language syntax and operator reference
 - [`Docs/state.md`](Docs/state.md) - status, queue, and decisions
 - [`Docs/roadmap.md`](Docs/roadmap.md) - what is built, what is next, and the versioning scheme
+- [`Docs/todo.md`](Docs/todo.md) - open tasks, grouped by version
 - [`Docs/archive/`](Docs/archive/) — frozen history: design baseline, proposals, earlier status docs
 - [`Docs/Agent/`](Docs/Agent/) — agent operating system
 - [`orchestrator/`](orchestrator/) — TypeScript CLI, manifest, LSP, plugin, and codegen workspace

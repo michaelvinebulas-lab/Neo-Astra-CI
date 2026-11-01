@@ -3,6 +3,8 @@
 What exists today, what comes next, and the version each piece ships in.
 Updated whenever something is built. No internal task codes - plain names only.
 
+Open tasks for the current version live in [`todo.md`](todo.md).
+
 ## Versioning
 
 The project follows semantic versioning, and every package moves together:
