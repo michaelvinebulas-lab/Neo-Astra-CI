@@ -386,13 +386,21 @@ Lua, Ruby, Java** named as the direction. Scope per language (target vs
 interop vs both) is decided when each is picked up, V2 or later; nothing is
 scheduled now.
 
-### 8. `high` mode - CONCEPT DECIDED, design proposed
+### 8. `high` mode - DECIDED (concept and design)
 
-The principal decided the concept on 2026-11-01: `high` is a new mode that
-makes Neo Astra read like a high-level language - it **removes the low-level
-surface** from the developer and **grants high-level benefits**, with the
-boilerplate gone (`print("hello nova")` instead of `fn main() -> i32 { ... }`)
-and strings still quoted. The concrete design (feature bans, sugar list,
-ladder position, lowering) is **proposed** in
-`Docs/Design/high-mode-proposal.md` and awaits approval; it is not normative
-and not scheduled in the V1 queue.
+The principal decided the concept on 2026-11-01 and approved the design the
+same day: `high` is a new mode that makes Neo Astra read like a high-level
+language - it **removes the low-level surface** from the developer and
+**grants high-level benefits**, with the boilerplate gone
+(`print("hello nova")` instead of `fn main() -> i32 { ... }`) and strings
+still quoted.
+
+Approved shape: `high = app capabilities + source-level ban list + sugar`.
+Bans: `Memory`/`@memory:manual`, `Ptr`, `Region`, `ffi`, `@script`,
+C-ABI/`@export_as`. Sugar: top-level statements + implicit `main`/exit 0,
+`print`, implicit tail return, the top-level-statements/`fn main` mixing
+error, and optional return-type inference. Profile selected through the
+manifest `defaultMode`; high modules are importable as app-level modules.
+
+Design, answers, and rejected alternatives: `Docs/Design/high-mode-proposal.md`.
+Not implemented, not in the V1 queue; ships as a post-1.0 minor bump per §6.

@@ -128,10 +128,14 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
     type but defines no surface; building it would mean inventing semantics.
 19. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
     embeddings (Python, Wasm, Java), `TOOLCHAIN-001c` cross-target triples.
-20. `[-]` **`high` mode** — concept decided 2026-11-01 (addendum §8); design
-    **proposed** in `Docs/Design/high-mode-proposal.md`, awaiting answers to its
-    five open questions. Not in V1; ships as a post-1.0 minor bump (1.1.0)
-    under the versioning policy.
+20. `[-]` **`high` mode** — **decided 2026-11-01** (addendum §8): concept and
+    design approved (`Docs/Design/high-mode-proposal.md`) — app capabilities +
+    ban list (Memory/`@memory:manual`, `Ptr`, `Region`, `ffi`, `@script`,
+    C-ABI/`@export_as`) + full sugar (top-level statements, implicit main/exit 0,
+    `print`, tail return, `fn main` mixing error, optional return-type
+    inference), profile via manifest `defaultMode`, importable as app. Not in
+    V1; ships as a post-1.0 minor bump (1.1.0) with spec text + conformance
+    written when scheduled.
 21. `[-]` **More language surfaces** — decided direction 2026-11-01 (addendum
     §7): extend the C/Wasm/JS/TS pattern (build targets, interop, toolchain
     rungs) to Rust, Go, Lua, Ruby, Java. Per-language scope decided when each is
