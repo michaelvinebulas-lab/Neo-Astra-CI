@@ -1870,6 +1870,9 @@ Codes are stable and MUST NOT be reused for different meanings.
 | `NS2006` | Missing newline or `;` boundary |
 | `NS2007` | Invalid modifier |
 
+Implementations MUST reject expression, type, or block nesting deeper than 64
+levels with `NS2002` instead of aborting on a stack overflow.
+
 ### 14.5 Type and effect diagnostics
 
 | Code | Meaning |

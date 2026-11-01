@@ -25,6 +25,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cancellation is cooperative at GC safepoints and channel operations. Spec
   9 updated; implementation is the last V1 item.
 - Structural fuzzing pass for the parser (pseudo-random inputs never panic).
+- Structural fuzzing pass for the whole frontend (`fuzz_frontend.rs`): token
+  soup and mutants of valid programs must never panic the parser, resolver,
+  checker, or formatter; clean parses must survive `astra fmt` twice.
+- Parser nesting limit (HARD-001): expression, type, or block nesting deeper
+  than 64 levels is rejected with `NS2002` (and the rest of the input is
+  skipped) instead of overflowing the stack and aborting the process.
+- Block-vs-map disambiguation no longer re-parses (HARD-001): when the
+  speculative parse of a `{` expression finds no map colon and no errors, it is
+  reused as the block's first statement instead of restoring and re-parsing the
+  whole subtree. The old backtracking doubled work per nesting level, so deeply
+  nested blocks took exponential time (28 levels parsed for minutes).
 
 ### Changed
 - Script translation units now include the runtime header so managed types are

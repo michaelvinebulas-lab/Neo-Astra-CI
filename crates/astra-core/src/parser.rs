@@ -20,6 +20,11 @@ const INVALID_TYPE: &str = "NS2003";
 const INVALID_PATTERN: &str = "NS2004";
 const INVALID_ITEM: &str = "NS2005";
 const BOUNDARY: &str = "NS2006";
+
+/// Nesting limit for the recursive-descent parser (HARD-001). Beyond this depth
+/// the parser reports `NS2002` and unwinds instead of risking a stack
+/// overflow, which would abort the process rather than report diagnostics.
+const MAX_NESTING_DEPTH: usize = 64;
 const CONFLICTING_VISIBILITY: &str = "NS3002";
 const UNKNOWN_SCRIPT_LANGUAGE: &str = "NS7001";
 const INVALID_SCRIPT_EXPORTS: &str = "NS7003";
@@ -42,6 +47,9 @@ pub fn parse_with_comments(source: &str) -> ParseResult<(Module, Vec<Comment>)> 
         tokens,
         index: 0,
         diagnostics,
+        depth: 0,
+        depth_reported: false,
+        nesting_drained: false,
     };
     let module = parser.parse_module();
 
@@ -56,6 +64,15 @@ struct Parser {
     tokens: Vec<Token>,
     index: usize,
     diagnostics: Vec<Diagnostic>,
+    /// Current recursion depth of expression/type/block parsing.
+    depth: usize,
+    /// Whether the nesting-limit diagnostic was already reported.
+    depth_reported: bool,
+    /// Whether the guard has drained the token stream to EOF. Sticky: once
+    /// set, speculative restores must not rewind the index, or unwinding
+    /// speculation frames would each re-scan the tail (quadratic on deep
+    /// nesting).
+    nesting_drained: bool,
 }
 
 impl Parser {
@@ -1109,6 +1126,27 @@ impl Parser {
     }
 
     fn parse_scoped_items(&mut self) -> ScopedItems {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Scope nesting exceeds the supported depth.");
+            let span = self.peek().span;
+            self.depth -= 1;
+            return ScopedItems {
+                annotation: ScopeAnnotation {
+                    kind: ScopeKind::Mode,
+                    value: String::new(),
+                    span,
+                },
+                items: Vec::new(),
+                span,
+            };
+        }
+        let scoped = self.parse_scoped_items_inner();
+        self.depth -= 1;
+        scoped
+    }
+
+    fn parse_scoped_items_inner(&mut self) -> ScopedItems {
         let start = self.bump().span.start;
         let annotation = self.parse_scope_annotation_body();
         let mut items = Vec::new();
@@ -1136,6 +1174,27 @@ impl Parser {
     }
 
     fn parse_scoped_statements(&mut self) -> ScopedStatements {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Scope nesting exceeds the supported depth.");
+            let span = self.peek().span;
+            self.depth -= 1;
+            return ScopedStatements {
+                annotation: ScopeAnnotation {
+                    kind: ScopeKind::Mode,
+                    value: String::new(),
+                    span,
+                },
+                statements: Vec::new(),
+                span,
+            };
+        }
+        let scoped = self.parse_scoped_statements_inner();
+        self.depth -= 1;
+        scoped
+    }
+
+    fn parse_scoped_statements_inner(&mut self) -> ScopedStatements {
         let start = self.bump().span.start;
         let annotation = self.parse_scope_annotation_body();
         let mut statements = Vec::new();
@@ -1196,12 +1255,42 @@ impl Parser {
     }
 
     fn parse_block(&mut self) -> Block {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Block nesting exceeds the supported depth.");
+            // Consume the opening brace so the caller always makes progress.
+            self.eat_punct(Punctuation::LBrace);
+            let span = self.peek().span;
+            self.depth -= 1;
+            return Block {
+                statements: Vec::new(),
+                span,
+            };
+        }
+        let block = self.parse_block_inner();
+        self.depth -= 1;
+        block
+    }
+
+    fn parse_block_inner(&mut self) -> Block {
         let start = self
             .expect_punct(Punctuation::LBrace, "'{'")
             .map_or_else(|| self.peek().span.start, |token| token.span.start);
         let mut statements = Vec::new();
 
         self.skip_separators();
+        self.parse_block_statements(&mut statements);
+
+        self.expect_punct(Punctuation::RBrace, "'}'");
+
+        Block {
+            statements,
+            span: self.span_from(start),
+        }
+    }
+
+    /// Parses block statements up to (but not including) the closing `}`.
+    fn parse_block_statements(&mut self, statements: &mut Vec<Stmt>) {
         while !self.at_punct(Punctuation::RBrace) && !self.at_eof() {
             let before = self.index;
             if self.looks_like_scope_annotation() {
@@ -1217,13 +1306,6 @@ impl Parser {
             if self.index == before {
                 self.bump();
             }
-        }
-
-        self.expect_punct(Punctuation::RBrace, "'}'");
-
-        Block {
-            statements,
-            span: self.span_from(start),
         }
     }
 
@@ -1343,7 +1425,63 @@ impl Parser {
     }
 
     fn parse_expression(&mut self) -> Expr {
-        self.parse_assignment()
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            return self.nesting_limit_expression();
+        }
+        let expression = self.parse_assignment();
+        self.depth -= 1;
+        expression
+    }
+
+    /// Bails out of a recursion deeper than `MAX_NESTING_DEPTH`: reports the
+    /// limit once (`NS2002`), consumes a token so the caller always makes
+    /// progress, and returns the same placeholder the "expected an expression"
+    /// path produces.
+    fn nesting_limit_expression(&mut self) -> Expr {
+        let span = self.peek().span;
+        self.nesting_limit_error("Expression nesting exceeds the supported depth.");
+        if self.can_consume_for_progress() {
+            self.bump();
+        }
+        self.depth -= 1;
+        Expr {
+            kind: ExprKind::Literal(Literal::Unit),
+            span,
+        }
+    }
+
+    /// Whether the parser may consume the current token to guarantee progress
+    /// on an error path (stopper tokens stay put for the caller to handle).
+    fn can_consume_for_progress(&self) -> bool {
+        !self.at_eof()
+            && !self.at(TokenKind::Newline)
+            && !self.at_punct(Punctuation::Semicolon)
+            && !self.at_punct(Punctuation::RBrace)
+            && !self.at_punct(Punctuation::RParen)
+            && !self.at_punct(Punctuation::RBracket)
+            && !self.at_punct(Punctuation::Comma)
+    }
+
+    /// Reports the nesting limit once per parse and skips the rest of the
+    /// input. Draining matters: without it the unwinding frames would keep
+    /// parsing (and boxing) the remaining tokens into an ever deeper tree,
+    /// and dropping that tree would overflow the stack again.
+    fn nesting_limit_error(&mut self, message: &str) {
+        if self.depth_reported {
+            return;
+        }
+        self.depth_reported = true;
+        // Leave the final EOF token in place for callers that expect it.
+        self.index = self.tokens.len().saturating_sub(1);
+        self.nesting_drained = true;
+        let span = self.peek().span;
+        self.error(
+            INVALID,
+            message,
+            span,
+            "Simplify the expression; the parser supports at most 64 levels of nesting.",
+        );
     }
 
     fn parse_assignment(&mut self) -> Expr {
@@ -1838,7 +1976,9 @@ impl Parser {
         self.skip_newlines();
 
         if self.at_punct(Punctuation::RBrace) {
-            self.index = saved_index;
+            if !self.nesting_drained {
+                self.index = saved_index;
+            }
             self.diagnostics.truncate(saved_diagnostics);
             return Expr {
                 kind: ExprKind::Block(self.parse_block()),
@@ -1885,7 +2025,38 @@ impl Parser {
             };
         }
 
-        self.index = saved_index;
+        // Clean speculation with no map colon: `first` is exactly what the
+        // block's first statement parses to (`parse_statement` falls through
+        // to `parse_expression` for non-keyword statements), so keep it
+        // instead of restoring and re-parsing the same tokens. Restoring here
+        // re-parsed the whole subtree a second time at every nesting level,
+        // which made nested blocks exponential in depth (28 levels parsed for
+        // minutes). Dirty speculations (keyword-led or malformed first
+        // statements, scope annotations) still restore; they fail on their
+        // first token, so nesting stays linear.
+        if self.diagnostics.len() == saved_diagnostics {
+            let statement_start = first.span.start;
+            let statement = Stmt {
+                kind: StmtKind::Expr(first),
+                span: self.span_from(statement_start),
+            };
+            let mut statements = vec![statement];
+            self.finish_boundary(true);
+            self.parse_block_statements(&mut statements);
+            self.expect_punct(Punctuation::RBrace, "'}'");
+
+            return Expr {
+                kind: ExprKind::Block(Block {
+                    statements,
+                    span: self.span_from(start),
+                }),
+                span: self.span_from(start),
+            };
+        }
+
+        if !self.nesting_drained {
+            self.index = saved_index;
+        }
         self.diagnostics.truncate(saved_diagnostics);
         Expr {
             kind: ExprKind::Block(self.parse_block()),
@@ -2043,7 +2214,9 @@ impl Parser {
         {
             Some(arguments)
         } else {
-            self.index = saved_index;
+            if !self.nesting_drained {
+                self.index = saved_index;
+            }
             self.diagnostics.truncate(saved_diagnostics);
             None
         }
@@ -2246,6 +2419,25 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Type {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            let span = self.peek().span;
+            self.nesting_limit_error("Type nesting exceeds the supported depth.");
+            if self.can_consume_for_progress() {
+                self.bump();
+            }
+            self.depth -= 1;
+            return Type {
+                kind: TypeKind::Unit,
+                span,
+            };
+        }
+        let ty = self.parse_type_inner();
+        self.depth -= 1;
+        ty
+    }
+
+    fn parse_type_inner(&mut self) -> Type {
         let token = self.peek().clone();
         let start = token.span.start;
 
