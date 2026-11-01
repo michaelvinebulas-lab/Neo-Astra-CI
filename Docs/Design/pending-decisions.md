@@ -215,6 +215,17 @@ call, not an engineering one.
 > inside V1.** CONC-001's proposal (the four decision areas with options) is
 > the last work item of the V1 queue; implementation follows its approval.
 
+> **Addendum (2026-11-01): the four areas are decided.** A2 (OS thread per
+> spawn, A1 eager fallback for Web/JS/Nova), B3 (park with a watchdog panic;
+> 5 s runtime constant, `ASTRA_CHANNEL_DEADLOCK_TIMEOUT` for tests), C2
+> (per-task heaps + immortal global heap), D1 (cooperative cancellation at GC
+> safepoints and channel operations). Operational specs: thread-pool size N/A
+> in v0.1, watchdog threshold 5 s, `cancel()` on a completed task is an
+> idempotent no-op, `send` copies managed values only (scalars move by value),
+> Web Workers deferred as a recorded gap. Full record:
+> `CONC-001-proposal.md` 10; spec 9 updated. Implementation stays the last
+> V1 item.
+
 ---
 
 ## 6. `HARD-001` — what "v0.1 hardening" means

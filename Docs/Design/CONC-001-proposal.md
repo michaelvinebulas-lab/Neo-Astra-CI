@@ -1,6 +1,7 @@
 # CONC-001 — OS-threaded structured concurrency (proposal)
 
-**Status:** Proposal — pending approval. No code changes.
+**Status:** **Approved 2026-11-01** (see 10. Verdict). Decided, not yet implemented;
+implementation is sequenced last in V1.
 **Date:** 2026-10-31
 **Depends on:** GC-001 (single-heap collector, Phase C on by default), spec §9
 **Related:** `Docs/spec-v0.1.md` §9, `Docs/Design/V1/03-runtime-and-memory.md`,
@@ -162,3 +163,65 @@ native, parked channel operations with a watchdog panic, per-task heaps with a
 global immortal heap, and cancellation at GC safepoints. JS, Nova, and the
 Wasm fallback retain the eager single-threaded model. No language syntax
 changes.
+
+---
+
+## 10. Verdict (2026-11-01, principal)
+
+All four areas decided, plus the five operational specifications. The rationale
+below is the principal's, recorded verbatim in substance.
+
+**A = A2 - OS thread per spawn, with A1 as the Web/Nova fallback.** A2 is the
+strategic sweet spot for v0.1: true hardware parallelism without a scheduling
+queue in the compiler. Thread lifetimes are bounded strictly to structured
+scopes, which enforces spatial determinism. A3 stays a pure performance
+optimization that can be layered on later. The multi-compiler manifest carries
+this per target: a native machine-code target spawns a dedicated OS thread; the
+JS/TS and Nova targets slide back to the eager inline model (A1), which is the
+ecosystem separation already designed in D13.
+
+**B = B3 - park with watchdog panic.** Losing the automated deadlock panic
+contract (B2) would cripple diagnostic reliability and replace it with flaky,
+uninformative CI timeouts. B3 keeps the language's safety profile: threads park
+on an OS condition variable (no CPU burn) and a lean runtime watchdog monitors
+task scopes; a block past the threshold raises a structured panic, so the
+existing `channels` conformance case is re-pinned without changing the semantic
+shape of the diagnostics.
+
+**C = C2 - per-task heaps plus a small global/immortal heap.** Since D9 and
+spec 9.3 mandate copy-on-send isolation and outlaw shared mutable state, C2 is
+the only logical architecture: a global stop-the-world collector (C1 or C3)
+would impose thread-lock latency that defeats the point of native concurrency.
+Each task gets an independent lightweight heap, so collection scales linearly
+with core count and never pauses other threads. Strings and shared static
+descriptors live in a thread-safe permanent global heap.
+
+**D = D1 - cooperative cancellation at GC safepoints.** The cancellation token
+is checked inside `astra_gc_maybe_collect` (already executed at allocation
+boundaries) and during blocking channel transactions, giving safe cancellation
+for free. It sidesteps fragile thread-interruption signals and adds no language
+keyword (D3), keeping the grammar intact.
+
+### 10.1 Operational specifications
+
+1. **Thread pool size:** not applicable in v0.1. A2 is structured
+   OS-thread-per-spawn; thread management maps to OS scaling limits.
+2. **Watchdog threshold:** 5 s default, treated as a runtime implementation
+   constant, not a visible spec feature; immediately overridable via
+   `ASTRA_CHANNEL_DEADLOCK_TIMEOUT` so the conformance suite stays fast.
+3. **`cancel()` on a completed or dead task:** idempotent no-op - returns
+   immediately, no error flag.
+4. **Copying on `send`:** managed values only. Primitives and scalars move by
+   value; managed heap objects are deep-copied into the destination task's
+   private heap, honouring C2's isolation boundary.
+5. **Web Workers:** deferred in v0.1. Web/JS targets run the eager A1 profile;
+   parallel tasks for web are recorded as a gap alongside the deferred Wasm
+   slice (GC-001 S6 / Phase D), not as a conformance failure.
+
+### 10.2 Status
+
+Decided. Spec 9 is updated with the decided target mapping, watchdog, and
+copy-on-send rules, each carrying an implementation-pending note. Implementation
+stays the **last** V1 work item, after NOPM-005, NOPM-006, and TOOLCHAIN-001a/b,
+and lands in the order given by 7: runtime, collector, safepoints, spec, then
+conformance and CI.

@@ -17,6 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NS7010`-`NS7013`, and the C backend emits each listed instantiation as an
   externally visible function under exactly the author-chosen symbol (also
   prototyped in the module header).
+- `CONC-001` concurrency model decided (2026-11-01): native `spawn` runs on an
+  OS thread bound to its structured scope (eager inline fallback for Web/JS/Nova);
+  blocked channel operations park and a runtime watchdog (5 s,
+  `ASTRA_CHANNEL_DEADLOCK_TIMEOUT` in tests) turns a deadlock into a structured
+  panic; native tasks get per-task heaps plus a thread-safe immortal heap;
+  cancellation is cooperative at GC safepoints and channel operations. Spec
+  9 updated; implementation is the last V1 item.
 - Structural fuzzing pass for the parser (pseudo-random inputs never panic).
 
 ### Changed

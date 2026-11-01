@@ -1361,7 +1361,7 @@ Rules:
 - The parent scope MUST wait for children before exiting.
 - A child panic fails the parent scope.
 - Detached tasks are not allowed in the portable core.
-- A task MAY be cancelled cooperatively.
+- A task MAY be cancelled cooperatively; cancellation is checked at GC safepoints and at channel operations (CONC-001, D1).
 - CPU tasks and I/O readiness are distinct concepts.
 
 ### 9.2 Channels
@@ -1373,23 +1373,28 @@ Rules:
 - `close` is explicit.
 - Sending to a closed channel fails.
 - Cancellation MUST interrupt blocked channel operations.
+- A blocked operation past the runtime deadlock threshold (default 5 s; `ASTRA_CHANNEL_DEADLOCK_TIMEOUT` overrides it in tests) panics rather than hanging (CONC-001, B3).
 
 ### 9.3 Isolation
 
 - Shared mutable state is not allowed between tasks in the portable core.
 - Messages are copied or serialized.
+- Managed values are deep-copied into the receiving task's heap on `send`; primitives and scalars move by value (CONC-001).
 - Immutable values MAY be shared.
 - `SharedArrayBuffer` is an explicit `web` opt-in.
-- Native tasks use isolated heaps or synchronized message queues.
+- Native tasks use a per-task heap plus a thread-safe immortal heap for interned strings and static descriptors (CONC-001, C2).
 
 ### 9.4 Target mapping
 
 | Target | Mapping |
 |---|---|
-| Native | OS thread pool |
-| Web/JS | Web Workers + `postMessage` |
-| Wasm | Threads when available; worker fallback |
+| Native | OS thread per spawn, bound to the structured scope (A2) |
+| Web/JS | Eager inline in v0.1; Web Workers deferred (recorded gap) |
+| Wasm | Eager inline in v0.1; threads when available are a later slice |
+| Nova | Eager inline (single-threaded interpreter) |
 | Async I/O | Separate I/O runtime |
+
+Decision record (2026-11-01, CONC-001): native threading is OS-thread-per-spawn (A2), blocked channel operations park with a watchdog panic (B3), native tasks use per-task heaps plus an immortal global heap (C2), and cancellation is cooperative at GC safepoints and channel operations (D1). Web Workers are deferred to the recorded gap beside the Wasm slice. Decided; implementation is pending and sequenced last in V1.
 
 ### 9.5 Task results
 

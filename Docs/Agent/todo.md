@@ -97,9 +97,17 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
     PATH) + `astra doctor` + lockfile record — no network.
 11. `[ ]` `TOOLCHAIN-001b` pinned download/verify/unpack (Zig `zig cc`),
     offline-safe, checksum table in-repo.
-12. `[ ]` `CONC-001` — proposal landed (`Docs/Design/CONC-001-proposal.md`,
-    four decision areas); awaiting the user's verdicts. Implementation is the
-    **last** V1 work item.
+12. `[ ]` `CONC-001` - **decided 2026-11-01**. A2 (OS thread per spawn; A1
+    eager fallback for Web/JS/Nova), B3 (park + watchdog panic, 5 s runtime
+    constant, `ASTRA_CHANNEL_DEADLOCK_TIMEOUT` in tests), C2 (per-task heaps +
+    immortal global heap), D1 (cooperative cancellation at GC safepoints and
+    channel operations); `cancel()` on a completed task is an idempotent no-op,
+    `send` copies managed values only, Web Workers deferred as a recorded gap.
+    Verdicts and rationale: `Docs/Design/CONC-001-proposal.md` 10;
+    pending-decisions 5 addendum; spec 9 updated. Implementation is the **last**
+    V1 work item: runtime threads + park/watchdog, per-task heaps, safepoint
+    cancellation, then spec 9.4/9.5 final wording, conformance re-pin of
+    `channels`, and Tier-1 threaded CI.
 13. `[-]` `PLAY-001` — starts after the queue; slice A (wasm bridge) merged as
     `61a5163`.
 
