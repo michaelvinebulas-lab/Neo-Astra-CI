@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inference as structured evidence plus its human-readable rendering. Parse
   errors come back as failed responses, never JSON-RPC errors. Exposed to the
   browser playground through `astra-wasm` (which delegates to `process_json`).
+- C emitter fuzz pass (HARD-001 A): `astra-codegen-c/tests/fuzz_emit.rs` proves
+  that any input which parses, resolves, and type-checks cleanly also emits C
+  without panicking (`BackendError` is a valid outcome; a panic is not).
 - Structural fuzzing pass for the parser (pseudo-random inputs never panic).
 - Structural fuzzing pass for the whole frontend (`fuzz_frontend.rs`): token
   soup and mutants of valid programs must never panic the parser, resolver,

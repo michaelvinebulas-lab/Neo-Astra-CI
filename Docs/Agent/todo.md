@@ -72,8 +72,10 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
    run 49 green): frontend structural fuzzing (`fuzz_frontend.rs`), parser
    nesting limit (64, NS2002, drain-to-EOF), and two fuzz-found parser fixes
    (exponential block-vs-map backtracking; sticky guard drain vs speculation
-   restores). Remaining: panic/OOM-path audit, historical CI failure repros,
-   release tooling half (B).
+   restores). Slice 2: C-emitter fuzz leg (`astra-codegen-c/tests/fuzz_emit.rs`)
+   and the panic/OOM scan — no user-controlled preallocation, reachable
+   invariant `expect`s covered by the two fuzz suites. Remaining: historical CI
+   failure repros and the release tooling half (B).
 5. `[x]` `@export_as` implementation - landed as `c24a358` + `2a169ff` (Tier-1 runs
    44 and 45 green). The parser carries typed `TypeParameter = type` bindings
    (`Attribute.export_as`), the formatter round-trips them, the checker owns
