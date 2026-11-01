@@ -17,6 +17,7 @@ or frozen history (`Docs/archive/`).
 |---|---|
 | `Docs/spec-v0.1.md` | Normative language contract. No status, no queue. |
 | `Docs/state.md` | This file: status, queue, decisions, short log. |
+| `Docs/roadmap.md` | What is built, what comes next, and the versioning scheme. |
 | `Docs/Report/Task.md` | Active work order (lead to Kilo). Pruned each round. |
 | `Docs/release-checklist.md` | Steps for a release. |
 | `Docs/syntax-legend.md` | Plain-language syntax reference. |
