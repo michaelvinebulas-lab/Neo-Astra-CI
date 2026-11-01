@@ -269,7 +269,7 @@ later, and Java only after a JVM backend exists.
 
 It extends the foreign-module model; it does not replace `foreign module`,
 manifest FFI mappings, or NoPM packages. See
-[`../Design/V1/10-inline-script-interop.md`](../Design/V1/10-inline-script-interop.md).
+[`../archive/Design/V1/10-inline-script-interop.md`](../archive/Design/V1/10-inline-script-interop.md).
 
 ### Tree-shaking
 
@@ -414,7 +414,7 @@ These are known design tensions, not unresolved decisions. Do not “fix” them
 8. **“Any ecosystem” means any adapter** — a package must still have target-compatible bindings; fail early instead of pretending otherwise.
 9. **The universal registry is optional for local development** — NoPM must work against upstream registries without it.
 10. **Cross-module checking is end-to-end in the API, not yet in Nova execution** — `astra-core` checks module graphs, and `astra-compiler-api` exposes the additive `check_project` method with per-module diagnostics and `moduleOrder`. `@neo-astra/compiler-client` exposes `checkProject()`. Nova's interpreter is still single-module, so use `check_project` for project checking and wait for `NOVA-003` for multi-module execution.
-11. **Unwired modules are invisible** — a file in `src/` that is not declared in `lib.rs` (or `mod.rs`) is never compiled, so CI cannot catch it and it can rot indefinitely. Every source module must be reachable at all times; interrupted work must be marked `[~]` and logged in `state-log.md`.
+11. **Unwired modules are invisible** — a file in `src/` that is not declared in `lib.rs` (or `mod.rs`) is never compiled, so CI cannot catch it and it can rot indefinitely. Every source module must be reachable at all times; interrupted work must be marked `[~]` and logged in `../state.md`.
 
 ---
 
@@ -422,9 +422,9 @@ These are known design tensions, not unresolved decisions. Do not “fix” them
 
 As of 2026-10-25:
 
-- `Docs/architecture.md` is the main architecture and decision record.
+- `Docs/state.md` is the decision index and current status; `Docs/archive/architecture.md` holds the historical record.
 - `Docs/Agent/` is the agent operating system.
-- `Docs/Design/V1/` is the V1 design baseline: language, compiler, runtime, targets, manifest/packages, tooling, delivery, and Nova/NoPM.
+- `Docs/archive/Design/V1/` is the frozen V1 design baseline: language, compiler, runtime, targets, manifest/packages, tooling, delivery, and Nova/NoPM.
 - `Docs/spec-v0.1.md` is the normative v0.1 language specification.
 - `orchestrator/` contains the TypeScript orchestrator scaffold and npm workspace.
 - `crates/` contains the Rust core, capabilities, JSON-RPC protocol, raw Wasm boundary, and backend scaffolds.
@@ -434,7 +434,7 @@ As of 2026-10-25:
 - The lexer, parser, AST, formatter, resolver, module export surfaces, symbol tables, type checker, and cross-module type surfaces (`TYPE-003`) are implemented in `astra-core`, including `//` comment trivia and expression type annotations.
 - `@neo-astra/compiler-client` speaks JSON-RPC to the native compiler; it exposes single-source `check()` and multi-source `checkProject()`, and `astra fmt` formats files and directories and supports `--check`.
 - Manifest formatting (`FMT-004`), the resolver (`TYPE-001`), the type checker (`TYPE-002`), cross-module type surfaces (`TYPE-003`), the multi-source compiler API (`TYPE-004`), the typed-HIR interpreter (`NOVA-001`), the Nova CLI (`NOVA-002`), and the complete NoPM stack (`NOPM-001`–`NOPM-004`) are implemented.
-- Nova and NoPM are designed in `Docs/Design/V1/08-nova-and-nopm.md`; production backends and Nova module loading/linking (`NOVA-003`) are next.
+- Nova and NoPM are designed in `Docs/archive/Design/V1/08-nova-and-nopm.md`; production backends and Nova module loading/linking (`NOVA-003`) are next.
 - The workspace is not a git repository.
 
 ---

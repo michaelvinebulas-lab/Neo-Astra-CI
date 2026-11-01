@@ -28,9 +28,9 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 
 ### Steps
 
-1. Read `state-log.md`.
-2. Read `todo.md`.
-3. Read the relevant section of `../architecture.md`.
+1. Read `../state.md`.
+2. Read `../state.md`.
+3. Read the relevant section of `../archive/architecture.md`.
 4. List the files that exist.
 5. Identify the current phase.
 6. Identify blockers.
@@ -39,7 +39,7 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 ### Gate
 
 - The current phase is known.
-- The selected task is in `todo.md`.
+- The selected task is in `../state.md`.
 - No unresolved blocker prevents the task.
 
 ---
@@ -50,7 +50,7 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 
 ### Output
 
-- D1–D25 confirmed in `../architecture.md`.
+- D1–D25 confirmed in `../archive/architecture.md`.
 - Naming normalized to Neo Astra, `.ns`, `astra`.
 - Manifest, memory, mode, error, concurrency, FFI, package, and compiler decisions recorded.
 
@@ -146,7 +146,7 @@ Do not reopen a decision unless the user explicitly asks. If a new requirement c
 - No section contradicts another.
 - Every syntax example is plausible.
 - Every semantic rule has a test plan.
-- `state-log.md` records completion.
+- `../state.md` records completion.
 
 ---
 
@@ -476,8 +476,8 @@ Read state
 
 ### Start of session
 
-- [ ] Read `state-log.md`
-- [ ] Read `todo.md`
+- [ ] Read `../state.md`
+- [ ] Read `../state.md`
 - [ ] Read the relevant architecture section
 - [ ] Confirm the current phase
 - [ ] Select one task

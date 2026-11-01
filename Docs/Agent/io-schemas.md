@@ -39,7 +39,7 @@ Used when the user or a planner assigns work.
     "Implementing the compiler"
   ],
   "inputs": [
-    "docs/architecture.md",
+    "docs/archive/architecture.md",
     "docs/Agent/project-context-glossary.md"
   ],
   "acceptance": [
@@ -98,7 +98,7 @@ Used when a new architectural decision is proposed or confirmed.
 - `rejected`
 - `superseded`
 
-A decision is not confirmed until it is recorded in `../architecture.md`.
+A decision is not confirmed until it is recorded in the `../state.md` Decisions table.
 
 ---
 
@@ -169,7 +169,7 @@ Used inside change reports and the state log.
 
 ## 6. State update
 
-Used to update `state-log.md` without rewriting the whole history.
+Used to update `../state.md` without rewriting the whole history.
 
 ```json
 {
@@ -192,7 +192,7 @@ Used to update `state-log.md` without rewriting the whole history.
 
 ## 7. Todo item
 
-Used in `todo.md` or a machine-readable task file.
+Used in `../state.md` or a machine-readable task file.
 
 ```json
 {
@@ -360,5 +360,5 @@ A record is invalid if:
 - A path is absolute or escapes the repository, unless explicitly about the environment.
 - A verification result is `pass` without evidence.
 - A task is `done` while its DoD is incomplete.
-- A decision is `confirmed` but absent from `../architecture.md`.
+- A decision is `confirmed` but absent from the `../state.md` Decisions table.
 - A secret or credential appears anywhere.

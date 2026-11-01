@@ -14,7 +14,7 @@
 //!
 //! The first slice supports the portable managed subset; unsupported features
 //! are rejected with stable `NS80xx` diagnostics instead of emitting
-//! incorrect C. See `C-001` in `Docs/Agent/todo.md` for the supported scope and
+//! incorrect C. See `C-001` in `Docs/archive/Agent/todo.md` for the supported scope and
 //! boundaries.
 
 mod emit;
@@ -155,7 +155,7 @@ pub fn generate_project(entries: &[ProjectEntry]) -> Result<Vec<GeneratedC>, Bac
 /// Emits a multi-module project for the requested artifact kind.
 ///
 /// [`EmitKind::Library`] suppresses the `int main(void)` wrapper so the output
-/// can be archived or linked into a shared library. See `Docs/Design/V1/11-c-abi.md`.
+/// can be archived or linked into a shared library. See `Docs/archive/Design/V1/11-c-abi.md`.
 pub fn generate_project_with_kind(
     entries: &[ProjectEntry],
     kind: EmitKind,

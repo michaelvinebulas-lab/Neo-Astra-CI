@@ -7,8 +7,8 @@ targets. Source files use `.ns`; the CLI is `astra`.
 
 - [`Docs/spec-v0.1.md`](Docs/spec-v0.1.md) — normative v0.1 language contract
 - [`Docs/syntax-legend.md`](Docs/syntax-legend.md) — plain-language syntax and operator reference
-- [`Docs/architecture.md`](Docs/architecture.md) — confirmed decisions D1-D25
-- [`Docs/Design/V1/`](Docs/Design/V1/) — V1 design baseline, including Nova and NoPM
+- [`Docs/state.md`](Docs/state.md) — status, queue, and decisions
+- [`Docs/archive/`](Docs/archive/) — frozen history: design baseline, proposals, earlier status docs
 - [`Docs/Agent/`](Docs/Agent/) — agent operating system
 - [`orchestrator/`](orchestrator/) — TypeScript CLI, manifest, LSP, plugin, and codegen workspace
 - [`crates/`](crates/) — Rust compiler core, capabilities, protocol, and backend boundaries
@@ -57,4 +57,4 @@ re-exports, and inline `@script:js` blocks emitted as real ESM modules with
 boundary validation, error mapping, arbitrary-precision integer semantics, and
 `.d.ts` artifacts. Channels and a scheduler, TypeScript generation,
 TypeScript-target script emission, and the C/C++ script slice remain staged. Inline interop is
-specified in `Docs/Design/V1/10-inline-script-interop.md`.
+specified in `Docs/archive/Design/V1/10-inline-script-interop.md`.

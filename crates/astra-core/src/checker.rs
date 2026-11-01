@@ -3044,7 +3044,7 @@ impl<'a> Checker<'a> {
             // that grants system capability. The scope rule in spec 8.4 names
             // only `Memory.alloc`, so `Region.new` carries the mode gate
             // alone; whether it should also require an `@memory:manual` scope
-            // is recorded as a design question in Docs/Agent/todo.md.
+            // is recorded as a design question in Docs/archive/Agent/todo.md.
             if name == "Region" && member == "new" && self.resolve_struct(name).is_none() {
                 if !self.mode.allows(Mode::System) {
                     self.error(
@@ -6437,7 +6437,7 @@ pub fn main() -> i32 {
         // Spec 8.4's Region surface: one fixed block carved bump-style. The
         // scope rule names only `Memory.alloc`, so Region use needs system
         // mode but no `@memory:manual` block - that boundary is deliberate,
-        // not an oversight (see the NS6001 entry in Docs/Agent/todo.md).
+        // not an oversight (see the NS6001 entry in Docs/archive/Agent/todo.md).
         let source = r#"
 pub fn main() -> i32 {
     let region = Region.new(64)

@@ -12,8 +12,8 @@
 
 **Normative references:**
 
-- [`architecture.md`](./architecture.md)
-- [`Design/V1/README.md`](./Design/V1/README.md)
+- [`architecture.md`](./archive/architecture.md)
+- [`archive/Design/V1/README.md`](./archive/Design/V1/README.md)
 - [`Agent/definition-of-done.md`](./Agent/definition-of-done.md)
 
 **Quick reference:** [`syntax-legend.md`](./syntax-legend.md)
@@ -1977,7 +1977,7 @@ composites built only from pointer-free types are allowed.
 ### 14.10 FFI diagnostics
 
 The `NS7xxx` range (§14.3) covers FFI. The `@script` block diagnostics are
-`NS7001`–`NS7008` (see `Design/V1/10-inline-script-interop.md` §6). The
+`NS7001`–`NS7008` (see `archive/Design/V1/10-inline-script-interop.md` §6). The
 generic instantiation export diagnostics (§11.5) are:
 
 | Code | Meaning |
@@ -2051,7 +2051,7 @@ tests/conformance/<area>/<case>/
 
 ### 15.3 Target requirements
 
-Target tiers are defined in [`Design/V1/README.md`](./Design/V1/README.md).
+Target tiers are defined in [`archive/Design/V1/README.md`](./archive/Design/V1/README.md).
 
 - Tier 1 targets MUST pass all portable cases.
 - Tier 2 targets MUST pass their documented subset.
@@ -2169,7 +2169,7 @@ The following choices are normative for v0.1 but should be reviewed before V1 fr
 19. Whether package-root exports are declared in the manifest or inferred from the entry module.
 20. Whether `export *` should remain portable or be restricted on some targets.
 21. Whether type-only imports and exports need explicit `import type`/`export type` syntax.
-22. Whether declaration-level inline `@script` blocks should be part of the language, and how their raw-body terminator, typed export surface, and target matrix are defined. The current proposal is [`Design/V1/10-inline-script-interop.md`](./Design/V1/10-inline-script-interop.md).
+22. Whether declaration-level inline `@script` blocks should be part of the language, and how their raw-body terminator, typed export surface, and target matrix are defined. The current proposal is [`archive/Design/V1/10-inline-script-interop.md`](./archive/Design/V1/10-inline-script-interop.md).
 
 ---
 
@@ -2295,11 +2295,11 @@ This specification is normative for v0.1.
 Changes follow this order:
 
 1. Identify affected confirmed decisions.
-2. If a confirmed decision must change, update `architecture.md` first.
+2. If a confirmed decision must change, update the Decisions table in `state.md` first.
 3. Update this specification.
 4. Update the V1 design if the change affects it.
 5. Add or update conformance cases.
-6. Record the change in `Agent/state-log.md`.
+6. Record it in `state.md` (a Decisions row and a Log row).
 
 A change that exists only in source code is not a language change.
 
@@ -2333,9 +2333,9 @@ A change that exists only in source code is not a language change.
 | D22 | Keyword aliases with canonical formatting | §1.6, §3.1–§3.7 |
 | D23 | Declaration visibility, imports, exports, and canonical ESM mapping | §3.15, §3.16, §16.3 |
 | D24 | Semicolon soft separators and scope-header separators | §1.4, §2.2, §3.1, §3.7, §3.14 |
-| D25 | Nova development interpreter and NoPM universal packages; production stays compiled | §16.1, `Docs/Design/V1/08-nova-and-nopm.md` |
+| D25 | Nova development interpreter and NoPM universal packages; production stays compiled | §16.1, `Docs/archive/Design/V1/08-nova-and-nopm.md` |
 
-D3, D4, and D19 are architecture-level decisions. This document consumes their consequences but does not replace the compiler design in `Docs/Design/V1/02-compiler-design.md`. D25 is a tooling/runtime decision; it does not change the language contract.
+D3, D4, and D19 are architecture-level decisions. This document consumes their consequences but does not replace the compiler design in `Docs/archive/Design/V1/02-compiler-design.md`. D25 is a tooling/runtime decision; it does not change the language contract.
 
 ### 20.1 Review result
 

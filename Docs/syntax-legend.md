@@ -630,7 +630,7 @@ FFI is unsafe by default. Panics must not cross an FFI boundary silently.
 
 > **Proposed V1 syntax, not part of v0.1:** inline `@script` blocks let a `.ns`
 > file contain a bounded foreign implementation with a typed export surface. See
-> [`Design/V1/10-inline-script-interop.md`](./Design/V1/10-inline-script-interop.md).
+> [`archive/Design/V1/10-inline-script-interop.md`](./archive/Design/V1/10-inline-script-interop.md).
 > The block is not accepted by the current parser.
 
 ---
@@ -714,6 +714,6 @@ export default parse_age
 ## 16. Normative references
 
 - [`spec-v0.1.md`](./spec-v0.1.md) — language contract
-- [`architecture.md`](./architecture.md) — decisions D1–D25
-- [`Design/V1/01-language-design.md`](./Design/V1/01-language-design.md) — V1 language surface
+- [`archive/architecture.md`](./archive/architecture.md) — decisions D1–D25
+- [`archive/Design/V1/01-language-design.md`](./archive/Design/V1/01-language-design.md) — V1 language surface
 - [`Agent/project-context-glossary.md`](./Agent/project-context-glossary.md) — terminology

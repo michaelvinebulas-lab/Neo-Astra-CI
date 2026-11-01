@@ -5,7 +5,7 @@
 //! the same shared frontend that Nova and the JS backend consume, satisfying the
 //! backend DoD ("consumes the shared IR, not a private parser").
 //!
-//! Supported first slice (see `C-001` in `Docs/Agent/todo.md`): the portable
+//! Supported first slice (see `C-001` in `Docs/archive/Agent/todo.md`): the portable
 //! managed subset — typed functions, primitives, let bindings, arithmetic with
 //! explicit signed wrapping, control flow, print/println/assert, strings,
 //! named and tuple structs, enums with payload variants, `Option`/`Result`,

@@ -34,7 +34,7 @@ are green, write your REPORT in the same block and set Status to
 
 ## What and why
 
-The user decided (2026-10-31, `Docs/Design/pending-decisions.md` item 4):
+The user decided (2026-10-31, `Docs/archive/Design/pending-decisions.md` item 4):
 the first `@script:c` foreign-frame boundary that passes managed values into
 a foreign frame must emit the approved FFI root-registration triple, and the
 `11-c-abi.md` §7 verification list gains the boundary-rooting test with it.
@@ -322,7 +322,7 @@ be flagged at the outermost instantiation site. Add the two-hop regression test
 
 - Task.md's +"## Kilo log"+ was never filled in. Write it (Answer + Report) at
   handback — it is the record.
-- +"Docs/Agent/state-log.md"+ "Next action" was rewritten with an unverified
+- +"Docs/state.md"+ "Next action" was rewritten with an unverified
   claim ("V1 queue complete"). The lead reverts it at integration; **do not
   edit +"Docs/**"+**.
 
@@ -357,7 +357,7 @@ be flagged at the outermost instantiation site. Add the two-hop regression test
 
 ## D26 — two-manifest split (`core.*` + `build.*`)
 
-Read `Docs/Agent/nopm-cli-track.md` → `T-D26` and spec §12 (rewritten by the
+Read `Docs/archive/Agent/nopm-cli-track.md` → `T-D26` and spec §12 (rewritten by the
 lead). This is the implementation of D26; no design left open.
 
 **Deliverables**
@@ -584,7 +584,7 @@ When F2, F3, F4, F9 are green: re-run the gate, append
 
 ## TASK-003 - NOPM-005 `nopm add` / `nopm remove`
 
-Full definition: `Docs/Agent/nopm-cli-track.md` T-NOPM-005. Start after the
+Full definition: `Docs/archive/Agent/nopm-cli-track.md` T-NOPM-005. Start after the
 TASK-002 fixes; keep everything in `orchestrator/**`.
 
 - `manifest` package: comment-preserving edit API (`addDependency`,
