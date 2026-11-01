@@ -21,7 +21,7 @@ not invent â€” mark questions instead.
 - Before handback Kilo runs `cargo fmt --all` and the full gate
   (`npm run ci`) locally, green, and reports the output tail.
 
-## Status: DONE — lead (TASK-002)
+## Status: DONE ï¿½ lead (TASK-002)
 
 Read TASK-001 below, write your `## Kilo log` entry (understanding, approach,
 questions â€” or "no questions, proceeding"), then code. When tests and gate
@@ -405,7 +405,7 @@ more state-changing subexpressions in a target-native-order position â€” binary
 operands, array-literal elements, struct-initializer fields, map-literal
 entries â€” is rejected with a diagnostic that tells the developer to hoist the
 calls into named bindings. Call arguments are exempt (they are ordered).
-## Kilo log — TASK-002 — 2026-10-31
+## Kilo log ï¿½ TASK-002 ï¿½ 2026-10-31
 ### Answer
 - Understanding: D26 two-manifest split: core.* required, build.* optional, per-file key validation, defaults, canonical formatting.
 - Approach: manifest package gained findCoreManifest/findBuildManifest/findManifests/loadCoreManifest/loadBuildManifest/loadProjectManifests/applyBuildDefaults/validateManifestKeys and BUILD_MANIFEST_NAMES; ManifestFile gained kind. CLI build path merges core+build with defaults fallback. nopm unchanged (core-only).
@@ -413,6 +413,71 @@ calls into named bindings. Call arguments are exempt (they are ordered).
 - Proceeding: yes
 ### Report
 - Files changed: orchestrator/packages/manifest/src/index.ts, orchestrator/packages/cli/src/index.ts.
-- Gate: pass — npm run ci EXIT=0.
+- Gate: pass ï¿½ npm run ci EXIT=0.
 - Deviations: validation is lenient in parseManifestSource (validateManifestKeys exported for diagnostic); fixture migration deferred (lead's acceptance tests may use validateManifestKeys).
 - Self-review: manifest + cli build green; boundary tests green.
+---
+
+# TASK-002 review (lead) - 2026-10-31 - status: FIXES REQUIRED (F1-F5)
+
+Read the diff first, then the gate. The shape is right: `CORE_MANIFEST_NAMES` /
+`BUILD_MANIFEST_NAMES`, `kind: "core" | "build"` on `ManifestFile`,
+`findCoreManifest` / `findBuildManifest` / `findManifests` /
+`loadProjectManifests`, `CORE_KEYS` / `BUILD_KEYS` matching spec12.2, and
+`BUILD_DEFAULTS` matching the documented defaults exactly. Five things block
+landing.
+
+- **F1 (blocking) - wrong-file rejection is never wired.** `validateManifestKeys`
+  is exported and correct, but nothing calls it: not `loadCoreManifest` /
+  `loadBuildManifest`, not `runBuild`, not `runCheck`. Spec12.1: "A key placed in
+  the wrong file MUST be rejected" and "`astra check` MUST validate both
+  manifests before building". Today `astra build` on a `core.json` containing
+  `build` / `targets` / `nova` succeeds silently, and a `build.json` containing
+  `package` is silently ignored. Call it for both manifests in the load path (or
+  immediately after `loadProjectManifests` in `runBuild`, and in `runCheck` for
+  both files) so the diagnostic cannot be skipped.
+- **F2 (blocking) - the fallback re-introduces the dual-read D26 forbade.**
+  `applyBuildDefaults(buildDoc !== undefined ? buildDoc.data : coreData)` reads
+  `build` / `targets` / `nova` / `math` out of `core.json` whenever `build.json`
+  is absent - that is exactly the single-manifest behaviour the clean break
+  removed. It should be `applyBuildDefaults(buildDoc?.data ?? {})` (defaults fill
+  the absence; a build key in `core.json` is F1's diagnostic, never input). The
+  same reasoning applies to any other command that reads build-ish keys.
+- **F3 (blocking) - `toolchain` is missing from `ROOT_ORDER`.** It is in
+  `BUILD_KEYS`, so a `build.*` file with `toolchain` formats with the key in
+  unknown-key placement, which is not canonical (spec12.1: "Each manifest MUST be
+  canonically formattable"). Add it, and prefer splitting the top-level order
+  per `kind` so `build.*` prints in spec12.2 order: build, targets, nova, math,
+  strings, memory, toolchain (core: package, dependencies, packageSources,
+  registry, ffi, capabilities).
+- **F4 (blocking) - the acceptance criteria have no tests yet.** Needed: (1) a
+  rejection test in both directions (build key in `core.json` -> NS9002 naming
+  `build.json`; core key in `build.json` -> NS9002 naming `core.json`), at the
+  CLI level (`astra build` / `astra check` exit 1 with the code and message);
+  (2) a test that an absent `build.*` produces exactly the documented defaults
+  end-to-end; (3) the explicitly required `astra fmt` idempotency test on a
+  `build.toml` **with `#` comments**; (4) a `build.toml` parse/format case (only
+  JSON is covered). Also: the canonical-order test was *repurposed* from
+  `core.json` to `build.json` - add a `build.json` test and put a `core.json`
+  canonical-order test back, so the core path keeps its coverage.
+- **F5 (deviation accepted, with a note)** - fixture migration deferred. I
+  measured it: no fixture actually puts build keys in a core manifest today (the
+  one `targets` hit in `stress_nopm.test.mjs` is a **lockfile** fixture, where
+  `targets` is a lockfile key), so deferring is safe *for the current suite*.
+  But F1 needs its own fixtures, and any future manifest with build keys in
+  `core.json` must fail loudly, so migrate when you add those tests.
+
+Minor notes, no action required unless you disagree:
+
+- `applyBuildDefaults` merges shallowly: a top-level key present in `build.json`
+  replaces its default wholesale. Fine at the current default depth - state it in
+  the `loadProjectManifests` doc comment so it is not a surprise later.
+- `BUILD_DEFAULTS` omits `strings` / `memory` (spec12.2 shows them as `{}`);
+  harmless because the readers use `isRecord`, but include them for symmetry.
+- `findManifest` / `loadManifest` / `MANIFEST_NAMES` kept as core aliases - good,
+  that is source compatibility, not manifest dual-read.
+
+The lead re-ran the gate over your tree (it was green here too, `npm run ci`
+EXIT=0) and confirmed your file list; the fixes are orchestrator-only, still in
+your area. Fix, re-run the gate, and append a `## Kilo log - (fixes)` entry with
+what changed and the gate tail. Do not commit; the lead commits after review.
