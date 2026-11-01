@@ -12,9 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Normative left-to-right call-argument evaluation order (D27; spec §3.10). Other expression positions - binary operands, array elements, struct fields, map entries - are target-native and carry no portability guarantee; the system-mode side-effect rejection pass is specced and queued.
 - Hybrid `NS6002` micro-pass: generic forwarding of managed element types into
   manual allocation is now rejected at instantiation sites.
-- `@export_as("name", T = type)` attribute for exporting concrete
-  instantiations of generic functions across the C ABI (spec §11.5, specced,
-  not yet implemented).
+- `@export_as("symbol", T = type)` instantiation exports (spec 11.5): the
+  parser and formatter carry typed bindings, the checker gates them with
+  `NS7010`-`NS7013`, and the C backend emits each listed instantiation as an
+  externally visible function under exactly the author-chosen symbol (also
+  prototyped in the module header).
 - Structural fuzzing pass for the parser (pseudo-random inputs never panic).
 
 ### Changed

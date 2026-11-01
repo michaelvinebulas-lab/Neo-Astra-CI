@@ -1592,9 +1592,9 @@ export fn identity<T>(value: T) -> T {
     return value
 }
 
-@export_as("ns_demo_pair_i32_str", A = i32, B = str)
-export fn pair<A, B>(a: A, b: B) -> (A, B) {
-    return (a, b)
+@export_as("ns_demo_first_i32_str", A = i32, B = str)
+export fn first<A, B>(a: A, b: B) -> A {
+    return a
 }
 ```
 
@@ -1607,7 +1607,8 @@ Rules:
   function, is `NS7010`.
 - The first argument is a string literal naming the exported C symbol. It is
   used verbatim (the compiler does not mangle it) and MUST be a valid C
-  identifier, unique within the artifact. A collision is `NS7013`.
+  identifier, unique within the artifact. An invalid identifier, or a
+  collision with another `@export_as` symbol, is `NS7013`.
 - The remaining arguments are `TypeParameter = type` bindings. Every type
   parameter of the declaration MUST be bound exactly once, in any order; a
   missing, extra, or duplicated binding is `NS7011`.
@@ -1976,7 +1977,7 @@ generic instantiation export diagnostics (§11.5) are:
 | `NS7010` | `@export_as` on a non-generic or non-exported function |
 | `NS7011` | `@export_as` binding list does not bind every type parameter exactly once |
 | `NS7012` | `@export_as` bound type is not C-boundary-safe |
-| `NS7013` | duplicate `@export_as` symbol or instantiation |
+| `NS7013` | `@export_as` symbol is not a valid C identifier, or duplicates another symbol or instantiation |
 
 ---
 

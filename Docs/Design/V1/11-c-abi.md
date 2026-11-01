@@ -97,6 +97,11 @@ consumers treat it as the author-declared entry point rather than reconstructing
 it from a mangling scheme. The refusal above stays in force for any generic
 function that carries no `@export_as` attribute.
 
+Landing status: implemented for the C backend. The checker owns `NS7010`-`NS7013`
+(including module-wide symbol uniqueness); each exported instantiation is emitted,
+and prototyped in the module header, under the author-chosen symbol, and a hosted
+test links a hand-written C consumer against the emitted symbol.
+
 ---
 
 ## 4. Value layouts

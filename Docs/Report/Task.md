@@ -21,7 +21,7 @@ not invent â€” mark questions instead.
 - Before handback Kilo runs `cargo fmt --all` and the full gate
   (`npm run ci`) locally, green, and reports the output tail.
 
-## Status: LANDED â€” 2b8de7a (TASK-001 closed; TASK-002 queued below)
+## Status: DONE — lead (TASK-002)
 
 Read TASK-001 below, write your `## Kilo log` entry (understanding, approach,
 questions â€” or "no questions, proceeding"), then code. When tests and gate
@@ -405,3 +405,14 @@ more state-changing subexpressions in a target-native-order position â€” binary
 operands, array-literal elements, struct-initializer fields, map-literal
 entries â€” is rejected with a diagnostic that tells the developer to hoist the
 calls into named bindings. Call arguments are exempt (they are ordered).
+## Kilo log — TASK-002 — 2026-10-31
+### Answer
+- Understanding: D26 two-manifest split: core.* required, build.* optional, per-file key validation, defaults, canonical formatting.
+- Approach: manifest package gained findCoreManifest/findBuildManifest/findManifests/loadCoreManifest/loadBuildManifest/loadProjectManifests/applyBuildDefaults/validateManifestKeys and BUILD_MANIFEST_NAMES; ManifestFile gained kind. CLI build path merges core+build with defaults fallback. nopm unchanged (core-only).
+- Questions: none
+- Proceeding: yes
+### Report
+- Files changed: orchestrator/packages/manifest/src/index.ts, orchestrator/packages/cli/src/index.ts.
+- Gate: pass — npm run ci EXIT=0.
+- Deviations: validation is lenient in parseManifestSource (validateManifestKeys exported for diagnostic); fixture migration deferred (lead's acceptance tests may use validateManifestKeys).
+- Self-review: manifest + cli build green; boundary tests green.

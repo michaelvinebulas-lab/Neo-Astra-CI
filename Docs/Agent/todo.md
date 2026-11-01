@@ -72,9 +72,18 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
    test (needs the F7 fix), CHANGELOG, release checklist. Remaining: full
    fuzzing pass (panic/OOM audit, historical CI failure repros) + release
    tooling.
-5. `[ ]` `@export_as` implementation — surface decided (P2); spec §11.5 and
-   `11-c-abi.md` §3 written by the lead; checker (`NS7010`–`NS7013`),
-   parser/formatter, C emission of the named instance symbols, consumer test.
+5. `[x]` `@export_as` implementation - landed as `c24a358` + `2a169ff` (Tier-1 runs
+   44 and 45 green). The parser carries typed `TypeParameter = type` bindings
+   (`Attribute.export_as`), the formatter round-trips them, the checker owns
+   `NS7010` (target rules), `NS7011` (exact binding coverage), `NS7012`
+   (C-boundary safety), and `NS7013` (invalid identifier, module-wide symbol
+   reuse, repeated instantiation). The C backend registers each listed
+   instantiation under the author symbol, drains it through normal
+   monomorphization, and prototypes it in the module header; a hosted consumer
+   calls `ns_demo_identity_i32`. Three reject cases in the corpus. Known V1
+   limitation: a binding to a generic struct (e.g. `Box<i32>`) is rejected
+   because the boundary predicate does not substitute struct type arguments -
+   non-generic structs, enums, slices, arrays, and `Option` are supported.
 6. `[x]` System-mode side-effect detection pass (P1) — landed as `2adaab6`
    (`NS5007`): rejects two or more state-changing calls in target-native
    positions with a hoist hint; call arguments exempt; corpus case + spec row.
