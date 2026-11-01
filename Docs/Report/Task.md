@@ -600,3 +600,19 @@ TASK-002 fixes; keep everything in `orchestrator/**`.
   correct lockfile diff and populated store; `--dry-run` writes nothing.
 - Do not touch the root `package.json` test script - the lead is adding
   `codegen-js.test.mjs` to the gate when D26 lands.
+
+## Lead note - compiler API `ast` / `explain` landed (PLAY-001 prerequisite)
+
+The JSON-RPC methods the playground needed are now implemented (lead, in
+`crates/astra-compiler-api`): `ast` returns the parsed surface tree, `explain`
+returns the serialized mode inference (requiredMode, capabilities, per-reason
+evidence) plus its human-readable rendering. Parse errors are `ok:false`
+responses with diagnostics, like `check`/`format` - not JSON-RPC errors. The
+`astra-wasm` entrypoint delegates to `process_json`, so the browser build gets
+both for free.
+
+One small orchestrator gap is yours: `orchestrator/packages/cli` still routes
+`astra ast` and `astra explain` to `runNotImplemented`. Wire them to the
+compiler client when convenient (after the TASK-002 fixes; it is not urgent
+because the playground calls the API directly). Do not start PLAY-001 itself -
+it stays queued last per decision 7b.

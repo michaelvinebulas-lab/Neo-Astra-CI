@@ -1516,7 +1516,7 @@ by a production native target.
 
 ## PLAY-001 — Browser playground
 
-**Status:** Not started, queued last (decision 7b: starts once the V1 queue clears). Backlog entry expanded into a runnable plan; slice A (the wasm bridge) already merged from `work/play-001-a` as `61a5163` (decision 7a, executed 2026-10-31). No design decision blocks it, but two API methods it needs (`ast`, `explain`) are still stubs.
+**Status:** Not started, queued last (decision 7b: starts once the V1 queue clears). Backlog entry expanded into a runnable plan; slice A (the wasm bridge) already merged from `work/play-001-a` as `61a5163` (decision 7a, executed 2026-10-31). The two API methods it needed (`ast`, `explain`) are now implemented in `astra-compiler-api`; the remaining gap is the CLI wiring (`astra ast` / `astra explain` are still `runNotImplemented` stubs in `orchestrator/packages/cli`).
 
 **Goal**
 
@@ -1534,7 +1534,7 @@ This follows the existing split in `Docs/architecture.md` §7.5; it does not int
 
 **Prerequisite gaps found while expanding**
 
-- `astra-compiler-api` advertises `ast` and `explain` but returns an error for both; `astra explain` is also a CLI stub. Slice C must either implement them or show the typed-module/metadata view instead, and the task cannot be marked done while the UI promises a method that fails.
+- ~~`astra-compiler-api` advertises `ast` and `explain` but returns an error for both~~ - **implemented** (lead slice, 2026-11-01): `ast` returns the parsed surface tree and `explain` returns the mode inference evidence plus rendering; parse errors are failed responses, not JSON-RPC errors. The `astra ast` / `astra explain` CLI commands remain `runNotImplemented` stubs (orchestrator work) and are the only CLI-side gap.
 - `check_project` and multi-source `compile` exist, so multi-module samples are possible, but in-browser module resolution and ESM URL mapping still need to be built.
 
 **Scope slices**

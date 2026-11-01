@@ -24,6 +24,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   panic; native tasks get per-task heaps plus a thread-safe immortal heap;
   cancellation is cooperative at GC safepoints and channel operations. Spec
   9 updated; implementation is the last V1 item.
+- Compiler API `ast` and `explain` (both were advertised and stubbed): `ast`
+  returns the parsed surface tree, `explain` returns the least-privileged mode
+  inference as structured evidence plus its human-readable rendering. Parse
+  errors come back as failed responses, never JSON-RPC errors. Exposed to the
+  browser playground through `astra-wasm` (which delegates to `process_json`).
 - Structural fuzzing pass for the parser (pseudo-random inputs never panic).
 - Structural fuzzing pass for the whole frontend (`fuzz_frontend.rs`): token
   soup and mutants of valid programs must never panic the parser, resolver,

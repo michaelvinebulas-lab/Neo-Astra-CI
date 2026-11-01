@@ -179,6 +179,84 @@ impl FormatResponse {
     }
 }
 
+/// A parsed surface-AST result returned inside a JSON-RPC response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AstResponse {
+    pub api_version: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ast: Option<astra_core::ast::Module>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl AstResponse {
+    /// Creates a successful AST response.
+    #[must_use]
+    pub fn success(ast: astra_core::ast::Module) -> Self {
+        Self {
+            api_version: API_VERSION.to_owned(),
+            ok: true,
+            ast: Some(ast),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// Creates a failed AST response.
+    #[must_use]
+    pub fn failure(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            ast: None,
+            diagnostics,
+        }
+    }
+}
+
+/// A mode-inference explanation returned inside a JSON-RPC response.
+///
+/// `explanation` is the human-readable rendering of the structured `inference`
+/// payload, so both machine and display consumers read the same evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExplainResponse {
+    pub api_version: String,
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference: Option<ModeInference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl ExplainResponse {
+    /// Creates a successful explanation response.
+    #[must_use]
+    pub fn success(inference: ModeInference) -> Self {
+        let explanation = inference.explain();
+        Self {
+            api_version: API_VERSION.to_owned(),
+            ok: true,
+            inference: Some(inference),
+            explanation: Some(explanation),
+            diagnostics: Vec::new(),
+        }
+    }
+
+    /// Creates a failed explanation response.
+    #[must_use]
+    pub fn failure(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            inference: None,
+            explanation: None,
+            diagnostics,
+        }
+    }
+}
+
 /// Derives a stem name from a source path for output file naming
 /// (e.g. `"src/app/main.ns"` → `"main"`).
 fn module_stem(path: &str) -> &str {
@@ -1060,15 +1138,45 @@ pub fn process_json(input: &str) -> String {
             Err(message) => JsonRpcResponse::error(request.id, -32602, message),
         },
         "shutdown" => JsonRpcResponse::success(request.id, Value::Null),
-        "ast" | "explain" => JsonRpcResponse::error(
-            request.id,
-            -32000,
-            format!("{} is not implemented in the scaffold.", request.method),
-        ),
+        "ast" => match parse_compile_request(request.params) {
+            Ok(compile_request) => JsonRpcResponse::success(
+                request.id,
+                serde_json::to_value(ast_for_request(&compile_request)).unwrap_or(Value::Null),
+            ),
+            Err(message) => JsonRpcResponse::error(request.id, -32602, message),
+        },
+        "explain" => match parse_compile_request(request.params) {
+            Ok(compile_request) => JsonRpcResponse::success(
+                request.id,
+                serde_json::to_value(explain_for_request(&compile_request)).unwrap_or(Value::Null),
+            ),
+            Err(message) => JsonRpcResponse::error(request.id, -32602, message),
+        },
         _ => JsonRpcResponse::error(request.id, -32601, "Method not found."),
     };
 
     serialize_response(response)
+}
+
+/// Parses one source unit into the surface AST. Parse errors are reported as a
+/// failed response, mirroring `check` and `format`.
+fn ast_for_request(request: &CompileRequest) -> AstResponse {
+    match parse(&request.source.text) {
+        Ok(module) => AstResponse::success(module),
+        Err(diagnostics) => AstResponse::failure(diagnostics),
+    }
+}
+
+/// Infers the least-privileged mode for one source unit and returns both the
+/// structured evidence and its human-readable rendering.
+fn explain_for_request(request: &CompileRequest) -> ExplainResponse {
+    match parse(&request.source.text) {
+        Ok(module) => ExplainResponse::success(infer_module_mode_named(
+            &module,
+            request.source.path.clone(),
+        )),
+        Err(diagnostics) => ExplainResponse::failure(diagnostics),
+    }
 }
 
 fn parse_compile_request(params: Option<Value>) -> Result<CompileRequest, String> {
@@ -1583,5 +1691,54 @@ mod tests {
             "empty sources should be a JSON-RPC invalid-params error: {output}"
         );
         assert!(output.contains("at least one source unit"), "{output}");
+    }
+
+    #[test]
+    fn ast_returns_the_surface_tree() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":21,"method":"ast","params":{"apiVersion":"1.0","source":{"path":"src/main.ns","text":"module app.main\npub fn add(a: i32, b: i32) -> i32 { return a + b }\n"},"target":"js","mode":"core"}}"#,
+        );
+        assert!(output.contains(r#""ok":true"#), "{output}");
+        assert!(output.contains(r#""apiVersion":"1.0""#), "{output}");
+        assert!(output.contains(r#""ast""#), "{output}");
+        // The surface tree carries declaration names, not just a blank module.
+        assert!(output.contains(r#""add""#), "{output}");
+    }
+
+    #[test]
+    fn ast_reports_parse_errors_without_failing_the_rpc_call() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":22,"method":"ast","params":{"apiVersion":"1.0","source":{"path":"src/broken.ns","text":"fn main( {\n"},"target":"js","mode":"core"}}"#,
+        );
+        assert!(output.contains(r#""ok":false"#), "{output}");
+        assert!(output.contains("NS2001"), "expected NS2001: {output}");
+        assert!(
+            !output.contains(r#""ast""#),
+            "failed ast must omit the tree: {output}"
+        );
+    }
+
+    #[test]
+    fn explain_returns_mode_evidence_and_rendering() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":23,"method":"explain","params":{"apiVersion":"1.0","source":{"path":"src/main.ns","text":"@tags(fetch)\nmodule app.main\npub fn load() {}\n"},"target":"js"}}"#,
+        );
+        assert!(output.contains(r#""ok":true"#), "{output}");
+        assert!(output.contains(r#""requiredMode":"web""#), "{output}");
+        assert!(output.contains(r#""reasons""#), "{output}");
+        assert!(output.contains(r#""explanation""#), "{output}");
+        assert!(
+            output.contains("fetch"),
+            "capability evidence missing: {output}"
+        );
+    }
+
+    #[test]
+    fn explain_reports_parse_errors() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":24,"method":"explain","params":{"apiVersion":"1.0","source":{"path":"src/broken.ns","text":"fn main( {\n"},"target":"js"}}"#,
+        );
+        assert!(output.contains(r#""ok":false"#), "{output}");
+        assert!(output.contains("NS2001"), "expected NS2001: {output}");
     }
 }
