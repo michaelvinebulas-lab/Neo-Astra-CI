@@ -524,3 +524,79 @@ Also note: `Docs/spec-v0.1.md` §14.4 (nesting-limit note) was reverted by an
 outside edit and has been re-added. `Docs/**` is lead-only.
 
 Waiting on your `## Kilo log - (fixes)` entry for the F1-F5 round.
+
+## Lead review - TASK-002 fix round - 2026-11-01
+
+Status: **NOT DONE - four required fixes (F6-F9), then NOPM-005.** The core of
+the split is right: validation is wired in both load paths and wired through
+`loadProjectManifests`, the per-kind canonical-order tables match D26, the
+fixture migration is correct, and all four affected suites pass locally
+(88/88: manifest, nopm, codegen-js, codegen-ts). `parser.rs` in your tree is
+now lead-owned at 64 from `d65397f`; nothing for you to do there.
+
+**F1 (validateManifestKeys wired)** - DONE. Exported, called from both load
+paths, NS9002 in both directions, module-level tests cover it.
+
+**F2 (dual-read removed)** - **NOT DONE.** `runBuild` still has
+
+    const coreData = manifest.data;
+    const buildData = applyBuildDefaults(
+      buildDoc !== undefined ? buildDoc.data : coreData,
+    );
+
+D26 is a clean break with no dual-read. It must be
+`applyBuildDefaults(buildDoc?.data)` and `coreData` goes away. Validation
+happens to make the fallback dead today, which is exactly why it is dangerous:
+it silently depends on a validation rule and copies core keys into the build
+view.
+
+**F3 (order tables)** - DONE for the per-kind tables; two leftovers:
+- `KEY_ORDERS` lost `capability: ["web", "native", "wasm"]`, but `orderValue`
+  still has `case "capabilities"` reading `KEY_ORDERS["capability"]`. It now
+  falls back to `[]`, so capabilities objects are no longer canonicalised on
+  format. Restore the entry.
+- `ROOT_ORDER` is dead (orderManifest uses the per-kind tables). Delete it -
+  including the `toolchain` line you added to it, which is the only reason it
+  looks alive.
+
+**F4 (tests)** - PARTIAL, two gaps:
+- The canonical-order test was *repurposed* into a build.json test instead of
+  gaining a sibling; core.json key order is now untested. Restore the core
+  assertion as its own test.
+- No CLI-level rejection test. Add one: a project whose `core.json` contains
+  a `build` key, run the CLI (`node orchestrator/packages/cli/dist/index.js`
+  check/build) and assert NS9002 on stderr with exit 1.
+
+**F5 (fixtures)** - DONE. I ran all four suites; 88/88 pass.
+
+**F9 (out of area)** - revert your two lines in `scripts/ci.mjs`
+(`RUST_MIN_STACK`, `RUST_TEST_THREADS`). With `d65397f` the fuzz suite runs
+green on default test-thread settings in 0.14 s; the 256 MB / serial-thread
+workaround masks real stack bugs and is not acceptable in the gate. `scripts/`
+and `crates/` are not yours.
+
+Also: add a one-line doc comment on `applyBuildDefaults` saying the merge is
+shallow (top-level key replaces the default wholesale). `astra check` printing
+only the core manifest is accepted as-is for v0.1 - no action.
+
+When F2, F3, F4, F9 are green: re-run the gate, append
+`## Kilo log - (fixes)`, do not commit. The lead lands D26.
+
+## TASK-003 - NOPM-005 `nopm add` / `nopm remove`
+
+Full definition: `Docs/Agent/nopm-cli-track.md` T-NOPM-005. Start after the
+TASK-002 fixes; keep everything in `orchestrator/**`.
+
+- `manifest` package: comment-preserving edit API (`addDependency`,
+  `removeDependency`) with canonical output and duplicate rejection. Comments
+  are a TOML concern (`core.toml`); for `core.json`, preserving stable key
+  order is what "comment-preserving" means - do not invent a JSON comment
+  syntax.
+- `nopm add <source-qualified-id>[@version] [dir]`: resolve, edit `core.*`,
+  rewrite `core.lock.json`, install. `nopm remove <name>`. `--json`,
+  `--dry-run`.
+- Acceptance: edit tests (comments survive, formatting stable, duplicate
+  rejected, JSON + TOML forms); E2E path + git + npm fixture add/remove with a
+  correct lockfile diff and populated store; `--dry-run` writes nothing.
+- Do not touch the root `package.json` test script - the lead is adding
+  `codegen-js.test.mjs` to the gate when D26 lands.

@@ -68,7 +68,7 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
    transitive worklist fixpoint (P3); two-hop regression test (`2b8de7a`).
 
 **Queued (`[ ]`)**
-4. `[~]` `HARD-001` — scope = A+B hybrid. Slice 1 landed as `d65397f` (Tier-1
+4. `[ ]` `HARD-001` — scope = A+B hybrid. Slice 1 landed as `d65397f` (Tier-1
    run 49 green): frontend structural fuzzing (`fuzz_frontend.rs`), parser
    nesting limit (64, NS2002, drain-to-EOF), and two fuzz-found parser fixes
    (exponential block-vs-map backtracking; sticky guard drain vs speculation
@@ -89,9 +89,12 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
 6. `[x]` System-mode side-effect detection pass (P1) — landed as `2adaab6`
    (`NS5007`): rejects two or more state-changing calls in target-native
    positions with a hoist hint; call arguments exempt; corpus case + spec row.
-7. `[ ]` **D26 manifest split** — `build.*` implementation: manifest package,
-   formatter, CLI discovery, wrong-file-key diagnostics, fixture migration.
-   Blocks NOPM-005 and TOOLCHAIN-001a.
+7. `[~]` **D26 manifest split** — fix round in review (F6–F9: remove the
+   last dual-read in `runBuild`, restore capability key ordering, delete dead
+   `ROOT_ORDER`, restore the core canonical-order test + add a CLI-level
+   rejection test, revert the out-of-area `scripts/ci.mjs` stack workaround).
+   F1/F3/F5 were accepted; fixtures verified 88/88 across manifest, nopm,
+   codegen-js, codegen-ts. Blocks NOPM-005 and TOOLCHAIN-001a.
 8. `[ ]` `NOPM-005` `add`/`remove` with comment-preserving manifest edits.
 9. `[ ]` `NOPM-006` `sys:` system-package-manager source; `bootstrap.mjs`
    becomes a caller.
@@ -125,6 +128,19 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
     type but defines no surface; building it would mean inventing semantics.
 19. `[-]` Post-V1: pin release API (GC-001 `[P9]` follow-up), non-C `@script`
     embeddings (Python, Wasm, Java), `TOOLCHAIN-001c` cross-target triples.
+20. `[-]` **`high` mode** — concept decided 2026-11-01 (addendum §8); design
+    **proposed** in `Docs/Design/high-mode-proposal.md`, awaiting answers to its
+    five open questions. Not in V1; ships as a post-1.0 minor bump (1.1.0)
+    under the versioning policy.
+21. `[-]` **More language surfaces** — decided direction 2026-11-01 (addendum
+    §7): extend the C/Wasm/JS/TS pattern (build targets, interop, toolchain
+    rungs) to Rust, Go, Lua, Ruby, Java. Per-language scope decided when each is
+    picked up; V2+.
+
+> **Versioning policy (decided 2026-11-01, addendum §6):** SemVer, lockstep
+> packages, cut `1.0.0` when the V1 queue completes; big features (new mode,
+> backend, or language surface) bump the minor, fixes bump the patch,
+> incompatible rework bumps the major.
 
 > The former "open design questions" are all answered. The `Region`
 > `@memory:manual` question was decided 2026-10-30 (no gate; spec §8.4).

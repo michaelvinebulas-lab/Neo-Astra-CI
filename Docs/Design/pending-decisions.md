@@ -359,3 +359,40 @@ policy, `MutSlice<T>`, pin release API, threshold adaptivity — all stay
   The stale todo entry was closed when this document landed.
 - **`[P9]` signature, §5.8 pinning scope, per-case conformance mode:**
   decided and implemented (runs 29/35).
+
+---
+
+## Addendum - 2026-11-01 (principal decisions, not proposals)
+
+### 6. Versioning policy - DECIDED
+
+SemVer, applied in lockstep. `CHANGELOG.md` already commits to Keep a Changelog
++ Semantic Versioning; this pins the operational rule:
+
+- All packages carry the **same version** and move together in one commit
+  (monorepo lockstep). They stay `0.1.0` while V1 is in flight.
+- **Cut `1.0.0` when the V1 queue completes** (current work + CONC-001
+  implementation), not before.
+- After 1.0.0: a big update - a new language target/interop, a new mode, a new
+  backend family - bumps the **minor** (`1.1.0`); small fixes bump the
+  **patch** (`1.0.1`); any incompatible rework that breaks the older version
+  bumps the **major** (`2.0.0`).
+
+### 7. Future language support - DECIDED (roadmap, no design yet)
+
+Neo Astra will grow the same three surfaces it already has for C/Wasm/JS/TS -
+build targets, interop, and toolchain rungs - to more languages: **Rust, Go,
+Lua, Ruby, Java** named as the direction. Scope per language (target vs
+interop vs both) is decided when each is picked up, V2 or later; nothing is
+scheduled now.
+
+### 8. `high` mode - CONCEPT DECIDED, design proposed
+
+The principal decided the concept on 2026-11-01: `high` is a new mode that
+makes Neo Astra read like a high-level language - it **removes the low-level
+surface** from the developer and **grants high-level benefits**, with the
+boilerplate gone (`print("hello nova")` instead of `fn main() -> i32 { ... }`)
+and strings still quoted. The concrete design (feature bans, sugar list,
+ladder position, lowering) is **proposed** in
+`Docs/Design/high-mode-proposal.md` and awaits approval; it is not normative
+and not scheduled in the V1 queue.
