@@ -596,15 +596,43 @@ test("astra build emits a linked multi-module project with re-exports", () => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "web", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -714,15 +742,43 @@ test("astra build emits an inline JavaScript script module and calls it", () => 
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "script-demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "web", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "script-demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -822,14 +878,40 @@ test("astra build reports a missing script export", () => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "script-missing", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "web", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
-          },
+      {
+        "package": {
+          "name": "script-missing",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        }
+      },
         null,
         2,
       ),
@@ -878,14 +960,40 @@ test("astra build maps script exceptions into Nova recoverable errors", () => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "script-error", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "web", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
-          },
+      {
+        "package": {
+          "name": "script-error",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        }
+      },
         null,
         2,
       ),
@@ -958,14 +1066,40 @@ test("astra build rejects a TypeScript script on the JavaScript target", () => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "script-ts", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "web", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
-          },
+      {
+        "package": {
+          "name": "script-ts",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        }
+      },
         null,
         2,
       ),
@@ -1014,15 +1148,43 @@ test("astra build writes runnable ESM and a module package marker", () => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "web", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1364,15 +1526,42 @@ test("astra build writes C translation unit and host shim with --target c", () =
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "c", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            c: { backend: "c", mode: "core", outDir: "dist/c" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "c",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "c": {
+            "backend": "c",
+            "mode": "core",
+            "outDir": "dist/c"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1427,15 +1616,42 @@ test("astra build --target native links and runs a hosted binary", (t) => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "native", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            native: { backend: "native", mode: "core", outDir: "dist/native" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "core",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1493,15 +1709,42 @@ test("astra build --target native links an inline @script:c block", (t) => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "native", defaultMode: "system" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            native: { backend: "native", mode: "system", outDir: "dist/native" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "system"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "system",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1573,15 +1816,42 @@ test("astra build --target native roots managed args across a @script:c call", (
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "native", defaultMode: "system" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            native: { backend: "native", mode: "system", outDir: "dist/native" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "system"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "system",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1663,13 +1933,42 @@ test("astra build --emit staticlib produces a linkable C library", (t) => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "mathlib", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "c", defaultMode: "core" },
-          nova: { entry: "src/lib.ns" },
-          targets: { c: { backend: "c", mode: "core", outDir: "dist/lib" } },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "mathlib",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "c",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/lib.ns"
+        },
+        "targets": {
+          "c": {
+            "backend": "c",
+            "mode": "core",
+            "outDir": "dist/lib"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1751,13 +2050,42 @@ test("astra build --emit cdylib produces a runnable shared library", (t) => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "mathlib", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "c", defaultMode: "core" },
-          nova: { entry: "src/lib.ns" },
-          targets: { c: { backend: "c", mode: "core", outDir: "dist/lib" } },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "mathlib",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "c",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/lib.ns"
+        },
+        "targets": {
+          "c": {
+            "backend": "c",
+            "mode": "core",
+            "outDir": "dist/lib"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1857,16 +2185,48 @@ test("astra build links a path package through a bare import", (t) => {
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "app", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "native", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: { native: { backend: "native", mode: "core", outDir: "dist/native" } },
-          dependencies: {
-            mathlib: { source: "path", path: "./packages/mathlib" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "app",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
         },
+        "dependencies": {
+          "mathlib": {
+            "source": "path",
+            "path": "./packages/mathlib"
+          }
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "core",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1888,11 +2248,31 @@ test("astra build links a path package through a bare import", (t) => {
     writeFileSync(
       join(project, "packages", "mathlib", "core.json"),
       JSON.stringify(
-        {
-          package: { name: "mathlib", version: "1.0.0", edition: "2026", license: "MIT" },
-          nova: { entry: "src/lib.ns" },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "mathlib",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "packages", "mathlib", "build.json"),
+      JSON.stringify(
+      {
+        "nova": {
+          "entry": "src/lib.ns"
         },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -1942,16 +2322,48 @@ test("astra build links an installed (non-path) package via the NoPM store", (t)
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "app", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "native", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: { native: { backend: "native", mode: "core", outDir: "dist/native" } },
-          dependencies: {
-            mathlib: { source: "nova", version: "1.0.0" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "app",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
         },
+        "dependencies": {
+          "mathlib": {
+            "source": "nova",
+            "version": "1.0.0"
+          }
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "core",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -2027,11 +2439,31 @@ test("astra build links an installed (non-path) package via the NoPM store", (t)
     writeFileSync(
       join(project, ".astra", "store", "nova-mathlib", "core.json"),
       JSON.stringify(
-        {
-          package: { name: "mathlib", version: "1.0.0", edition: "2026", license: "MIT" },
-          nova: { entry: "src/lib.ns" },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "mathlib",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, ".astra", "store", "nova-mathlib", "build.json"),
+      JSON.stringify(
+      {
+        "nova": {
+          "entry": "src/lib.ns"
         },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -2071,15 +2503,42 @@ test("astra build --target c emits one qualified translation unit per module", (
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "c", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            c: { backend: "c", mode: "core", outDir: "dist/c" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "c",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "c": {
+            "backend": "c",
+            "mode": "core",
+            "outDir": "dist/c"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),

@@ -4,14 +4,44 @@ import { basename, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
 import type { Taplo as TaploInstance } from "@taplo/lib";
 
-export const MANIFEST_NAMES = ["core.json", "core.toml"] as const;
+export const CORE_MANIFEST_NAMES = ["core.json", "core.toml"] as const;
+export const BUILD_MANIFEST_NAMES = ["build.json", "build.toml"] as const;
+export const MANIFEST_NAMES = CORE_MANIFEST_NAMES;
+
+export const CORE_KEYS = [
+  "package",
+  "dependencies",
+  "packageSources",
+  "registry",
+  "ffi",
+  "capabilities",
+] as const;
+
+export const BUILD_KEYS = [
+  "build",
+  "targets",
+  "nova",
+  "math",
+  "strings",
+  "memory",
+  "toolchain",
+] as const;
+
+export function isCoreManifestName(name: string): boolean {
+  return (CORE_MANIFEST_NAMES as readonly string[]).includes(name);
+}
+
+export function isBuildManifestName(name: string): boolean {
+  return (BUILD_MANIFEST_NAMES as readonly string[]).includes(name);
+}
 
 export type ManifestFormat = "json" | "toml";
 
 export interface ManifestFile {
   readonly path: string;
-  readonly name: (typeof MANIFEST_NAMES)[number];
+  readonly name: string;
   readonly format: ManifestFormat;
+  readonly kind: "core" | "build";
 }
 
 export interface ManifestDocument {
@@ -39,20 +69,25 @@ const taploModule = require("@taplo/lib") as {
 };
 let taploPromise: Promise<TaploInstance> | undefined;
 
-const ROOT_ORDER = [
+const CORE_ROOT_ORDER = [
   "$schema",
   "package",
-  "build",
-  "nova",
+  "dependencies",
+  "packageSources",
   "registry",
+  "ffi",
+  "capabilities",
+] as const;
+
+const BUILD_ROOT_ORDER = [
+  "$schema",
+  "build",
+  "targets",
+  "nova",
   "math",
   "strings",
   "memory",
-  "targets",
-  "dependencies",
-  "packageSources",
-  "ffi",
-  "capabilities",
+  "toolchain",
 ] as const;
 
 const KEY_ORDERS: Readonly<Record<string, readonly string[]>> = {
@@ -88,8 +123,8 @@ const KEY_ORDERS: Readonly<Record<string, readonly string[]>> = {
   ],
   packageSource: ["enabled", "lifecycleScripts", "registry", "index"],
   packageSources: ["path", "git", "npm", "cargo", "pypi", "nuget", "oci"],
-  capability: ["web", "native", "wasm"],
   ffiTarget: ["source", "type", "ownership"],
+  capability: ["web", "native", "wasm"],
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -152,30 +187,6 @@ function orderKnownMap(
 
   return result;
 }
-
-function orderFfi(value: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
-
-  for (const moduleName of sortedKeys(value)) {
-    const moduleValue = value[moduleName];
-    if (!isRecord(moduleValue)) {
-      result[moduleName] = orderValue(moduleValue, moduleName);
-      continue;
-    }
-
-    const targets: Record<string, unknown> = {};
-    for (const targetName of sortedKeys(moduleValue)) {
-      const targetValue = moduleValue[targetName];
-      targets[targetName] = isRecord(targetValue)
-        ? orderRecord(targetValue, KEY_ORDERS["ffiTarget"] ?? [])
-        : orderValue(targetValue, targetName);
-    }
-    result[moduleName] = targets;
-  }
-
-  return result;
-}
-
 function orderValue(value: unknown, key: string | undefined): unknown {
   if (Array.isArray(value)) {
     return value.map((entry) => orderValue(entry, undefined));
@@ -199,8 +210,16 @@ function orderValue(value: unknown, key: string | undefined): unknown {
         KEY_ORDERS["packageSources"] ?? [],
         KEY_ORDERS["packageSource"] ?? [],
       );
-    case "ffi":
-      return orderFfi(value);
+    case "ffi": {
+      const result: Record<string, unknown> = {};
+      for (const moduleName of Object.keys(value)) {
+        const moduleValue = value[moduleName];
+        result[moduleName] = isRecord(moduleValue)
+          ? orderRecord(moduleValue, KEY_ORDERS["ffiTarget"] ?? [])
+          : moduleValue;
+      }
+      return result;
+    }
     case "capabilities":
       return orderRecord(value, KEY_ORDERS["capability"] ?? []);
     case "memory":
@@ -210,14 +229,16 @@ function orderValue(value: unknown, key: string | undefined): unknown {
     case "registry":
     case "math":
     case "strings":
+    case "toolchain":
       return orderRecord(value, KEY_ORDERS[key] ?? []);
     default:
       return orderRecord(value, []);
   }
 }
 
-function orderManifest(data: Record<string, unknown>): Record<string, unknown> {
-  return orderRecord(data, ROOT_ORDER);
+function orderManifest(data: Record<string, unknown>, kind: "core" | "build" = "core"): Record<string, unknown> {
+  const order = kind === "build" ? BUILD_ROOT_ORDER : CORE_ROOT_ORDER;
+  return orderRecord(data, order);
 }
 
 function getTaplo(): Promise<TaploInstance> {
@@ -225,8 +246,8 @@ function getTaplo(): Promise<TaploInstance> {
   return taploPromise;
 }
 
-export function findManifest(cwd = process.cwd()): ManifestFile {
-  const matches = MANIFEST_NAMES.filter((name) => existsSync(join(cwd, name)));
+export function findCoreManifest(cwd = process.cwd()): ManifestFile {
+  const matches = CORE_MANIFEST_NAMES.filter((name) => existsSync(join(cwd, name)));
 
   if (matches.length === 0) {
     throw new ManifestError(
@@ -253,12 +274,50 @@ export function findManifest(cwd = process.cwd()): ManifestFile {
     path: join(cwd, name),
     name,
     format: name.endsWith(".json") ? "json" : "toml",
+    kind: "core",
   };
+}
+
+export function findBuildManifest(cwd = process.cwd()): ManifestFile | undefined {
+  const matches = BUILD_MANIFEST_NAMES.filter((name) => existsSync(join(cwd, name)));
+
+  if (matches.length > 1) {
+    throw new ManifestError(
+      "NS9001",
+      "Both build.json and build.toml exist. At most one is allowed.",
+      cwd,
+    );
+  }
+
+  const name = matches[0];
+  if (name === undefined) {
+    return undefined;
+  }
+
+  return {
+    path: join(cwd, name),
+    name,
+    format: name.endsWith(".json") ? "json" : "toml",
+    kind: "build",
+  };
+}
+
+export function findManifest(cwd = process.cwd()): ManifestFile {
+  return findCoreManifest(cwd);
+}
+
+export function findManifests(cwd = process.cwd()): {
+  core: ManifestFile;
+  build: ManifestFile | undefined;
+} {
+  return { core: findCoreManifest(cwd), build: findBuildManifest(cwd) };
 }
 
 export function manifestFileForPath(path: string): ManifestFile | undefined {
   const name = basename(path);
-  if (name !== "core.json" && name !== "core.toml") {
+  const core = isCoreManifestName(name);
+  const build = isBuildManifestName(name);
+  if (!core && !build) {
     return undefined;
   }
 
@@ -266,6 +325,7 @@ export function manifestFileForPath(path: string): ManifestFile | undefined {
     path,
     name,
     format: name.endsWith(".json") ? "json" : "toml",
+    kind: core ? "core" : "build",
   };
 }
 
@@ -445,6 +505,28 @@ export function parseManifestSource(
   return value;
 }
 
+export function validateManifestKeys(file: ManifestFile, data: Record<string, unknown>): void {
+  const coreKeySet = new Set(CORE_KEYS as readonly string[]);
+  const buildKeySet = new Set(BUILD_KEYS as readonly string[]);
+
+  for (const key of Object.keys(data)) {
+    if (file.kind === "core" && buildKeySet.has(key)) {
+      throw new ManifestError(
+        "NS9002",
+        `Key '${key}' belongs in build.${file.format === "json" ? "json" : "toml"}, not ${file.name}.`,
+        file.path,
+      );
+    }
+    if (file.kind === "build" && coreKeySet.has(key)) {
+      throw new ManifestError(
+        "NS9002",
+        `Key '${key}' belongs in core.${file.format === "json" ? "json" : "toml"}, not ${file.name}.`,
+        file.path,
+      );
+    }
+  }
+}
+
 export function readManifest(file: ManifestFile): Record<string, unknown> {
   let source: string;
 
@@ -468,7 +550,7 @@ export async function formatManifestSource(
   const data = parseManifestSource(source, file);
 
   if (file.format === "json") {
-    return `${JSON.stringify(orderManifest(data), null, 2)}\n`;
+    return `${JSON.stringify(orderManifest(data, file.kind), null, 2)}\n`;
   }
 
   const taplo = await getTaplo();
@@ -487,9 +569,58 @@ export async function formatManifestSource(
   return `${formatted.replace(/\r\n/g, "\n").trimEnd()}\n`;
 }
 
+export function loadCoreManifest(cwd = process.cwd()): ManifestDocument {
+  const file = findCoreManifest(cwd);
+  const data = readManifest(file);
+  validateManifestKeys(file, data);
+  return { file, data };
+}
+
+export function loadBuildManifest(cwd = process.cwd()): ManifestDocument | undefined {
+  const file = findBuildManifest(cwd);
+  if (file === undefined) {
+    return undefined;
+  }
+  const data = readManifest(file);
+  validateManifestKeys(file, data);
+  return { file, data };
+}
+
 export function loadManifest(cwd = process.cwd()): ManifestDocument {
-  const file = findManifest(cwd);
-  return { file, data: readManifest(file) };
+  return loadCoreManifest(cwd);
+}
+
+export function loadProjectManifests(cwd = process.cwd()): {
+  core: ManifestDocument;
+  build: ManifestDocument | undefined;
+} {
+  return { core: loadCoreManifest(cwd), build: loadBuildManifest(cwd) };
+}
+
+export const BUILD_DEFAULTS = {
+  build: { defaultTarget: "native" },
+  targets: { native: { backend: "native", outDir: "dist/native" } },
+  nova: { entry: "src/main.ns" },
+  math: { integers: "wrapping" },
+  strings: {},
+  memory: {},
+  toolchain: { c: "auto" },
+} as const;
+
+/**
+ * Shallow merge: a top-level key present in `data` replaces the corresponding
+ * default wholesale (nested keys are not deep-merged).
+ */
+export function applyBuildDefaults(
+  data: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...BUILD_DEFAULTS };
+  if (data !== undefined) {
+    for (const [key, value] of Object.entries(data)) {
+      result[key] = value;
+    }
+  }
+  return result;
 }
 
 export function getPackageName(manifest: ManifestDocument): string | undefined {

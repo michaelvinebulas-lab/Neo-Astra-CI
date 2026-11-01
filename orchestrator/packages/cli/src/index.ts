@@ -27,6 +27,9 @@ import {
   formatManifestSource,
   getPackageName,
   loadManifest,
+  loadBuildManifest,
+  loadProjectManifests,
+  applyBuildDefaults,
   manifestFileForPath,
   type ManifestDocument,
 } from "@neo-astra/manifest";
@@ -1290,8 +1293,10 @@ function linkedPathPackages(
       packageRoot = installed;
     }
     let packageManifest: ManifestDocument;
+    let packageBuildManifest: ManifestDocument | undefined;
     try {
       packageManifest = loadManifest(packageRoot);
+      packageBuildManifest = loadBuildManifest(packageRoot);
     } catch (error) {
       // An installed foreign package (e.g. a plain npm library) has no Astra
       // manifest; it is simply not linkable, so skip rather than fail the build.
@@ -1301,8 +1306,9 @@ function linkedPathPackages(
       continue;
     }
     const packageDir = dirname(packageManifest.file.path);
-    const nova = isRecord(packageManifest.data["nova"])
-      ? packageManifest.data["nova"]
+    const packageData = { ...packageManifest.data, ...(packageBuildManifest?.data ?? {}) };
+    const nova = isRecord(packageData["nova"])
+      ? packageData["nova"]
       : {};
     const entryValue = nova["entry"];
     if (typeof entryValue !== "string" || entryValue.length === 0) {
@@ -1401,11 +1407,14 @@ function runBuild(args: readonly string[], cwd: string): number {
   };
 
   try {
-    const manifest = loadManifest(options.project);
+    const manifests = loadProjectManifests(options.project);
+    const manifest = manifests.core;
     const root = dirname(manifest.file.path);
-    const build = isRecord(manifest.data["build"]) ? manifest.data["build"] : {};
-    const targets = isRecord(manifest.data["targets"])
-      ? manifest.data["targets"]
+    const buildDoc = manifests.build;
+    const buildData = applyBuildDefaults(buildDoc?.data);
+    const build = isRecord(buildData["build"]) ? buildData["build"] : {};
+    const targets = isRecord(buildData["targets"])
+      ? buildData["targets"]
       : {};
     const targetName =
       options.target ??
@@ -1486,7 +1495,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       );
     }
 
-    const nova = isRecord(manifest.data["nova"]) ? manifest.data["nova"] : {};
+    const nova = isRecord(buildData["nova"]) ? buildData["nova"] : {};
     const entryValue = nova["entry"];
     if (typeof entryValue !== "string" || entryValue.length === 0) {
       throw new CliError(
@@ -1538,7 +1547,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       );
     }
 
-    const math = isRecord(manifest.data["math"]) ? manifest.data["math"] : {};
+    const math = isRecord(buildData["math"]) ? buildData["math"] : {};
     const policyValue = math["integers"];
     if (policyValue !== undefined && !isIntegerPolicy(policyValue)) {
       throw new CliError(

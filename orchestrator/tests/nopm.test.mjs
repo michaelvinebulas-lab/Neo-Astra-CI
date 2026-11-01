@@ -554,11 +554,20 @@ test("nopm lock and install work for a path package", () => {
       JSON.stringify(
         {
           package: { name: "demo", version: "0.1.0" },
-          targets: { web: { backend: "js", mode: "web" } },
           dependencies: {
             "local-utils": { source: "path", path: "local-utils" },
           },
           packageSources: { path: true },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFileSync(
+      join(directory, "build.json"),
+      JSON.stringify(
+        {
+          targets: { web: { backend: "js", mode: "web" } },
         },
         null,
         2,
@@ -570,6 +579,15 @@ test("nopm lock and install work for a path package", () => {
       JSON.stringify(
         {
           package: { name: "local-utils", version: "0.1.0" },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFileSync(
+      join(packageDirectory, "build.json"),
+      JSON.stringify(
+        {
           targets: { web: { backend: "js", mode: "web" } },
         },
         null,
@@ -605,7 +623,6 @@ test("git adapter resolves a cached pinned commit", () => {
       join(packageDirectory, "core.json"),
       JSON.stringify({
         package: { name: "git-pkg", version: "1.0.0" },
-        targets: { web: { backend: "js", mode: "web" } },
       }),
     );
     const runner = {

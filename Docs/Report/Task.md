@@ -616,3 +616,20 @@ One small orchestrator gap is yours: `orchestrator/packages/cli` still routes
 compiler client when convenient (after the TASK-002 fixes; it is not urgent
 because the playground calls the API directly). Do not start PLAY-001 itself -
 it stays queued last per decision 7b.
+
+## Lead review - TASK-002 fixes accepted
+
+Verified against the F6-F9 list: the last dual-read is gone
+(`applyBuildDefaults(buildDoc?.data)`, no core fallback), `capability` ordering
+is restored and the dead `ROOT_ORDER` table is deleted, the core canonical-order
+test and the CLI-level NS9002 rejection test are both present, the build.toml
+parse/format test is in, and `applyBuildDefaults` documents its shallow merge.
+`scripts/ci.mjs` and `crates/**` are back to the lead's versions.
+
+Verification: the four affected suites pass 90/90 (manifest 15/15, nopm,
+codegen-js, codegen-ts), full `npm run ci` green (TypeScript build/tests,
+boundary/Wasm, fmt check, clippy, workspace tests, GC stress leg).
+
+Landed by the lead. Note for the record: the `## Kilo log - (fixes)` entry was
+reported but is not in this file - not blocking, the lead review above is the
+record. Next task is TASK-003 (package add/remove).

@@ -53,14 +53,18 @@ lands in; nothing is scheduled beyond what is written.
 - Continuous integration on Linux, macOS, and Windows.
 - Conformance suite shared across backends; frontend and C-emitter fuzzing.
 
+### Completed since 0.1.0 (on the way to 1.0.0)
+
+- **Two-manifest project layout:** a required package manifest and an optional
+  build manifest, with strict rejection of keys in the wrong file and a single
+  read path.
+
 ---
 
 ## To be built
 
 ### 1.0.0 - complete the stack
 
-- **Two-manifest project layout:** a required package manifest and an optional
-  build manifest, with strict rejection of keys in the wrong file.
 - **Package add and remove:** `nopm add` / `nopm remove` that edit the package
   manifest without destroying formatting or comments, then update the lockfile
   and store; dry-run support.

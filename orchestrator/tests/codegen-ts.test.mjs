@@ -531,15 +531,43 @@ test("astra build --target ts writes linked TypeScript that tsc accepts and Node
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "web", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),

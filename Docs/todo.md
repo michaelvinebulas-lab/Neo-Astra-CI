@@ -9,7 +9,7 @@ Completed work is summarized at the bottom; the full history is in
 
 ### Project layout and packages
 
-- [ ] Finish the two-manifest project layout: strict rejection of keys in the
+- [x] Finish the two-manifest project layout: strict rejection of keys in the
       wrong file, one read path with no fallback to the other manifest,
       canonical key ordering per manifest kind, the restored core-order test,
       a CLI-level rejection test, and the migrated fixtures - then commit it.
@@ -177,7 +177,7 @@ One release per surface, in the order taken up:
       into the CLI.
 - [ ] Finish the historical CI-failure repro notes.
 - [ ] Keep the fuzz and conformance corpora growing with each feature.
-- [ ] Remove the temporary stack-size and single-thread test workaround once
+- [x] Remove the temporary stack-size and single-thread test workaround once
       the parser fixes are confirmed in the gate.
 
 ## Done
