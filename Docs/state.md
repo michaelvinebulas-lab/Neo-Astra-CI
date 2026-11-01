@@ -45,28 +45,14 @@ or frozen history (`Docs/archive/`).
   (arbitrary input never panics; clean input emits without panicking);
   conformance corpus across backends.
 
-## Queue (V1, in order)
+## Current work
 
-| # | Item | State |
-|---|---|---|
-| 1 | **D26** two manifests (`core.*` + `build.*`) | **in progress** - Kilo's fix round F6-F9 (uncommitted) |
-| 2 | **NOPM-005** `nopm add` / `remove` | queued - task written in `Task.md` |
-| 3 | **NOPM-006** `sys:` package-manager source | queued |
-| 4 | **TOOLCHAIN-001a** `[toolchain]` + ladder + `astra doctor` | queued |
-| 5 | **TOOLCHAIN-001b** pinned toolchain download | queued |
-| 6 | **CONC-001** implementation (threads, per-task heaps, park/watchdog, safepoint cancellation) | queued - **last in V1 by decision** |
-| 7 | **HARD-001 A** remainder: historical CI failure repros | queued (low) |
-| 8 | **HARD-001 B** release tooling | queued (low; do near 1.0.0) |
-| 9 | **PLAY-001** browser playground | queued after V1 (slice A merged) |
+Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
+the two-manifest project layout fix round (uncommitted).
 
-**Post-1.0 (approved, not scheduled):** `high` mode; more language surfaces
-(Rust, Go, Lua, Ruby, Java); first-party machine-code backend (V2); GC-001
-Phase D (Wasm); `WASM-001`; fallible allocation policy; `MutSlice`; pin release
-API; cross-target triples.
-
-**Release:** cut `1.0.0` when the V1 queue completes. All packages move in
-lockstep: new mode/backend/language = minor, fixes = patch, incompatible
-rework = major. Packages stay `0.1.0` until the cut.
+**Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete. All
+packages move in lockstep: new mode/backend/language = minor, fixes = patch,
+incompatible rework = major. Packages stay `0.1.0` until the cut.
 
 ## Decisions (index)
 
