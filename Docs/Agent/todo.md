@@ -68,10 +68,12 @@ slice-by-slice task list in `Docs/Agent/nopm-cli-track.md`.
    transitive worklist fixpoint (P3); two-hop regression test (`2b8de7a`).
 
 **Queued (`[ ]`)**
-4. `[ ]` `HARD-001` — scope = A+B hybrid. Partial on disk: the parser fuzz
-   test (needs the F7 fix), CHANGELOG, release checklist. Remaining: full
-   fuzzing pass (panic/OOM audit, historical CI failure repros) + release
-   tooling.
+4. `[~]` `HARD-001` — scope = A+B hybrid. Slice 1 landed as `d65397f` (Tier-1
+   run 49 green): frontend structural fuzzing (`fuzz_frontend.rs`), parser
+   nesting limit (64, NS2002, drain-to-EOF), and two fuzz-found parser fixes
+   (exponential block-vs-map backtracking; sticky guard drain vs speculation
+   restores). Remaining: panic/OOM-path audit, historical CI failure repros,
+   release tooling half (B).
 5. `[x]` `@export_as` implementation - landed as `c24a358` + `2a169ff` (Tier-1 runs
    44 and 45 green). The parser carries typed `TypeParameter = type` bindings
    (`Attribute.export_as`), the formatter round-trips them, the checker owns
@@ -1699,14 +1701,10 @@ These are intentionally high-level. Break them into smaller tasks when their pha
   compiler is available)
 - [ ] `HARD-001` v0.1 hardening — **scope decided 2026-10-31 (decision 6:
   A+B hybrid): "Structural Fuzzing Pass with Distributed Release Tooling."**
-  Two halves now define the task: (A) the structural/property fuzzing pass
-  extending the defect-trail method (random and mutated input never panic
-  the lexer/parser/formatter, panic/OOM-path audit, deterministic repro of
-  every historical CI failure class), and (B) distributed release tooling
-  (versioning, packaging/distribution, install/upgrade docs, changelog
-  discipline). Queued as item 5 — positioned late so it hardens what
-  exists. Nothing implements it yet; it is no longer an undefined
-  placeholder.
+  Part of (A) landed as `d65397f` (run 49 green): frontend fuzz suite,
+  nesting limit, exponential-backtracking and sticky-drain parser fixes.
+  Remaining: panic/OOM-path audit, historical CI failure repros, and the
+  release tooling half (B).
 
 - [ ] `D26` Two manifests - split into `core.*` (package identity, dependencies, sources, registry, capabilities, ffi) and optional `build.*` (build directives, targets, nova, semantic policies, toolchain). Spec §12 rewritten; implementation (manifest package, formatter, CLI discovery, fixture migration) is queue item 7.
 - [ ] `NOPM-005` `add`/`remove` - npm-install UX that edits `core.*` dependencies (comment-preserving) and rewrites the lockfile. Queue item 8.
