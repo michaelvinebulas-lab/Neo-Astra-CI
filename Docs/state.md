@@ -82,7 +82,7 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 
 | Date | Change | Evidence |
 |---|---|---|
-| 2026-11-01 | Two-manifest project layout landed (core + build, strict keys, single read path, ordering, tests) | commit this push |
+| 2026-11-01 | Two-manifest project layout landed (core + build, strict keys, single read path, ordering, tests) | `07274f9`, run 57 |
 | 2026-11-01 | HARD-001 A slice 2: C-emitter fuzz leg + panic/OOM audit | `0af2b9d`, run 54 |
 | 2026-11-01 | Compiler API `ast` + `explain`; `codegen-js` added to the gate | `80eb4e9`, run 53 |
 | 2026-11-01 | `high` mode design approved; versioning + language decisions recorded | `7c41bb3`, run 52; `75d491d`, run 51 |
