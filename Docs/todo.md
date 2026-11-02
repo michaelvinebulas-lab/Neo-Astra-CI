@@ -48,17 +48,19 @@ Completed work is summarized at the bottom; the full history is in
 
 ### Runtime
 
-- [ ] Multithreaded concurrency: one OS thread per spawn bound to its
+- [x] Multithreaded concurrency: one OS thread per spawn bound to its
       structured scope, with the eager inline model kept for browser, JS, and
       interpreter targets.
-- [ ] Park blocked channel operations instead of spinning; add the deadlock
+- [x] Park blocked channel operations instead of spinning; add the deadlock
       watchdog (5 second runtime constant, test override via an environment
       variable).
-- [ ] Per-task heaps plus a thread-safe immortal heap for interned strings and
-      static descriptors; update the collector's single-heap assumption.
+- [x] Per-task heaps: every execution context owns an `NS_Heap`, TLS selects
+      it, and captured values plus task results are deep-copied across heaps.
+- [ ] Thread-safe immortal heap for interned strings and static descriptors;
+      update the collector's single-heap assumption for shared descriptors.
 - [ ] Cooperative cancellation at collection safepoints and during blocked
       channel operations; cancellation of a finished or dead task is a no-op.
-- [ ] Re-pin the concurrency conformance case for the new blocking semantics
+- [x] Re-pin the concurrency conformance case for the new blocking semantics
       and run the threaded matrix on Linux, macOS, and Windows.
 - [ ] Send copies managed values only; primitives and scalars move by value.
 
