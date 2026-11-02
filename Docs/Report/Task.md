@@ -6,8 +6,14 @@ do not invent decisions - mark the question instead.
 
 ## Protocol
 
-- The Status line is the lock. While it says `OPEN - KILO`, the lead runs no
-  shell or git operations in this repository.
+- The Status line is the lock for `orchestrator/**`. While it says
+  `OPEN - KILO`, Kilo owns that tree; the lead works only in `crates/**`,
+  `conformance/**`, and lead-owned tests. Neither side edits the other's files,
+  and the lead commits explicit paths only.
+- While the lead's crates work is uncommitted, it verifies with the Rust legs
+  (`cargo fmt --all --check`, clippy with `-D warnings`, workspace tests, GC
+  stress). The full `npm run ci` gate runs when the tree has no other work in
+  progress; every push still gets a Tier-1 run.
 - Neither side rewrites the other's section. Append only.
 - Kilo never commits, never pushes, never edits `Docs/**` or the spec. The
   deliverable is code, a `## Kilo log` entry, and a Status update. The lead

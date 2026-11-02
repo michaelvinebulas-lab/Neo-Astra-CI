@@ -353,33 +353,54 @@ const NS_Gc_Shape NS_SHAPE_ARRAY_OF_STR = { .kind = NS_SHAPE_KIND_ARRAY, .elem_s
    family: not recorded, never traced, released only by `astra_manual_free`
    (proposal §5.7, spec §8.4). */
 typedef struct NS_Arena_Node { void* ptr; struct NS_Arena_Node* next; } NS_Arena_Node;
-static NS_Arena_Node* astra_arena_head = NULL;
-static size_t astra_arena_live = 0;
-static size_t astra_arena_total = 0;
+/* One live managed block and its payload size; the collector rebuilds this
+   directory per collection so interior pointers resolve by containment. */
+typedef struct { void* payload; size_t bytes; } NS_Gc_Dir_Entry;
+
+/* Per-execution-context heap (CONC-001 C2). Each task owns one heap: recorded
+   blocks, roots, boundary pins, foreign-frame scopes, collection counters, and
+   collector scratch. A task collects only its own heap, so another task's
+   frames are never treated as roots. Compile-time shapes are static constants
+   and the runtime interns nothing, so nothing is shared between heaps today. */
+typedef struct NS_Heap {
+    NS_Arena_Node* arena_head;
+    size_t arena_live;
+    size_t arena_total;
+    void** roots;
+    size_t roots_cap;
+    size_t root_count;
+    void** pins;
+    size_t pins_cap;
+    size_t pins_len;
+    size_t* scope_stack;
+    size_t scope_cap;
+    size_t scope_len;
+    size_t bytes_since_gc;
+    size_t collections;
+    NS_Gc_Dir_Entry* dir;
+    size_t dir_count;
+    void** mark_stack;
+    size_t mark_len;
+    size_t mark_cap;
+} NS_Heap;
+
+/* The main execution context's heap is static. A task binds its own heap to
+   its thread (CONC-001 A2); every runtime entry point addresses the bound
+   heap. */
+static NS_Heap astra_main_heap;
+static _Thread_local NS_Heap* astra_heap_current = NULL;
+
+static NS_Heap* astra_heap(void) {
+    if (!astra_heap_current) { astra_heap_current = &astra_main_heap; }
+    return astra_heap_current;
+}
+
+/* Manual-family counters are process-wide: manual memory is not reclaimed by
+   any task's collector. */
 static size_t astra_manual_live = 0;
 static size_t astra_manual_total = 0;
 
-/* GC roots and collection (GC-001 §5.1-§5.6). One root array per execution
-   context: the runtime is single-threaded and `spawn` evaluates inline, so
-   there is exactly one array today; CONC-001 makes it one per task. Slots hold
-   payload pointers (values, not addresses), so the array may realloc while
-   frames are live. Frames reserve zeroed slots and restore the count before
-   every return; `astra_gc_temp_enter`/`exit` extend the same region for
-   materialised call arguments. */
-static void** astra_roots = NULL;
-static size_t astra_roots_cap = 0;
-static size_t astra_root_count = 0;
-/* Permanent root set for values returned across the C ABI (§5.8). Unlike a
-   frame slot, a pin is never released until shutdown; the set is monotone by
-   design for V1. */
-static void** astra_gc_pins = NULL;
-static size_t astra_gc_pins_cap = 0;
-static size_t astra_gc_pins_len = 0;
 static int astra_gc_stress = -1;
-static size_t astra_gc_collections = 0;
-/* Managed bytes allocated since the last collection; safepoints collect when
-   this reaches ASTRA_GC_DEFAULT_THRESHOLD (Phase C, §5.4). */
-static size_t astra_gc_bytes_since_gc = 0;
 
 static void astra_gc_init_stress(void) {
     if (astra_gc_stress >= 0) { return; }
@@ -387,113 +408,119 @@ static void astra_gc_init_stress(void) {
     astra_gc_stress = (value && value[0] == '1' && value[1] == '\0') ? 1 : 0;
 }
 
-static void astra_gc_reserve(size_t need) {
-    if (need <= astra_roots_cap) { return; }
-    size_t cap = astra_roots_cap == 0 ? 64 : astra_roots_cap;
+static void astra_gc_reserve(NS_Heap* h, size_t need) {
+    if (need <= h->roots_cap) { return; }
+    size_t cap = h->roots_cap == 0 ? 64 : h->roots_cap;
     while (cap < need) { cap *= 2; }
-    void** fresh = (void**)realloc(astra_roots, cap * sizeof(void*));
+    void** fresh = (void**)realloc(h->roots, cap * sizeof(void*));
     if (!fresh) { astra_panic("out of memory"); }
-    astra_roots = fresh;
-    astra_roots_cap = cap;
+    h->roots = fresh;
+    h->roots_cap = cap;
 }
 
 size_t astra_gc_frame_enter(size_t slots) {
+    NS_Heap* h = astra_heap();
     astra_gc_init_stress();
-    size_t rf = astra_root_count;
-    astra_gc_reserve(rf + slots);
-    memset(astra_roots + rf, 0, slots * sizeof(void*));
-    astra_root_count = rf + slots;
+    size_t rf = h->root_count;
+    astra_gc_reserve(h, rf + slots);
+    memset(h->roots + rf, 0, slots * sizeof(void*));
+    h->root_count = rf + slots;
     return rf;
 }
 
 void astra_gc_frame_exit(size_t rf) {
-    if (rf < astra_root_count) { astra_root_count = rf; }
+    NS_Heap* h = astra_heap();
+    if (rf < h->root_count) { h->root_count = rf; }
 }
 
 void astra_gc_publish(size_t index, void* payload) {
+    NS_Heap* h = astra_heap();
     // Slots are assigned per declaration site, so a declaring statement inside
     // a loop re-publishes the same index each iteration. Growing on demand is
     // therefore idempotent and keeps the frame bound independent of any static
     // pre-pass over the body.
-    if (index >= astra_root_count) {
-        astra_gc_reserve(index + 1);
+    if (index >= h->root_count) {
+        astra_gc_reserve(h, index + 1);
         memset(
-            astra_roots + astra_root_count,
+            h->roots + h->root_count,
             0,
-            (index + 1 - astra_root_count) * sizeof(void*)
+            (index + 1 - h->root_count) * sizeof(void*)
         );
-        astra_root_count = index + 1;
+        h->root_count = index + 1;
     }
-    astra_roots[index] = payload;
+    h->roots[index] = payload;
 }
 
 size_t astra_gc_temp_enter(void) {
-    size_t index = astra_root_count;
-    astra_gc_reserve(index + 1);
-    astra_roots[index] = NULL;
-    astra_root_count = index + 1;
+    NS_Heap* h = astra_heap();
+    size_t index = h->root_count;
+    astra_gc_reserve(h, index + 1);
+    h->roots[index] = NULL;
+    h->root_count = index + 1;
     return index;
 }
 
 void astra_gc_temp_exit(size_t index) {
-    if (index < astra_root_count) { astra_root_count = index; }
+    NS_Heap* h = astra_heap();
+    if (index < h->root_count) { h->root_count = index; }
 }
 
-size_t astra_gc_root_count(void) { return astra_root_count; }
-size_t astra_gc_collected_count(void) { return astra_gc_collections; }
+size_t astra_gc_root_count(void) { return astra_heap()->root_count; }
+size_t astra_gc_collected_count(void) { return astra_heap()->collections; }
 
 void astra_gc_pin(void* payload) {
+    NS_Heap* h = astra_heap();
     if (!payload) { return; }
-    if (astra_gc_pins_len == astra_gc_pins_cap) {
-        size_t cap = astra_gc_pins_cap == 0 ? 32 : astra_gc_pins_cap * 2;
-        void** fresh = (void**)realloc(astra_gc_pins, cap * sizeof(void*));
+    if (h->pins_len == h->pins_cap) {
+        size_t cap = h->pins_cap == 0 ? 32 : h->pins_cap * 2;
+        void** fresh = (void**)realloc(h->pins, cap * sizeof(void*));
         if (!fresh) { astra_panic("out of memory"); }
-        astra_gc_pins = fresh;
-        astra_gc_pins_cap = cap;
+        h->pins = fresh;
+        h->pins_cap = cap;
     }
-    astra_gc_pins[astra_gc_pins_len++] = payload;
+    h->pins[h->pins_len++] = payload;
 }
 
-size_t astra_gc_pin_count(void) { return astra_gc_pins_len; }
+size_t astra_gc_pin_count(void) { return astra_heap()->pins_len; }
 
 /* Foreign-frame root registration (GC-001 §5.9). A scope records the live
    root count at entry and restores it on exit, so every root appended while
    the scope is open is released when it closes. Scopes nest LIFO; the handle
    returned by scope_enter is the saved base count, which doubles as the
    identity for scope_exit (out-of-order exits are a no-op on the count but
-   leave the scope stack unbalanced — a debug-only concern). */
-static size_t* astra_gc_scope_stack = NULL;
-static size_t astra_gc_scope_cap = 0;
-static size_t astra_gc_scope_len = 0;
-
+   leave the scope stack unbalanced — a debug-only concern). The stack lives on
+   the current heap, so a task's foreign frames never unbalance another task. */
 size_t astra_gc_scope_enter(void) {
+    NS_Heap* h = astra_heap();
     astra_gc_init_stress();
-    size_t base = astra_root_count;
-    if (astra_gc_scope_len == astra_gc_scope_cap) {
-        size_t cap = astra_gc_scope_cap == 0 ? 8 : astra_gc_scope_cap * 2;
-        size_t* fresh = (size_t*)realloc(astra_gc_scope_stack, cap * sizeof(size_t));
+    size_t base = h->root_count;
+    if (h->scope_len == h->scope_cap) {
+        size_t cap = h->scope_cap == 0 ? 8 : h->scope_cap * 2;
+        size_t* fresh = (size_t*)realloc(h->scope_stack, cap * sizeof(size_t));
         if (!fresh) { astra_panic("out of memory"); }
-        astra_gc_scope_stack = fresh;
-        astra_gc_scope_cap = cap;
+        h->scope_stack = fresh;
+        h->scope_cap = cap;
     }
-    astra_gc_scope_stack[astra_gc_scope_len++] = base;
+    h->scope_stack[h->scope_len++] = base;
     return base;
 }
 
 void astra_gc_root(size_t scope, const void* payload) {
+    NS_Heap* h = astra_heap();
     if (!payload) { return; }
     (void)scope;
-    astra_gc_reserve(astra_root_count + 1);
-    astra_roots[astra_root_count++] = payload;
+    astra_gc_reserve(h, h->root_count + 1);
+    h->roots[h->root_count++] = (void*)payload;
 }
 
 void astra_gc_scope_exit(size_t scope) {
-    if (scope <= astra_root_count) {
-        astra_root_count = scope;
+    NS_Heap* h = astra_heap();
+    if (scope <= h->root_count) {
+        h->root_count = scope;
     }
-    if (astra_gc_scope_len > 0
-        && astra_gc_scope_stack[astra_gc_scope_len - 1] == scope) {
-        astra_gc_scope_len--;
+    if (h->scope_len > 0
+        && h->scope_stack[h->scope_len - 1] == scope) {
+        h->scope_len--;
     }
 }
 
@@ -529,6 +556,7 @@ void astra_gc_poison_payload(void* payload) {
 size_t astra_gc_poison_count(void) { return astra_gc_poison_fills; }
 
 void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
+    NS_Heap* h = astra_heap();
     /* Under stress, collect before the new block exists: everything the caller
        still needs must already be published (§5.4 amendment, §8.1). */
     astra_gc_init_stress();
@@ -542,11 +570,11 @@ void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
     NS_Arena_Node* node = (NS_Arena_Node*)malloc(sizeof(NS_Arena_Node));
     if (!node) { free(head); astra_panic("out of memory"); }
     node->ptr = (void*)(head + 1);
-    node->next = astra_arena_head;
-    astra_arena_head = node;
-    astra_arena_live += 1;
-    astra_arena_total += 1;
-    astra_gc_bytes_since_gc += n;
+    node->next = h->arena_head;
+    h->arena_head = node;
+    h->arena_live += 1;
+    h->arena_total += 1;
+    h->bytes_since_gc += n;
     return (void*)(head + 1);
 }
 
@@ -555,7 +583,8 @@ void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
    freed through `astra_manual_free`. */
 void astra_gc_free(void* p) {
     if (!p) { return; }
-    NS_Arena_Node** cur = &astra_arena_head;
+    NS_Heap* h = astra_heap();
+    NS_Arena_Node** cur = &h->arena_head;
     while (*cur) {
         if ((*cur)->ptr == p) {
             NS_Arena_Node* dead = *cur;
@@ -563,7 +592,7 @@ void astra_gc_free(void* p) {
             astra_gc_poison(astra_gc_head(dead->ptr));
             free(astra_gc_head(dead->ptr));
             free(dead);
-            astra_arena_live -= 1;
+            h->arena_live -= 1;
             return;
         }
         cur = &(*cur)->next;
@@ -577,9 +606,10 @@ void astra_gc_free(void* p) {
    tracked block keeps the shape it was allocated with. */
 void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n) {
     if (!p) { return astra_gc_alloc(shape, n); }
+    NS_Heap* h = astra_heap();
     NS_Gc_Head* head = astra_gc_head(p);
     size_t old_bytes = head->bytes;
-    astra_gc_bytes_since_gc += n;
+    h->bytes_since_gc += n;
     NS_Gc_Head* fresh = (NS_Gc_Head*)realloc(head, sizeof(NS_Gc_Head) + (n == 0 ? 1 : n));
     if (!fresh) { astra_panic("out of memory"); }
     fresh->bytes = n;
@@ -587,7 +617,7 @@ void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n) {
         memset(((unsigned char*)(fresh + 1)) + old_bytes, 0, n - old_bytes);
     }
     void* payload = (void*)(fresh + 1);
-    NS_Arena_Node** cur = &astra_arena_head;
+    NS_Arena_Node** cur = &h->arena_head;
     while (*cur) {
         if ((*cur)->ptr == p) {
             (*cur)->ptr = payload;
@@ -614,34 +644,27 @@ void astra_manual_free(void* p) {
 
 /* Directory of live blocks, rebuilt and sorted once per collection so an
    interior pointer (a `str`/`bytes` slice, spec §5.6) resolves to its block by
-   containment instead of by exact base match. */
-typedef struct { void* payload; size_t bytes; } NS_Gc_Dir_Entry;
-static NS_Gc_Dir_Entry* astra_gc_dir = NULL;
-static size_t astra_gc_dir_count = 0;
-
+   containment instead of by exact base match. The directory and mark stack are
+   collector scratch owned by the heap being collected. */
 static int astra_gc_dir_cmp(const void* a, const void* b) {
     uintptr_t x = (uintptr_t)((const NS_Gc_Dir_Entry*)a)->payload;
     uintptr_t y = (uintptr_t)((const NS_Gc_Dir_Entry*)b)->payload;
     return x < y ? -1 : (x > y ? 1 : 0);
 }
 
-/* Mark stack: explicit, so deep object graphs cannot overflow the C stack. */
-static void** astra_mark_stack = NULL;
-static size_t astra_mark_len = 0;
-static size_t astra_mark_cap = 0;
-
 static void astra_gc_mark_push(void* payload) {
+    NS_Heap* h = astra_heap();
     NS_Gc_Head* head = astra_gc_head(payload);
     if (head->marks != 0) { return; }
     head->marks = 1;
-    if (astra_mark_len == astra_mark_cap) {
-        size_t cap = astra_mark_cap == 0 ? 64 : astra_mark_cap * 2;
-        void** fresh = (void**)realloc(astra_mark_stack, cap * sizeof(void*));
+    if (h->mark_len == h->mark_cap) {
+        size_t cap = h->mark_cap == 0 ? 64 : h->mark_cap * 2;
+        void** fresh = (void**)realloc(h->mark_stack, cap * sizeof(void*));
         if (!fresh) { astra_panic("out of memory"); }
-        astra_mark_stack = fresh;
-        astra_mark_cap = cap;
+        h->mark_stack = fresh;
+        h->mark_cap = cap;
     }
-    astra_mark_stack[astra_mark_len++] = payload;
+    h->mark_stack[h->mark_len++] = payload;
 }
 
 /* Resolves a slot value to its block: an exact base pointer, or the block that
@@ -649,18 +672,19 @@ static void astra_gc_mark_push(void* payload) {
    ignored: only real pointers are followed (precise roots, §4.1). */
 static void astra_gc_mark_pointer(void* value) {
     if (!value) { return; }
+    NS_Heap* h = astra_heap();
     size_t lo = 0;
-    size_t hi = astra_gc_dir_count;
+    size_t hi = h->dir_count;
     while (lo < hi) {
         size_t mid = lo + (hi - lo) / 2;
-        if ((uintptr_t)astra_gc_dir[mid].payload <= (uintptr_t)value) {
+        if ((uintptr_t)h->dir[mid].payload <= (uintptr_t)value) {
             lo = mid + 1;
         } else {
             hi = mid;
         }
     }
     if (lo == 0) { return; }
-    const NS_Gc_Dir_Entry* entry = &astra_gc_dir[lo - 1];
+    const NS_Gc_Dir_Entry* entry = &h->dir[lo - 1];
     uintptr_t base = (uintptr_t)entry->payload;
     uintptr_t pointer = (uintptr_t)value;
     if (pointer == base || pointer < base + entry->bytes) {
@@ -699,37 +723,38 @@ static void astra_gc_trace(const NS_Gc_Shape* shape, unsigned char* base, size_t
 }
 
 void astra_gc_collect(void) {
-    size_t count = astra_arena_live;
+    NS_Heap* h = astra_heap();
+    size_t count = h->arena_live;
     NS_Gc_Dir_Entry* dir = NULL;
     if (count > 0) {
         dir = (NS_Gc_Dir_Entry*)malloc(count * sizeof(NS_Gc_Dir_Entry));
         if (!dir) { astra_panic("out of memory"); }
         size_t i = 0;
-        for (NS_Arena_Node* node = astra_arena_head; node; node = node->next) {
+        for (NS_Arena_Node* node = h->arena_head; node; node = node->next) {
             dir[i].payload = node->ptr;
             dir[i].bytes = astra_gc_head(node->ptr)->bytes;
             i++;
         }
         qsort(dir, count, sizeof(NS_Gc_Dir_Entry), astra_gc_dir_cmp);
     }
-    astra_gc_dir = dir;
-    astra_gc_dir_count = count;
+    h->dir = dir;
+    h->dir_count = count;
     /* Mark: roots, then pinned boundary values, then everything reachable
        through the shapes. */
-    for (size_t i = 0; i < astra_root_count; i++) {
-        astra_gc_mark_pointer(astra_roots[i]);
+    for (size_t i = 0; i < h->root_count; i++) {
+        astra_gc_mark_pointer(h->roots[i]);
     }
-    for (size_t i = 0; i < astra_gc_pins_len; i++) {
-        astra_gc_mark_pointer(astra_gc_pins[i]);
+    for (size_t i = 0; i < h->pins_len; i++) {
+        astra_gc_mark_pointer(h->pins[i]);
     }
-    while (astra_mark_len > 0) {
-        void* payload = astra_mark_stack[--astra_mark_len];
+    while (h->mark_len > 0) {
+        void* payload = h->mark_stack[--h->mark_len];
         NS_Gc_Head* head = astra_gc_head(payload);
         astra_gc_trace(head->shape, (unsigned char*)payload, head->bytes);
     }
     /* Sweep: unmarked blocks are garbage; survivors keep their storage and
        lose the mark for the next collection. */
-    NS_Arena_Node** cur = &astra_arena_head;
+    NS_Arena_Node** cur = &h->arena_head;
     while (*cur) {
         NS_Arena_Node* node = *cur;
         NS_Gc_Head* head = astra_gc_head(node->ptr);
@@ -738,17 +763,17 @@ void astra_gc_collect(void) {
             astra_gc_poison(head);
             free(head);
             free(node);
-            astra_arena_live -= 1;
+            h->arena_live -= 1;
         } else {
             head->marks = 0;
             cur = &node->next;
         }
     }
-    astra_gc_dir = NULL;
-    astra_gc_dir_count = 0;
+    h->dir = NULL;
+    h->dir_count = 0;
     free(dir);
-    astra_gc_collections += 1;
-    astra_gc_bytes_since_gc = 0;
+    h->collections += 1;
+    h->bytes_since_gc = 0;
 }
 
 /* Safepoint hook (Phase C, §5.4): collection runs when the managed bytes
@@ -759,9 +784,10 @@ void astra_gc_collect(void) {
    to the surviving heap) is post-V1 work recorded on the workstream board. */
 #define ASTRA_GC_DEFAULT_THRESHOLD (1024u * 1024u)
 void astra_gc_maybe_collect(void) {
+    NS_Heap* h = astra_heap();
     astra_gc_init_stress();
     if (astra_gc_stress) { astra_gc_collect(); return; }
-    if (astra_gc_bytes_since_gc >= ASTRA_GC_DEFAULT_THRESHOLD) {
+    if (h->bytes_since_gc >= ASTRA_GC_DEFAULT_THRESHOLD) {
         astra_gc_collect();
     }
 }
@@ -805,42 +831,46 @@ void astra_region_free(NS_Region* r) {
 }
 
 void astra_runtime_shutdown(void) {
-    NS_Arena_Node* cur = astra_arena_head;
+    NS_Heap* h = astra_heap();
+    NS_Arena_Node* cur = h->arena_head;
     while (cur) {
         NS_Arena_Node* next = cur->next;
         free(astra_gc_head(cur->ptr));
         free(cur);
         cur = next;
     }
-    astra_arena_head = NULL;
-    astra_arena_live = 0;
-    /* The root array and mark stack are plain libc memory, not managed blocks;
-       release them here so a long-lived host that runs several programs does
-       not keep the last program's bookkeeping. */
-    free(astra_roots);
-    astra_roots = NULL;
-    astra_roots_cap = 0;
-    astra_root_count = 0;
-    free(astra_gc_pins);
-    astra_gc_pins = NULL;
-    astra_gc_pins_cap = 0;
-    astra_gc_pins_len = 0;
-    free(astra_gc_scope_stack);
-    astra_gc_scope_stack = NULL;
-    astra_gc_scope_cap = 0;
-    astra_gc_scope_len = 0;
-    free(astra_mark_stack);
-    astra_mark_stack = NULL;
-    astra_mark_len = 0;
-    astra_mark_cap = 0;
-    astra_gc_bytes_since_gc = 0;
+    h->arena_head = NULL;
+    h->arena_live = 0;
+    /* The root array, pins, scope stack, and mark stack are plain libc memory,
+       not managed blocks; release them here so a long-lived host that runs
+       several programs does not keep the last program's bookkeeping. */
+    free(h->roots);
+    h->roots = NULL;
+    h->roots_cap = 0;
+    h->root_count = 0;
+    free(h->pins);
+    h->pins = NULL;
+    h->pins_cap = 0;
+    h->pins_len = 0;
+    free(h->scope_stack);
+    h->scope_stack = NULL;
+    h->scope_cap = 0;
+    h->scope_len = 0;
+    free(h->mark_stack);
+    h->mark_stack = NULL;
+    h->mark_len = 0;
+    h->mark_cap = 0;
+    h->bytes_since_gc = 0;
+    /* A host may run another program in this process; the next entry point
+       rebinds the main heap. Task heaps are released when their task joins. */
+    astra_heap_current = &astra_main_heap;
 }
 
 /* Test/observability accessors for both families (leak checks in the native
    gate). The manual counters reflect astra_manual_alloc/free balance; the
    managed counters reflect tracked gc blocks, released wholesale at shutdown. */
-size_t astra_arena_live_count(void) { return astra_arena_live; }
-size_t astra_arena_total_count(void) { return astra_arena_total; }
+size_t astra_arena_live_count(void) { return astra_heap()->arena_live; }
+size_t astra_arena_total_count(void) { return astra_heap()->arena_total; }
 size_t astra_manual_live_count(void) { return astra_manual_live; }
 size_t astra_manual_total_count(void) { return astra_manual_total; }
 

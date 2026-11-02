@@ -109,8 +109,10 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 4. Keep this file under ~250 lines. Superseded detail goes to `Docs/archive/`.
 5. No docs-only commits, except this consolidation.
 6. Kilo owns implementation in `orchestrator/**`; the lead owns its tests from
-   2026-11-02. A handback without tests is complete work, not an incomplete
-   one - coverage is added by the lead before landing.
+   2026-11-02 and owns `crates/**` and `conformance/**`. The lanes may run in
+   parallel: neither edits the other's files, and commits use explicit paths. A
+   handback without tests is complete work, not an incomplete one - coverage is
+   added by the lead before landing.
 
 ## Verification protocol
 
