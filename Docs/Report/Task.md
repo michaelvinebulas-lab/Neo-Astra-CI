@@ -16,6 +16,9 @@ do not invent decisions - mark the question instead.
   Status to `BLOCKED - principal`.
 - Before handback: `cargo fmt --all` and the full gate (`npm run ci`) green,
   with the output tail reported. Report the actual test count.
+- The lead writes the tests for `orchestrator/**` (principal's decision,
+  2026-11-02). Your deliverable is implementation code, the log entry, and a
+  green gate; the lead adds coverage before landing.
 
 ## Status: FIXES REQUIRED - KILO
 
@@ -143,7 +146,9 @@ Verified the planner with a direct probe of the built package.
 `spawnSync` does not throw on `ENOENT`; it returns `status: null` with
 `error.code === "ENOENT"` (probe confirms). Both the winget and brew branches
 push unconditionally, so a missing winget/brew still plans an install that dies
-at execution with `NP0010` instead of `NP0017`. Check `status === 0`.
+at execution with `NP0010` instead of `NP0017`. Check `status === 0`, and make
+`detectManagers` accept an injectable presence check so the missing-manager
+path is testable.
 
 **B2 (blocking) - Linux no-manager throws a plain `Error`.** The default case
 in the Linux branch is `throw new Error("NP0017: ...")`, not a `NopmError`.
@@ -174,18 +179,9 @@ usage error. Reject it for add and remove.
 **B7 (minor) - dead code.** The `__already_installed__` placeholder block in
 `planSysInstall` does nothing; remove it.
 
-**B8 (blocking) - no tests were added.** The task required the mock-only
-matrix in `orchestrator/tests/nopm.test.mjs`, and the test count is unchanged.
-Required:
-- planner matrix: win32, darwin, linux-root, linux-sudo, apt/dnf/pacman/
-  zypper/apk exact argv;
-- macOS-root refusal, unknown tool `NP0015`, no manager `NP0017` on each
-  platform;
-- already-installed short-circuit runs no commands;
-- CLI `add sys:git --dry-run` leaves `core.*`, `core.lock.json`, and `.astra/`
-  byte-identical;
-- `remove sys:git` -> `NP0016`; `--json` shape;
-- no real installs, no network.
+**B8 (withdrawn)** - tests are the lead's responsibility from now on (the
+principal's decision). The lead will add the matrix after B1-B7 land; do not
+add tests to `orchestrator/tests/**`.
 
 Then run the full gate and append a `## Kilo log - (fixes)` entry with the
 tail and the real test count.
