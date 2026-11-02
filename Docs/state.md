@@ -48,8 +48,8 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
-the system package source (`sys:`) - Kilo builds the adapter, the lead wires
-bootstrap to it.
+nothing assigned; next queued is toolchain pinning (parse `[toolchain]`,
+resolution ladder, `astra doctor`).
 
 **Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete. All
 packages move in lockstep: new mode/backend/language = minor, fixes = patch,
@@ -83,6 +83,7 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-02 | System package source landed: `nopm add sys:<tool>`, planner/executor, `NP0015`-`NP0018`, 6 tests (lead-written), bootstrap delegation with identical `--check` output | commit this push |
 | 2026-11-02 | Package add/remove landed: comment-preserving JSON/TOML edit API, CLI add/remove with `--json`/`--dry-run`, rollback, 9 acceptance tests (lead-written under a one-time exception) | `36dbccd`, run 41410494240 |
 | 2026-11-01 | Two-manifest project layout landed (core + build, strict keys, single read path, ordering, tests) | `07274f9`, run 57 |
 | 2026-11-01 | HARD-001 A slice 2: C-emitter fuzz leg + panic/OOM audit | `0af2b9d`, run 54 |

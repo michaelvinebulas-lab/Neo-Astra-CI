@@ -61,6 +61,9 @@ lands in; nothing is scheduled beyond what is written.
 - **Package add and remove:** `nopm add` / `nopm remove` that edit the package
   manifest in place, preserving formatting and comments, then rewrite the
   lockfile, install, and roll back if resolution or installation fails.
+- **System package source:** `nopm add sys:<tool>` installs git, cmake, or
+  clang through winget, brew, apt, dnf, pacman, zypper, or apk, with the exact
+  command lines unit-tested and bootstrap delegating to the adapter.
 
 ---
 
@@ -68,8 +71,6 @@ lands in; nothing is scheduled beyond what is written.
 
 ### 1.0.0 - complete the stack
 
-- **System package manager integration:** install tools through winget, brew,
-  apt, dnf, or zypper as an explicit package source; bootstrap delegates to it.
 - **Toolchain pinning:** a toolchain section in the build manifest, a resolution
   ladder (pin, then local cache, then PATH), and a doctor command that explains
   what was found.

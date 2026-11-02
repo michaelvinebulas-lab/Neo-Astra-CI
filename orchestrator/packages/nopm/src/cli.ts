@@ -30,6 +30,8 @@ import {
   type DependencyRequest,
   type PackageDescriptor,
 } from "./index.js";
+import { defaultCommandRunner } from "./command.js";
+import { planSysInstall, executeSysInstall, detectInstalled, detectManagers } from "./sys-adapter.js";
 import { resolvePathPackage } from "./path-adapter.js";
 import { resolveNpmPackage, type AdapterResolution } from "./npm-adapter.js";
 import { resolveGitPackage } from "./git-adapter.js";
@@ -52,7 +54,7 @@ Usage:
 
 Commands:
   add <id>[@version] [dir] [--json] [--dry-run]
-                              Add a dependency and update the lockfile
+                              Add a dependency; use sys:<tool> for git/cmake/clang
   remove <name> [dir] [--json] [--dry-run]
                               Remove a dependency and update the lockfile
   lock [dir] [--json]         Resolve dependencies and write core.lock.json
@@ -174,7 +176,8 @@ function parseArgs(args: readonly string[]): CliOptions {
   if (command === undefined) {
     return baseOptions("help", json, locked, frozen, dryRun, registry);
   }
-  const maxPositionals = command === "add" || command === "remove" ? 2 : 1;
+  const isSys = rest[0]?.startsWith("sys:") === true;
+  const maxPositionals = (command === "add" || command === "remove") && !isSys ? 2 : 1;
   if (rest.length > maxPositionals) {
     throw usage(`nopm ${command} accepts at most ${maxPositionals} argument(s).`);
   }
@@ -292,6 +295,53 @@ async function runAdd(options: CliOptions): Promise<number> {
   if (id === null) {
     throw usage("nopm add requires a package ID.");
   }
+
+  // System tool install: `nopm add sys:<tool>`
+  if (id.startsWith("sys:")) {
+    const tool = id.slice("sys:".length);
+    const context = {
+      platform: process.platform,
+      uid: typeof process.getuid === "function" ? process.getuid() : 0,
+      managers: detectManagers(),
+    };
+
+    // already installed?
+    if (detectInstalled(tool, defaultCommandRunner)) {
+      if (options.dryRun) {
+        if (options.json) {
+          process.stdout.write(JSON.stringify({ ok: true, dryRun: true, action: "sys-install", tool, manager: null, commands: [], installed: true }) + "\n");
+        } else {
+          process.stdout.write("already installed\n");
+        }
+        return 0;
+      }
+      if (options.json) {
+        process.stdout.write(JSON.stringify({ ok: true, action: "sys-install", tool, manager: null, commands: [], installed: true }) + "\n");
+      } else {
+        process.stdout.write("already installed\n");
+      }
+      return 0;
+    }
+
+    const plan = planSysInstall(tool, context);
+    if (options.dryRun) {
+      if (options.json) {
+        process.stdout.write(JSON.stringify({ ok: true, dryRun: true, action: "sys-install", tool, manager: plan.manager, commands: plan.commands, installed: false }) + "\n");
+      } else {
+        for (const cmd of plan.commands) process.stdout.write(cmd.join(" ") + "\n");
+      }
+      return 0;
+    }
+
+    const result = executeSysInstall(tool, context, defaultCommandRunner);
+    if (options.json) {
+      process.stdout.write(JSON.stringify({ ok: true, action: "sys-install", tool, manager: result.manager, commands: result.commands, installed: result.installed }) + "\n");
+    } else {
+      process.stdout.write(`Installed ${tool} via ${result.manager}.\n`);
+    }
+    return 0;
+  }
+
   const parsedId = parsePackageId(id);
   const alias = (parsedId.name.split("@")[0] ?? parsedId.name).replace(/[^A-Za-z0-9_-]/g, "-").replace(/^-/, "_");
   const spec = id;
@@ -368,6 +418,10 @@ async function runRemove(options: CliOptions): Promise<number> {
   const name = options.target;
   if (name === null) {
     throw usage("nopm remove requires a package name.");
+  }
+
+  if (name.startsWith("sys:")) {
+    throw new NopmError("NP0016", "NoPM does not uninstall system tools.", name);
   }
   const project = readProject(options.directory, { requireTargets: false });
 

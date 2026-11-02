@@ -30,7 +30,11 @@ export type NopmErrorCode =
   | "NP0011"
   | "NP0012"
   | "NP0013"
-  | "NP0014";
+  | "NP0014"
+  | "NP0015"
+  | "NP0016"
+  | "NP0017"
+  | "NP0018";
 
 export type Mode = "core" | "app" | "web" | "system";
 

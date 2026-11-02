@@ -34,6 +34,7 @@ import { resolveNuGetPackage } from "../packages/nopm/dist/nuget-adapter.js";
 import { resolveOciPackage } from "../packages/nopm/dist/oci-adapter.js";
 import { resolveRegistryPackage } from "../packages/nopm/dist/registry-client.js";
 import { installLockedPackages } from "../packages/nopm/dist/store.js";
+import { detectManagers, executeSysInstall, planSysInstall } from "../packages/nopm/dist/sys-adapter.js";
 
 function expectCode(fn, code) {
   assert.throws(fn, (error) => {
@@ -1045,6 +1046,159 @@ test("nopm add restores the manifest and lockfile when resolution fails", () => 
 
     assert.equal(readFileSync(manifestPath, "utf8"), manifestBefore);
     assert.equal(readFileSync(lockfilePath, "utf8"), lockfileBefore);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("sys planner builds the exact command lines for every manager", () => {
+  const cases = [
+    [
+      "win32",
+      0,
+      ["winget"],
+      "git",
+      "winget",
+      [["winget", "install", "--id", "Git.Git", "-e", "--accept-package-agreements", "--accept-source-agreements", "--silent"]],
+    ],
+    ["darwin", 501, ["brew"], "cmake", "brew", [["brew", "install", "cmake"]]],
+    [
+      "linux",
+      0,
+      ["apt-get"],
+      "clang",
+      "apt-get",
+      [["apt-get", "update"], ["apt-get", "install", "-y", "clang"]],
+    ],
+    [
+      "linux",
+      1000,
+      ["apt-get"],
+      "clang",
+      "apt-get",
+      [["sudo", "-n", "apt-get", "update"], ["sudo", "-n", "apt-get", "install", "-y", "clang"]],
+    ],
+    ["linux", 0, ["dnf"], "git", "dnf", [["dnf", "install", "-y", "git"]]],
+    ["linux", 0, ["pacman"], "git", "pacman", [["pacman", "-S", "--noconfirm", "git"]]],
+    ["linux", 0, ["zypper"], "git", "zypper", [["zypper", "--non-interactive", "install", "git"]]],
+    ["linux", 0, ["apk"], "git", "apk", [["apk", "add", "git"]]],
+  ];
+
+  for (const [platform, uid, managers, tool, manager, commands] of cases) {
+    const plan = planSysInstall(tool, { platform, uid, managers });
+    assert.equal(plan.manager, manager, `${platform} ${managers.join(",")}`);
+    assert.deepEqual(plan.commands, commands, `${platform} ${managers.join(",")}`);
+    assert.equal(plan.installed, false);
+  }
+});
+
+test("sys planner rejects unknown tools and missing managers", () => {
+  expectCode(
+    () => planSysInstall("bogus", { platform: "linux", uid: 0, managers: ["apt-get"] }),
+    "NP0015",
+  );
+  expectCode(() => planSysInstall("git", { platform: "linux", uid: 0, managers: [] }), "NP0017");
+  expectCode(() => planSysInstall("git", { platform: "win32", uid: 0, managers: [] }), "NP0017");
+  expectCode(
+    () => planSysInstall("git", { platform: "darwin", uid: 0, managers: ["brew"] }),
+    "NP0017",
+  );
+});
+
+test("sys manager detection asks the injected presence check", () => {
+  assert.deepEqual(detectManagers("win32", () => false), []);
+  assert.deepEqual(detectManagers("win32", (command) => command === "winget"), ["winget"]);
+  assert.deepEqual(detectManagers("darwin", (command) => command === "brew"), ["brew"]);
+  assert.deepEqual(
+    detectManagers("linux", (_command, args) => args[1] === "command -v dnf"),
+    ["dnf"],
+  );
+});
+
+test("sys executor runs the plan in order and short-circuits when installed", () => {
+  const context = { platform: "linux", uid: 1000, managers: ["apt-get"] };
+  const calls = [];
+
+  const runner = (installed) => ({
+    run(command, args) {
+      calls.push([command, ...args]);
+      if (command === "git" && args[0] === "--version") {
+        return { status: installed ? 0 : 1, stdout: "", stderr: "" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  const plan = executeSysInstall("git", context, runner(false));
+  assert.deepEqual(plan.commands, [
+    ["sudo", "-n", "apt-get", "update"],
+    ["sudo", "-n", "apt-get", "install", "-y", "git"],
+  ]);
+  assert.deepEqual(calls, [
+    ["git", "--version"],
+    ["sudo", "-n", "apt-get", "update"],
+    ["sudo", "-n", "apt-get", "install", "-y", "git"],
+  ]);
+
+  calls.length = 0;
+  const already = executeSysInstall("git", context, runner(true));
+  assert.equal(already.installed, true);
+  assert.deepEqual(already.commands, []);
+  assert.deepEqual(calls, [["git", "--version"]]);
+});
+
+test("sys executor reports a failed install as NP0018", () => {
+  const runner = {
+    run(command, args) {
+      if (command === "git" && args[0] === "--version") {
+        return { status: 1, stdout: "", stderr: "" };
+      }
+      return { status: 3, stdout: "", stderr: "boom" };
+    },
+  };
+
+  assert.throws(
+    () => executeSysInstall("git", { platform: "linux", uid: 0, managers: ["apt-get"] }, runner),
+    (error) => {
+      assert.ok(error instanceof NopmError);
+      assert.equal(error.code, "NP0018");
+      assert.match(error.message, /apt-get/);
+      return true;
+    },
+  );
+});
+
+test("nopm add sys: writes nothing, and remove sys: is refused", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-sys-"));
+  try {
+    writeFileSync(
+      join(directory, "core.json"),
+      `${JSON.stringify({ package: { name: "demo", version: "0.1.0" } }, null, 2)}\n`,
+    );
+    const before = readFileSync(join(directory, "core.json"), "utf8");
+
+    const dry = runNopm(["add", "sys:git", "--dry-run", "--json"], directory);
+    assert.equal(dry.status, 0, dry.stderr);
+    const payload = JSON.parse(dry.stdout);
+    assert.equal(payload.action, "sys-install");
+    assert.equal(payload.tool, "git");
+    assert.equal(typeof payload.installed, "boolean");
+    assert.ok(Array.isArray(payload.commands));
+    assert.equal(readFileSync(join(directory, "core.json"), "utf8"), before);
+    assert.equal(existsSync(join(directory, "core.lock.json")), false);
+    assert.equal(existsSync(join(directory, ".astra")), false);
+
+    const remove = runNopm(["remove", "sys:git"], directory);
+    assert.notEqual(remove.status, 0);
+    assert.match(remove.stderr, /NP0016/);
+
+    const extra = runNopm(["add", "sys:git", directory], directory);
+    assert.notEqual(extra.status, 0);
+    assert.match(extra.stderr, /at most 1/);
+
+    const unknown = runNopm(["add", "sys:bogus-not-real", "--dry-run"], directory);
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /NP0015/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

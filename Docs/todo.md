@@ -22,12 +22,15 @@ Completed work is summarized at the bottom; the full history is in
 - [x] End-to-end package tests: path source through the CLI (add, remove,
       dry-run, rollback, lockfile and store); git and npm stay covered by their
       adapter tests so the gate needs no network.
-- [ ] System package-manager source: winget (Windows), brew (macOS), apt, dnf,
+- [x] System package-manager source: winget (Windows), brew (macOS), apt, dnf,
       zypper (Linux) as an explicit `sys:` source; elevation handled by the
       adapter; exact command lines unit-tested with no real installs in CI;
       `sys:` entries never land in the dependency list.
-- [ ] Bootstrap script delegates to the system source with unchanged dry-run
+- [x] Bootstrap script delegates to the system source with unchanged dry-run
       output and no duplicated install logic.
+- [ ] Validate the `sys:` tool name before the installed check, so an unknown
+      tool that happens to exist on `PATH` is rejected with `NP0015` instead of
+      reported as already installed.
 - [ ] Toolchain section in the build manifest: parse it, resolve in order
       (manifest pin, local cache, PATH), honor `ASTRA_CC`, and record the
       resolved toolchain in the lockfile with a single writer.
