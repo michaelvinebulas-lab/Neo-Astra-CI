@@ -83,7 +83,7 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 
 | Date | Change | Evidence |
 |---|---|---|
-| 2026-11-02 | System package source landed: `nopm add sys:<tool>`, planner/executor, `NP0015`-`NP0018`, 6 tests (lead-written), bootstrap delegation with identical `--check` output | commit this push |
+| 2026-11-02 | System package source landed: `nopm add sys:<tool>`, planner/executor, `NP0015`-`NP0018`, 6 tests (lead-written), bootstrap delegation with identical `--check` output | `4fb3554`, run 41427650964 |
 | 2026-11-02 | Package add/remove landed: comment-preserving JSON/TOML edit API, CLI add/remove with `--json`/`--dry-run`, rollback, 9 acceptance tests (lead-written under a one-time exception) | `36dbccd`, run 41410494240 |
 | 2026-11-01 | Two-manifest project layout landed (core + build, strict keys, single read path, ordering, tests) | `07274f9`, run 57 |
 | 2026-11-01 | HARD-001 A slice 2: C-emitter fuzz leg + panic/OOM audit | `0af2b9d`, run 54 |
