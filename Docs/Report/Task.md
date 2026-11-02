@@ -26,7 +26,7 @@ do not invent decisions - mark the question instead.
   2026-11-02). Your deliverable is implementation code, the log entry, and a
   green gate; the lead adds coverage before landing.
 
-## Status: OPEN - KILO (task: toolchain resolution, no network)
+## Status: OPEN - KILO (fix round: toolchain; see Lead review)
 
 Read the task below, write your `## Kilo log` entry, then code. When the gate
 is green, write the report in the same block and set Status to `DONE - lead`.
@@ -118,3 +118,88 @@ spawning: inject filesystem probes and command probes.
 - `nopm lock` writes the toolchain record; `auto` with no compiler writes
   `null` and still succeeds; a pinned unresolved toolchain fails.
 - No network, no package-manager invocation, no elevation in any new path.
+
+## Lead review - toolchain round 1 (2026-11-02)
+
+The tree builds and the 171 existing TypeScript tests pass, so the layer is
+coherent. It is not landable yet: the lockfile writer is missing, the rung
+report is incomplete, and the error path loses the toolchain code. The lead
+writes the acceptance tests and lands. Fix the items below in
+`orchestrator/**`, append your report under `## Kilo log`, and set Status to
+`DONE - lead`.
+
+### `@neo-astra/toolchain`
+
+1. **Typed errors.** Throw a `ToolchainError` carrying `code` and a human
+   message (`NS9101` bad policy, `NS9102` pin mismatch, `NS9103` bad
+   `ASTRA_CC`). Never throw the bare string `"NS9101"`; the CLI must be able
+   to print the code and reason.
+2. **Policy validation.** If `toolchain` is present but not an object, or `c`
+   is not a string, fail `NS9101` (do not silently default to `auto`). Reject
+   a second `@`, an empty version, and a version containing whitespace.
+   Trim the pin.
+3. **`auto` order.** Make the two passes distinct: first the hosted probe
+   (`-std=c17 -fsyntax-only -x c -` with stdin), then the first candidate that
+   only answers `--version`. `hostedProbe` must not return true merely because
+   `--version` works. Record the candidate's family (`cc` -> gcc).
+4. **Pinned cache.**
+   - A marker whose `id` differs is `NS9102` for **both** bare and versioned
+     pins. Only a **missing** cache entry/marker may fall back to PATH for a
+     bare family pin.
+   - Validate the marker's `family`; for a versioned pin also validate its
+     `version` against the pin.
+   - A marker without a binary is `NS9102`.
+5. **`ASTRA_CC`.** Path must exist and answer `--version` (else `NS9103` with
+   a clear message). A bare command name is not a path; either resolve it on
+   PATH or fail with a reason that says so.
+6. **`doctor`.** Report every rung actually attempted, in order, with the
+   concrete detail: the env value, the cache marker path and why it failed,
+   each PATH candidate and its probe result. Then the winner
+   (`rung/id/family/path/version`) or the failure reason. No duplicate env
+   entry.
+
+### CLI
+
+7. **Do not swallow toolchain errors.** `resolveNativeCompiler` must let
+   `NS9101`/`NS9102`/`NS9103` reach the user with their code and message.
+   Only an unresolved `auto` may keep the current `NS9008` "no native
+   compiler" path. Keep the hosted-probe behavior so the existing native
+   tests still pass on the PATH rung.
+8. **Remove the unrelated `ast`/`explain` implementations** and the
+   `findCompilerBinary` import. This slice is `doctor` plus the build
+   resolver; those commands belong to a separate task.
+9. **`doctor` UX.** Parse `--json` independently of the directory argument
+   (`astra doctor --json` must work). Load only the build manifest; absent
+   means `auto`. Print policy, each rung, winner or reason, and exit 0/1.
+   Document `ASTRA_CC` in the help text.
+10. **Correction to the task:** the existing `--compiler` flag selects the
+    astra-compiler binary, not the C toolchain. Do not repurpose it. Native
+    precedence is `ASTRA_CC`, then `toolchain.c`. A dedicated `--cc` flag is
+    proposed to the principal; do not add it in this slice.
+
+### nopm
+
+11. Add `@neo-astra/toolchain` to nopm's dependencies and resolve + record
+    `toolchain` in the single lock writer used by `nopm lock`, `add`, and
+    `remove`:
+    - parse the build manifest policy and resolve with the real probe;
+    - `auto` unresolved -> `toolchain: null`, lock still succeeds;
+    - pinned unresolved -> fail `NS9102`;
+    - do not change `lockfileVersion`.
+    The model/formatter/validator round-trip is already there; the writer is
+    the missing acceptance item.
+
+### Housekeeping
+
+12. Restore the original formatting in the root and CLI `tsconfig.json`; add
+    only the new reference line.
+13. Do not add `dist/` or `*.tsbuildinfo` (both are ignored).
+
+Note: the Tier-1 failure on `d8ed12e` was in the lead's concurrency slice
+(glibc hides `clock_gettime` under strict `-std=c17`), fixed in `ec4c5a8`;
+run 41470469664 is green. It was not the per-task heap work in `emit.rs` /
+`ty.rs`.
+
+## Kilo log
+
+(Append the fix-round report here.)
