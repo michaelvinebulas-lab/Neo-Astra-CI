@@ -48,7 +48,8 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
-nothing assigned; next queued is the system package source (`sys:`).
+the system package source (`sys:`) - Kilo builds the adapter, the lead wires
+bootstrap to it.
 
 **Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete. All
 packages move in lockstep: new mode/backend/language = minor, fixes = patch,
