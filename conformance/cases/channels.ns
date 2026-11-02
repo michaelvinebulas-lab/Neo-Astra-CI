@@ -7,7 +7,7 @@ pub fn main() -> i32 {
     let channel = Channel.create<str>()
     spawn || {
         match produce(channel) {
-            Ok(value) => println("sent"),
+            Ok(value) => (),
             Err(error) => println("send failed"),
         }
     }

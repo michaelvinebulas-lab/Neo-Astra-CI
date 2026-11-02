@@ -22,7 +22,7 @@ use astra_core::parser::parse;
 use astra_core::resolver::resolve_module;
 use astra_core::type_surface::{ProjectModule, check_module_graph};
 
-// â”€â”€â”€ helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ helpers Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 fn compile_and_emit(source: &str) -> String {
     compile_and_emit_mode(source, Mode::Core)
@@ -189,7 +189,7 @@ fn hosted_build_and_run_with_env(
 
 /// Builds one emitted library module plus a hand-written C consumer as a single
 /// hosted program, runs it, and returns (success, stdout, stderr). Used by the
-/// GC-001 §5.8 boundary tests, where the consumer holds a returned managed
+/// GC-001 Â§5.8 boundary tests, where the consumer holds a returned managed
 /// value across an explicit collection.
 /// Returns `None` when no hosted-capable compiler is available.
 fn hosted_build_library_and_consumer(
@@ -237,7 +237,7 @@ fn hosted_build_library_and_consumer(
     Some((run_output.status.success(), stdout, stderr))
 }
 
-/// Compiles a multi-module project (key â†’ source, in any order) through the
+/// Compiles a multi-module project (key Ã¢â€ â€™ source, in any order) through the
 /// shared graph frontend and emits one translation unit per module.
 ///
 /// Returns the emitted sources keyed by module, plus the header for each.
@@ -371,7 +371,7 @@ fn assert_project_compiles(emitted: &[(String, String, Option<String>)]) {
     }
 }
 
-// â”€â”€â”€ tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ tests Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 #[test]
 fn empty_module_emits_valid_header() {
@@ -730,7 +730,7 @@ fn manual_memory_requires_system_mode_in_checker() {
     );
 }
 
-/// `ptr.read(i)` / `ptr.write(i, v)` (spec Â§8.4) lower to plain C indexing on
+/// `ptr.read(i)` / `ptr.write(i, v)` (spec Ã‚Â§8.4) lower to plain C indexing on
 /// the `T*` that `Ptr<T>` already maps to, so a write is visible to a later
 /// read and to a `Memory.free` that follows. Unchecked by design.
 #[test]
@@ -891,7 +891,7 @@ fn region_api_requires_system_mode_in_checker() {
 
 #[test]
 fn unsupported_target_map_emits_ns_map() {
-    // Maps are now supported â€” the backend must emit NS_Map via astra_map_new.
+    // Maps are now supported Ã¢â‚¬â€ the backend must emit NS_Map via astra_map_new.
     use astra_core::checker::{CheckOptions, check_source};
     let src = "pub fn mm() { let m = {\"a\": 1} }\n";
     let checked = match check_source(src, CheckOptions::new(Mode::Core)) {
@@ -1087,7 +1087,7 @@ fn host_shim_is_a_complete_hosted_translation_unit() {
 /// `NS_Gc_Head` before its payload) so `astra_runtime_shutdown` can release the
 /// whole run, while the manual family (`astra_manual_alloc`) keeps its own
 /// counters that shutdown never touches. Pins the two-family split of proposal
-/// Â§5.7 plus the leak check the native gate needs.
+/// Ã‚Â§5.7 plus the leak check the native gate needs.
 #[test]
 fn managed_arena_is_released_at_shutdown() {
     let harness = r#"
@@ -1151,7 +1151,7 @@ int main(void) {
 /// GC-001 Phase A: every managed payload is preceded by an `NS_Gc_Head`
 /// carrying the payload extent and the compiler-emitted shape, payloads are
 /// zeroed on allocation, and growth zeroes the tail while preserving the old
-/// bytes. This is the object model (Â§5.5) the collector in later phases reads.
+/// bytes. This is the object model (Ã‚Â§5.5) the collector in later phases reads.
 #[test]
 fn gc_blocks_carry_headers_shapes_and_zeroed_payloads() {
     let harness = r#"
@@ -1371,7 +1371,7 @@ int main(void) {
 
 /// GC-001 Phase B: tracing follows the compiler-emitted shapes (a `RECORD` slot
 /// keeps its target alive), resolves interior pointers to their containing
-/// block (spec Â§5.6 slices), and dispatches `VARIANT` payloads on the tag so an
+/// block (spec Ã‚Â§5.6 slices), and dispatches `VARIANT` payloads on the tag so an
 /// inactive slot is never followed.
 #[test]
 fn collector_traces_shapes_interior_pointers_and_variants() {
@@ -1526,7 +1526,7 @@ pub fn main() -> i32 {
     assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["hi", "2"]);
 }
 
-/// GC-001 Phase B stress mode (Â§5.4 amendment, Â§8.1): with
+/// GC-001 Phase B stress mode (Ã‚Â§5.4 amendment, Ã‚Â§8.1): with
 /// `ASTRA_GC_STRESS=1` a collection runs before every managed allocation and at
 /// every safepoint. A loop that grows a live array and allocates a scratch
 /// array per iteration must keep the live array intact, including across the
@@ -1594,7 +1594,7 @@ int main(void) {
     );
 }
 
-/// GC-001 §8.2 poison oracle: freed managed payloads are filled with 0xDD in
+/// GC-001 Â§8.2 poison oracle: freed managed payloads are filled with 0xDD in
 /// debug builds. Reading freed memory back is not portable (macOS reclaims
 /// freed pages and returns them zero-filled - run 31 - or unmaps them - run
 /// 30), so the test verifies the two things that are portable: the fill
@@ -1666,7 +1666,7 @@ int main(void) {
 /// the last collection. The harness allocates in a loop and calls the
 /// safepoint hook where generated code does, then asserts (a) nothing
 /// collects below the threshold, (b) the live-block peak stays bounded while
-/// the total keeps growing - the §8.3 proof without stress mode, and the
+/// the total keeps growing - the Â§8.3 proof without stress mode, and the
 /// assertion that fails against the old arena, where live could never fall -
 /// and (c) the one rooted survivor is untouched. The stress leg skips the
 /// threshold-gating phase (there every safepoint collects).
@@ -1761,7 +1761,7 @@ pub fn main() -> i32 {
     );
 }
 
-/// GC-001 Phase B §5.3: a managed argument is materialised into a published
+/// GC-001 Phase B Â§5.3: a managed argument is materialised into a published
 /// temporary before a later argument (or the call) can allocate. Without the
 /// hoist, the first array literal would be unreachable while the second one is
 /// built and would be collected under stress.
@@ -1804,7 +1804,7 @@ pub fn main() -> i32 {
     );
 }
 
-/// GC-001 §8.3: the first proof that collection actually happens - a loop that
+/// GC-001 Â§8.3: the first proof that collection actually happens - a loop that
 /// allocates without publishing keeps the live count bounded while the total
 /// grows. Against the pre-GC arena the live count would equal the total.
 #[test]
@@ -1844,7 +1844,7 @@ int main(void) {
     );
 }
 
-/// GC-001 §8.5: a `bytes` slice is an interior pointer. Once the owning local
+/// GC-001 Â§8.5: a `bytes` slice is an interior pointer. Once the owning local
 /// is reassigned, only the slice keeps the block alive; the directory resolves
 /// the interior pointer on every collection, so the view stays readable.
 #[test]
@@ -2135,7 +2135,7 @@ fn library_emission_omits_main_and_exports_public_functions() {
     assert_clang_ok(lib_src);
 }
 
-/// `@export_as` (spec §11.5): each listed instantiation is emitted as a
+/// `@export_as` (spec Â§11.5): each listed instantiation is emitted as a
 /// concrete, externally visible function under the author-chosen symbol, the
 /// header exposes it, and a hand-written C consumer can call it.
 #[test]
@@ -2176,7 +2176,7 @@ pub fn identity<T>(value: T) -> T {
         assert!(ok, "consumer failed to link or run:\n{stderr}");
     }
 }
-/// GC-001 §5.8: a managed value returned across the C ABI is pinned for the
+/// GC-001 Â§5.8: a managed value returned across the C ABI is pinned for the
 /// run, so it survives a collection while the foreign module still holds it.
 #[test]
 fn library_pins_values_returned_across_the_c_boundary() {
@@ -2230,9 +2230,9 @@ int main(void) {
     assert_eq!(lines, vec!["3 10 20 30", "1", "10", "0"]);
 }
 
-/// GC-001 §5.8: pinning is a library-ABI rule. Executable builds and private
+/// GC-001 Â§5.8: pinning is a library-ABI rule. Executable builds and private
 /// helpers return values that never cross the boundary, so they never pin;
-/// every exported managed return — including a constructed `Err` payload — does.
+/// every exported managed return â€” including a constructed `Err` payload â€” does.
 #[test]
 fn only_library_exports_pin_managed_returns() {
     let modules = &[(
@@ -2294,9 +2294,10 @@ int main(void) {
     assert_eq!(lines, vec!["0 boom", "1"]);
 }
 
-/// CONC-001 first slice: bounded single-threaded channels and eager `spawn`.
+/// CONC-001 A2/B3: a thread-per-spawn task sends into a bounded channel while
+/// the parent parks in `receive`.
 #[test]
-fn channels_and_eager_spawn_run_the_corpus_semantics() {
+fn channels_and_threaded_spawn_run_the_corpus_semantics() {
     let src = r#"
 fn produce(channel: Channel<str>) -> () ! ChannelError {
     channel.send("hello")!
@@ -2307,7 +2308,7 @@ pub fn main() -> i32 {
     let channel = Channel.create<str>()
     spawn || {
         match produce(channel) {
-            Ok(value) => println("sent"),
+            Ok(value) => (),
             Err(error) => println("send failed"),
         }
     }
@@ -2338,11 +2339,18 @@ pub fn main() -> i32 {
     ] {
         assert!(out.contains(needle), "missing {needle}:\n{out}");
     }
+    // A fallible call in a match scrutinee runs once, not once per dispatch
+    // read (the child would otherwise send every message twice).
+    assert_eq!(
+        out.matches("ns_produce(v_channel)").count(),
+        1,
+        "fallible scrutinee was evaluated more than once:\n{out}"
+    );
     assert_clang_ok(&out);
     if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
         assert!(ok, "execution failed:\nstderr:\n{stderr}");
         let lines: Vec<&str> = stdout.lines().collect();
-        assert_eq!(lines, vec!["sent", "hello", "world", "closed send"]);
+        assert_eq!(lines, vec!["hello", "world", "closed send"]);
     }
     // Same program with a collection at every managed allocation. The channel
     // helper allocates two blocks (handle + data buffer); the handle must stay
@@ -2354,10 +2362,200 @@ pub fn main() -> i32 {
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(
             lines,
-            vec!["sent", "hello", "world", "closed send"],
+            vec!["hello", "world", "closed send"],
             "channel state was collected under stress"
         );
     }
+}
+
+/// CONC-001 A2/C2: a captured managed value is copied into the child heap, so
+/// the child can read a nested array while the parent keeps its own copy.
+#[test]
+fn spawn_copies_managed_captures_into_its_own_heap() {
+    let src = r#"
+pub fn main() -> i32 {
+    let values = [[1, 2], [3, 4]]
+    let task = spawn || { values[0][1] + values[1][0] }
+    let sum = task.join()
+    println(sum + values[1][1])
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(out.contains("astra_gc_copy_into"), "{out}");
+    assert_clang_ok(&out);
+    for env in [None, Some([("ASTRA_GC_STRESS", "1")])] {
+        let run = match env {
+            None => hosted_build_and_run(&out),
+            Some(env) => hosted_build_and_run_with_env(&out, &env),
+        };
+        let Some((ok, stdout, stderr)) = run else {
+            return;
+        };
+        assert!(ok, "execution failed:\nstderr:\n{stderr}");
+        assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["9"]);
+    }
+}
+
+/// CONC-001 A2/C2: a managed result is copied out of the child heap before the
+/// heap is released, so the parent can keep using it after the join.
+#[test]
+fn spawn_result_is_copied_out_before_the_child_heap_is_released() {
+    let src = r#"
+pub fn main() -> i32 {
+    let task = spawn || {
+        let inner = [[5, 6], [7, 8]]
+        inner
+    }
+    let values = task.join()
+    println(values[0][1] + values[1][0])
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    for env in [None, Some([("ASTRA_GC_STRESS", "1")])] {
+        let run = match env {
+            None => hosted_build_and_run(&out),
+            Some(env) => hosted_build_and_run_with_env(&out, &env),
+        };
+        let Some((ok, stdout, stderr)) = run else {
+            return;
+        };
+        assert!(ok, "execution failed:\nstderr:\n{stderr}");
+        assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["13"]);
+    }
+}
+
+/// A task is owned by its enclosing block: the `if` block waits before the
+/// parent prints, so the child's line is always first.
+#[test]
+fn spawn_is_joined_when_its_enclosing_block_exits() {
+    let src = r#"
+pub fn main() -> i32 {
+    let mut once = 0
+    while once == 0 {
+        once = 1
+        spawn || { println("child") }
+    }
+    println("parent")
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(out.contains("astra_task_join"), "{out}");
+    assert_clang_ok(&out);
+    for env in [None, Some([("ASTRA_GC_STRESS", "1")])] {
+        let run = match env {
+            None => hosted_build_and_run(&out),
+            Some(env) => hosted_build_and_run_with_env(&out, &env),
+        };
+        let Some((ok, stdout, stderr)) = run else {
+            return;
+        };
+        assert!(ok, "execution failed:\nstderr:\n{stderr}");
+        assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["child", "parent"]);
+    }
+}
+
+/// Captures are copied, so a mutation inside the task is not shared with the
+/// parent (the portable core forbids shared mutable state).
+#[test]
+fn spawn_capture_is_isolated_from_the_parent() {
+    let src = r#"
+pub fn main() -> i32 {
+    let mut x = 1
+    let task = spawn || {
+        x = x + 10
+        x
+    }
+    let value = task.join()
+    println(x)
+    println(value)
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "execution failed:\nstderr:\n{stderr}");
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["1", "11"]);
+}
+
+/// A panic in a task fails the parent's run: the process exits non-zero with
+/// the child's panic message instead of the parent silently joining.
+#[test]
+fn a_child_panic_fails_the_run() {
+    let src = r#"
+pub fn main() {
+    let task = spawn || {
+        panic("child boom")
+        0
+    }
+    task.join()
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, _stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(!ok, "a child panic must fail the process");
+    assert!(stderr.contains("child boom"), "stderr:\n{stderr}");
+}
+
+/// B3: a receive that waits past the watchdog is a structured deadlock, not a
+/// spin. The environment override keeps the test quick.
+#[test]
+fn an_empty_channel_receive_times_out_into_a_deadlock_panic() {
+    let src = r#"
+pub fn main() {
+    let channel = Channel.create<i32>()
+    match channel.receive() {
+        Ok(value) => (),
+        Err(error) => (),
+    }
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, _stdout, stderr)) =
+        hosted_build_and_run_with_env(&out, &[("ASTRA_CHANNEL_DEADLOCK_TIMEOUT", "0.05")])
+    else {
+        return;
+    };
+    assert!(!ok, "an empty receive must fail after the watchdog");
+    assert!(stderr.contains("channel deadlock"), "stderr:\n{stderr}");
+}
+
+/// B3: a bounded channel applies backpressure. The seventeenth send on the
+/// default 16-slot buffer waits, then fails the watchdog.
+#[test]
+fn a_full_channel_send_times_out_into_a_deadlock_panic() {
+    let src = r#"
+pub fn main() {
+    let channel = Channel.create<i32>()
+    let mut i = 0
+    while i < 20 {
+        match channel.send(i) {
+            Ok(value) => (),
+            Err(error) => (),
+        }
+        i = i + 1
+    }
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, _stdout, stderr)) =
+        hosted_build_and_run_with_env(&out, &[("ASTRA_CHANNEL_DEADLOCK_TIMEOUT", "0.05")])
+    else {
+        return;
+    };
+    assert!(!ok, "a full send must fail after the watchdog");
+    assert!(stderr.contains("channel deadlock"), "stderr:\n{stderr}");
 }
 
 /// Regression for the run-23 failure: `astra_channel_new` allocates the handle
@@ -2410,7 +2608,7 @@ int main(void) {
 }
 
 #[test]
-fn spawn_returns_an_eager_task_that_joins() {
+fn spawn_runs_on_a_thread_and_joins() {
     let src = r#"
 pub fn main() {
     let task = spawn || { 21 + 21 }
@@ -2419,7 +2617,8 @@ pub fn main() {
 "#;
     let out = compile_and_emit(src);
     assert!(out.contains("NS_Task_i32"), "{out}");
-    assert!(out.contains(".value"), "{out}");
+    assert!(out.contains("astra_task_start"), "{out}");
+    assert!(out.contains("astra_task_join"), "{out}");
     assert_clang_ok(&out);
     if let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) {
         assert!(ok, "execution failed:\nstderr:\n{stderr}");
@@ -2427,7 +2626,7 @@ pub fn main() {
     }
 }
 
-// â”€â”€â”€ Map literal emission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Map literal emission Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 #[test]
 fn test_map_literal_emits_map_new_and_set() {
@@ -2578,7 +2777,7 @@ fn iterate_array() {
     assert_clang_ok(&out);
 }
 
-// â”€â”€â”€ Byte literals â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ Byte literals Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 #[test]
 fn test_bytes_literal_emits_ns_bytes() {
@@ -2668,13 +2867,13 @@ fn write() -> u8 {
 
 #[test]
 fn str_slice_lowers_to_result_with_bounds_check() {
-    // `str.slice` is fallible (spec Â§6.2): it lowers to the bounds-checking
-    // runtime helper and a `Result<str, SliceError>` built at the call site â€”
+    // `str.slice` is fallible (spec Ã‚Â§6.2): it lowers to the bounds-checking
+    // runtime helper and a `Result<str, SliceError>` built at the call site Ã¢â‚¬â€
     // never a bare substring and never a rejected `SliceError` type.
     let src = r#"
 fn take(s: str) -> bool {
     return match s.slice(1, 3) {
-        Ok(piece) => piece == "Ã©",
+        Ok(piece) => piece == "ÃƒÂ©",
         Err(_) => false,
     }
 }
@@ -2720,7 +2919,7 @@ fn failure(s: str) -> bool {
 fn propagate_materializes_fallible_builtin_results() {
     // `expr!` on a fallible builtin call: the checker annotates the call with
     // its base type, so propagation must materialize `Result<base, E>` before
-    // reading `.ok`/`.error` â€” including when the enclosing function's own
+    // reading `.ok`/`.error` Ã¢â‚¬â€ including when the enclosing function's own
     // Result wraps a different base type.
     let src = r#"
 fn count(s: str) -> i32 ! SliceError {
@@ -2742,7 +2941,7 @@ fn count(s: str) -> i32 ! SliceError {
 
 #[test]
 fn str_to_int_and_integer_checked_arithmetic_lower_to_results() {
-    // Spec Â§6.2 `to_int` and Â§6.1 `checked_*`: fallible builtins lower to a
+    // Spec Ã‚Â§6.2 `to_int` and Ã‚Â§6.1 `checked_*`: fallible builtins lower to a
     // Result at the call site (strict decimal parse / overflow verdicts), and
     // wrapping arithmetic stays infallible.
     let src = r#"
@@ -2801,7 +3000,7 @@ fn wrap(a: i8, b: i8) -> i8 {
 
 #[test]
 fn str_scalar_and_sequence_methods_lower_to_runtime_helpers() {
-    // Spec Â§6.2: byte/scalar indexing, scalar counting, and the byte/char
+    // Spec Ã‚Â§6.2: byte/scalar indexing, scalar counting, and the byte/char
     // sequence views all lower to the UTF-8-aware runtime helpers.
     let src = r#"
 fn inspect(text: str) -> bool {
@@ -2810,7 +3009,7 @@ fn inspect(text: str) -> bool {
         None => false,
     }
     let second = match text.char_at(1) {
-        Some(character) => character == "Ã©",
+        Some(character) => character == "ÃƒÂ©",
         None => false,
     }
     let count = text.char_count()
@@ -3261,7 +3460,7 @@ module test.script_js
     assert_eq!(err.code, "NS7002");
 }
 
-// â”€â”€â”€ multi-module (linked) project emission â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬ multi-module (linked) project emission Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬Ã¢â€â‚¬
 
 #[test]
 fn project_resolves_cross_module_call_to_dependency_symbol() {
@@ -3428,8 +3627,8 @@ fn project_rejects_cross_module_value_reference() {
 #[test]
 fn project_emits_cross_module_struct_types() {
     // A struct imported from a dependency lowers to the dependency's qualified
-    // typedef (`NS_lib_Point`). The typedef stays in the dependency â€” its
-    // translation unit and header â€” and this module includes that header.
+    // typedef (`NS_lib_Point`). The typedef stays in the dependency Ã¢â‚¬â€ its
+    // translation unit and header Ã¢â‚¬â€ and this module includes that header.
     let emitted = compile_project_and_emit(&[
         ("lib", "pub struct Point { x: i32, y: i32 }\n"),
         (
@@ -3469,8 +3668,8 @@ fn project_emits_cross_module_struct_types() {
 #[test]
 fn project_emits_cross_module_enum_construction_and_match() {
     // Constructing and matching an imported enum must use the dependency's tag
-    // constants (`NS_lib_Status_TAG_*`) â€” the exact names its own translation
-    // unit declares â€” and its qualified enum type.
+    // constants (`NS_lib_Status_TAG_*`) Ã¢â‚¬â€ the exact names its own translation
+    // unit declares Ã¢â‚¬â€ and its qualified enum type.
     let emitted = compile_project_and_emit(&[
         ("lib", "pub enum Status { Active, Idle }\n"),
         (

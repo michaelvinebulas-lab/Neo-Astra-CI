@@ -444,7 +444,8 @@ impl TyCtxt {
         !self.rejects.is_empty()
     }
 
-    fn ensure(&mut self, name: &str, decl: String) {
+    /// Registers a typedef once (keyed by `name`) for the prelude.
+    pub fn ensure(&mut self, name: &str, decl: String) {
         if self.seen.insert(name.to_string()) {
             self.typedefs.push(decl);
         }
@@ -631,14 +632,14 @@ impl TyCtxt {
                 format!("{value}*")
             }
             Type::Named(name, args) if name == "Task" => {
+                // A Task<T> value is a pointer to a managed task record (the
+                // record is allocated in the parent's heap and registered with
+                // the enclosing scope). Keeping it a pointer means copies of
+                // the value still name the same task and the scope join has a
+                // stable address to wait on.
                 let inner = args.first().cloned().unwrap_or(Type::Unit);
-                let value = self.c_type(&inner);
-                let name = format!("NS_Task_{}", self.ident(&inner));
-                self.ensure(
-                    &name,
-                    format!("typedef struct {{ {value} value; bool canceled; }} {name};"),
-                );
-                name
+                let struct_name = self.task_struct_ref(&inner);
+                format!("{struct_name}*")
             }
             Type::Named(name, args) => {
                 if !args.is_empty() {
@@ -696,6 +697,37 @@ impl TyCtxt {
     pub fn channel_handle_shape_ref(&mut self, elem: &Type) -> String {
         let data = self.block_shape_ref(elem);
         self.record_shape(&format!("{{ offsetof(NS_Channel, data), {data} }}"), 1)
+    }
+
+    /// Public view of [`shape_ref`](Self::shape_ref) for the task emitter: the
+    /// shape of one inline value of `ty`.
+    pub fn value_shape_ref(&mut self, ty: &Type) -> String {
+        self.shape_ref(ty)
+    }
+
+    /// The C struct name (`NS_Task_<T>`) for a `Task<T>` record, declaring the
+    /// record if needed. The record lives in the parent heap and holds the
+    /// runtime core plus the copied-out result.
+    pub fn task_struct_ref(&mut self, inner: &Type) -> String {
+        let value = self.c_type(inner);
+        let name = format!("NS_Task_{}", self.ident(inner));
+        self.ensure(
+            &name,
+            format!("typedef struct {{ NS_Task_Core core; {value} value; }} {name};"),
+        );
+        name
+    }
+
+    /// Shape for a block holding a `Task<T>` record: trace the result slot so
+    /// the parent's collector keeps a managed result alive after the join copy.
+    /// The core's raw thread/heap pointers are never traced.
+    pub fn task_block_shape_ref(&mut self, inner: &Type) -> String {
+        let value_shape = self.shape_ref(inner);
+        if value_shape == "&NS_SHAPE_LEAF" {
+            return "&NS_SHAPE_LEAF".to_owned();
+        }
+        let task = self.task_struct_ref(inner);
+        self.record_shape(&format!("{{ offsetof({task}, value), {value_shape} }}"), 1)
     }
 
     /// C expression for the shape of one inline value of `ty`: how a block
@@ -776,13 +808,10 @@ impl TyCtxt {
                     self.record_shape(&format!("{{ 0, {handle} }}"), 1)
                 }
                 "Task" => {
-                    let inner = args.first().cloned().unwrap_or(Type::Unit);
-                    let inner_shape = self.shape_ref(&inner);
-                    if inner_shape == "&NS_SHAPE_LEAF" {
-                        return "&NS_SHAPE_LEAF".to_owned();
-                    }
-                    let c = self.c_type(ty);
-                    self.record_shape(&format!("{{ offsetof({c}, value), {inner_shape} }}"), 1)
+                    // A `Task<T>` value is a pointer to a managed task record.
+                    // Trace the pointer; the record's own allocation shape
+                    // (`task_block_shape_ref`) decomposes its result slot.
+                    self.record_shape("{ 0, &NS_SHAPE_LEAF }", 1)
                 }
                 // Built-in nominal payloads declared in the runtime header:
                 // the string-carrying error tuples hold an NS_Str at `_0`;
@@ -851,6 +880,12 @@ impl TyCtxt {
             // nothing to trace.
             _ => "&NS_SHAPE_LEAF".to_owned(),
         }
+    }
+
+    /// Public view of [`record_shape`](Self::record_shape) for compiler-emitted
+    /// records (spawn closure frames).
+    pub fn record_shape_ref(&mut self, fields: &str, count: usize) -> String {
+        self.record_shape(fields, count)
     }
 
     /// Registers (deduplicating) one RECORD shape over `fields` and returns
@@ -946,10 +981,7 @@ impl TyCtxt {
                 "Ptr" | "Region" => Vec::new(),
                 // A `Channel<T>` value is the `NS_Channel*` handle itself.
                 "Channel" => vec![format!("(void*)({base})")],
-                "Task" => {
-                    let inner = args.first().cloned().unwrap_or(Type::Unit);
-                    self.root_exprs(&format!("({base}).value"), &inner)
-                }
+                "Task" => vec![format!("(void*)({base})")],
                 "SliceError" | "ParseIntError" | "OverflowError" => {
                     vec![format!("(void*)(({base})._0.data)")]
                 }

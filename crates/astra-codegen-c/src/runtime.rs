@@ -40,7 +40,7 @@ typedef struct { NS_Str _0; } NS_OverflowError;
 /* Built-in `Channel` runtime (single-threaded V1 slice). `Channel<T>` maps to
    `NS_Channel*`; messages are copied by value using `elem_size`. */
 typedef struct { char _unit; } NS_ChannelError;
-typedef struct { void* data; size_t len; size_t cap; size_t elem_size; bool closed; } NS_Channel;
+typedef struct { void* data; size_t len; size_t cap; size_t elem_size; bool closed; void* sync; } NS_Channel;
 /* Built-in `Region` (spec 8.4 manual API): a fixed-capacity block carved
    bump-style. A region is a header-plus-block handle, so every pointer it
    hands out stays valid until `region.free()`. */
@@ -240,6 +240,52 @@ extern bool astra_channel_send(NS_Channel* c, const void* value);
 extern bool astra_channel_receive(NS_Channel* c, void* out);
 extern void astra_channel_close(NS_Channel* c);
 
+/* Task runtime (CONC-001 A2). A native `spawn` runs its body on one OS
+   thread with a private heap. The generated code owns the typed Task<T>
+   record; this core carries only what the runtime needs: the thread handle,
+   the task heap, the entry/closure, and lifecycle flags. */
+typedef struct NS_Heap NS_Heap;
+typedef struct {
+    uintptr_t handle;          /* pthread_t / HANDLE, opaque here */
+    NS_Heap* heap;             /* private task heap; released after the result copy */
+    void (*entry)(void*);
+    void* closure;
+    size_t value_offset;       /* result slot inside the task closure */
+    bool started;
+    bool finished;
+    bool canceled;
+} NS_Task_Core;
+
+/* Creates an unbound task heap. The parent allocates captures into it with
+   the explicit-heap copy below, then `astra_task_start` binds it on the new
+   thread. `astra_heap_release` frees every block and scratch array. */
+extern NS_Heap* astra_heap_create(void);
+extern void astra_heap_bind(NS_Heap* heap);
+extern void astra_heap_release(NS_Heap* heap);
+/* Allocates in an explicit heap (captures are built in the child heap before
+   its thread starts) and roots a value in that heap for its lifetime. */
+extern void* astra_gc_alloc_in_heap(NS_Heap* heap, const NS_Gc_Shape* shape, size_t n);
+extern void astra_gc_root_in(NS_Heap* heap, void* payload);
+/* The heap bound to the calling thread (the current task's private heap). */
+extern NS_Heap* astra_current_heap(void);
+
+/* Starts `task->entry(task->closure)` on an OS thread and joins it. The heap
+   stays alive until `astra_task_heap_free`, so the parent can copy the result
+   out before the child's memory is released. */
+extern void astra_task_start(NS_Task_Core* task);
+extern void astra_task_join(NS_Task_Core* task);
+extern void astra_task_heap_free(NS_Task_Core* task);
+/* Cooperative cancellation flag for the calling task (CONC-001 D1). */
+extern void astra_task_cancel(NS_Task_Core* task);
+extern bool astra_task_canceled(void);
+
+/* Shape-directed copy of one value from `src` into `dst` (CONC-001 9.3).
+   `dst_value` and `src_value` name the value slots; `n` is the value's byte
+   size. Every managed pointer reachable from the value is copied into `dst`;
+   pointers that do not resolve inside `src` (string literals, static
+   descriptors) are shared unchanged. */
+extern void astra_gc_copy_into(NS_Heap* dst, NS_Heap* src, const NS_Gc_Shape* shape, size_t n, void* dst_value, const void* src_value);
+
 /* Integer overflow helpers (signed wrapping via unsigned round-trip). */
 extern int8_t  astra_add_i8(int8_t a, int8_t b);
 extern int16_t astra_add_i16(int16_t a, int16_t b);
@@ -264,11 +310,18 @@ extern int64_t astra_mul_i64(int64_t a, int64_t b);
 pub const HOST_SHIM: &str = r#"/* Neo Astra C runtime -- hosted implementation (astra_host.c).
    Shared value types and runtime prototypes come from RUNTIME_HEADER, which
    `host_shim()` prepends. Only libc headers belong in this file. */
+#include <errno.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 
 static void astra_write_str(NS_Str x) {
     if (x.len > 0) {
@@ -389,6 +442,11 @@ typedef struct NS_Heap {
    heap. */
 static NS_Heap astra_main_heap;
 static _Thread_local NS_Heap* astra_heap_current = NULL;
+/* Non-zero while a cross-heap copy is in flight. The copy allocates the
+   destination blocks bottom-up; none of them is reachable from a root until
+   the enclosing value is stored, so the stress hook must not collect in the
+   middle of one (the copy is atomic from the collector's point of view). */
+static _Thread_local int astra_gc_copy_depth = 0;
 
 static NS_Heap* astra_heap(void) {
     if (!astra_heap_current) { astra_heap_current = &astra_main_heap; }
@@ -555,12 +613,13 @@ void astra_gc_poison_payload(void* payload) {
 
 size_t astra_gc_poison_count(void) { return astra_gc_poison_fills; }
 
-void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
-    NS_Heap* h = astra_heap();
+static void astra_gc_collect_in(NS_Heap* h);
+
+static void* astra_gc_alloc_in(NS_Heap* h, const NS_Gc_Shape* shape, size_t n) {
     /* Under stress, collect before the new block exists: everything the caller
        still needs must already be published (§5.4 amendment, §8.1). */
     astra_gc_init_stress();
-    if (astra_gc_stress) { astra_gc_collect(); }
+    if (astra_gc_stress && astra_gc_copy_depth == 0) { astra_gc_collect_in(h); }
     size_t bytes = sizeof(NS_Gc_Head) + (n == 0 ? 1 : n);
     NS_Gc_Head* head = (NS_Gc_Head*)calloc(bytes, 1);
     if (!head) { astra_panic("out of memory"); }
@@ -578,12 +637,15 @@ void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
     return (void*)(head + 1);
 }
 
+void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n) {
+    return astra_gc_alloc_in(astra_heap(), shape, n);
+}
+
 /* Frees one managed block (no-op for NULL). A pointer that is not a tracked
    payload is a family crossing (or a double free) and panics; manual memory is
    freed through `astra_manual_free`. */
-void astra_gc_free(void* p) {
+static void astra_gc_free_in(NS_Heap* h, void* p) {
     if (!p) { return; }
-    NS_Heap* h = astra_heap();
     NS_Arena_Node** cur = &h->arena_head;
     while (*cur) {
         if ((*cur)->ptr == p) {
@@ -600,13 +662,14 @@ void astra_gc_free(void* p) {
     astra_panic("free of a pointer that is not a managed block");
 }
 
+void astra_gc_free(void* p) { astra_gc_free_in(astra_heap(), p); }
+
 /* Grows or creates a managed block. The grown tail is zeroed so spare
    capacity never reads as pointers (the [P5] amendment's zero-on-alloc rule,
    applied to growth). The shape argument only matters for a NULL create; a
    tracked block keeps the shape it was allocated with. */
-void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n) {
-    if (!p) { return astra_gc_alloc(shape, n); }
-    NS_Heap* h = astra_heap();
+static void* astra_gc_realloc_in(NS_Heap* h, void* p, const NS_Gc_Shape* shape, size_t n) {
+    if (!p) { return astra_gc_alloc_in(h, shape, n); }
     NS_Gc_Head* head = astra_gc_head(p);
     size_t old_bytes = head->bytes;
     h->bytes_since_gc += n;
@@ -626,6 +689,10 @@ void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n) {
         cur = &(*cur)->next;
     }
     astra_panic("realloc of a pointer that is not a managed block");
+}
+
+void* astra_gc_realloc(void* p, const NS_Gc_Shape* shape, size_t n) {
+    return astra_gc_realloc_in(astra_heap(), p, shape, n);
 }
 
 void* astra_manual_alloc(size_t n) {
@@ -652,8 +719,7 @@ static int astra_gc_dir_cmp(const void* a, const void* b) {
     return x < y ? -1 : (x > y ? 1 : 0);
 }
 
-static void astra_gc_mark_push(void* payload) {
-    NS_Heap* h = astra_heap();
+static void astra_gc_mark_push(NS_Heap* h, void* payload) {
     NS_Gc_Head* head = astra_gc_head(payload);
     if (head->marks != 0) { return; }
     head->marks = 1;
@@ -670,9 +736,8 @@ static void astra_gc_mark_push(void* payload) {
 /* Resolves a slot value to its block: an exact base pointer, or the block that
    contains the interior pointer (slices). A value outside every live block is
    ignored: only real pointers are followed (precise roots, §4.1). */
-static void astra_gc_mark_pointer(void* value) {
+static void astra_gc_mark_pointer(NS_Heap* h, void* value) {
     if (!value) { return; }
-    NS_Heap* h = astra_heap();
     size_t lo = 0;
     size_t hi = h->dir_count;
     while (lo < hi) {
@@ -688,11 +753,11 @@ static void astra_gc_mark_pointer(void* value) {
     uintptr_t base = (uintptr_t)entry->payload;
     uintptr_t pointer = (uintptr_t)value;
     if (pointer == base || pointer < base + entry->bytes) {
-        astra_gc_mark_push(entry->payload);
+        astra_gc_mark_push(h, entry->payload);
     }
 }
 
-static void astra_gc_trace(const NS_Gc_Shape* shape, unsigned char* base, size_t bytes) {
+static void astra_gc_trace(NS_Heap* h, const NS_Gc_Shape* shape, unsigned char* base, size_t bytes) {
     if (!shape) { return; }
     switch (shape->kind) {
     case NS_SHAPE_KIND_LEAF:
@@ -701,29 +766,28 @@ static void astra_gc_trace(const NS_Gc_Shape* shape, unsigned char* base, size_t
         if (shape->elem_size == 0) { break; }
         size_t elements = bytes / shape->elem_size;
         for (size_t i = 0; i < elements; i++) {
-            astra_gc_trace(shape->elem, base + i * shape->elem_size, 0);
+            astra_gc_trace(h, shape->elem, base + i * shape->elem_size, 0);
         }
         break;
     }
     case NS_SHAPE_KIND_RECORD:
         for (size_t i = 0; i < shape->field_count; i++) {
             void* slot = *(void**)(base + shape->fields[i].offset);
-            astra_gc_mark_pointer(slot);
+            astra_gc_mark_pointer(h, slot);
         }
         break;
     case NS_SHAPE_KIND_VARIANT: {
         if (shape->variant_count == 0) { break; }
         int tag = *(const int*)(base + shape->tag_offset);
         if (tag >= 0 && (size_t)tag < shape->variant_count && shape->variants[tag]) {
-            astra_gc_trace(shape->variants[tag], base, 0);
+            astra_gc_trace(h, shape->variants[tag], base, 0);
         }
         break;
     }
     }
 }
 
-void astra_gc_collect(void) {
-    NS_Heap* h = astra_heap();
+static void astra_gc_collect_in(NS_Heap* h) {
     size_t count = h->arena_live;
     NS_Gc_Dir_Entry* dir = NULL;
     if (count > 0) {
@@ -742,15 +806,15 @@ void astra_gc_collect(void) {
     /* Mark: roots, then pinned boundary values, then everything reachable
        through the shapes. */
     for (size_t i = 0; i < h->root_count; i++) {
-        astra_gc_mark_pointer(h->roots[i]);
+        astra_gc_mark_pointer(h, h->roots[i]);
     }
     for (size_t i = 0; i < h->pins_len; i++) {
-        astra_gc_mark_pointer(h->pins[i]);
+        astra_gc_mark_pointer(h, h->pins[i]);
     }
     while (h->mark_len > 0) {
         void* payload = h->mark_stack[--h->mark_len];
         NS_Gc_Head* head = astra_gc_head(payload);
-        astra_gc_trace(head->shape, (unsigned char*)payload, head->bytes);
+        astra_gc_trace(h, head->shape, (unsigned char*)payload, head->bytes);
     }
     /* Sweep: unmarked blocks are garbage; survivors keep their storage and
        lose the mark for the next collection. */
@@ -775,6 +839,8 @@ void astra_gc_collect(void) {
     h->collections += 1;
     h->bytes_since_gc = 0;
 }
+
+void astra_gc_collect(void) { astra_gc_collect_in(astra_heap()); }
 
 /* Safepoint hook (Phase C, §5.4): collection runs when the managed bytes
    allocated since the last collection reach the threshold - the Phase C
@@ -830,8 +896,9 @@ void astra_region_free(NS_Region* r) {
     r->offset = 0;
 }
 
-void astra_runtime_shutdown(void) {
-    NS_Heap* h = astra_heap();
+/* Releases every managed block and bookkeeping array owned by one heap,
+   leaving the NS_Heap record itself to its owner. */
+static void astra_heap_release_state(NS_Heap* h) {
     NS_Arena_Node* cur = h->arena_head;
     while (cur) {
         NS_Arena_Node* next = cur->next;
@@ -841,9 +908,9 @@ void astra_runtime_shutdown(void) {
     }
     h->arena_head = NULL;
     h->arena_live = 0;
-    /* The root array, pins, scope stack, and mark stack are plain libc memory,
-       not managed blocks; release them here so a long-lived host that runs
-       several programs does not keep the last program's bookkeeping. */
+    /* Root, pin, scope, and mark arrays are plain libc memory, not managed
+       blocks; release them so a long-lived host that runs several programs
+       does not keep the last program's bookkeeping. */
     free(h->roots);
     h->roots = NULL;
     h->roots_cap = 0;
@@ -861,6 +928,11 @@ void astra_runtime_shutdown(void) {
     h->mark_len = 0;
     h->mark_cap = 0;
     h->bytes_since_gc = 0;
+}
+
+void astra_runtime_shutdown(void) {
+    NS_Heap* h = &astra_main_heap;
+    astra_heap_release_state(h);
     /* A host may run another program in this process; the next entry point
        rebinds the main heap. Task heaps are released when their task joins. */
     astra_heap_current = &astra_main_heap;
@@ -873,6 +945,181 @@ size_t astra_arena_live_count(void) { return astra_heap()->arena_live; }
 size_t astra_arena_total_count(void) { return astra_heap()->arena_total; }
 size_t astra_manual_live_count(void) { return astra_manual_live; }
 size_t astra_manual_total_count(void) { return astra_manual_total; }
+
+/* Task heaps (CONC-001 C2): created unbound, bound on the task thread, and
+   released by the joining parent after it copies the result out. */
+NS_Heap* astra_heap_create(void) {
+    NS_Heap* h = (NS_Heap*)calloc(1, sizeof(NS_Heap));
+    if (!h) { astra_panic("out of memory"); }
+    return h;
+}
+
+void astra_heap_bind(NS_Heap* h) { astra_heap_current = h; }
+
+NS_Heap* astra_current_heap(void) { return astra_heap(); }
+
+void* astra_gc_alloc_in_heap(NS_Heap* h, const NS_Gc_Shape* shape, size_t n) {
+    return astra_gc_alloc_in(h, shape, n);
+}
+
+void astra_gc_root_in(NS_Heap* h, void* payload) {
+    if (!payload) { return; }
+    astra_gc_reserve(h, h->root_count + 1);
+    h->roots[h->root_count++] = payload;
+}
+
+void astra_heap_release(NS_Heap* h) {
+    if (!h || h == &astra_main_heap) { return; }
+    astra_heap_release_state(h);
+    if (astra_heap_current == h) { astra_heap_current = NULL; }
+    free(h);
+}
+
+/* Task thread runtime (CONC-001 A2): one OS thread per spawn. The thread
+   binds the task's private heap before the body runs. The heap is not freed
+   here: the joining parent copies the result out of it first. */
+static _Thread_local NS_Task_Core* astra_task_current = NULL;
+
+static void astra_task_trampoline(void* arg) {
+    NS_Task_Core* task = (NS_Task_Core*)arg;
+    astra_heap_bind(task->heap);
+    astra_task_current = task;
+    task->entry(task->closure);
+    task->finished = true;
+    astra_task_current = NULL;
+}
+
+#if defined(_WIN32)
+static DWORD WINAPI astra_task_thread_entry(LPVOID arg) {
+    astra_task_trampoline(arg);
+    return 0;
+}
+#else
+static void* astra_task_thread_entry(void* arg) {
+    astra_task_trampoline(arg);
+    return NULL;
+}
+#endif
+
+void astra_task_start(NS_Task_Core* task) {
+    if (!task->heap) { task->heap = astra_heap_create(); }
+    task->started = true;
+#if defined(_WIN32)
+    HANDLE handle = CreateThread(NULL, 0, astra_task_thread_entry, task, 0, NULL);
+    if (!handle) { astra_panic("failed to start task"); }
+    task->handle = (uintptr_t)handle;
+#else
+    pthread_t handle;
+    if (pthread_create(&handle, NULL, astra_task_thread_entry, task) != 0) {
+        astra_panic("failed to start task");
+    }
+    task->handle = (uintptr_t)handle;
+#endif
+}
+
+void astra_task_join(NS_Task_Core* task) {
+    if (!task->started) { return; }
+#if defined(_WIN32)
+    WaitForSingleObject((HANDLE)task->handle, INFINITE);
+    CloseHandle((HANDLE)task->handle);
+#else
+    pthread_join((pthread_t)task->handle, NULL);
+#endif
+    task->handle = 0;
+    task->started = false;
+    task->finished = true;
+}
+
+void astra_task_heap_free(NS_Task_Core* task) {
+    if (!task->heap) { return; }
+    astra_heap_release(task->heap);
+    task->heap = NULL;
+}
+
+void astra_task_cancel(NS_Task_Core* task) {
+    if (task) { task->canceled = true; }
+}
+
+bool astra_task_canceled(void) {
+    return astra_task_current && astra_task_current->canceled;
+}
+
+/* Shape-directed cross-heap copy (CONC-001 9.3). The source heap is searched
+   by containment so a slice (an interior pointer) keeps its offset and the
+   whole containing block is copied. A pointer that is not in the source heap
+   is static or explicitly shared and is left unchanged. */
+static NS_Arena_Node* astra_gc_block_containing(NS_Heap* h, const void* pointer, size_t* offset) {
+    uintptr_t target = (uintptr_t)pointer;
+    for (NS_Arena_Node* node = h->arena_head; node; node = node->next) {
+        uintptr_t base = (uintptr_t)node->ptr;
+        size_t bytes = astra_gc_head(node->ptr)->bytes;
+        if (bytes == 0) { bytes = 1; }
+        if (target >= base && target < base + bytes) {
+            *offset = (size_t)(target - base);
+            return node;
+        }
+    }
+    return NULL;
+}
+
+static void astra_gc_copy_value(NS_Heap* dst, NS_Heap* src, const NS_Gc_Shape* shape, size_t bytes, void* dst_value, const void* src_value);
+
+static void* astra_gc_copy_block(NS_Heap* dst, NS_Heap* src, const NS_Gc_Shape* shape, size_t n, const void* payload) {
+    void* copy = astra_gc_alloc_in(dst, shape, n);
+    memcpy(copy, payload, n);
+    astra_gc_copy_value(dst, src, shape, n, copy, payload);
+    return copy;
+}
+
+static void* astra_gc_copy_pointer(NS_Heap* dst, NS_Heap* src, void* pointer) {
+    if (!pointer) { return NULL; }
+    size_t offset = 0;
+    NS_Arena_Node* node = astra_gc_block_containing(src, pointer, &offset);
+    if (!node) { return pointer; }
+    NS_Gc_Head* head = astra_gc_head(node->ptr);
+    void* copy = astra_gc_copy_block(dst, src, head->shape, head->bytes, node->ptr);
+    return (char*)copy + offset;
+}
+
+static void astra_gc_copy_value(NS_Heap* dst, NS_Heap* src, const NS_Gc_Shape* shape, size_t bytes, void* dst_value, const void* src_value) {
+    if (!shape) { return; }
+    switch (shape->kind) {
+    case NS_SHAPE_KIND_LEAF:
+        break;
+    case NS_SHAPE_KIND_ARRAY: {
+        if (shape->elem_size == 0) { break; }
+        size_t elements = bytes / shape->elem_size;
+        for (size_t i = 0; i < elements; i++) {
+            astra_gc_copy_value(dst, src, shape->elem, 0,
+                (char*)dst_value + i * shape->elem_size,
+                (const char*)src_value + i * shape->elem_size);
+        }
+        break;
+    }
+    case NS_SHAPE_KIND_RECORD:
+        for (size_t i = 0; i < shape->field_count; i++) {
+            void** dst_slot = (void**)((char*)dst_value + shape->fields[i].offset);
+            void* src_pointer = *(void**)((const char*)src_value + shape->fields[i].offset);
+            *dst_slot = astra_gc_copy_pointer(dst, src, src_pointer);
+        }
+        break;
+    case NS_SHAPE_KIND_VARIANT: {
+        if (shape->variant_count == 0) { break; }
+        int tag = *(const int*)((const char*)src_value + shape->tag_offset);
+        if (tag >= 0 && (size_t)tag < shape->variant_count && shape->variants[tag]) {
+            astra_gc_copy_value(dst, src, shape->variants[tag], 0, dst_value, src_value);
+        }
+        break;
+    }
+    }
+}
+
+void astra_gc_copy_into(NS_Heap* dst, NS_Heap* src, const NS_Gc_Shape* shape, size_t n, void* dst_value, const void* src_value) {
+    if (dst_value != src_value) { memcpy(dst_value, src_value, n); }
+    astra_gc_copy_depth++;
+    astra_gc_copy_value(dst, src, shape, n, dst_value, src_value);
+    astra_gc_copy_depth--;
+}
 
 NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src, const NS_Gc_Shape* shape) {
     NS_Array arr;
@@ -1141,9 +1388,112 @@ void* astra_map_key_at(const NS_Map* m, size_t i) {
     return (char*)m->keys + (i * m->key_size);
 }
 
-/* Bounded single-threaded channels (CONC-001 first slice). The V1 portable
-   runtime is cooperative, so blocking is a structured deadlock panic. */
+/* Bounded channels (CONC-001 A2/B3). A bounded channel applies backpressure:
+   `send` waits while the buffer is full and `receive` waits while it is empty.
+   A wait that exceeds the watchdog (5 s by default,
+   `ASTRA_CHANNEL_DEADLOCK_TIMEOUT` seconds) is a structured deadlock and
+   panics. The mutex/condition pair lives in a malloc'd, thread-shared sync
+   block so the public NS_Channel layout stays free of platform headers. */
 #define ASTRA_CHANNEL_CAP 16
+#define ASTRA_CHANNEL_DEFAULT_TIMEOUT 5.0
+
+typedef struct {
+#if defined(_WIN32)
+    CRITICAL_SECTION mutex;
+    CONDITION_VARIABLE cond;
+#else
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+#endif
+} NS_Channel_Sync;
+
+static double astra_channel_timeout_seconds(void) {
+    static double seconds = -1.0;
+    if (seconds >= 0.0) { return seconds; }
+    seconds = ASTRA_CHANNEL_DEFAULT_TIMEOUT;
+    const char* raw = getenv("ASTRA_CHANNEL_DEADLOCK_TIMEOUT");
+    if (raw && *raw) {
+        char* end = NULL;
+        double parsed = strtod(raw, &end);
+        if (end != raw && parsed > 0.0) { seconds = parsed; }
+    }
+    return seconds;
+}
+
+static NS_Channel_Sync* astra_channel_sync_new(void) {
+    NS_Channel_Sync* sync = (NS_Channel_Sync*)calloc(1, sizeof(NS_Channel_Sync));
+    if (!sync) { astra_panic("out of memory"); }
+#if defined(_WIN32)
+    InitializeCriticalSection(&sync->mutex);
+    InitializeConditionVariable(&sync->cond);
+#else
+    pthread_mutex_init(&sync->mutex, NULL);
+    pthread_cond_init(&sync->cond, NULL);
+#endif
+    return sync;
+}
+
+static void astra_channel_lock(NS_Channel_Sync* sync) {
+#if defined(_WIN32)
+    EnterCriticalSection(&sync->mutex);
+#else
+    pthread_mutex_lock(&sync->mutex);
+#endif
+}
+
+static void astra_channel_unlock(NS_Channel_Sync* sync) {
+#if defined(_WIN32)
+    LeaveCriticalSection(&sync->mutex);
+#else
+    pthread_mutex_unlock(&sync->mutex);
+#endif
+}
+
+static void astra_channel_signal(NS_Channel_Sync* sync) {
+#if defined(_WIN32)
+    WakeConditionVariable(&sync->cond);
+#else
+    pthread_cond_signal(&sync->cond);
+#endif
+}
+
+static void astra_channel_broadcast(NS_Channel_Sync* sync) {
+#if defined(_WIN32)
+    WakeAllConditionVariable(&sync->cond);
+#else
+    pthread_cond_broadcast(&sync->cond);
+#endif
+}
+
+/* Waits for a state change. Returns true on wake; `timed_out` distinguishes a
+   watchdog expiry from an ordinary wake. */
+static bool astra_channel_wait(NS_Channel_Sync* sync, bool* timed_out) {
+#if defined(_WIN32)
+    DWORD milliseconds = (DWORD)(astra_channel_timeout_seconds() * 1000.0);
+    if (milliseconds == 0) { milliseconds = 1; }
+    if (SleepConditionVariableCS(&sync->cond, &sync->mutex, milliseconds)) {
+        *timed_out = false;
+        return true;
+    }
+    *timed_out = GetLastError() == ERROR_TIMEOUT;
+    return false;
+#else
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    double seconds = astra_channel_timeout_seconds();
+    time_t whole = (time_t)seconds;
+    long nanos = (long)((seconds - (double)whole) * 1000000000.0);
+    deadline.tv_sec += whole;
+    deadline.tv_nsec += nanos;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec += 1;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    int rc = pthread_cond_timedwait(&sync->cond, &sync->mutex, &deadline);
+    *timed_out = rc == ETIMEDOUT;
+    return rc == 0;
+#endif
+}
 
 NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape) {
     /* Two managed blocks. The stress hook collects inside every managed
@@ -1159,31 +1509,64 @@ NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape,
     c->cap = ASTRA_CHANNEL_CAP;
     c->elem_size = elem_size;
     c->closed = false;
+    c->sync = astra_channel_sync_new();
     return c;
 }
 
 bool astra_channel_send(NS_Channel* c, const void* value) {
-    if (!c || c->closed) return false;
-    if (c->len >= c->cap) astra_panic("channel deadlock: send on a full channel");
+    if (!c) return false;
+    NS_Channel_Sync* sync = (NS_Channel_Sync*)c->sync;
+    astra_channel_lock(sync);
+    while (!c->closed && c->len >= c->cap) {
+        bool timed_out = false;
+        astra_channel_wait(sync, &timed_out);
+        if (timed_out) {
+            astra_channel_unlock(sync);
+            astra_panic("channel deadlock: send on a full channel");
+        }
+    }
+    if (c->closed) {
+        astra_channel_unlock(sync);
+        return false;
+    }
     memcpy((char*)c->data + (c->len * c->elem_size), value, c->elem_size);
     c->len++;
+    astra_channel_signal(sync);
+    astra_channel_unlock(sync);
     return true;
 }
 
 bool astra_channel_receive(NS_Channel* c, void* out) {
     if (!c) return false;
+    NS_Channel_Sync* sync = (NS_Channel_Sync*)c->sync;
+    astra_channel_lock(sync);
+    while (c->len == 0 && !c->closed) {
+        bool timed_out = false;
+        astra_channel_wait(sync, &timed_out);
+        if (timed_out) {
+            astra_channel_unlock(sync);
+            astra_panic("channel deadlock: receive on an empty channel");
+        }
+    }
     if (c->len == 0) {
-        if (c->closed) return false;
-        astra_panic("channel deadlock: receive on an empty channel");
+        astra_channel_unlock(sync);
+        return false;
     }
     memcpy(out, c->data, c->elem_size);
     memmove(c->data, (char*)c->data + c->elem_size, (c->len - 1) * c->elem_size);
     c->len--;
+    astra_channel_signal(sync);
+    astra_channel_unlock(sync);
     return true;
 }
 
 void astra_channel_close(NS_Channel* c) {
-    if (c) c->closed = true;
+    if (!c) return;
+    NS_Channel_Sync* sync = (NS_Channel_Sync*)c->sync;
+    astra_channel_lock(sync);
+    c->closed = true;
+    astra_channel_broadcast(sync);
+    astra_channel_unlock(sync);
 }
 
 /* Signed wrapping arithmetic through unsigned round-trips to avoid C

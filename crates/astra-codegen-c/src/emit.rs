@@ -6,7 +6,7 @@
 //! backend DoD ("consumes the shared IR, not a private parser").
 //!
 //! Supported first slice (see `C-001` in `Docs/archive/Agent/todo.md`): the portable
-//! managed subset — typed functions, primitives, let bindings, arithmetic with
+//! managed subset â€” typed functions, primitives, let bindings, arithmetic with
 //! explicit signed wrapping, control flow, print/println/assert, strings,
 //! named and tuple structs, enums with payload variants, `Option`/`Result`,
 //! single-error `!` propagation, pattern matching, constants, arrays, and
@@ -161,6 +161,9 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         defers: Vec::new(),
         roots: None,
         hoist: true,
+        scope_tasks: Vec::new(),
+        task_defs: String::new(),
+        task_protos: Vec::new(),
     };
     e.emit_program();
     // Emission can reject constructs that only surface inside a body (an
@@ -285,6 +288,9 @@ pub fn emit_project(
             defers: Vec::new(),
             roots: None,
             hoist: true,
+            scope_tasks: Vec::new(),
+            task_defs: String::new(),
+            task_protos: Vec::new(),
         };
         e.emit_program_linked(&dep_headers);
         if e.tcx.rejected() {
@@ -308,9 +314,9 @@ pub fn emit_project(
 
 /// Call-site lookup tables derived from a module's HIR imports.
 ///
-/// - `named`: local binding name → (dep module key, imported name), so a call
+/// - `named`: local binding name â†’ (dep module key, imported name), so a call
 ///   to a named import resolves to the dependency's qualified symbol.
-/// - `namespaces`: namespace alias → dep module key, for `alias.fn(...)` calls.
+/// - `namespaces`: namespace alias â†’ dep module key, for `alias.fn(...)` calls.
 /// - `default_imports`: local names bound by a default import, which the C
 ///   backend cannot lower and rejects when referenced.
 type ImportTables = (
@@ -356,7 +362,7 @@ fn collect_import_tables(hir: &astra_core::hir::Module) -> ImportTables {
 }
 
 /// Derives a safe C header stem from a module key.
-/// `"app/math"` → `"app_math"`, `"lib"` → `"lib"`, `"src/main.ns"` → `"src_main"`.
+/// `"app/math"` â†’ `"app_math"`, `"lib"` â†’ `"lib"`, `"src/main.ns"` â†’ `"src_main"`.
 ///
 /// A trailing `.ns` source extension is stripped before separators are
 /// replaced so CLI file-path keys do not leak a `_ns` suffix into filenames
@@ -368,8 +374,8 @@ fn module_key_stem(key: &str) -> String {
         .replace(['/', '.', '-'], "_")
 }
 
-/// Registers every type declared by a dependency as the using module sees it —
-/// imported by name, renamed, or namespace-dotted (`alias.Type`) — so
+/// Registers every type declared by a dependency as the using module sees it â€”
+/// imported by name, renamed, or namespace-dotted (`alias.Type`) â€” so
 /// cross-module signatures, constructors, and patterns resolve to the
 /// dependency's qualified typedef instead of failing with `NS8020`.
 ///
@@ -499,7 +505,7 @@ fn prescan(tcx: &mut TyCtxt, module: &CModule) {
 }
 
 /// True when a type still contains a checker placeholder (`Unknown`, `Error`,
-/// `Never`), a function type, or an unresolved generic parameter — none of
+/// `Never`), a function type, or an unresolved generic parameter â€” none of
 /// which are storable C values until an instantiation substitutes them.
 fn mentions_unresolved(ty: &Type) -> bool {
     match ty {
@@ -592,10 +598,10 @@ struct Emitter<'a> {
     /// output is unchanged; the module stem in linked builds, so two modules
     /// that each declare `helper` emit distinct symbols.
     prefix: String,
-    /// Named-import bindings: local name → (dep module key, imported name).
+    /// Named-import bindings: local name â†’ (dep module key, imported name).
     /// Used to resolve a cross-module call to the dependency's symbol.
     imports: HashMap<String, (String, String)>,
-    /// Namespace-import aliases → dep module key, for `alias.fn(...)` calls.
+    /// Namespace-import aliases â†’ dep module key, for `alias.fn(...)` calls.
     namespaces: HashMap<String, String>,
     /// Local names bound by a default import (`import foo from "lib"`), which
     /// the C backend cannot resolve to a symbol and rejects at the call site.
@@ -610,10 +616,10 @@ struct Emitter<'a> {
     emit_main_entry: bool,
     /// When `true`, the project is emitted as a library: exported functions
     /// return values across the C ABI, so their managed returns are pinned
-    /// (GC-001 §5.8).
+    /// (GC-001 Â§5.8).
     library: bool,
     /// Whether the function currently being emitted pins managed return
-    /// values (§5.8). Set per function; never set outside a function body.
+    /// values (Â§5.8). Set per function; never set outside a function body.
     pin_returns: bool,
     out: String,
     pre: String,
@@ -633,14 +639,39 @@ struct Emitter<'a> {
     /// Instantiations whose bodies have been emitted (dedupe).
     emitted_instantiations: HashSet<String>,
     defers: Vec<Vec<ast::Stmt>>,
-    /// Root slots for the function being emitted (GC-001 §5.1). `None` outside
+    /// Root slots for the function being emitted (GC-001 Â§5.1). `None` outside
     /// a function body (constants, the `main` wrapper).
     roots: Option<RootFrame>,
     /// Whether managed subvalues may be hoisted into published temporaries at
-    /// the current point (GC-001 §5.3). Cleared inside short-circuit right
+    /// the current point (GC-001 Â§5.3). Cleared inside short-circuit right
     /// operands and loop conditions, where hoisting would change when the
     /// expression runs.
     hoist: bool,
+    /// Tasks spawned in each active C block, innermost last. The enclosing
+    /// scope joins them before it exits (CONC-001 A2).
+    scope_tasks: Vec<Vec<PendingTask>>,
+    /// Lifted thread bodies and their entry wrappers, emitted after the
+    /// regular functions (prototypes are emitted up front).
+    task_defs: String,
+    task_protos: Vec<String>,
+}
+
+/// One spawned task awaiting its scope's join. `var` is the C pointer the
+/// spawn expression produced; `task_ty` is `Task<T>`.
+#[derive(Clone)]
+struct PendingTask {
+    var: String,
+    task_ty: Type,
+}
+
+/// The `T` of a `Task<T>` type (Unit when the annotation is missing).
+fn task_value_type(task_ty: &Type) -> Type {
+    match task_ty {
+        Type::Named(name, arguments) if name == "Task" => {
+            arguments.first().cloned().unwrap_or(Type::Unit)
+        }
+        _ => Type::Unit,
+    }
 }
 
 /// Frame root state: the C variable holding the frame base, the next free slot
@@ -650,6 +681,9 @@ struct RootFrame {
     var: String,
     used: usize,
     locals: Vec<(String, Type, usize)>,
+    /// Every lexical local recorded so far, including scalar slots. Spawn
+    /// capture analysis resolves a free name against this list.
+    all_locals: Vec<(String, Type)>,
 }
 
 /// One monomorphized generic function: the declaration plus the concrete type
@@ -713,7 +747,7 @@ impl<'a> Emitter<'a> {
         Some(subst)
     }
 
-    /// `ns_<fn>_<type args…>` — one symbol per distinct instantiation.
+    /// `ns_<fn>_<type argsâ€¦>` â€” one symbol per distinct instantiation.
     fn instantiation_symbol(
         &self,
         decl: &ast::FunctionDecl,
@@ -787,7 +821,7 @@ impl<'a> Emitter<'a> {
         }
     }
     /// Registers every `@export_as` instantiation as a specialized body under
-    /// the author-chosen symbol (`spec §11.5`, `11-c-abi.md` §3). Runs before
+    /// the author-chosen symbol (`spec Â§11.5`, `11-c-abi.md` Â§3). Runs before
     /// any body emission so `emit_instantiations` drains them like call-site
     /// instantiations.
     fn register_exported_instantiations(&mut self) {
@@ -852,6 +886,8 @@ impl<'a> Emitter<'a> {
         // Phase 2: specialized bodies (a generic body may call another generic
         // function, so keep draining until the queue is empty).
         self.emit_instantiations();
+        let lifted = std::mem::take(&mut self.task_defs);
+        self.out.push_str(&lifted);
 
         let code = std::mem::take(&mut self.out);
         // Phase 3: runtime header, complete typedefs, then prototypes, then the
@@ -883,6 +919,10 @@ impl<'a> Emitter<'a> {
             self.emit_fn_proto(f);
         }
         self.emit_instantiation_protos();
+        for proto in self.task_protos.clone() {
+            self.out.push_str(&proto);
+            self.out.push('\n');
+        }
         self.out.push('\n');
         if !self.scripts.is_empty() {
             self.out
@@ -925,6 +965,8 @@ impl<'a> Emitter<'a> {
         }
         // Phase 2: specialized bodies.
         self.emit_instantiations();
+        let lifted = std::mem::take(&mut self.task_defs);
+        self.out.push_str(&lifted);
 
         let code = std::mem::take(&mut self.out);
         // Phase 3: header, dep includes, typedefs, prototypes, then code.
@@ -962,6 +1004,10 @@ impl<'a> Emitter<'a> {
             self.emit_fn_proto(f);
         }
         self.emit_instantiation_protos();
+        for proto in self.task_protos.clone() {
+            self.out.push_str(&proto);
+            self.out.push('\n');
+        }
         self.out.push('\n');
         if !self.scripts.is_empty() {
             self.out
@@ -991,7 +1037,7 @@ impl<'a> Emitter<'a> {
         );
         let _ = writeln!(
             h,
-            "/* Auto-generated by Neo Astra C backend — do not edit. */"
+            "/* Auto-generated by Neo Astra C backend â€” do not edit. */"
         );
         let _ = writeln!(h, "#ifndef {guard}");
         let _ = writeln!(h, "#define {guard}");
@@ -1037,7 +1083,7 @@ impl<'a> Emitter<'a> {
         }
         // Exported generic instantiations (`@export_as`): the author-chosen
         // symbol is the ABI entry point, so it belongs in the header
-        // (`11-c-abi.md` §3).
+        // (`11-c-abi.md` Â§3).
         let mut exported_instances: Vec<String> = Vec::new();
         for item in &self.module.ast.items.clone() {
             if let ast::ItemKind::Function(_) = &item.kind {
@@ -1365,6 +1411,10 @@ impl<'a> Emitter<'a> {
             ExprKind::Call { callee, arguments } => {
                 self.count_expr_slots(callee, total);
                 for argument in arguments {
+                    // Arguments are materialized into rooted temps before the
+                    // call, so each managed argument needs one slot.
+                    let ty = self.type_of(argument).cloned().unwrap_or(Type::Unit);
+                    *total += self.tcx.root_slot_count(&ty);
                     self.count_expr_slots(argument, total);
                 }
             }
@@ -1377,6 +1427,10 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::Array(items) | ExprKind::Tuple(items) => {
                 for item in items {
+                    // Managed elements are materialized into rooted temps
+                    // before the container is built.
+                    let ty = self.type_of(item).cloned().unwrap_or(Type::Unit);
+                    *total += self.tcx.root_slot_count(&ty);
                     self.count_expr_slots(item, total);
                 }
             }
@@ -1388,6 +1442,8 @@ impl<'a> Emitter<'a> {
             }
             ExprKind::StructInit { fields, .. } => {
                 for field in fields {
+                    let ty = self.type_of(&field.value).cloned().unwrap_or(Type::Unit);
+                    *total += self.tcx.root_slot_count(&ty);
                     self.count_expr_slots(&field.value, total);
                 }
             }
@@ -1428,10 +1484,14 @@ impl<'a> Emitter<'a> {
                     }
                 }
             }
-            ExprKind::Spawn { body } => {
-                for stmt in &body.statements {
-                    self.count_stmt_slots(stmt, total);
-                }
+            ExprKind::Spawn { body: _ } => {
+                // The body runs in its own lifted function with its own root
+                // frame; the spawning scope only roots the Task pointer.
+                let task_ty = self
+                    .type_of(e)
+                    .cloned()
+                    .unwrap_or_else(|| Type::Named("Task".to_owned(), vec![Type::Unit]));
+                *total += self.tcx.root_slot_count(&task_ty);
             }
             ExprKind::Fail { arguments, .. } => match arguments {
                 FailArguments::Tuple(items) => {
@@ -1473,6 +1533,7 @@ impl<'a> Emitter<'a> {
     fn record_local(&mut self, name: String, ty: Type, first: usize, slots: usize) {
         if let Some(frame) = self.roots.as_mut() {
             frame.used += slots;
+            frame.all_locals.push((name.clone(), ty.clone()));
             if slots > 0 {
                 frame.locals.push((name, ty, first));
             }
@@ -1673,8 +1734,58 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// C statements that wait for one task, copy its result out of the child
+    /// heap into the current heap, and release the child heap. Idempotent: a
+    /// task that was already joined has no heap and only the (no-op) wait is
+    /// emitted again.
+    fn task_join_code(&mut self, task: &PendingTask) -> String {
+        let inner = task_value_type(&task.task_ty);
+        let inner_c = self.tcx.c_type(&inner);
+        let shape = self.tcx.value_shape_ref(&inner);
+        let var = &task.var;
+        let mut code = String::new();
+        let _ = writeln!(code, "    astra_task_join(&{var}->core);");
+        let _ = writeln!(code, "    if ({var}->core.heap) {{");
+        let _ = writeln!(
+            code,
+            "        astra_gc_copy_into(astra_current_heap(), {var}->core.heap, {shape}, sizeof({inner_c}), &{var}->value, (char*){var}->core.closure + {var}->core.value_offset);"
+        );
+        let _ = writeln!(code, "        astra_task_heap_free(&{var}->core);");
+        let _ = writeln!(code, "    }}");
+        code
+    }
+
+    fn emit_scope_task_joins(&mut self) {
+        let tasks = self.scope_tasks.last().cloned().unwrap_or_default();
+        for task in &tasks {
+            let code = self.task_join_code(task);
+            self.out.push_str(&code);
+        }
+    }
+
+    fn emit_scope_task_joins_into_pre(&mut self) {
+        let tasks = self.scope_tasks.last().cloned().unwrap_or_default();
+        for task in &tasks {
+            let code = self.task_join_code(task);
+            self.pre.push_str(&code);
+        }
+    }
+
+    /// Joins every task owned by an enclosing scope, innermost first. Used on
+    /// `return`, `break`, and `continue`: any exit from the scope must wait for
+    /// its children. Joining a finished task again is a no-op.
+    fn emit_all_task_joins(&mut self) {
+        let scopes = self.scope_tasks.clone();
+        for scope in scopes.iter().rev() {
+            for task in scope {
+                let code = self.task_join_code(task);
+                self.out.push_str(&code);
+            }
+        }
+    }
+
     /// Whether this function's managed returns cross the C ABI and must be
-    /// pinned for the run (GC-001 §5.8). Only exported, non-generic functions
+    /// pinned for the run (GC-001 Â§5.8). Only exported, non-generic functions
     /// in a library build have a foreign consumer.
     fn returns_across_abi(&self, f: &ast::FunctionDecl) -> bool {
         self.library
@@ -1687,7 +1798,7 @@ impl<'a> Emitter<'a> {
                 .any(|item| item.name == f.name && item.exported)
     }
 
-    /// Pins every managed leaf reachable through `base` (GC-001 §5.8). The
+    /// Pins every managed leaf reachable through `base` (GC-001 Â§5.8). The
     /// caller materializes `base` first so each leaf expression is evaluated
     /// exactly once; `Option`/`Result` guards yield `NULL` for inactive
     /// payloads, which `astra_gc_pin` ignores.
@@ -1719,12 +1830,13 @@ impl<'a> Emitter<'a> {
         } else {
             let _ = writeln!(self.out, "static {ret_c} {sym}({params}) {{");
         }
-        // One root region per frame (GC-001 §5.1): zeroed slots for every
+        // One root region per frame (GC-001 Â§5.1): zeroed slots for every
         // managed local and temporary, restored before every return.
         self.roots = Some(RootFrame {
             var: "_rf".to_string(),
             used: 0,
             locals: Vec::new(),
+            all_locals: Vec::new(),
         });
         let _ = writeln!(
             self.out,
@@ -1769,6 +1881,7 @@ impl<'a> Emitter<'a> {
     /// a nested scope and its value is discarded.
     fn emit_block_body(&mut self, block: &ast::Block, is_fn_body: bool, is_fallible: bool) {
         self.defers.push(Vec::new());
+        self.scope_tasks.push(Vec::new());
         let n = block.statements.len();
         for (i, stmt) in block.statements.iter().enumerate() {
             let is_tail = is_fn_body && i + 1 == n;
@@ -1781,8 +1894,14 @@ impl<'a> Emitter<'a> {
         if is_fn_body && block.statements.is_empty() {
             self.emit_implicit_tail_return(is_fallible);
         } else if !is_fn_body {
+            // Structured scope: children finish before the scope's cleanup.
+            // A defer may itself spawn (or unblock) a child, so join once more
+            // after the cleanup; already-joined tasks are no-ops.
+            self.emit_scope_task_joins();
             self.emit_scope_defers();
+            self.emit_scope_task_joins();
         }
+        self.scope_tasks.pop();
         self.defers.pop();
     }
 
@@ -1872,6 +1991,9 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_all_defers(&mut self) {
+        // Structured concurrency: every enclosing scope's children finish
+        // before this scope's cleanup and before the function returns.
+        self.emit_all_task_joins();
         let all: Vec<ast::Stmt> = self
             .defers
             .iter()
@@ -1881,6 +2003,8 @@ impl<'a> Emitter<'a> {
         for d in &all {
             self.emit_stmt(d);
         }
+        // A defer may spawn a task; it belongs to the exiting scope too.
+        self.emit_all_task_joins();
     }
 
     fn emit_scope_defers(&mut self) {
@@ -1955,8 +2079,12 @@ impl<'a> Emitter<'a> {
                 value,
             } => self.emit_let(name, ty.as_ref(), value),
             StmtKind::Return { value } => self.emit_return(value.as_ref()),
-            StmtKind::Break => self.writeln_s("    break;"),
+            StmtKind::Break => {
+                self.emit_all_task_joins();
+                self.writeln_s("    break;");
+            }
             StmtKind::Continue => {
+                self.emit_all_task_joins();
                 self.writeln_s("    astra_gc_maybe_collect();");
                 self.writeln_s("    continue;");
             }
@@ -2078,7 +2206,7 @@ impl<'a> Emitter<'a> {
     fn emit_while(&mut self, condition: &Expr, body: &ast::Block) {
         self.pre.clear();
         // The condition re-runs each iteration, so nothing may be hoisted out
-        // of it (§5.3 amendment).
+        // of it (Â§5.3 amendment).
         let saved = self.hoist;
         self.hoist = false;
         let cond = self.expr(condition);
@@ -2340,22 +2468,7 @@ impl<'a> Emitter<'a> {
                 else_branch,
             } => self.if_expr_c(condition, then_branch, else_branch.as_ref(), e),
             ExprKind::Match { value, arms } => self.match_expr_c(value, arms, e),
-            ExprKind::Spawn { body } => {
-                // V1 portable runtime is single-threaded and eager, matching
-                // JS/Nova: run the block now and store its value in a Task.
-                let task_ty = self
-                    .type_of(e)
-                    .cloned()
-                    .unwrap_or_else(|| Type::Named("Task".to_owned(), vec![Type::Unit]));
-                let task_c = self.tcx.c_type(&task_ty);
-                let value = self.block_expr_c(body);
-                let task = self.fresh_id("task");
-                let _ = writeln!(
-                    self.pre,
-                    "    {task_c} {task} = ({task_c}){{ .value = {value} }};"
-                );
-                task
-            }
+            ExprKind::Spawn { body } => self.spawn_c(body, e),
             ExprKind::Fail { error, arguments } => self.fail_c(error, arguments),
             ExprKind::Panic { message } => self.panic_c(message),
             ExprKind::Abort { message } => self.abort_c(message),
@@ -2498,7 +2611,7 @@ impl<'a> Emitter<'a> {
     fn binary_c(&mut self, op: BinaryOp, left: &Expr, right: &Expr, _e: &Expr) -> String {
         if matches!(op, BinaryOp::And | BinaryOp::Or) {
             // The right operand runs conditionally, so nothing may be hoisted
-            // out of it (§5.3 amendment).
+            // out of it (Â§5.3 amendment).
             let l = self.materialize(left);
             let saved = self.hoist;
             self.hoist = false;
@@ -2625,7 +2738,7 @@ impl<'a> Emitter<'a> {
             return format!("({l} {sym} {r})");
         }
         // Signed integer addition/subtraction/multiplication must wrap without
-        // invoking C signed-overflow undefined behavior (design §6.2).
+        // invoking C signed-overflow undefined behavior (design Â§6.2).
         if (is_wrapping_op || policy_wrapping)
             && let Some(width) = signed_width(&ty)
         {
@@ -2698,7 +2811,7 @@ impl<'a> Emitter<'a> {
     fn call_c(&mut self, callee: &Expr, args: &[Expr], e: &Expr) -> String {
         // `Channel.create<str>()` parses as a type-argument wrapper around the
         // member callee. Unwrap it here (not by recursing) so the call's own
-        // annotation — `Channel<str>` — is still available to the constructor.
+        // annotation â€” `Channel<str>` â€” is still available to the constructor.
         let callee = match &callee.kind {
             ExprKind::TypeArguments { target, .. } => target.as_ref(),
             _ => callee,
@@ -2839,7 +2952,7 @@ impl<'a> Emitter<'a> {
                             // Inline script export call: `<script>.<func>(...)`.
                             if self.scripts.iter().any(|s| s.name == *owner) {
                                 // Managed arguments are borrowed pointers for the foreign frame
-                                // (GC-001 §5.9): register them as roots for the duration of the
+                                // (GC-001 Â§5.9): register them as roots for the duration of the
                                 // call so a collection triggered inside the opaque body cannot
                                 // reclaim them. The emitter owns the pairing (scoped handle).
                                 let arg_strs: Vec<String> =
@@ -2918,7 +3031,7 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// GC-001 §5.3: evaluates a managed subvalue into an emitter temporary and
+    /// GC-001 Â§5.3: evaluates a managed subvalue into an emitter temporary and
     /// publishes it as a root, so it survives an allocation performed by the
     /// call itself or by a later argument. Scalars stay inline, and references
     /// to rooted locals need no copy. Disabled where hoisting would change when
@@ -2932,9 +3045,9 @@ impl<'a> Emitter<'a> {
         };
         if self.tcx.root_slot_count(&ty) == 0 {
             // Hoist expressions that can have observable side effects (calls,
-            // blocks, control flow) into a temporary so that call arguments — and
-            // other comma-separated expression lists — are evaluated left-to-right
-            // regardless of the C compiler's argument-evaluation order (spec §3.10,
+            // blocks, control flow) into a temporary so that call arguments â€” and
+            // other comma-separated expression lists â€” are evaluated left-to-right
+            // regardless of the C compiler's argument-evaluation order (spec Â§3.10,
             // [P11]).
             let side_effecting = matches!(
                 e.kind,
@@ -2958,7 +3071,7 @@ impl<'a> Emitter<'a> {
     }
 
     /// Publishes a compiler temporary's root slots in the `pre` buffer (GC-001
-    /// §5.3). Temporaries are immutable, so they are never re-published.
+    /// Â§5.3). Temporaries are immutable, so they are never re-published.
     fn publish_temp_in_pre(&mut self, name: &str, ty: &Type) {
         let Some(var) = self.roots.as_ref().map(|frame| frame.var.clone()) else {
             return;
@@ -3030,7 +3143,7 @@ impl<'a> Emitter<'a> {
 
     fn enum_variant_c(&mut self, owner: &str, variant: &str, args: &[Expr]) -> String {
         let enum_c = self.tcx.c_type(&Type::Named(owner.to_string(), Vec::new()));
-        // The tag constant is declared with the owning module's prefix — the
+        // The tag constant is declared with the owning module's prefix â€” the
         // local stem for local enums, the dependency's stem for imported ones.
         let Some(tag) = self.tcx.enum_tag(owner, variant) else {
             self.tcx
@@ -3145,7 +3258,17 @@ impl<'a> Emitter<'a> {
             }
             (Some(Type::Named(type_name, _)), "join") if type_name == "Task" => {
                 let receiver_c = self.expr(receiver);
-                format!("({receiver_c}).value")
+                let task_ty = self.type_of(receiver).cloned().unwrap_or(Type::Unit);
+                let task_c = self.tcx.c_type(&task_ty);
+                let task = self.fresh_id("task");
+                let _ = writeln!(self.pre, "    {task_c} {task} = {receiver_c};");
+                let pending = PendingTask {
+                    var: task.clone(),
+                    task_ty,
+                };
+                let code = self.task_join_code(&pending);
+                self.pre.push_str(&code);
+                format!("({task}->value)")
             }
             (Some(Type::Named(type_name, _)), "cancel") if type_name == "Task" => {
                 let receiver_c = self.expr(receiver);
@@ -3153,10 +3276,10 @@ impl<'a> Emitter<'a> {
                 let task_c = self.tcx.c_type(&task_ty);
                 let task = self.fresh_id("task");
                 let _ = writeln!(self.pre, "    {task_c} {task} = {receiver_c};");
-                let _ = writeln!(self.pre, "    {task}.canceled = true;");
+                let _ = writeln!(self.pre, "    astra_task_cancel(&{task}->core);");
                 "(NS_Unit){0}".into()
             }
-            // Manual-memory pointer access (spec §8.4): `Ptr<T>` lowers to
+            // Manual-memory pointer access (spec Â§8.4): `Ptr<T>` lowers to
             // `T*`, so `ptr.read(i)` is `ptr[i]` and `ptr.write(i, v)` is the
             // statement `ptr[i] = v`. Both are unchecked by design - the
             // pointer carries no length - which matches the C semantics the
@@ -3337,7 +3460,7 @@ impl<'a> Emitter<'a> {
                 format!("{tmp}.error")
             }
             (Some(Type::Str), "slice") => {
-                // `str.slice(start, end)` is fallible (spec §6.2): byte
+                // `str.slice(start, end)` is fallible (spec Â§6.2): byte
                 // offsets, `Err(SliceError)` when the range is reversed, out
                 // of bounds, or splits a UTF-8 scalar value. Evaluate the
                 // receiver and each operand once into statement temporaries,
@@ -3371,7 +3494,7 @@ impl<'a> Emitter<'a> {
                 res
             }
             (Some(Type::Str), "to_int") => {
-                // `str.to_int()` is fallible (spec §6.2): a strict decimal
+                // `str.to_int()` is fallible (spec Â§6.2): a strict decimal
                 // parse to `i32`, with the original text as the error payload.
                 let r = self.expr(receiver);
                 let source = self.fresh_id("intsrc");
@@ -3789,6 +3912,216 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Lowers `spawn || { ... }` to one OS thread (CONC-001 A2). The body is
+    /// lifted into a static C function that takes a closure of the values it
+    /// captures; every captured value is copied into the task's private heap
+    /// (channels and task handles are shared), and the spawning scope joins the
+    /// task before it exits. The result is copied back into the parent heap by
+    /// `task_join_code` before the child heap is released.
+    fn spawn_c(&mut self, body: &ast::Block, spawn_expr: &Expr) -> String {
+        let task_ty = self
+            .type_of(spawn_expr)
+            .cloned()
+            .unwrap_or_else(|| Type::Named("Task".to_owned(), vec![Type::Unit]));
+        let inner = task_value_type(&task_ty);
+        let task_c = self.tcx.c_type(&task_ty);
+        let task_struct = self.tcx.task_struct_ref(&inner);
+        let task_block_shape = self.tcx.task_block_shape_ref(&inner);
+        let inner_c = self.tcx.c_type(&inner);
+        let inner_shape = self.tcx.value_shape_ref(&inner);
+
+        let captures = self.spawn_captures(body);
+        let id = self.fresh_id("spawn");
+        let closure_c = format!("ns_closure_{id}");
+        let body_sym = format!("ns_spawn_body_{id}");
+        let entry_sym = format!("ns_spawn_entry_{id}");
+
+        // The closure holds copied captures plus the child's result slot.
+        let mut fields = String::new();
+        for (name, ty) in &captures {
+            let ty_c = self.tcx.c_type(ty);
+            let _ = writeln!(fields, "    {ty_c} c_{};", sanitize(name));
+        }
+        let _ = writeln!(fields, "    {inner_c} value;");
+        self.tcx.ensure(
+            &closure_c,
+            format!("typedef struct {{\n{fields}}} {closure_c};"),
+        );
+
+        // Trace captures and the staged result so the child collector keeps
+        // them alive. The closure itself is rooted in the child heap.
+        let mut shape_fields: Vec<String> = Vec::new();
+        for (name, ty) in &captures {
+            let shape = self.tcx.value_shape_ref(ty);
+            if shape != "&NS_SHAPE_LEAF" {
+                shape_fields.push(format!(
+                    "{{ offsetof({closure_c}, c_{}), {shape} }}",
+                    sanitize(name)
+                ));
+            }
+        }
+        if inner_shape != "&NS_SHAPE_LEAF" {
+            shape_fields.push(format!("{{ offsetof({closure_c}, value), {inner_shape} }}"));
+        }
+        let closure_shape = if shape_fields.is_empty() {
+            "&NS_SHAPE_LEAF".to_owned()
+        } else {
+            self.tcx
+                .record_shape_ref(&shape_fields.join(", "), shape_fields.len())
+        };
+
+        self.task_protos
+            .push(format!("static {inner_c} {body_sym}({closure_c}* _c);"));
+        self.task_protos
+            .push(format!("static void {entry_sym}(void* _arg);"));
+        self.emit_spawn_body(&body_sym, &entry_sym, &closure_c, &inner, &captures, body);
+
+        let task_var = self.fresh_id("task");
+        let closure_var = self.fresh_id("closure");
+        let _ = writeln!(
+            self.pre,
+            "    {task_c} {task_var} = ({task_c})astra_gc_alloc({task_block_shape}, sizeof({task_struct}));"
+        );
+        self.publish_temp_in_pre(&task_var, &task_ty);
+        let _ = writeln!(self.pre, "    {task_var}->core.heap = astra_heap_create();");
+        let _ = writeln!(
+            self.pre,
+            "    {closure_c}* {closure_var} = ({closure_c}*)astra_gc_alloc_in_heap({task_var}->core.heap, {closure_shape}, sizeof({closure_c}));"
+        );
+        let _ = writeln!(
+            self.pre,
+            "    astra_gc_root_in({task_var}->core.heap, {closure_var});"
+        );
+        for (name, ty) in &captures {
+            let field = format!("{closure_var}->c_{}", sanitize(name));
+            let local = format!("v_{}", sanitize(name));
+            if is_shared_capture(ty) {
+                let _ = writeln!(self.pre, "    {field} = {local};");
+                continue;
+            }
+            let shape = self.tcx.value_shape_ref(ty);
+            if shape == "&NS_SHAPE_LEAF" {
+                let _ = writeln!(self.pre, "    {field} = {local};");
+            } else {
+                let ty_c = self.tcx.c_type(ty);
+                let _ = writeln!(
+                    self.pre,
+                    "    astra_gc_copy_into({task_var}->core.heap, astra_current_heap(), {shape}, sizeof({ty_c}), &{field}, &{local});"
+                );
+            }
+        }
+        let _ = writeln!(
+            self.pre,
+            "    {task_var}->core.value_offset = offsetof({closure_c}, value);"
+        );
+        let _ = writeln!(self.pre, "    {task_var}->core.entry = &{entry_sym};");
+        let _ = writeln!(self.pre, "    {task_var}->core.closure = {closure_var};");
+        let _ = writeln!(self.pre, "    astra_task_start(&{task_var}->core);");
+        if let Some(scope) = self.scope_tasks.last_mut() {
+            scope.push(PendingTask {
+                var: task_var.clone(),
+                task_ty,
+            });
+        }
+        task_var
+    }
+
+    /// Emits the lifted value function and the `void(void*)` thread entry
+    /// wrapper into `task_defs`. The body gets its own root frame and a fresh
+    /// emitter scope; the enclosing function's state is restored afterwards.
+    fn emit_spawn_body(
+        &mut self,
+        body_sym: &str,
+        entry_sym: &str,
+        closure_c: &str,
+        inner: &Type,
+        captures: &[(String, Type)],
+        body: &ast::Block,
+    ) {
+        let inner_c = self.tcx.c_type(inner);
+
+        let saved_out = std::mem::take(&mut self.out);
+        let saved_pre = std::mem::take(&mut self.pre);
+        let saved_roots = self.roots.take();
+        let saved_ret = std::mem::replace(&mut self.cur_ret, inner.clone());
+        let saved_err = self.cur_err.take();
+        let saved_pin = std::mem::replace(&mut self.pin_returns, false);
+        let saved_defers = std::mem::take(&mut self.defers);
+        let saved_tasks = std::mem::take(&mut self.scope_tasks);
+        let saved_expected = self.expected.take();
+        let saved_hoist = std::mem::replace(&mut self.hoist, true);
+
+        let mut root_slots = self.count_root_slots(body, &[]);
+        for (_, ty) in captures {
+            root_slots += self.tcx.root_slot_count(ty);
+        }
+
+        let _ = writeln!(self.out, "static {inner_c} {body_sym}({closure_c}* _c) {{");
+        self.roots = Some(RootFrame {
+            var: "_rf".to_string(),
+            used: 0,
+            locals: Vec::new(),
+            all_locals: Vec::new(),
+        });
+        let _ = writeln!(
+            self.out,
+            "    size_t _rf = astra_gc_frame_enter({root_slots});"
+        );
+        for (name, ty) in captures {
+            let ty_c = self.tcx.c_type(ty);
+            let c_name = format!("v_{}", sanitize(name));
+            let first = self.roots.as_ref().map_or(0, |frame| frame.used);
+            let _ = writeln!(self.out, "    {ty_c} {c_name} = _c->c_{};", sanitize(name));
+            let slots = self.publish_local(&c_name, ty, first);
+            self.record_local(c_name, ty.clone(), first, slots);
+        }
+        self.writeln_s("    astra_gc_maybe_collect();");
+        self.emit_block_body(body, true, false);
+        self.roots = None;
+        self.out.push_str("}\n");
+
+        let _ = writeln!(self.out, "static void {entry_sym}(void* _arg) {{");
+        let _ = writeln!(self.out, "    {closure_c}* _c = ({closure_c}*)_arg;");
+        let _ = writeln!(self.out, "    _c->value = {body_sym}(_c);");
+        self.out.push_str("}\n");
+
+        self.task_defs.push_str(&self.out);
+
+        self.out = saved_out;
+        self.pre = saved_pre;
+        self.roots = saved_roots;
+        self.cur_ret = saved_ret;
+        self.cur_err = saved_err;
+        self.pin_returns = saved_pin;
+        self.defers = saved_defers;
+        self.scope_tasks = saved_tasks;
+        self.expected = saved_expected;
+        self.hoist = saved_hoist;
+    }
+
+    /// The values a spawn body reads from its enclosing function, in first-use
+    /// order: free identifiers that resolve to a recorded local of the current
+    /// function. Types come from the local's declaration.
+    fn spawn_captures(&self, body: &ast::Block) -> Vec<(String, Type)> {
+        let free = spawn_free_names(body);
+        let Some(frame) = &self.roots else {
+            return Vec::new();
+        };
+        let mut captures = Vec::new();
+        for name in free {
+            let c_name = format!("v_{}", sanitize(&name));
+            if let Some((_, ty)) = frame
+                .all_locals
+                .iter()
+                .rev()
+                .find(|(local, _)| *local == c_name)
+            {
+                captures.push((name, ty.clone()));
+            }
+        }
+        captures
+    }
+
     fn block_expr_c(&mut self, block: &ast::Block) -> String {
         let ty = self.block_value_type(block);
         let tmp = self.fresh_id("b");
@@ -3819,6 +4152,7 @@ impl<'a> Emitter<'a> {
     /// Emits a block whose tail value is assigned to `target` (a fresh temp).
     fn emit_block_value(&mut self, block: &ast::Block, target: &str, block_ty: &Type) {
         self.defers.push(Vec::new());
+        self.scope_tasks.push(Vec::new());
         let n = block.statements.len();
         for (i, stmt) in block.statements.iter().enumerate() {
             let is_tail = i + 1 == n;
@@ -3837,7 +4171,10 @@ impl<'a> Emitter<'a> {
         if block.statements.is_empty() && block_ty == &Type::Unit {
             let _ = writeln!(self.pre, "        {target} = (NS_Unit){{0}};");
         }
+        self.emit_scope_task_joins_into_pre();
         self.emit_scope_defers_into_pre();
+        self.emit_scope_task_joins_into_pre();
+        self.scope_tasks.pop();
         self.defers.pop();
     }
 
@@ -3939,7 +4276,7 @@ impl<'a> Emitter<'a> {
         // The checker annotates a fallible call with its base type alone and
         // tracks the error effect separately, so a `match` over such a call
         // must materialize `Result<base, E>` exactly as the checker does for
-        // exhaustiveness — otherwise the Ok/Err arms have nothing to dispatch
+        // exhaustiveness â€” otherwise the Ok/Err arms have nothing to dispatch
         // on and bind against the wrong payload types.
         let scrut_ty = self
             .materialized_result_type(value)
@@ -3947,6 +4284,23 @@ impl<'a> Emitter<'a> {
             .unwrap_or(Type::Unit);
         let scrut = self.expr(value);
         self.flush_pre();
+        // A side-effecting scrutinee is evaluated exactly once: the dispatch
+        // reads the result several times (tag and payload).
+        let scrut = if matches!(
+            value.kind,
+            ExprKind::Call { .. }
+                | ExprKind::Block(_)
+                | ExprKind::If { .. }
+                | ExprKind::Match { .. }
+        ) {
+            let scrut_c = self.tcx.c_type(&scrut_ty);
+            let scrut_tmp = self.fresh_id("scrut");
+            let _ = writeln!(self.pre, "    {scrut_c} {scrut_tmp} = {scrut};");
+            self.flush_pre();
+            scrut_tmp
+        } else {
+            scrut
+        };
         self.emit_match_dispatch(&scrut, &scrut_ty, arms, Some(&tmp), &ty);
         tmp
     }
@@ -3955,8 +4309,8 @@ impl<'a> Emitter<'a> {
     /// backend can see it: `Some(Result<base, E>)` for a fallible call,
     /// `None` for a plain value. The checker records only the base type of a
     /// fallible call (the error effect travels separately), so consumers that
-    /// need the runtime `Result` shape — `match` scrutinees and `expr!`
-    /// propagation — ask for it here instead of guessing.
+    /// need the runtime `Result` shape â€” `match` scrutinees and `expr!`
+    /// propagation â€” ask for it here instead of guessing.
     fn materialized_result_type(&self, value: &Expr) -> Option<Type> {
         match self.type_of(value).cloned()? {
             ty @ Type::Result(_, _) => Some(ty),
@@ -4008,7 +4362,7 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    /// Lowers the spec §6.1 integer member methods (`checked_*` and
+    /// Lowers the spec Â§6.1 integer member methods (`checked_*` and
     /// `wrapping_*`) for one integer receiver type. Checked operations build a
     /// fallible `Result<T, OverflowError>` (division by zero still panics, as
     /// in Nova and the JavaScript backend); wrapping operations reuse the
@@ -4525,7 +4879,7 @@ impl<'a> Emitter<'a> {
             PatternKind::Identifier(name) => {
                 let ty_c = self.tcx.c_type(ty);
                 let _ = writeln!(self.out, "        {ty_c} v_{} = {c_expr};", sanitize(name));
-                // Pattern bindings are managed locals too (GC-001 §5.1): a
+                // Pattern bindings are managed locals too (GC-001 Â§5.1): a
                 // payload copy bound by `match` must be a root.
                 let c_name = format!("v_{}", sanitize(name));
                 let first = self.roots.as_ref().map_or(0, |frame| frame.used);
@@ -4581,7 +4935,7 @@ impl<'a> Emitter<'a> {
         let result_ty = self.materialized_result_type(inner);
         let inner_c = self.expr(inner);
         // A fallible call is annotated with its base type only, so the
-        // propagation temp must materialize `Result<base, E>` — the enclosing
+        // propagation temp must materialize `Result<base, E>` â€” the enclosing
         // function's Result may wrap a different base type.
         let result_c = match &result_ty {
             Some(ty) => self.tcx.c_type(ty),
@@ -4596,7 +4950,7 @@ impl<'a> Emitter<'a> {
             .map(|frame| format!("astra_gc_frame_exit({}); ", frame.var))
             .unwrap_or_default();
         // The error payload is copied into the enclosing Result, which may
-        // leave the compilation unit, so pin its managed leaves (§5.8).
+        // leave the compilation unit, so pin its managed leaves (Â§5.8).
         let mut pins = String::new();
         if self.pin_returns
             && let Some(err_ty) = match &result_ty {
@@ -4803,5 +5157,236 @@ fn int_min_literal(ty: &Type) -> Option<&'static str> {
         Type::I32 => Some("INT32_MIN"),
         Type::I64 => Some("INT64_MIN"),
         _ => None,
+    }
+}
+
+/// True when a captured value is a task-scope handle that must be shared
+/// rather than copied: a channel is the synchronization primitive itself, and
+/// a task/pointer/region handle already names shared state.
+fn is_shared_capture(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Named(name, _)
+            if name == "Channel" || name == "Task" || name == "Region" || name == "Ptr"
+    )
+}
+
+/// Free identifiers of a spawn body, in first-use order. The walker tracks the
+/// body's own scopes so a name bound inside the body (at any depth) is never a
+/// capture, while a reference to an enclosing local is.
+fn spawn_free_names(body: &ast::Block) -> Vec<String> {
+    let mut walker = FreeNames {
+        scopes: vec![HashSet::new()],
+        free: Vec::new(),
+        seen: HashSet::new(),
+    };
+    walker.block(body);
+    walker.free
+}
+
+struct FreeNames {
+    scopes: Vec<HashSet<String>>,
+    free: Vec<String>,
+    seen: HashSet<String>,
+}
+
+impl FreeNames {
+    fn bound(&self, name: &str) -> bool {
+        self.scopes.iter().rev().any(|scope| scope.contains(name))
+    }
+
+    fn reference(&mut self, name: &str) {
+        if self.bound(name) || self.seen.contains(name) {
+            return;
+        }
+        self.seen.insert(name.to_owned());
+        self.free.push(name.to_owned());
+    }
+
+    fn bind(&mut self, name: &str) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_owned());
+        }
+    }
+
+    fn push(&mut self) {
+        self.scopes.push(HashSet::new());
+    }
+
+    fn pop(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn scoped_block(&mut self, block: &ast::Block) {
+        self.push();
+        self.block(block);
+        self.pop();
+    }
+
+    fn block(&mut self, block: &ast::Block) {
+        for stmt in &block.statements {
+            self.stmt(stmt);
+        }
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) {
+        match &stmt.kind {
+            StmtKind::Let { name, value, .. } => {
+                // The initializer runs before the binding is in scope.
+                self.expr(value);
+                self.bind(name);
+            }
+            StmtKind::Return { value } => {
+                if let Some(value) = value {
+                    self.expr(value);
+                }
+            }
+            StmtKind::Break | StmtKind::Continue => {}
+            StmtKind::Defer(s) => self.stmt(s),
+            StmtKind::While { condition, body } => {
+                self.expr(condition);
+                self.scoped_block(body);
+            }
+            StmtKind::For {
+                binding,
+                iterable,
+                body,
+            } => {
+                self.expr(iterable);
+                self.push();
+                self.bind(binding);
+                self.block(body);
+                self.pop();
+            }
+            StmtKind::Expr(e) => self.expr(e),
+            StmtKind::Scoped(s) => {
+                self.push();
+                for stmt in &s.statements {
+                    self.stmt(stmt);
+                }
+                self.pop();
+            }
+        }
+    }
+
+    fn expr(&mut self, e: &Expr) {
+        match &e.kind {
+            ExprKind::Literal(_) => {}
+            ExprKind::Identifier(name) => self.reference(name),
+            ExprKind::Unary { operand, .. } => self.expr(operand),
+            ExprKind::Binary { left, right, .. } => {
+                self.expr(left);
+                self.expr(right);
+            }
+            ExprKind::Assign { target, value } => {
+                self.expr(target);
+                self.expr(value);
+            }
+            ExprKind::Call { callee, arguments } => {
+                // A bare callee name is a function/constructor, not a value; a
+                // method receiver (`channel.send`) is a value.
+                let callee = unwrap_type_arguments(callee);
+                if !matches!(callee.kind, ExprKind::Identifier(_)) {
+                    self.expr(callee);
+                }
+                for argument in arguments {
+                    self.expr(argument);
+                }
+            }
+            ExprKind::Index { target, index } => {
+                self.expr(target);
+                self.expr(index);
+            }
+            ExprKind::Member { target, .. } => self.expr(target),
+            ExprKind::TypeArguments { target, .. } => self.expr(target),
+            ExprKind::Propagate(inner) => self.expr(inner),
+            ExprKind::Array(items) | ExprKind::Tuple(items) => {
+                for item in items {
+                    self.expr(item);
+                }
+            }
+            ExprKind::Map(entries) => {
+                for entry in entries {
+                    self.expr(&entry.key);
+                    self.expr(&entry.value);
+                }
+            }
+            ExprKind::StructInit { fields, .. } => {
+                for field in fields {
+                    self.expr(&field.value);
+                }
+            }
+            ExprKind::Block(block) => self.scoped_block(block),
+            ExprKind::If {
+                condition,
+                then_branch,
+                else_branch,
+            } => {
+                self.expr(condition);
+                self.scoped_block(then_branch);
+                match else_branch {
+                    Some(ElseBranch::Block(block)) => self.scoped_block(block),
+                    Some(ElseBranch::If(inner)) => self.expr(inner),
+                    None => {}
+                }
+            }
+            ExprKind::Match { value, arms } => {
+                self.expr(value);
+                for arm in arms {
+                    self.push();
+                    self.pattern(&arm.pattern);
+                    match &arm.body {
+                        MatchArmBody::Expr(e) => self.expr(e),
+                        MatchArmBody::Block(block) => self.block(block),
+                    }
+                    self.pop();
+                }
+            }
+            ExprKind::Spawn { body } => self.scoped_block(body),
+            ExprKind::Fail { arguments, .. } => match arguments {
+                FailArguments::Tuple(items) => {
+                    for item in items {
+                        self.expr(item);
+                    }
+                }
+                FailArguments::Struct(fields) => {
+                    for field in fields {
+                        self.expr(&field.value);
+                    }
+                }
+            },
+            ExprKind::Panic { message } | ExprKind::Abort { message } => self.expr(message),
+        }
+    }
+
+    fn pattern(&mut self, pattern: &Pattern) {
+        match &pattern.kind {
+            PatternKind::Wildcard | PatternKind::Literal(_) => {}
+            PatternKind::Identifier(name) => self.bind(name),
+            PatternKind::Tuple(items) => {
+                for item in items {
+                    self.pattern(item);
+                }
+            }
+            PatternKind::Constructor { arguments, .. } => {
+                for argument in arguments {
+                    self.pattern(argument);
+                }
+            }
+            PatternKind::Variant { arguments, .. } => {
+                if let Some(arguments) = arguments {
+                    for argument in arguments {
+                        self.pattern(argument);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn unwrap_type_arguments(e: &Expr) -> &Expr {
+    match &e.kind {
+        ExprKind::TypeArguments { target, .. } => unwrap_type_arguments(target),
+        _ => e,
     }
 }
