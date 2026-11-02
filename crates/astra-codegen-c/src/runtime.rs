@@ -1407,6 +1407,21 @@ typedef struct {
 #endif
 } NS_Channel_Sync;
 
+/* Wall-clock seconds for the channel watchdog. `timespec_get` is C11 and stays
+   visible under strict `-std=c17`; `clock_gettime`/`CLOCK_REALTIME` are POSIX
+   and glibc hides them unless a feature-test macro is defined before the first
+   include. Windows uses the monotonic tick counter, matching the relative
+   `SleepConditionVariableCS` timeout. */
+static double astra_now_seconds(void) {
+#if defined(_WIN32)
+    return (double)GetTickCount64() / 1000.0;
+#else
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0;
+#endif
+}
+
 static double astra_channel_timeout_seconds(void) {
     static double seconds = -1.0;
     if (seconds >= 0.0) { return seconds; }
@@ -1479,7 +1494,7 @@ static bool astra_channel_wait(NS_Channel_Sync* sync, bool* timed_out) {
     return false;
 #else
     struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
+    timespec_get(&deadline, TIME_UTC);
     double seconds = astra_channel_timeout_seconds();
     time_t whole = (time_t)seconds;
     long nanos = (long)((seconds - (double)whole) * 1000000000.0);
