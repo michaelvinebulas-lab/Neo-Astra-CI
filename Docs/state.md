@@ -48,8 +48,8 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
-nothing assigned; next queued is toolchain pinning (parse `[toolchain]`,
-resolution ladder, `astra doctor`).
+toolchain pinning (`[toolchain]`, resolution ladder, `astra doctor`, lockfile
+record) - Kilo.
 
 **Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete. All
 packages move in lockstep: new mode/backend/language = minor, fixes = patch,

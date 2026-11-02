@@ -20,22 +20,95 @@ do not invent decisions - mark the question instead.
   2026-11-02). Your deliverable is implementation code, the log entry, and a
   green gate; the lead adds coverage before landing.
 
-## Status: COMPLETE - lead (no active task)
+## Status: OPEN - KILO (task: toolchain resolution, no network)
 
-**Last completed: system package source.**
+Read the task below, write your `## Kilo log` entry, then code. When the gate
+is green, write the report in the same block and set Status to `DONE - lead`.
 
-`nopm add sys:<tool>` installs `git`, `cmake`, or `clang` through winget, brew,
-apt, dnf, pacman, zypper, or apk. The planner is pure and matches the pinned
-command lines exactly; elevation is `sudo -n` off-root; unknown tools are
-`NP0015`, a missing manager `NP0017`, an install failure `NP0018`, and
-`nopm remove sys:<tool>` is `NP0016`. `sys:` never touches the manifest,
-lockfile, or store.
+---
 
-Coverage: six lead-written tests (manager matrix, manager detection, executor
-order and short-circuit, `NP0018`, and a CLI test proving `add sys:` writes
-nothing). `scripts/bootstrap.mjs` now delegates to the adapter; its `--check`
-output is byte-identical to before.
+# Task: toolchain policy, resolution ladder, `astra doctor`
 
-**Next queued, not assigned:** toolchain pinning - parse the `[toolchain]`
-section, resolve pin -> cache -> PATH with `ASTRA_CC` honored, add
-`astra doctor`, and record the resolved toolchain in the lockfile.
+## Goal
+
+Make build-time toolchain selection explicit, inspectable, and recorded, with
+no downloads and no elevation. The spec already defines the policy and the
+record: `build.*` `toolchain.c` is `auto` or a pinned id (§12.2), and the
+resolved toolchain goes into `core.lock.json` (§12.3). This slice implements
+that; it does not change the spec.
+
+**Scope.** You own `orchestrator/**`. You may edit the root `tsconfig.json`
+only to add the reference for the new package. Do not touch `package.json`,
+`scripts/**`, or `Docs/**`.
+
+## 1. New package `@neo-astra/toolchain`
+
+Must have no dependency on the CLI or nopm, and must be testable without
+spawning: inject filesystem probes and command probes.
+
+- `parseToolchainPolicy(buildData)` -> `{ request: "auto" | string }`.
+  - `toolchain.c` defaults to `auto`; a non-string or empty value is
+    `NS9101`.
+  - A pin id matches `auto` or `<family>[@<version>]`, family in
+    `clang | gcc | zig | cc` (for example `zig@0.13.0`, `clang`, `gcc@14`).
+    Anything else is `NS9101`.
+- `resolveToolchain(options)` -> resolution record:
+  `{ rung: "env" | "cache" | "path", id, family, path, version }`.
+  `id` is the pin string when the policy is pinned; for `auto` and
+  `ASTRA_CC` it is the resolved family.
+  - **CLI `--compiler <path>`** is handled by the CLI, not this function; it
+    wins over everything.
+  - **`ASTRA_CC`** (non-empty) is rung `env`: the path must exist and answer
+    `--version`; otherwise `NS9103`.
+  - **Pinned id**: cache first at
+    `<project>/.tools/toolchain/<id>/`, which must contain
+    `toolchain.json` = `{ "id", "family", "version" }` and the binary at
+    `bin/<family>[.exe]` or `<family>[.exe]`. A missing marker, a marker whose
+    `id` differs, or a missing binary is `NS9102` ("pin mismatch"). A bare
+    family pin (`clang`, `gcc`) may fall back to PATH when the cache is absent;
+    a versioned pin (`clang@18`, `zig@0.13.0`) never trusts PATH - it fails
+    `NS9102` and names the missing cache entry.
+  - **`auto`**: PATH candidates `clang`, `gcc`, `cc` in that order, each
+    required to pass the hosted probe already used by `findNativeCompiler`
+    (`-std=c17 -fsyntax-only -x c -` with `#include <stdio.h>`), falling back
+    to the first that only answers `--version`. Family is derived from the
+    binary name (`clang` -> clang, `gcc`/`cc` -> gcc).
+  - No network, no `sys:` calls, no elevation anywhere in this slice.
+- `doctor(projectRoot)` -> the ladder attempts plus the winner, for printing.
+  It reports each rung tried (env, cache, path), the winner's rung/id/family/
+  path/version, or the failure reason.
+
+## 2. CLI
+
+- `astra doctor [dir]`: load the project, print the resolved policy and the
+  ladder result. Resolved -> exit 0. Unresolved -> exit 1 with the reason.
+  `--json` may be added if it falls out naturally, but text is the contract.
+- `astra build` (and the second native path at the other
+  `findNativeCompiler()` call site): resolve through the new package instead of
+  the ad-hoc list. Precedence: `--compiler`, then `ASTRA_CC`, then
+  `toolchain.c`. Keep the current hosted-probe behavior for `auto` so existing
+  native tests pass on the PATH rung.
+- Update the help text for `doctor` and for `ASTRA_CC`.
+
+## 3. Lockfile
+
+- Add `toolchain: { rung, id, family, path, version } | null` to the lockfile
+  model, formatter, parser, and validator. nopm remains the only writer.
+- `nopm lock` and the re-lock inside `nopm add` / `nopm remove` resolve the
+  policy from the build manifest and record it.
+  - `auto` unresolved -> record `null`, do not fail the lock.
+  - pinned and unresolved -> fail `NS9102`.
+- `nopm tree` need not print it; the field is for `doctor`-level inspection
+  and reproducibility. Do not change `lockfileVersion`.
+
+## Acceptance
+
+- `npm run ci` green; existing native tests still pass on the PATH rung.
+- `astra doctor` names the rung and the binary for a cache hit, a PATH hit, and
+  an `ASTRA_CC` override; exits 1 with a clear reason when nothing resolves.
+- A versioned pin with no cache entry fails `NS9102` and never falls back to
+  PATH or to a download.
+- A cache marker whose id differs fails `NS9102`.
+- `nopm lock` writes the toolchain record; `auto` with no compiler writes
+  `null` and still succeeds; a pinned unresolved toolchain fails.
+- No network, no package-manager invocation, no elevation in any new path.
