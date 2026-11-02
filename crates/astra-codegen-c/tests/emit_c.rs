@@ -2558,6 +2558,112 @@ pub fn main() {
     assert!(stderr.contains("channel deadlock"), "stderr:\n{stderr}");
 }
 
+/// D1: cancellation is polled at managed allocations and GC safepoints. The
+/// child reports readiness, then allocates in a long loop; the parent cancels
+/// and joins. The result slot was never written, so the join yields T's zero
+/// value and the run exits cleanly instead of waiting for the loop.
+#[test]
+fn a_cancelled_task_stops_at_the_next_allocation() {
+    let src = r#"
+pub fn main() {
+    let ready = Channel.create<i32>()
+    let task = spawn || {
+        match ready.send(1) {
+            Ok(value) => (),
+            Err(error) => (),
+        }
+        let mut i = 0
+        while i < 1000000000 {
+            let block = [i, i + 1]
+            i = i + 1
+        }
+        i
+    }
+    match ready.receive() {
+        Ok(value) => (),
+        Err(error) => (),
+    }
+    task.cancel()
+    println(task.join())
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "a cancelled task must join cleanly; stderr:\n{stderr}");
+    assert_eq!(stdout.replace("\r\n", "\n"), "0\n");
+}
+
+/// D1: cancellation interrupts a blocked channel operation via the sliced
+/// wait, not the watchdog. A short watchdog makes the distinction observable:
+/// if cancellation fails, the child panics at the deadline and the run fails.
+#[test]
+fn cancelling_a_blocked_receive_interrupts_the_wait() {
+    let src = r#"
+pub fn main() {
+    let ready = Channel.create<i32>()
+    let task = spawn || {
+        match ready.send(1) {
+            Ok(value) => (),
+            Err(error) => (),
+        }
+        let empty = Channel.create<i32>()
+        match empty.receive() {
+            Ok(value) => (),
+            Err(error) => (),
+        }
+    }
+    match ready.receive() {
+        Ok(value) => (),
+        Err(error) => (),
+    }
+    task.cancel()
+    task.join()
+    println("done")
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) =
+        hosted_build_and_run_with_env(&out, &[("ASTRA_CHANNEL_DEADLOCK_TIMEOUT", "1")])
+    else {
+        return;
+    };
+    assert!(
+        ok,
+        "a cancelled wait must join before the watchdog; stderr:\n{stderr}"
+    );
+    assert_eq!(stdout.replace("\r\n", "\n"), "done\n");
+}
+
+/// Cancelling a task that already finished (and was joined) is a no-op: a
+/// second join still returns the stored value.
+#[test]
+fn cancelling_a_finished_task_is_a_no_op() {
+    let src = r#"
+pub fn main() {
+    let task = spawn || {
+        7
+    }
+    println(task.join())
+    task.cancel()
+    println(task.join())
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(
+        ok,
+        "cancelling a finished task must not fail; stderr:\n{stderr}"
+    );
+    assert_eq!(stdout.replace("\r\n", "\n"), "7\n7\n");
+}
+
 /// Regression for the run-23 failure: `astra_channel_new` allocates the handle
 /// and then the message buffer. Under stress the second allocation collects at
 /// entry, so an unrooted handle was freed (the language cannot reference it

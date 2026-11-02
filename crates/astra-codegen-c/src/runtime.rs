@@ -251,9 +251,10 @@ typedef struct {
     void (*entry)(void*);
     void* closure;
     size_t value_offset;       /* result slot inside the task closure */
+    size_t child_count;        /* tasks this task started (cancellation safety) */
     bool started;
     bool finished;
-    bool canceled;
+    volatile bool canceled;    /* cooperative cancellation flag (D1) */
 } NS_Task_Core;
 
 /* Creates an unbound task heap. The parent allocates captures into it with
@@ -278,6 +279,9 @@ extern void astra_task_heap_free(NS_Task_Core* task);
 /* Cooperative cancellation flag for the calling task (CONC-001 D1). */
 extern void astra_task_cancel(NS_Task_Core* task);
 extern bool astra_task_canceled(void);
+/* Safepoint poll: a cancelled task exits its thread immediately. Called from
+   the GC safepoint and every managed allocation; a no-op off a task thread. */
+extern void astra_task_check(void);
 
 /* Shape-directed copy of one value from `src` into `dst` (CONC-001 9.3).
    `dst_value` and `src_value` name the value slots; `n` is the value's byte
@@ -616,6 +620,9 @@ size_t astra_gc_poison_count(void) { return astra_gc_poison_fills; }
 static void astra_gc_collect_in(NS_Heap* h);
 
 static void* astra_gc_alloc_in(NS_Heap* h, const NS_Gc_Shape* shape, size_t n) {
+    /* A cancelled task stops before it can leave another half-rooted value in
+       its heap; the heap is freed wholesale after the join. */
+    astra_task_check();
     /* Under stress, collect before the new block exists: everything the caller
        still needs must already be published (§5.4 amendment, §8.1). */
     astra_gc_init_stress();
@@ -850,6 +857,7 @@ void astra_gc_collect(void) { astra_gc_collect_in(astra_heap()); }
    to the surviving heap) is post-V1 work recorded on the workstream board. */
 #define ASTRA_GC_DEFAULT_THRESHOLD (1024u * 1024u)
 void astra_gc_maybe_collect(void) {
+    astra_task_check();
     NS_Heap* h = astra_heap();
     astra_gc_init_stress();
     if (astra_gc_stress) { astra_gc_collect(); return; }
@@ -1004,6 +1012,10 @@ static void* astra_task_thread_entry(void* arg) {
 void astra_task_start(NS_Task_Core* task) {
     if (!task->heap) { task->heap = astra_heap_create(); }
     task->started = true;
+    /* Remember that this task has children: cancelling it aborts the thread
+       before the generated scope joins run, so its heap must not be released
+       while a child may still hold its record (see astra_task_heap_free). */
+    if (astra_task_current) { astra_task_current->child_count += 1; }
 #if defined(_WIN32)
     HANDLE handle = CreateThread(NULL, 0, astra_task_thread_entry, task, 0, NULL);
     if (!handle) { astra_panic("failed to start task"); }
@@ -1032,6 +1044,14 @@ void astra_task_join(NS_Task_Core* task) {
 
 void astra_task_heap_free(NS_Task_Core* task) {
     if (!task->heap) { return; }
+    /* An aborted task skips its generated scope joins, so a child it started
+       may still be running and still name a record in this heap. Leaking the
+       heap is safer than a use-after-free; the process reclaims it at exit.
+       Normal completion joined every child first, so its heap is released. */
+    if (task->canceled && task->child_count > 0) {
+        task->heap = NULL;
+        return;
+    }
     astra_heap_release(task->heap);
     task->heap = NULL;
 }
@@ -1042,6 +1062,23 @@ void astra_task_cancel(NS_Task_Core* task) {
 
 bool astra_task_canceled(void) {
     return astra_task_current && astra_task_current->canceled;
+}
+
+/* Ends the calling task's thread. The generated body is abandoned; the task
+   heap is released (or deliberately leaked, above) by the joining parent.
+   Deliberately no cleanup here: a cancelled task holds no runtime lock at a
+   poll point, and its memory belongs to the per-task heap. */
+ASTRA_NORETURN static void astra_task_abort(void) {
+#if defined(_WIN32)
+    ExitThread(0);
+#else
+    pthread_exit(NULL);
+#endif
+}
+
+void astra_task_check(void) {
+    NS_Task_Core* task = astra_task_current;
+    if (task && task->canceled) { astra_task_abort(); }
 }
 
 /* Shape-directed cross-heap copy (CONC-001 9.3). The source heap is searched
@@ -1480,11 +1517,13 @@ static void astra_channel_broadcast(NS_Channel_Sync* sync) {
 #endif
 }
 
-/* Waits for a state change. Returns true on wake; `timed_out` distinguishes a
-   watchdog expiry from an ordinary wake. */
-static bool astra_channel_wait(NS_Channel_Sync* sync, bool* timed_out) {
+/* Waits for a state change for at most `seconds`. `timed_out` distinguishes a
+   watchdog expiry from an ordinary wake. Task threads wait in short slices so
+   a cancellation is noticed without waiting for the full watchdog. */
+#define ASTRA_CHANNEL_CANCEL_SLICE 0.05
+static bool astra_channel_wait(NS_Channel_Sync* sync, double seconds, bool* timed_out) {
 #if defined(_WIN32)
-    DWORD milliseconds = (DWORD)(astra_channel_timeout_seconds() * 1000.0);
+    DWORD milliseconds = (DWORD)(seconds * 1000.0);
     if (milliseconds == 0) { milliseconds = 1; }
     if (SleepConditionVariableCS(&sync->cond, &sync->mutex, milliseconds)) {
         *timed_out = false;
@@ -1495,7 +1534,6 @@ static bool astra_channel_wait(NS_Channel_Sync* sync, bool* timed_out) {
 #else
     struct timespec deadline;
     timespec_get(&deadline, TIME_UTC);
-    double seconds = astra_channel_timeout_seconds();
     time_t whole = (time_t)seconds;
     long nanos = (long)((seconds - (double)whole) * 1000000000.0);
     deadline.tv_sec += whole;
@@ -1530,15 +1568,26 @@ NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape,
 
 bool astra_channel_send(NS_Channel* c, const void* value) {
     if (!c) return false;
+    astra_task_check();
     NS_Channel_Sync* sync = (NS_Channel_Sync*)c->sync;
+    double deadline = astra_now_seconds() + astra_channel_timeout_seconds();
     astra_channel_lock(sync);
     while (!c->closed && c->len >= c->cap) {
-        bool timed_out = false;
-        astra_channel_wait(sync, &timed_out);
-        if (timed_out) {
+        if (astra_task_canceled()) {
+            astra_channel_unlock(sync);
+            astra_task_check();
+        }
+        double left = deadline - astra_now_seconds();
+        if (left <= 0.0) {
             astra_channel_unlock(sync);
             astra_panic("channel deadlock: send on a full channel");
         }
+        if (astra_task_current && left > ASTRA_CHANNEL_CANCEL_SLICE) {
+            left = ASTRA_CHANNEL_CANCEL_SLICE;
+        }
+        bool timed_out = false;
+        astra_channel_wait(sync, left, &timed_out);
+        (void)timed_out;
     }
     if (c->closed) {
         astra_channel_unlock(sync);
@@ -1553,15 +1602,26 @@ bool astra_channel_send(NS_Channel* c, const void* value) {
 
 bool astra_channel_receive(NS_Channel* c, void* out) {
     if (!c) return false;
+    astra_task_check();
     NS_Channel_Sync* sync = (NS_Channel_Sync*)c->sync;
+    double deadline = astra_now_seconds() + astra_channel_timeout_seconds();
     astra_channel_lock(sync);
     while (c->len == 0 && !c->closed) {
-        bool timed_out = false;
-        astra_channel_wait(sync, &timed_out);
-        if (timed_out) {
+        if (astra_task_canceled()) {
+            astra_channel_unlock(sync);
+            astra_task_check();
+        }
+        double left = deadline - astra_now_seconds();
+        if (left <= 0.0) {
             astra_channel_unlock(sync);
             astra_panic("channel deadlock: receive on an empty channel");
         }
+        if (astra_task_current && left > ASTRA_CHANNEL_CANCEL_SLICE) {
+            left = ASTRA_CHANNEL_CANCEL_SLICE;
+        }
+        bool timed_out = false;
+        astra_channel_wait(sync, left, &timed_out);
+        (void)timed_out;
     }
     if (c->len == 0) {
         astra_channel_unlock(sync);
