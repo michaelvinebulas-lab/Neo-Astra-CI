@@ -58,6 +58,9 @@ lands in; nothing is scheduled beyond what is written.
 - **Two-manifest project layout:** a required package manifest and an optional
   build manifest, with strict rejection of keys in the wrong file and a single
   read path.
+- **Package add and remove:** `nopm add` / `nopm remove` that edit the package
+  manifest in place, preserving formatting and comments, then rewrite the
+  lockfile, install, and roll back if resolution or installation fails.
 
 ---
 
@@ -65,9 +68,6 @@ lands in; nothing is scheduled beyond what is written.
 
 ### 1.0.0 - complete the stack
 
-- **Package add and remove:** `nopm add` / `nopm remove` that edit the package
-  manifest without destroying formatting or comments, then update the lockfile
-  and store; dry-run support.
 - **System package manager integration:** install tools through winget, brew,
   apt, dnf, or zypper as an explicit package source; bootstrap delegates to it.
 - **Toolchain pinning:** a toolchain section in the build manifest, a resolution

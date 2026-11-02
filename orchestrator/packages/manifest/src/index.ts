@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
@@ -49,7 +49,7 @@ export interface ManifestDocument {
   readonly data: Record<string, unknown>;
 }
 
-export type ManifestErrorCode = "NS9001" | "NS9002";
+export type ManifestErrorCode = "NS9001" | "NS9002" | "NS9003";
 
 export class ManifestError extends Error {
   readonly code: ManifestErrorCode;
@@ -628,7 +628,130 @@ export function getPackageName(manifest: ManifestDocument): string | undefined {
   if (!isRecord(pkg)) {
     return undefined;
   }
-
   const name = pkg["name"];
   return typeof name === "string" ? name : undefined;
+}
+
+export async function addDependency(
+  file: ManifestFile,
+  name: string,
+  spec: string,
+): Promise<void> {
+  const source = readFileSync(file.path, "utf8");
+  const data = parseManifestSource(source, file);
+  const deps = isRecord(data["dependencies"]) ? { ...data["dependencies"] } : {};
+
+  if (Object.hasOwn(deps, name)) {
+    throw new ManifestError(
+      "NS9003",
+      `Dependency '${name}' already exists in ${file.name}.`,
+      file.path,
+    );
+  }
+
+  deps[name] = spec;
+  data["dependencies"] = deps;
+
+  let formatted: string;
+  if (file.format === "json") {
+    formatted = `${JSON.stringify(orderManifest(data, file.kind), null, 2)}\n`;
+  } else {
+    // Preserve comments by editing the source text, then canonicalize with taplo.
+    const headerRe = /^\s*\[dependencies\]\s*(#.*)?$/;
+    let updated = source;
+    const lines = updated.split("\n");
+    const headerIndex = lines.findIndex((line) => headerRe.test(line));
+    if (headerIndex >= 0) {
+      lines.splice(headerIndex + 1, 0, `${name} = ${JSON.stringify(spec)}`);
+      updated = lines.join("\n");
+    } else {
+      updated = `${updated.trimEnd()}\n\n[dependencies]\n${name} = ${JSON.stringify(spec)}\n`;
+    }
+    const taplo = await getTaplo();
+    try {
+      formatted = taplo.format(updated.replace(/^\uFEFF/, ""));
+    } catch (error) {
+      throw new ManifestError(
+        "NS9002",
+        `Invalid TOML manifest: ${error instanceof Error ? error.message : String(error)}`,
+        file.path,
+      );
+    }
+    formatted = `${formatted.replace(/\r\n/g, "\n").trimEnd()}\n`;
+  }
+
+  writeFileSync(file.path, formatted, "utf8");
+}
+
+export async function removeDependency(file: ManifestFile, name: string): Promise<boolean> {
+  const source = readFileSync(file.path, "utf8");
+  const data = parseManifestSource(source, file);
+  const deps = isRecord(data["dependencies"]) ? { ...data["dependencies"] } : {};
+
+  if (!Object.hasOwn(deps, name)) {
+    return false;
+  }
+
+  delete deps[name];
+
+  if (Object.keys(deps).length === 0) {
+    delete data["dependencies"];
+  } else {
+    data["dependencies"] = deps;
+  }
+
+  let formatted: string;
+  if (file.format === "json") {
+    formatted = `${JSON.stringify(orderManifest(data, file.kind), null, 2)}\n`;
+  } else {
+    const headerRe = /^\s*\[dependencies\]\s*(#.*)?$/;
+    const lines = source.split("\n");
+    let inDeps = false;
+    const result: string[] = [];
+    for (const line of lines) {
+      if (/^\s*\[/.test(line)) {
+        inDeps = headerRe.test(line);
+        result.push(line);
+        continue;
+      }
+      if (inDeps) {
+        const m = line.match(/^\s*([A-Za-z0-9_.-]+)\s*=/);
+        if (m && m[1] === name) {
+          continue;
+        }
+      }
+      result.push(line);
+    }
+    // Remove empty [dependencies] header.
+    const cleaned: string[] = [];
+    let i = 0;
+    while (i < result.length) {
+      if (headerRe.test(result[i] ?? "")) {
+        let j = i + 1;
+        while (j < result.length && (result[j]?.trim() ?? "") === "") j++;
+        if (j >= result.length || /^\s*\[/.test(result[j] ?? "")) {
+          i++;
+          while (i < result.length && (result[i]?.trim() ?? "") === "") i++;
+          continue;
+        }
+      }
+      cleaned.push(result[i] ?? "");
+      i++;
+    }
+    let updated = cleaned.join("\n");
+    const taplo = await getTaplo();
+    try {
+      formatted = taplo.format(updated.replace(/^\uFEFF/, ""));
+    } catch (error) {
+      throw new ManifestError(
+        "NS9002",
+        `Invalid TOML manifest: ${error instanceof Error ? error.message : String(error)}`,
+        file.path,
+      );
+    }
+    formatted = `${formatted.replace(/\r\n/g, "\n").trimEnd()}\n`;
+  }
+
+  writeFileSync(file.path, formatted, "utf8");
+  return true;
 }

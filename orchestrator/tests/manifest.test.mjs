@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
   ManifestError,
+  addDependency,
   findManifest,
   findBuildManifest,
   loadBuildManifest,
@@ -18,6 +19,7 @@ import {
   getPackageName,
   loadManifest,
   manifestFileForPath,
+  removeDependency,
 } from "../packages/manifest/dist/index.js";
 import { runCli } from "../packages/cli/dist/index.js";
 
@@ -27,6 +29,10 @@ async function createProject() {
 
 async function removeProject(directory) {
   await rm(directory, { recursive: true, force: true });
+}
+
+async function readFileText(path) {
+  return readFile(path, "utf8");
 }
 
 test("loads core.json and reads the package name", async () => {
@@ -353,5 +359,173 @@ test("formats a build.toml and preserves comments", async () => {
     assert.equal(await formatManifestSource(formatted, file), formatted);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("adds a dependency to core.json and rejects duplicates", async () => {
+  const directory = await createProject();
+  try {
+    const path = join(directory, "core.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        package: { name: "demo", version: "0.1.0" },
+        dependencies: { alpha: "nova:alpha@1" },
+      }),
+      "utf8",
+    );
+    const file = manifestFileForPath(path);
+    assert.ok(file);
+
+    await addDependency(file, "gamma", "nova:gamma@1");
+
+    const data = JSON.parse(await readFileText(path));
+    assert.deepEqual(Object.keys(data.dependencies), ["alpha", "gamma"]);
+    assert.equal(data.dependencies.gamma, "nova:gamma@1");
+    assert.equal(data.package.name, "demo");
+    assert.ok((await readFileText(path)).endsWith("\n"));
+
+    const manifest = loadManifest(directory);
+    assert.equal(getPackageName(manifest), "demo");
+
+    await assert.rejects(
+      () => addDependency(file, "alpha", "nova:alpha@2"),
+      (error) => error instanceof ManifestError && error.code === "NS9003",
+    );
+  } finally {
+    await removeProject(directory);
+  }
+});
+
+test("removes a dependency from core.json and leaves undeclared entries untouched", async () => {
+  const directory = await createProject();
+  try {
+    const path = join(directory, "core.json");
+    await writeFile(
+      path,
+      JSON.stringify({
+        package: { name: "demo", version: "0.1.0" },
+        dependencies: { alpha: "nova:alpha@1", beta: "nova:beta@1" },
+      }),
+      "utf8",
+    );
+    const file = manifestFileForPath(path);
+    assert.ok(file);
+
+    assert.equal(await removeDependency(file, "alpha"), true);
+    const data = JSON.parse(await readFileText(path));
+    assert.deepEqual(Object.keys(data.dependencies), ["beta"]);
+
+    const afterRemoval = await readFileText(path);
+    assert.equal(await removeDependency(file, "alpha"), false);
+    assert.equal(await readFileText(path), afterRemoval);
+
+    assert.equal(await removeDependency(file, "beta"), true);
+    const emptied = JSON.parse(await readFileText(path));
+    assert.equal(Object.hasOwn(emptied, "dependencies"), false);
+  } finally {
+    await removeProject(directory);
+  }
+});
+
+test("edits core.toml in place, preserving comments and other sections", async () => {
+  const directory = await createProject();
+  try {
+    const path = join(directory, "core.toml");
+    await writeFile(
+      path,
+      [
+        "# project manifest",
+        "[package]",
+        'name = "demo"',
+        'version = "0.1.0"',
+        "",
+        "[dependencies] # runtime deps",
+        'alpha = "nova:alpha@1"',
+        'beta = "nova:beta@1"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const file = manifestFileForPath(path);
+    assert.ok(file);
+
+    await addDependency(file, "gamma", "nova:gamma@1");
+    let source = await readFileText(path);
+    assert.equal(source.match(/^\[dependencies\]/gm)?.length, 1);
+    assert.match(source, /\[dependencies\]\s+# runtime deps/);
+    assert.match(source, /^gamma = "nova:gamma@1"$/m);
+    assert.match(source, /^# project manifest$/m);
+
+    assert.equal(await removeDependency(file, "alpha"), true);
+    source = await readFileText(path);
+    assert.match(source, /^beta = "nova:beta@1"$/m);
+    assert.doesNotMatch(source, /^alpha = /m);
+    assert.match(source, /\[dependencies\]\s+# runtime deps/);
+    assert.match(source, /^name = "demo"$/m);
+
+    assert.equal(await removeDependency(file, "beta"), true);
+    assert.equal(await removeDependency(file, "gamma"), true);
+    source = await readFileText(path);
+    assert.doesNotMatch(source, /^\[dependencies\]/m);
+    assert.match(source, /^\[package\]$/m);
+    assert.match(source, /^name = "demo"$/m);
+
+    const manifest = loadManifest(directory);
+    assert.equal(getPackageName(manifest), "demo");
+  } finally {
+    await removeProject(directory);
+  }
+});
+
+test("removing a dependency never touches a same-named key in another section", async () => {
+  const directory = await createProject();
+  try {
+    const path = join(directory, "core.toml");
+    await writeFile(
+      path,
+      [
+        "[package]",
+        'name = "demo"',
+        "",
+        "[dependencies]",
+        'name = "nova:name@1"',
+        'other = "nova:other@1"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const file = manifestFileForPath(path);
+    assert.ok(file);
+
+    assert.equal(await removeDependency(file, "name"), true);
+    const source = await readFileText(path);
+    assert.match(source, /^name = "demo"$/m);
+    assert.doesNotMatch(source, /^name = "nova:name@1"$/m);
+    assert.match(source, /^other = "nova:other@1"$/m);
+  } finally {
+    await removeProject(directory);
+  }
+});
+
+test("adds a dependencies table when the TOML manifest has none", async () => {
+  const directory = await createProject();
+  try {
+    const path = join(directory, "core.toml");
+    await writeFile(path, '[package]\nname = "demo"\n', "utf8");
+    const file = manifestFileForPath(path);
+    assert.ok(file);
+
+    await addDependency(file, "alpha", "nova:alpha@1");
+    const source = await readFileText(path);
+    assert.equal(source.match(/^\[dependencies\]/gm)?.length, 1);
+    assert.match(source, /^alpha = "nova:alpha@1"$/m);
+
+    await assert.rejects(
+      () => addDependency(file, "alpha", "nova:alpha@2"),
+      (error) => error instanceof ManifestError && error.code === "NS9003",
+    );
+  } finally {
+    await removeProject(directory);
   }
 });

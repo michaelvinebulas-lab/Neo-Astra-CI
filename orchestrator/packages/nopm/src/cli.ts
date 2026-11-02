@@ -9,10 +9,12 @@ import {
   renameSync,
   rmSync,
   writeFileSync,
+  readFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { ManifestError } from "@neo-astra/manifest";
+import { addDependency, findCoreManifest, removeDependency } from "@neo-astra/manifest";
 
 import {
   LOCKFILE_NAME,
@@ -49,7 +51,11 @@ Usage:
   nopm <command> [options]
 
 Commands:
-  lock [dir] [--json]        Resolve dependencies and write core.lock.json
+  add <id>[@version] [dir] [--json] [--dry-run]
+                              Add a dependency and update the lockfile
+  remove <name> [dir] [--json] [--dry-run]
+                              Remove a dependency and update the lockfile
+  lock [dir] [--json]         Resolve dependencies and write core.lock.json
   tree [dir] [--json]        Print the locked dependency package list
   install [dir] [--locked|--frozen] [--json]
                              Verify and install locked packages
@@ -82,6 +88,7 @@ interface CliOptions {
   readonly json: boolean;
   readonly locked: boolean;
   readonly frozen: boolean;
+  readonly dryRun: boolean;
 }
 
 interface Diagnostic {
@@ -100,6 +107,10 @@ async function main(): Promise<number> {
       case "version":
         process.stdout.write(`nopm ${VERSION}\n`);
         return 0;
+      case "add":
+        return await runAdd(options);
+      case "remove":
+        return await runRemove(options);
       case "lock":
         return await runLock(options);
       case "update":
@@ -126,6 +137,7 @@ function parseArgs(args: readonly string[]): CliOptions {
   const json = args.includes("--json");
   const locked = args.includes("--locked");
   const frozen = args.includes("--frozen");
+  const dryRun = args.includes("--dry-run");
   const positional: string[] = [];
   let registry: string | null = null;
 
@@ -134,7 +146,7 @@ function parseArgs(args: readonly string[]): CliOptions {
     if (argument === undefined) {
       continue;
     }
-    if (argument === "--json" || argument === "--locked" || argument === "--frozen") {
+    if (argument === "--json" || argument === "--locked" || argument === "--frozen" || argument === "--dry-run") {
       continue;
     }
     if (argument === "--registry") {
@@ -147,10 +159,10 @@ function parseArgs(args: readonly string[]): CliOptions {
       continue;
     }
     if (argument === "-h" || argument === "--help") {
-      return baseOptions("help", json, locked, frozen, registry);
+      return baseOptions("help", json, locked, frozen, dryRun, registry);
     }
     if (argument === "-v" || argument === "--version") {
-      return baseOptions("version", json, locked, frozen, registry);
+      return baseOptions("version", json, locked, frozen, dryRun, registry);
     }
     if (argument.startsWith("-")) {
       throw usage(`Unknown option '${argument}'.`);
@@ -160,13 +172,28 @@ function parseArgs(args: readonly string[]): CliOptions {
 
   const [command, ...rest] = positional;
   if (command === undefined) {
-    return baseOptions("help", json, locked, frozen, registry);
+    return baseOptions("help", json, locked, frozen, dryRun, registry);
   }
-  if (rest.length > 1) {
-    throw usage(`nopm ${command} accepts at most one argument.`);
+  const maxPositionals = command === "add" || command === "remove" ? 2 : 1;
+  if (rest.length > maxPositionals) {
+    throw usage(`nopm ${command} accepts at most ${maxPositionals} argument(s).`);
   }
   if (locked && frozen) {
     throw usage("Use only one of --locked or --frozen.");
+  }
+
+  const addRemoveCommands = new Set(["add", "remove"]);
+  if (addRemoveCommands.has(command)) {
+    return {
+      command,
+      directory: resolve(process.cwd(), rest[1] ?? "."),
+      target: rest[0] ?? null,
+      registry,
+      json,
+      locked,
+      frozen,
+      dryRun,
+    };
   }
 
   const targetCommands = new Set(["search", "audit", "why"]);
@@ -179,6 +206,7 @@ function parseArgs(args: readonly string[]): CliOptions {
       json,
       locked,
       frozen,
+      dryRun,
     };
   }
 
@@ -190,6 +218,7 @@ function parseArgs(args: readonly string[]): CliOptions {
     json,
     locked,
     frozen,
+    dryRun,
   };
 }
 
@@ -198,6 +227,7 @@ function baseOptions(
   json: boolean,
   locked: boolean,
   frozen: boolean,
+  dryRun: boolean,
   registry: string | null,
 ): CliOptions {
   return {
@@ -208,6 +238,7 @@ function baseOptions(
     json,
     locked,
     frozen,
+    dryRun,
   };
 }
 
@@ -254,6 +285,159 @@ async function runLockAsync(options: CliOptions): Promise<number> {
     );
   }
   return 0;
+}
+
+async function runAdd(options: CliOptions): Promise<number> {
+  const id = options.target;
+  if (id === null) {
+    throw usage("nopm add requires a package ID.");
+  }
+  const parsedId = parsePackageId(id);
+  const alias = (parsedId.name.split("@")[0] ?? parsedId.name).replace(/[^A-Za-z0-9_-]/g, "-").replace(/^-/, "_");
+  const spec = id;
+
+  const project = readProject(options.directory, { requireTargets: false });
+
+  const existingSpec = project.dependencies.find((d) => d.alias === alias);
+  if (existingSpec !== undefined) {
+    throw new NopmError("NP0013", `Dependency '${alias}' already exists.`, alias);
+  }
+
+  if (options.dryRun) {
+    if (options.json) {
+      process.stdout.write(JSON.stringify({ ok: true, dryRun: true, action: "add", id: spec }) + "\n");
+    } else {
+      process.stdout.write(`Would add ${spec} to ${project.directory}\n`);
+    }
+    return 0;
+  }
+
+  const coreFile = findCoreManifest(project.directory);
+  const originalManifest = readFileSync(coreFile.path, "utf8");
+  const lockfilePath = join(project.directory, LOCKFILE_NAME);
+  let originalLockfile: string | null = null;
+  try {
+    originalLockfile = readFileSync(lockfilePath, "utf8");
+  } catch {
+    originalLockfile = null;
+  }
+  let manifestWritten = false;
+  let lockfileWritten = false;
+  try {
+    await addDependency(coreFile, alias, spec);
+    manifestWritten = true;
+
+    const newProject = readProject(options.directory, { requireTargets: false });
+    const requests = newProject.dependencies.map((d) => d.request);
+    const resolved = await collectDescriptors(newProject, requests);
+    const resolution = resolveForTargets(resolved.requests, resolved.descriptors, newProject.targets);
+    const lockfile = createLockfile({
+      resolution,
+      generatedBy: GENERATED_BY,
+      manifestHash: newProject.manifestHash,
+      compiler: COMPILER,
+      ffi: newProject.ffi,
+    });
+    writeAtomically(lockfilePath, formatLockfile(lockfile));
+    lockfileWritten = true;
+
+    await installLockedPackages(newProject.directory, lockfile, { generatedBy: GENERATED_BY });
+
+    if (options.json) {
+      process.stdout.write(JSON.stringify({ ok: true, action: "add", id: spec, packages: lockfile.packages.length }) + "\n");
+    } else {
+      process.stdout.write(`Added ${spec} (alias: ${alias}).\n`);
+    }
+    return 0;
+  } catch (error) {
+    if (manifestWritten) {
+      writeFileSync(coreFile.path, originalManifest, "utf8");
+    }
+    if (lockfileWritten) {
+      if (originalLockfile === null) {
+        try { rmSync(lockfilePath, { force: true }); } catch { /* ignore */ }
+      } else {
+        writeFileSync(lockfilePath, originalLockfile, "utf8");
+      }
+    }
+    throw error;
+  }
+}
+
+async function runRemove(options: CliOptions): Promise<number> {
+  const name = options.target;
+  if (name === null) {
+    throw usage("nopm remove requires a package name.");
+  }
+  const project = readProject(options.directory, { requireTargets: false });
+
+  const existing = project.dependencies.find((d) => d.request.alias === name);
+  if (existing === undefined) {
+    throw new NopmError("NP0014", `Dependency '${name}' is not declared.`, name);
+  }
+
+  if (options.dryRun) {
+    if (options.json) {
+      process.stdout.write(JSON.stringify({ ok: true, dryRun: true, action: "remove", name }) + "\n");
+    } else {
+      process.stdout.write(`Would remove ${name} from ${project.directory}\n`);
+    }
+    return 0;
+  }
+
+  const coreFile = findCoreManifest(project.directory);
+  const originalManifest = readFileSync(coreFile.path, "utf8");
+  const lockfilePath = join(project.directory, LOCKFILE_NAME);
+  let originalLockfile: string | null = null;
+  try {
+    originalLockfile = readFileSync(lockfilePath, "utf8");
+  } catch {
+    originalLockfile = null;
+  }
+  let manifestWritten = false;
+  let lockfileWritten = false;
+  try {
+    const removed = await removeDependency(coreFile, name);
+    if (!removed) {
+      throw new NopmError("NP0014", `Dependency '${name}' is not declared.`, name);
+    }
+    manifestWritten = true;
+
+    const newProject = readProject(options.directory, { requireTargets: false });
+    const requests = newProject.dependencies.map((d) => d.request);
+    const resolved = await collectDescriptors(newProject, requests);
+    const resolution = resolveForTargets(resolved.requests, resolved.descriptors, newProject.targets);
+    const lockfile = createLockfile({
+      resolution,
+      generatedBy: GENERATED_BY,
+      manifestHash: newProject.manifestHash,
+      compiler: COMPILER,
+      ffi: newProject.ffi,
+    });
+    writeAtomically(lockfilePath, formatLockfile(lockfile));
+    lockfileWritten = true;
+
+    await installLockedPackages(newProject.directory, lockfile, { generatedBy: GENERATED_BY });
+
+    if (options.json) {
+      process.stdout.write(JSON.stringify({ ok: true, action: "remove", name }) + "\n");
+    } else {
+      process.stdout.write(`Removed ${name}.\n`);
+    }
+    return 0;
+  } catch (error) {
+    if (manifestWritten) {
+      writeFileSync(coreFile.path, originalManifest, "utf8");
+    }
+    if (lockfileWritten) {
+      if (originalLockfile === null) {
+        try { rmSync(lockfilePath, { force: true }); } catch { /* ignore */ }
+      } else {
+        writeFileSync(lockfilePath, originalLockfile, "utf8");
+      }
+    }
+    throw error;
+  }
 }
 
 function runTree(options: CliOptions): number {
@@ -514,7 +698,7 @@ function registryFor(options: CliOptions): string {
     return options.registry;
   }
   try {
-    const project = readProject(options.directory);
+  const project = readProject(options.directory);
     if (project.registry !== null) {
       return project.registry;
     }

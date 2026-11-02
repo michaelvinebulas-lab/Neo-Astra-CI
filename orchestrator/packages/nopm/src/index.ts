@@ -28,7 +28,9 @@ export type NopmErrorCode =
   | "NP0009"
   | "NP0010"
   | "NP0011"
-  | "NP0012";
+  | "NP0012"
+  | "NP0013"
+  | "NP0014";
 
 export type Mode = "core" | "app" | "web" | "system";
 

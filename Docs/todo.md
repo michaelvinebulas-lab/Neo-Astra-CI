@@ -1,4 +1,4 @@
-# Todo
+﻿# Todo
 
 Every open task, grouped by the version it lands in (same names as the
 roadmap). Check items off as they are done and prune them at each release.
@@ -13,14 +13,15 @@ Completed work is summarized at the bottom; the full history is in
       wrong file, one read path with no fallback to the other manifest,
       canonical key ordering per manifest kind, the restored core-order test,
       a CLI-level rejection test, and the migrated fixtures - then commit it.
-- [ ] Manifest edit API: add and remove a dependency without destroying
+- [x] Manifest edit API: add and remove a dependency without destroying
       formatting or comments, canonical output, duplicate rejection, JSON and
       TOML forms.
-- [ ] `nopm add`: resolve a package, edit the package manifest, rewrite the
+- [x] `nopm add`: resolve a package, edit the package manifest, rewrite the
       lockfile, install; `--json` and `--dry-run` (dry-run writes nothing).
-- [ ] `nopm remove`, with the same edit guarantees.
-- [ ] End-to-end package tests for path, git, and npm sources: correct lockfile
-      diff, populated store, duplicate handling.
+- [x] `nopm remove`, with the same edit guarantees.
+- [x] End-to-end package tests: path source through the CLI (add, remove,
+      dry-run, rollback, lockfile and store); git and npm stay covered by their
+      adapter tests so the gate needs no network.
 - [ ] System package-manager source: winget (Windows), brew (macOS), apt, dnf,
       zypper (Linux) as an explicit `sys:` source; elevation handled by the
       adapter; exact command lines unit-tested with no real installs in CI;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -900,3 +900,152 @@ test("store installs and verifies a remote tarball", async (t) => {
 
 
 
+
+const nopmCliPath = fileURLToPath(new URL("../packages/nopm/dist/cli.js", import.meta.url));
+
+function runNopm(args, cwd) {
+  return spawnSync(process.execPath, [nopmCliPath, ...args], {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
+function writePathProject(directory, manifestName = "core.json") {
+  const packageDirectory = join(directory, "local-utils");
+  mkdirSync(packageDirectory, { recursive: true });
+
+  const packageData = JSON.stringify(
+    { package: { name: "local-utils", version: "0.1.0" } },
+    null,
+    2,
+  );
+  const buildData = JSON.stringify(
+    { targets: { web: { backend: "js", mode: "web" } } },
+    null,
+    2,
+  );
+  writeFileSync(join(packageDirectory, "core.json"), `${packageData}\n`);
+  writeFileSync(join(packageDirectory, "build.json"), `${buildData}\n`);
+
+  if (manifestName === "core.toml") {
+    writeFileSync(
+      join(directory, "core.toml"),
+      [
+        "# demo project",
+        "[package]",
+        'name = "demo"',
+        'version = "0.1.0"',
+        "",
+      ].join("\n"),
+    );
+  } else {
+    writeFileSync(
+      join(directory, "core.json"),
+      `${JSON.stringify({ package: { name: "demo", version: "0.1.0" } }, null, 2)}\n`,
+    );
+  }
+  writeFileSync(join(directory, "build.json"), `${buildData}\n`);
+  return packageDirectory;
+}
+
+test("nopm add and remove update the manifest, lockfile, and store (path source)", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-add-"));
+  try {
+    writePathProject(directory);
+
+    const add = runNopm(["add", "path:local-utils", directory, "--json"], directory);
+    assert.equal(add.status, 0, add.stderr);
+    assert.equal(JSON.parse(add.stdout).action, "add");
+
+    const manifest = JSON.parse(readFileSync(join(directory, "core.json"), "utf8"));
+    assert.deepEqual(manifest.dependencies, { "local-utils": "path:local-utils" });
+
+    const lockfile = readLockfileFile(join(directory, "core.lock.json"));
+    assert.deepEqual(lockfile.packages.map((entry) => entry.id), ["path:local-utils"]);
+
+    const store = JSON.parse(
+      readFileSync(join(directory, ".astra", "store", "index.json"), "utf8"),
+    );
+    assert.deepEqual(store.packages.map((entry) => entry.id), ["path:local-utils"]);
+
+    const duplicate = runNopm(["add", "path:local-utils", directory], directory);
+    assert.notEqual(duplicate.status, 0);
+    assert.match(duplicate.stderr, /NP0013/);
+
+    const remove = runNopm(["remove", "local-utils", directory], directory);
+    assert.equal(remove.status, 0, remove.stderr);
+    const removed = JSON.parse(readFileSync(join(directory, "core.json"), "utf8"));
+    assert.equal(Object.hasOwn(removed, "dependencies"), false);
+    const relocked = readLockfileFile(join(directory, "core.lock.json"));
+    assert.deepEqual(relocked.packages, []);
+
+    const missing = runNopm(["remove", "local-utils", directory], directory);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /NP0014/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("nopm add and remove preserve TOML comments through the CLI", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-add-toml-"));
+  try {
+    writePathProject(directory, "core.toml");
+
+    const add = runNopm(["add", "path:local-utils", directory], directory);
+    assert.equal(add.status, 0, add.stderr);
+    let source = readFileSync(join(directory, "core.toml"), "utf8");
+    assert.match(source, /^# demo project$/m);
+    assert.match(source, /^\[dependencies\]$/m);
+    assert.match(source, /^local-utils = "path:local-utils"$/m);
+
+    const remove = runNopm(["remove", "local-utils", directory], directory);
+    assert.equal(remove.status, 0, remove.stderr);
+    source = readFileSync(join(directory, "core.toml"), "utf8");
+    assert.match(source, /^# demo project$/m);
+    assert.match(source, /^name = "demo"$/m);
+    assert.doesNotMatch(source, /^\[dependencies\]$/m);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("nopm add --dry-run writes neither the manifest nor the lockfile", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-add-dry-"));
+  try {
+    writePathProject(directory);
+    const manifestPath = join(directory, "core.json");
+    const before = readFileSync(manifestPath, "utf8");
+
+    const result = runNopm(["add", "path:local-utils", directory, "--dry-run"], directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Would add path:local-utils/);
+    assert.equal(readFileSync(manifestPath, "utf8"), before);
+    assert.equal(existsSync(join(directory, "core.lock.json")), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("nopm add restores the manifest and lockfile when resolution fails", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-add-rollback-"));
+  try {
+    writePathProject(directory);
+    const locked = runNopm(["lock", directory], directory);
+    assert.equal(locked.status, 0, locked.stderr);
+
+    const manifestPath = join(directory, "core.json");
+    const lockfilePath = join(directory, "core.lock.json");
+    const manifestBefore = readFileSync(manifestPath, "utf8");
+    const lockfileBefore = readFileSync(lockfilePath, "utf8");
+
+    const failed = runNopm(["add", "path:missing-package", directory], directory);
+    assert.notEqual(failed.status, 0);
+
+    assert.equal(readFileSync(manifestPath, "utf8"), manifestBefore);
+    assert.equal(readFileSync(lockfilePath, "utf8"), lockfileBefore);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
