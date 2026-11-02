@@ -179,9 +179,11 @@ writes the acceptance tests and lands. Fix the items below in
 
 ### nopm
 
-11. Add `@neo-astra/toolchain` to nopm's dependencies and resolve + record
-    `toolchain` in the single lock writer used by `nopm lock`, `add`, and
-    `remove`:
+11. Add `@neo-astra/toolchain` to nopm's dependencies (and the nopm tsconfig
+    reference) and resolve + record `toolchain` in the single lock writer used
+    by `nopm lock`, `add`, and `remove`. There are three `createLockfile` call
+    sites in `nopm/src/cli.ts`; route them through one helper that resolves the
+    policy from the project's build manifest.
     - parse the build manifest policy and resolve with the real probe;
     - `auto` unresolved -> `toolchain: null`, lock still succeeds;
     - pinned unresolved -> fail `NS9102`;
@@ -199,6 +201,12 @@ Note: the Tier-1 failure on `d8ed12e` was in the lead's concurrency slice
 (glibc hides `clock_gettime` under strict `-std=c17`), fixed in `ec4c5a8`;
 run 41470469664 is green. It was not the per-task heap work in `emit.rs` /
 `ty.rs`.
+
+The lead's acceptance file `orchestrator/tests/toolchain.test.mjs` is in the
+tree (29 cases; 10 currently fail on the gaps above, including the CLI and
+`nopm lock` cases). Run it after `npm run build`; it is lead-owned, so do not
+edit it. It is not yet wired into the `package.json` test list; the lead does
+that at landing.
 
 ## Kilo log
 

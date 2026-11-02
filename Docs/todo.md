@@ -58,8 +58,10 @@ Completed work is summarized at the bottom; the full history is in
       it, and captured values plus task results are deep-copied across heaps.
 - [ ] Thread-safe immortal heap for interned strings and static descriptors;
       update the collector's single-heap assumption for shared descriptors.
-- [ ] Cooperative cancellation at collection safepoints and during blocked
+- [x] Cooperative cancellation at collection safepoints and during blocked
       channel operations; cancellation of a finished or dead task is a no-op.
+- [ ] Specify the `TaskError` shape and the result of joining a cancelled task
+      (currently `T`'s zero value); record it in the standard-library spec.
 - [x] Re-pin the concurrency conformance case for the new blocking semantics
       and run the threaded matrix on Linux, macOS, and Windows.
 - [ ] Send copies managed values only; primitives and scalars move by value.
