@@ -6,10 +6,14 @@
 // build and tests spend time on a tree that cannot be released.
 
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const root = fileURLToPath(new URL("..", import.meta.url));
+const defaultRoot = fileURLToPath(new URL("..", import.meta.url));
+const rootOverride = process.argv.find((arg) => arg.startsWith("--root="));
+const root = rootOverride
+  ? resolve(rootOverride.slice("--root=".length))
+  : defaultRoot;
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const errors = [];
 const checked = [];
