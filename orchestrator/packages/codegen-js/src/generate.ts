@@ -3704,7 +3704,29 @@ class JavaScriptGenerator {
   } {
     const temporary = this.temporary("match");
     this.useHelper("err");
-    const rootSemantic = this.typeAt(value.span);
+    let rootSemantic = this.typeAt(value.span);
+    // A fallible call is annotated at its call span with the materialized base
+    // type; the callee carries the function type and its error set. The match
+    // runtime builds `Result<return, error>`, so derive that result type for
+    // the arm bindings. Without this, a managed payload (e.g. a `bytes`
+    // message) stays `unknown` in TS and cannot be passed to a typed function.
+    if (rootSemantic === undefined || typeTag(rootSemantic) !== "Result") {
+      const call =
+        variantOf(value.kind) === "Call"
+          ? (payloadOf(value.kind) as { readonly callee: Expr })
+          : undefined;
+      const callee = call === undefined ? undefined : this.typeAt(call.callee.span);
+      if (
+        callee !== undefined &&
+        typeof callee === "object" &&
+        "Function" in callee &&
+        callee.Function.errors[0] !== undefined
+      ) {
+        rootSemantic = {
+          Result: [callee.Function.return_type, callee.Function.errors[0]],
+        };
+      }
+    }
     const lines = this.isTs
       ? [
           `let ${temporary} = ${this.emitExpr(value)} as unknown as $Dyn;`,
