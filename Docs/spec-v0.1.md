@@ -1380,9 +1380,10 @@ Rules:
 - Shared mutable state is not allowed between tasks in the portable core.
 - Messages are copied or serialized.
 - Managed values are deep-copied into the receiving task's heap on `send`; primitives and scalars move by value (CONC-001).
+- Channel handles are shared by reference; the handle and its queue live in the process-lived heap.
 - Immutable values MAY be shared.
 - `SharedArrayBuffer` is an explicit `web` opt-in.
-- Native tasks use a per-task heap plus a thread-safe immortal heap for interned strings and static descriptors (CONC-001, C2).
+- Native tasks use a per-task heap plus a thread-safe process-lived heap for channel handles, queued messages, interned strings, and static descriptors (CONC-001, C2).
 
 ### 9.4 Target mapping
 

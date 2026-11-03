@@ -56,9 +56,9 @@ Completed work is summarized at the bottom; the full history is in
       variable).
 - [x] Per-task heaps: every execution context owns an `NS_Heap`, TLS selects
       it, and captured values plus task results are deep-copied across heaps.
-- [ ] (1.0 blocker, D28) Thread-safe shared heap for channel storage, reused for
-      interned strings and static descriptors when they exist. A sender must
-      never allocate into another task's single-threaded heap.
+- [x] (1.0 blocker, D28) Thread-safe shared heap for channel storage, reused
+      for interned strings and static descriptors when they exist. A sender
+      never allocates into another task's single-threaded heap.
 - [x] Cooperative cancellation at collection safepoints and during blocked
       channel operations; cancellation of a finished or dead task is a no-op.
 - [ ] (1.0 blocker, D28; needs principal decision) Specify the `TaskError` shape
@@ -66,12 +66,19 @@ Completed work is summarized at the bottom; the full history is in
       standard-library spec, then implement it.
 - [x] Re-pin the concurrency conformance case for the new blocking semantics
       and run the threaded matrix on Linux, macOS, and Windows.
-- [ ] (1.0 blocker, D28) Channel messages: deep-copy managed values for the
+- [x] (1.0 blocker, D28) Channel messages: deep-copy managed values for the
       receiving task's heap (spec 9.3); primitives and scalars move by value.
-      The conformance case must send a heap-built string, not only a literal.
+      The conformance case sends a heap-built `bytes` value and receives it
+      after the sender heap is released.
 - [ ] (1.0 blocker, D28) Spawn captures resolve free names through the full
       scope chain, not a flat locals map, so an out-of-scope shadowed local is
       never captured.
+- [ ] (1.0 blocker, D28; proposed rule) A task handle nested inside a composite
+      (struct, array, option, result) is deep-copied by the generic shape when
+      it crosses a task boundary; that duplicates its thread handle and owner
+      heap. Channel elements now reject it (`NS4019`). Extend the rule to spawn
+      captures and task results, or define a single-owner shared task handle,
+      after the principal decides.
 
 ### Release
 

@@ -5,9 +5,9 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-03
-**Phase:** V1 completion - toolchain fix round, channel message copies, then the release cut.
-**Master:** `0c37c3c` (Tier-1 run 41603015821 green: Linux, macOS, Windows).
-**Blockers:** toolchain fix round (Kilo); channel cross-heap message copies (D28/CONC-001); `TaskError` shape decision.
+**Phase:** V1 completion - toolchain fix round and release preparation.
+**Master:** `88d771e` (Tier-1 run 41633106216 green: Linux, macOS, Windows).
+**Blockers:** toolchain fix round (Kilo); `TaskError` shape decision; composite task-handle rule (proposed); spawn-capture scope resolution; release packaging, install/upgrade docs, and the D28 gap audit.
 
 ---
 
@@ -37,6 +37,9 @@ or frozen history (`Docs/archive/`).
   JavaScript ESM, TypeScript ESM, and the Nova interpreter (typed HIR).
 - **Memory:** managed arena + precise root frames + mark-sweep collector with
   `ASTRA_GC_STRESS=1`, boundary pinning, manual alloc/free, `Region`, C ABI.
+- **Concurrency:** OS-thread spawn bound to structured scopes, per-task heaps,
+  cooperative cancellation, bounded channels with a deadlock watchdog, and a
+  thread-safe process-lived shared heap for channel handles and messages.
 - **Toolchain:** `astra` CLI (check, fmt, build, run), NoPM (lock, tree,
   install, search, audit, why, update), manifest formatting, registry adapters.
 - **Compiler API:** JSON-RPC/native + raw Wasm: `check`, `check_project`,
@@ -49,7 +52,9 @@ or frozen history (`Docs/archive/`).
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
 toolchain pinning (`[toolchain]`, resolution ladder, `astra doctor`, lockfile
-record) - Kilo; channel message deep copies and shared storage - lead.
+record) - Kilo; release preparation and the remaining 1.0 blockers - lead.
+Channel messages are done: handles, queue buffers, and queued copies live in a
+thread-safe process-lived heap, and both directions deep-copy by element shape.
 
 **Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete and
 the D28 gap audit is clean. All packages move in lockstep: new
@@ -72,7 +77,7 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 | FFI-001 | 2026-10-31 | Explicit instantiation exports via attributes (spec first). |
 | `@script:c` | 2026-10-31 | §5.1 boundary slice: enter/root/call/exit at managed-argument boundaries. |
 | GC-001 | 2026-10-30/31 | Phases 0/A/B/C landed; collection default at 1 MiB safepoints; pinning for library returns; Phase D (Wasm) deferred. |
-| CONC-001 | 2026-11-01 | A2 OS thread per spawn bound to the structured scope (A1 eager fallback for Web/JS/Nova); B3 parked channel ops + 5 s watchdog (`ASTRA_CHANNEL_DEADLOCK_TIMEOUT`); C2 per-task heaps + thread-safe immortal heap; D1 cooperative cancellation at GC safepoints and channel ops. Implementation last in V1. |
+| CONC-001 | 2026-11-01 | A2 OS thread per spawn bound to the structured scope (A1 eager fallback for Web/JS/Nova); B3 parked channel ops + 5 s watchdog (`ASTRA_CHANNEL_DEADLOCK_TIMEOUT`); C2 per-task heaps + a thread-safe process-lived shared heap for channel handles/messages, interned strings, and static descriptors; D1 cooperative cancellation at GC safepoints and channel ops. Implementation landed in V1. |
 | `high` mode | 2026-11-01 | New mode: `app` capabilities + ban list (`Memory`/`@memory:manual`, `Ptr`, `Region`, `ffi`, `@script`, C-ABI/`@export_as`) + full sugar (top-level statements, implicit main/exit 0, `print`, tail return, `fn main` mixing error, optional return-type inference); profile via manifest `defaultMode`; importable as app. Post-1.0. |
 | Languages | 2026-11-01 | Extend the C/Wasm/JS/TS pattern (targets, interop, toolchain rungs) to Rust, Go, Lua, Ruby, Java. Per-language scope decided on pickup; V2+. |
 | Versioning | 2026-11-01 | SemVer, lockstep, cut `1.0.0` at V1 end. |
@@ -80,13 +85,18 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 
 **Open questions:** `TaskError` shape and the result of joining a cancelled or
 failed task (spec 9.5 leaves it to the standard library). Proposed options are
-in `Task.md`; not recorded until the principal decides. Everything else is
-governed by D28 - a gap is not allowed to exist just because it has a task.
+in `Task.md`; not recorded until the principal decides. A second proposal: a
+task handle must not be nested in a value that crosses a task boundary (spawn
+captures, task results, channel messages). Channel elements already reject it
+with `NS4019` as a safety guard; whether that becomes the general rule is for
+the principal. Everything else is governed by D28 - a gap is not allowed to
+exist just because it has a task.
 
 ## Log (recent, pruned)
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-03 | Channel messages landed: a once-initialized, thread-safe shared heap owns channel handles, queue buffers, and queued copies; `send` deep-copies the element by shape, `receive` copies into the receiver heap and frees the shared subgraph, and channel values are shared handles; adds bytes-after-join, reclamation, shared-heap, stress, and cross-backend conformance tests. `Channel<T>` rejects task handles (`NS4019`). TS match bindings over fallible calls now type the materialized `Result`. | `7b7dc29` + `1a61817` + `88d771e`, run 41633106216 |
 | 2026-11-03 | Release engineering started: lockstep version gate (root package, Cargo workspace, lockfile, orchestrator packages, both CLI constants) and a release script that bumps every version, moves `[Unreleased]` under a dated heading, refreshes `Cargo.lock`, and supports `--dry-run`; covered by a new test | `866a7dd` + `5890c23`, runs 41600987283 + 41602074448 |
 | 2026-11-02 | Cooperative cancellation landed (D1): tasks poll the flag at GC safepoints and managed allocations, blocked channel waits are sliced so cancellation interrupts them, and cancelling a finished task is a no-op; 3 lead tests plus the GC-stress leg | `6346339`, run 41472912629 |
 | 2026-11-02 | Multithreaded spawn landed: one OS thread per spawn bound to its structured scope, per-task heaps with shape-directed capture and result copies, blocking channels with the 5 s deadlock watchdog, and single-evaluation match scrutinees; lead tests cover capture/result copies, block joins, child panic, backpressure, and the watchdog; channels conformance re-pinned | `ec4c5a8`, run 41470469664 |
