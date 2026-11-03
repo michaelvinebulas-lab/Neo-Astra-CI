@@ -2536,6 +2536,70 @@ pub fn main() -> i32 {
     assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["1", "11"]);
 }
 
+/// D28/CONC-001: a spawn resolves free names from the scope active at the
+/// spawn site. A shadowed binding in an earlier block or loop is out of scope
+/// and must not supply the capture's type (it would otherwise emit a closure
+/// field of the shadow's type).
+#[test]
+fn spawn_capture_ignores_shadowed_block_and_loop_bindings() {
+    let src = r#"
+pub fn main() -> i32 {
+    let value = 1
+    {
+        let value = "block"
+        println(value)
+    }
+    for value in ["loop"] {
+        println(value)
+    }
+    let task = spawn || { value }
+    let captured = task.join()
+    println(captured)
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "execution failed:\nstderr:\n{stderr}");
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec!["block", "loop", "1"]
+    );
+}
+
+/// A match arm's pattern binding is scoped to that arm. A spawn after the
+/// match must capture the enclosing binding, not the arm's shadow.
+#[test]
+fn spawn_capture_ignores_shadowed_match_arm_bindings() {
+    let src = r#"
+fn shadow() -> Option<str> {
+    return Some("match")
+}
+
+pub fn main() -> i32 {
+    let value = 1
+    match shadow() {
+        Some(value) => println(value),
+        _ => {},
+    }
+    let task = spawn || { value }
+    let captured = task.join()
+    println(captured)
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "execution failed:\nstderr:\n{stderr}");
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["match", "1"]);
+}
+
 /// A panic in a task fails the parent's run: the process exits non-zero with
 /// the child's panic message instead of the parent silently joining.
 #[test]
@@ -3943,4 +4007,59 @@ fn project_rejects_default_import_call() {
         "diagnostic should name the symbol: {}",
         err.message
     );
+}
+
+#[test]
+fn match_block_arm_managed_binding_stays_in_scope() {
+    let src = r#"
+fn describe(value: Option<str>) -> i32 {
+    return match value {
+        Some(message) => {
+            println(message)
+            1
+        }
+        None => 0,
+    }
+}
+pub fn main() -> i32 { return describe(Some("hello")) }
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+}
+
+#[test]
+fn channel_receive_block_arm_publishes_message_inside_the_arm() {
+    let src = r#"
+fn produce(channel: Channel<bytes>) -> () ! ChannelError {
+    let mut buffer = bytes.new(3)
+    buffer[0] = 65
+    buffer[1] = 66
+    buffer[2] = 67
+    channel.send(buffer)!
+}
+
+fn show(message: bytes) -> () {
+    println(message[0])
+}
+
+pub fn main() -> i32 {
+    let channel = Channel.create<bytes>()
+    let task = spawn || {
+        match produce(channel) {
+            Ok(value) => (),
+            Err(error) => println("send failed"),
+        }
+    }
+    task.join()
+    match channel.receive() {
+        Ok(message) => {
+            show(message)
+        }
+        Err(error) => println("closed"),
+    }
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
 }

@@ -162,6 +162,8 @@ pub fn emit(module: &CModule) -> Result<GeneratedC, BackendError> {
         roots: None,
         hoist: true,
         scope_tasks: Vec::new(),
+        pending_pattern_locals: Vec::new(),
+        pending_pattern_slots: Vec::new(),
         task_defs: String::new(),
         task_protos: Vec::new(),
     };
@@ -289,6 +291,8 @@ pub fn emit_project(
             roots: None,
             hoist: true,
             scope_tasks: Vec::new(),
+            pending_pattern_locals: Vec::new(),
+            pending_pattern_slots: Vec::new(),
             task_defs: String::new(),
             task_protos: Vec::new(),
         };
@@ -650,6 +654,11 @@ struct Emitter<'a> {
     /// Tasks spawned in each active C block, innermost last. The enclosing
     /// scope joins them before it exits (CONC-001 A2).
     scope_tasks: Vec<Vec<PendingTask>>,
+    /// Pattern bindings emitted for the current match arm. They move into the
+    /// arm's capture scope when the arm body starts.
+    pending_pattern_locals: Vec<(String, Type)>,
+    /// Published-slot entries for the current match arm's pattern bindings.
+    pending_pattern_slots: Vec<(String, Type, usize)>,
     /// Lifted thread bodies and their entry wrappers, emitted after the
     /// regular functions (prototypes are emitted up front).
     task_defs: String,
@@ -684,6 +693,11 @@ struct RootFrame {
     /// Every lexical local recorded so far, including scalar slots. Spawn
     /// capture analysis resolves a free name against this list.
     all_locals: Vec<(String, Type)>,
+    /// Lexical capture scopes: the `all_locals` and `locals` lengths at each
+    /// entry. Popping truncates bindings that have gone out of scope, so a
+    /// spawn never resolves a shadowed name from an enclosing block and a
+    /// mutation never republishes an out-of-scope binding's slots.
+    capture_scopes: Vec<(usize, usize)>,
 }
 
 /// One monomorphized generic function: the declaration plus the concrete type
@@ -1540,6 +1554,27 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Opens a lexical capture scope. Bindings recorded inside are discarded
+    /// when the matching `pop_capture_scope` runs.
+    fn push_capture_scope(&mut self) {
+        if let Some(frame) = self.roots.as_mut() {
+            frame
+                .capture_scopes
+                .push((frame.all_locals.len(), frame.locals.len()));
+        }
+    }
+
+    /// Closes the innermost lexical capture scope, removing bindings that have
+    /// gone out of scope from both capture and republish lookup.
+    fn pop_capture_scope(&mut self) {
+        if let Some(frame) = self.roots.as_mut()
+            && let Some((all_len, local_len)) = frame.capture_scopes.pop()
+        {
+            frame.all_locals.truncate(all_len);
+            frame.locals.truncate(local_len);
+        }
+    }
+
     /// Re-publishes one named local's slots after an operation that may move
     /// its payload (assignment, push/insert growth). Looks up the innermost
     /// binding of that C name.
@@ -1837,6 +1872,7 @@ impl<'a> Emitter<'a> {
             used: 0,
             locals: Vec::new(),
             all_locals: Vec::new(),
+            capture_scopes: Vec::new(),
         });
         let _ = writeln!(
             self.out,
@@ -1882,6 +1918,7 @@ impl<'a> Emitter<'a> {
     fn emit_block_body(&mut self, block: &ast::Block, is_fn_body: bool, is_fallible: bool) {
         self.defers.push(Vec::new());
         self.scope_tasks.push(Vec::new());
+        self.push_capture_scope();
         let n = block.statements.len();
         for (i, stmt) in block.statements.iter().enumerate() {
             let is_tail = is_fn_body && i + 1 == n;
@@ -1903,6 +1940,7 @@ impl<'a> Emitter<'a> {
         }
         self.scope_tasks.pop();
         self.defers.pop();
+        self.pop_capture_scope();
     }
 
     fn emit_implicit_tail_return(&mut self, is_fallible: bool) {
@@ -2110,10 +2148,12 @@ impl<'a> Emitter<'a> {
 
     fn emit_scoped_block(&mut self, scoped: &ast::ScopedStatements) {
         self.defers.push(Vec::new());
+        self.push_capture_scope();
         for stmt in &scoped.statements {
             self.emit_stmt(stmt);
         }
         self.emit_scope_defers();
+        self.pop_capture_scope();
         self.defers.pop();
     }
 
@@ -2281,10 +2321,12 @@ impl<'a> Emitter<'a> {
         let binding_c = format!("v_{}", sanitize(binding));
         let first = self.roots.as_ref().map_or(0, |frame| frame.used);
         let slots = self.publish_local(&binding_c, &elem_ty, first);
+        self.push_capture_scope();
         self.record_local(binding_c, elem_ty, first, slots);
         self.emit_block_body(body, false, false);
         self.writeln_s("        astra_gc_maybe_collect();");
         self.writeln_s("    }");
+        self.pop_capture_scope();
     }
 
     fn emit_expr_stmt(&mut self, e: &Expr) {
@@ -2322,9 +2364,11 @@ impl<'a> Emitter<'a> {
         self.flush_pre();
         self.republish_mutations(condition);
         let _ = writeln!(self.out, "    if ({cond}) {{");
+        self.push_capture_scope();
         for stmt in &then_branch.statements {
             self.emit_stmt(stmt);
         }
+        self.pop_capture_scope();
         self.emit_else_branch(else_branch);
     }
 
@@ -2332,9 +2376,11 @@ impl<'a> Emitter<'a> {
         match else_branch {
             Some(ElseBranch::Block(b)) => {
                 self.writeln_s("    } else {");
+                self.push_capture_scope();
                 for stmt in &b.statements {
                     self.emit_stmt(stmt);
                 }
+                self.pop_capture_scope();
                 self.writeln_s("    }");
             }
             Some(ElseBranch::If(inner)) => {
@@ -2348,13 +2394,17 @@ impl<'a> Emitter<'a> {
                     let icond = self.expr(inner_cond);
                     self.flush_pre();
                     let _ = writeln!(self.out, "    }} else if ({icond}) {{");
+                    self.push_capture_scope();
                     for stmt in &inner_then.statements {
                         self.emit_stmt(stmt);
                     }
+                    self.pop_capture_scope();
                     self.emit_else_branch(inner_else.as_ref());
                 } else {
                     self.writeln_s("    } else {");
+                    self.push_capture_scope();
                     self.emit_expr_stmt(inner);
+                    self.pop_capture_scope();
                     self.writeln_s("    }");
                 }
             }
@@ -4063,6 +4113,7 @@ impl<'a> Emitter<'a> {
             used: 0,
             locals: Vec::new(),
             all_locals: Vec::new(),
+            capture_scopes: Vec::new(),
         });
         let _ = writeln!(
             self.out,
@@ -4154,6 +4205,7 @@ impl<'a> Emitter<'a> {
     fn emit_block_value(&mut self, block: &ast::Block, target: &str, block_ty: &Type) {
         self.defers.push(Vec::new());
         self.scope_tasks.push(Vec::new());
+        self.push_capture_scope();
         let n = block.statements.len();
         for (i, stmt) in block.statements.iter().enumerate() {
             let is_tail = i + 1 == n;
@@ -4177,6 +4229,7 @@ impl<'a> Emitter<'a> {
         self.emit_scope_task_joins_into_pre();
         self.scope_tasks.pop();
         self.defers.pop();
+        self.pop_capture_scope();
     }
 
     fn emit_stmt_into_pre(&mut self, stmt: &Stmt) {
@@ -4791,11 +4844,19 @@ impl<'a> Emitter<'a> {
     /// assigned to it (value context); when `None`, the arm runs for side
     /// effects (statement context).
     fn emit_arm_body(&mut self, body: &MatchArmBody, target: Option<&str>, result_ty: &Type) {
+        self.push_capture_scope();
+        let pending_locals = std::mem::take(&mut self.pending_pattern_locals);
+        let pending_slots = std::mem::take(&mut self.pending_pattern_slots);
+        if let Some(frame) = self.roots.as_mut() {
+            frame.all_locals.extend(pending_locals);
+            frame.locals.extend(pending_slots);
+        }
         match body {
             MatchArmBody::Expr(e) => {
                 let ty = self.type_of(e).cloned().unwrap_or(Type::Unit);
                 if ty == Type::Never {
                     self.emit_expr_stmt(e);
+                    self.pop_capture_scope();
                     return;
                 }
                 let v = self.expr_with_expected(e, result_ty);
@@ -4838,6 +4899,7 @@ impl<'a> Emitter<'a> {
                 self.writeln_s("        }");
             }
         }
+        self.pop_capture_scope();
     }
 
     fn emit_block_tail_in_arm(&mut self, stmt: &Stmt, target: Option<&str>, result_ty: &Type) {
@@ -4886,6 +4948,18 @@ impl<'a> Emitter<'a> {
                 let first = self.roots.as_ref().map_or(0, |frame| frame.used);
                 let slots = self.publish_local(&c_name, ty, first);
                 self.record_local(c_name, ty.clone(), first, slots);
+                // Pattern bindings are scoped to the arm, not the enclosing
+                // function. Hold them until `emit_arm_body` opens that scope.
+                if let Some(frame) = self.roots.as_mut() {
+                    if let Some(entry) = frame.all_locals.pop() {
+                        self.pending_pattern_locals.push(entry);
+                    }
+                    if slots > 0
+                        && let Some(entry) = frame.locals.pop()
+                    {
+                        self.pending_pattern_slots.push(entry);
+                    }
+                }
             }
             PatternKind::Tuple(subpats) => {
                 let element_tys = match ty {
