@@ -83,6 +83,7 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-03 | Release engineering started: lockstep version gate (root package, Cargo workspace, lockfile, orchestrator packages, both CLI constants) and a release script that bumps every version, moves `[Unreleased]` under a dated heading, refreshes `Cargo.lock`, and supports `--dry-run`; covered by a new test | `866a7dd` + `5890c23`, runs 41600987283 + 41602074448 |
 | 2026-11-02 | Cooperative cancellation landed (D1): tasks poll the flag at GC safepoints and managed allocations, blocked channel waits are sliced so cancellation interrupts them, and cancelling a finished task is a no-op; 3 lead tests plus the GC-stress leg | `6346339`, run 41472912629 |
 | 2026-11-02 | Multithreaded spawn landed: one OS thread per spawn bound to its structured scope, per-task heaps with shape-directed capture and result copies, blocking channels with the 5 s deadlock watchdog, and single-evaluation match scrutinees; lead tests cover capture/result copies, block joins, child panic, backpressure, and the watchdog; channels conformance re-pinned | `ec4c5a8`, run 41470469664 |
 | 2026-11-02 | System package source landed: `nopm add sys:<tool>`, planner/executor, `NP0015`-`NP0018`, 6 tests (lead-written), bootstrap delegation with identical `--check` output | `4fb3554`, run 41427650964 |

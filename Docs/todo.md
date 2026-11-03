@@ -68,9 +68,9 @@ Completed work is summarized at the bottom; the full history is in
 
 ### Release
 
-- [ ] Version check in the gate: all package versions and the workspace version
+- [x] Version check in the gate: all package versions and the workspace version
       must agree.
-- [ ] Release script: lockstep bump, changelog section move, dry-run mode.
+- [x] Release script: lockstep bump, changelog section move, dry-run mode.
 - [ ] Packaging: build every package and the native compiler; verify the
       bootstrap install from a clean machine.
 - [ ] Install and upgrade documentation.
