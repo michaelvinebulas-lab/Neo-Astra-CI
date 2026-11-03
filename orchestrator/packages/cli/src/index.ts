@@ -33,6 +33,7 @@ import {
   manifestFileForPath,
   type ManifestDocument,
 } from "@neo-astra/manifest";
+import { parseToolchainPolicy, resolveToolchain, doctor, ToolchainError, type ToolchainPolicy, type ToolchainProbe } from "@neo-astra/toolchain";
 
 const VERSION = "0.1.0";
 const SOURCE_EXTENSION = ".ns";
@@ -56,10 +57,14 @@ Usage:
 
 Commands:
   check [dir] [--json]   Discover and validate the project manifest
+  doctor [dir] [--json]  Resolve and print the toolchain ladder
   build [dir]            Build the configured target
   fmt [path] [--check]   Format .ns source and core.json/core.toml
   ast [dir]              Print the canonical AST (not implemented yet)
   explain [dir]          Explain mode/capability inference (not implemented yet)
+
+Environment:
+  ASTRA_CC               Override the C compiler (path or command)
 
 Options:
   -h, --help             Show this help
@@ -89,6 +94,9 @@ type CliErrorCode =
   | "NS9001"
   | "NS9007"
   | "NS9008"
+  | "NS9101"
+  | "NS9102"
+  | "NS9103"
   | "NV0002";
 
 type FormatFileKind = "source" | "manifest";
@@ -259,35 +267,42 @@ function displayPath(path: string, cwd: string): string {
  * first binary that answers `--version`, and keep the old first-responder as a
  * fallback so the compiler's own error still reaches the user.
  */
-function findNativeCompiler(): string | null {
-  const candidates = [
-    "C:\\Program Files\\LLVM\\bin\\clang.exe",
-    "clang",
-    "gcc",
-    "cc",
-  ];
-  let fallback: string | null = null;
-
-  for (const candidate of candidates) {
-    const version = spawnSync(candidate, ["--version"], { windowsHide: true });
-    if (version.status !== 0) {
-      continue;
+function resolveNativeCompiler(buildData: Record<string, unknown>, projectRoot: string): string | null {
+  let policy: ToolchainPolicy;
+  try {
+    policy = parseToolchainPolicy(buildData);
+  } catch (error) {
+    if (error instanceof ToolchainError) {
+      throw new CliError(error.code as CliErrorCode, error.message);
     }
-    fallback ??= candidate;
-    const probe = spawnSync(
-      candidate,
-      ["-std=c17", "-fsyntax-only", "-x", "c", "-"],
-      {
-        windowsHide: true,
-        input: "#include <stdio.h>\nint main(void) { return 0; }\n",
-      },
-    );
-    if (probe.status === 0) {
-      return candidate;
-    }
+    throw error;
   }
-
-  return fallback;
+  const probe: ToolchainProbe = {
+    exists: (p: string) => existsSync(p),
+    run: (cmd: string, a: readonly string[]) => {
+      const r = spawnSync(cmd, [...a], { encoding: "utf8", windowsHide: true, input: a.includes("-") ? "#include <stdio.h>\nint main(void) { return 0; }\n" : undefined });
+      return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? r.error?.message ?? "" };
+    },
+    readFileSync: (p: string) => readFileSync(p, "utf8"),
+    readdir: (p: string) => readdirSync(p),
+  };
+  const env = process.env["ASTRA_CC"] ? { ASTRA_CC: process.env["ASTRA_CC"] } : {};
+  try {
+    const r = resolveToolchain({ projectRoot, policy, env, probe });
+    return r.path;
+  } catch (error) {
+    if (error instanceof ToolchainError) {
+      // Only an auto request with no compiler keeps the legacy NS9008 path.
+      if (policy.request === "auto" && error.code === "NS9102") {
+        return null;
+      }
+      throw new CliError(error.code as CliErrorCode, error.message);
+    }
+    if (policy.request === "auto") {
+      return null;
+    }
+    throw new CliError("NS9008", errorMessage(error));
+  }
 }
 
 /** Collects the manifest's native code-generation flags for one target. */
@@ -688,6 +703,18 @@ function errorDiagnostic(error: unknown, path: string | null = null): ReportedDi
       message: error.message,
       hint: null,
       path: error.path ?? path,
+      line: null,
+      column: null,
+    };
+  }
+
+  if (error instanceof ToolchainError) {
+    return {
+      code: error.code,
+      severity: "error",
+      message: error.message,
+      hint: null,
+      path,
       line: null,
       column: null,
     };
@@ -1714,7 +1741,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       let outputPath: string = mainCPath || outDir;
 
       if (libraryMode) {
-        const compilerBin = findNativeCompiler();
+        const compilerBin = resolveNativeCompiler(buildData, root);
         if (!compilerBin) {
           throw new CliError(
             "NS9008",
@@ -1889,7 +1916,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         }
         const exeName = process.platform === "win32" ? "main.exe" : "main";
         const exePath = resolve(outDir, exeName);
-        const compilerBin = findNativeCompiler();
+        const compilerBin = resolveNativeCompiler(buildData, root);
         if (!compilerBin) {
           throw new CliError(
             "NS9008",
@@ -2229,6 +2256,51 @@ function runBuild(args: readonly string[], cwd: string): number {
   }
 }
 
+function runDoctor(args: readonly string[], cwd: string): number {
+  const directory = args.find((a) => !a.startsWith("--")) ?? ".";
+  const root = resolve(cwd, directory);
+  const json = args.includes("--json");
+  try {
+    // Doctor needs only the optional build manifest; an absent manifest means
+    // `auto`. A present but malformed manifest is an error, not a default.
+    const buildData = (loadBuildManifest(root)?.data ?? {}) as Record<string, unknown>;
+    const policy = parseToolchainPolicy(buildData);
+    const probe: ToolchainProbe = {
+      exists: (p: string) => existsSync(p),
+      run: (cmd: string, a: readonly string[]) => {
+        const r = spawnSync(cmd, [...a], { encoding: "utf8", windowsHide: true, input: a.includes("-") ? "#include <stdio.h>\nint main(void){return 0;}\n" : undefined });
+        return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? r.error?.message ?? "" };
+      },
+      readFileSync: (p: string) => readFileSync(p, "utf8"),
+      readdir: (p: string) => readdirSync(p),
+    };
+    const env = process.env["ASTRA_CC"] ? { ASTRA_CC: process.env["ASTRA_CC"] } : {};
+    const result = doctor(root, policy, env, probe);
+    if (json) {
+      process.stdout.write(JSON.stringify({ ok: result.winner !== null, doctor: result }, null, 2) + "\n");
+    } else {
+      process.stdout.write(`policy: ${policy.request}\n`);
+      for (const a of result.attempts) {
+        process.stdout.write(`  ${a.rung}: ${a.detail}\n`);
+      }
+      if (result.winner) {
+        process.stdout.write(`resolved: ${result.winner.id} (${result.winner.family}) at ${result.winner.path}\n`);
+      } else {
+        process.stderr.write(`unresolved: ${result.error}\n`);
+      }
+    }
+    return result.winner ? 0 : 1;
+  } catch (error) {
+    const diagnostic = errorDiagnostic(error);
+    if (json) {
+      process.stdout.write(JSON.stringify({ ok: false, error: diagnostic }, null, 2) + "\n");
+    } else {
+      process.stderr.write(`${diagnostic.code}: ${diagnostic.message}\n`);
+    }
+    return 1;
+  }
+}
+
 function runNotImplemented(command: string): number {
   process.stderr.write(`astra ${command}: not implemented in the scaffold.\n`);
   return 2;
@@ -2248,6 +2320,8 @@ export async function runCli(args: readonly string[], cwd = process.cwd()): Prom
   }
 
   switch (command) {
+    case "doctor":
+      return runDoctor(rest, cwd);
     case "check":
       return runCheck(rest, cwd);
     case "fmt":

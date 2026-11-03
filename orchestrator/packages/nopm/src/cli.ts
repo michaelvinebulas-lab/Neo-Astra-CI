@@ -5,16 +5,21 @@
 //! The CLI currently supports project locking, tree inspection, and installation
 //! for path packages. Remote adapters are staged behind the same command surface.
 
+import { spawnSync } from "node:child_process";
 import {
+  existsSync,
+  readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
-  readFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { ManifestError } from "@neo-astra/manifest";
-import { addDependency, findCoreManifest, removeDependency } from "@neo-astra/manifest";
+import { addDependency, findCoreManifest, loadBuildManifest, removeDependency } from "@neo-astra/manifest";
+import type { LockfileToolchain } from "./index.js";
+import { parseToolchainPolicy, resolveToolchain, ToolchainError, type ToolchainProbe } from "@neo-astra/toolchain";
 
 import {
   LOCKFILE_NAME,
@@ -264,6 +269,7 @@ async function runLockAsync(options: CliOptions): Promise<number> {
     manifestHash: project.manifestHash,
     compiler: COMPILER,
     ffi: project.ffi,
+    toolchain: resolveProjectToolchain(project),
   });
   const path = join(project.directory, LOCKFILE_NAME);
   writeAtomically(path, formatLockfile(lockfile));
@@ -387,6 +393,7 @@ async function runAdd(options: CliOptions): Promise<number> {
       manifestHash: newProject.manifestHash,
       compiler: COMPILER,
       ffi: newProject.ffi,
+      toolchain: resolveProjectToolchain(newProject),
     });
     writeAtomically(lockfilePath, formatLockfile(lockfile));
     lockfileWritten = true;
@@ -467,6 +474,7 @@ async function runRemove(options: CliOptions): Promise<number> {
       manifestHash: newProject.manifestHash,
       compiler: COMPILER,
       ffi: newProject.ffi,
+      toolchain: resolveProjectToolchain(newProject),
     });
     writeAtomically(lockfilePath, formatLockfile(lockfile));
     lockfileWritten = true;
@@ -545,6 +553,31 @@ async function runInstallAsync(options: CliOptions): Promise<number> {
   return 0;
 }
 
+function resolveProjectToolchain(project: ProjectManifest): LockfileToolchain | null {
+  const buildData = (loadBuildManifest(project.directory)?.data ?? {}) as Record<string, unknown>;
+  const policy = parseToolchainPolicy(buildData);
+  const probe: ToolchainProbe = {
+    exists: (p: string) => existsSync(p),
+    run: (cmd: string, a: readonly string[]) => {
+      const r = spawnSync(cmd, [...a], { encoding: "utf8", windowsHide: true, input: a.includes("-") ? "#include <stdio.h>\nint main(void){return 0;}\n" : undefined });
+      return { status: r.status, stdout: r.stdout ?? "", stderr: r.stderr ?? r.error?.message ?? "" };
+    },
+    readFileSync: (p: string) => readFileSync(p, "utf8"),
+    readdir: (p: string) => readdirSync(p),
+  };
+  const env = process.env["ASTRA_CC"] ? { ASTRA_CC: process.env["ASTRA_CC"] } : {};
+  try {
+    const r = resolveToolchain({ projectRoot: project.directory, policy, env, probe });
+    return { rung: r.rung, id: r.id, family: r.family, path: r.path, version: r.version };
+  } catch (error) {
+    // An auto request that finds no compiler records null; a malformed policy,
+    // a bad ASTRA_CC, or an unresolved pin is a real failure.
+    if (policy.request === "auto" && error instanceof ToolchainError && error.code === "NS9102") {
+      return null;
+    }
+    throw error;
+  }
+}
 function currentLockfile(project: ProjectManifest, options: CliOptions) {
   const lockfile = readLockfileFile(join(project.directory, LOCKFILE_NAME));
   if (options.locked || options.frozen) {
@@ -818,6 +851,9 @@ function emitError(error: unknown, json: boolean): number {
 function diagnosticFor(error: unknown): Diagnostic {
   if (error instanceof NopmError) {
     return { code: error.code, message: error.message, path: error.input ?? null };
+  }
+  if (error instanceof ToolchainError) {
+    return { code: error.code, message: error.message, path: null };
   }
   if (error instanceof ManifestError) {
     return {

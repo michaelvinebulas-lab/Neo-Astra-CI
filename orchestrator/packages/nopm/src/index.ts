@@ -135,7 +135,13 @@ export interface LockfileCompiler {
   readonly apiVersion: string;
 }
 
-/** Semantic policy recorded in the lockfile. */
+export interface LockfileToolchain {
+  readonly rung: "env" | "cache" | "path";
+  readonly id: string;
+  readonly family: string;
+  readonly path: string;
+  readonly version: string | null;
+}
 export interface LockfileSemantics {
   readonly integers: string;
   readonly strings: string;
@@ -171,6 +177,7 @@ export interface Lockfile {
   readonly manifestHash: string;
   readonly compiler: LockfileCompiler;
   readonly semantics: LockfileSemantics;
+  readonly toolchain: LockfileToolchain | null;
   readonly targets: Readonly<Record<string, LockfileTarget>>;
   readonly packages: readonly LockfilePackage[];
   readonly ffi: Readonly<Record<string, unknown>>;
@@ -183,6 +190,7 @@ export interface LockfileInput {
   readonly manifestHash: string;
   readonly compiler: LockfileCompiler;
   readonly semantics?: LockfileSemantics;
+  readonly toolchain?: LockfileToolchain | null;
   readonly ffi?: Readonly<Record<string, unknown>>;
 }
 
@@ -789,6 +797,7 @@ export function createLockfile(input: LockfileInput): Lockfile {
       apiVersion: input.compiler.apiVersion,
     }),
     semantics: Object.freeze(input.semantics ?? DEFAULT_SEMANTICS),
+    toolchain: input.toolchain === undefined ? null : input.toolchain,
     targets: Object.freeze(targetMap),
     packages: Object.freeze(packages),
     ffi: Object.freeze({ ...(input.ffi ?? {}) }),
@@ -840,6 +849,13 @@ export function formatLockfile(lockfile: Lockfile): string {
     targets,
     packages,
     ffi: sortJson(lockfile.ffi),
+    toolchain: lockfile.toolchain === null ? null : {
+      rung: lockfile.toolchain.rung,
+      id: lockfile.toolchain.id,
+      family: lockfile.toolchain.family,
+      path: lockfile.toolchain.path,
+      version: lockfile.toolchain.version,
+    },
   };
 
   return `${JSON.stringify(document, null, 2)}\n`;
@@ -869,6 +885,22 @@ export function validateLockfile(value: unknown): Lockfile {
   const targetsRaw = requireRecord(value, "targets", "lockfile");
   const packagesRaw = requireArray(value, "packages", "lockfile");
   const ffi = requireRecord(value, "ffi", "lockfile");
+  const toolchainRaw = value["toolchain"];
+  let toolchain: LockfileToolchain | null = null;
+  if (toolchainRaw !== null && toolchainRaw !== undefined) {
+    if (!isRecord(toolchainRaw)) {
+      throw lockfileError("Lockfile 'toolchain' must be an object or null.");
+    }
+    const rung = requireString(toolchainRaw, "rung", "toolchain");
+    if (rung !== "env" && rung !== "cache" && rung !== "path") {
+      throw new NopmError("NP0008", `Toolchain rung '${rung}' is invalid.`, "toolchain");
+    }
+    const id = requireString(toolchainRaw, "id", "toolchain");
+    const family = requireString(toolchainRaw, "family", "toolchain");
+    const path = requireString(toolchainRaw, "path", "toolchain");
+    const version = optionalNullableString(toolchainRaw, "version", "toolchain");
+    toolchain = Object.freeze({ rung: rung as "env" | "cache" | "path", id, family, path, version });
+  }
 
   const targets: Record<string, LockfileTarget> = {};
   for (const name of Object.keys(targetsRaw).sort()) {
@@ -918,6 +950,7 @@ export function validateLockfile(value: unknown): Lockfile {
     targets: Object.freeze(targets),
     packages: Object.freeze(packages),
     ffi: Object.freeze({ ...ffi }),
+    toolchain,
   });
 }
 

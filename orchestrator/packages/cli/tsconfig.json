@@ -10,6 +10,7 @@
     { "path": "../compiler-client" },
     { "path": "../manifest" },
     { "path": "../codegen-js" },
-    { "path": "../codegen-ts" }
+    { "path": "../codegen-ts" },
+    { "path": "../toolchain" }
   ]
 }

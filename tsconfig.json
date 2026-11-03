@@ -11,6 +11,7 @@
     { "path": "orchestrator/packages/lsp" },
     { "path": "orchestrator/packages/playground" },
     { "path": "orchestrator/packages/nopm" },
-    { "path": "orchestrator/packages/cli" }
+    { "path": "orchestrator/packages/cli" },
+    { "path": "orchestrator/packages/toolchain" }
   ]
 }
