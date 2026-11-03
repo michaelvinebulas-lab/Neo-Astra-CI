@@ -31,13 +31,14 @@ Completed work is summarized at the bottom; the full history is in
 - [ ] Validate the `sys:` tool name before the installed check, so an unknown
       tool that happens to exist on `PATH` is rejected with `NP0015` instead of
       reported as already installed.
-- [ ] Toolchain section in the build manifest: parse it, resolve in order
+- [x] Toolchain section in the build manifest: parse it, resolve in order
       (manifest pin, local cache, PATH), honor `ASTRA_CC`, and record the
       resolved toolchain in the lockfile with a single writer.
-- [ ] `astra doctor`: print the resolution ladder result (rung, path, version),
+- [x] `astra doctor`: print the resolution ladder result (rung, path, version),
       refuse unknown pins, and refuse a resolution that would need a download
-      when running frozen.
-- [ ] Build uses the resolved compiler instead of ad-hoc detection; existing
+      when running frozen. No download path exists yet, so an unresolved pin
+      fails `NS9102`.
+- [x] Build uses the resolved compiler instead of ad-hoc detection; existing
       native tests still pass on the PATH rung.
 - [ ] Pinned toolchain download: per-OS/arch artifact table with SHA-256,
       download through the package transport, verify, unpack into the local
@@ -70,7 +71,7 @@ Completed work is summarized at the bottom; the full history is in
       receiving task's heap (spec 9.3); primitives and scalars move by value.
       The conformance case sends a heap-built `bytes` value and receives it
       after the sender heap is released.
-- [ ] (1.0 blocker, D28) Spawn captures resolve free names through the full
+- [x] (1.0 blocker, D28) Spawn captures resolve free names through the full
       scope chain, not a flat locals map, so an out-of-scope shadowed local is
       never captured.
 - [ ] (1.0 blocker, D28; proposed rule) A task handle nested inside a composite

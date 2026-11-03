@@ -5,9 +5,9 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-03
-**Phase:** V1 completion - toolchain fix round and release preparation.
-**Master:** `88d771e` (Tier-1 run 41633106216 green: Linux, macOS, Windows).
-**Blockers:** toolchain fix round (Kilo); `TaskError` shape decision; composite task-handle rule (proposed); spawn-capture scope resolution; release packaging, install/upgrade docs, and the D28 gap audit.
+**Phase:** V1 completion - pinned toolchain download and release preparation.
+**Master:** `915137d` (Tier-1 run 41686527626, attempt 2: green on Linux, macOS, Windows).
+**Blockers:** pinned toolchain download (Kilo); `TaskError` shape decision; composite task-handle rule (proposed); `sys:` name validation; release packaging, install/upgrade docs, and the D28 gap audit.
 
 ---
 
@@ -41,7 +41,9 @@ or frozen history (`Docs/archive/`).
   cooperative cancellation, bounded channels with a deadlock watchdog, and a
   thread-safe process-lived shared heap for channel handles and messages.
 - **Toolchain:** `astra` CLI (check, fmt, build, run), NoPM (lock, tree,
-  install, search, audit, why, update), manifest formatting, registry adapters.
+  install, search, audit, why, update), manifest formatting, registry adapters,
+  toolchain policy, the resolution ladder, `astra doctor`, and the lockfile
+  record.
 - **Compiler API:** JSON-RPC/native + raw Wasm: `check`, `check_project`,
   `compile`, `compile_project`, `format`, `ast`, `explain`.
 - **Quality:** Tier-1 CI on three OSes; frontend and C-emitter fuzz suites
@@ -51,10 +53,10 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
-toolchain pinning (`[toolchain]`, resolution ladder, `astra doctor`, lockfile
-record) - Kilo; release preparation and the remaining 1.0 blockers - lead.
-Channel messages are done: handles, queue buffers, and queued copies live in a
-thread-safe process-lived heap, and both directions deep-copy by element shape.
+pinned toolchain download (artifact table, verification, cache) - Kilo;
+release preparation and the remaining 1.0 blockers - lead. Toolchain policy,
+doctor, lockfile records, channel messages, and spawn-capture scope resolution
+are done.
 
 **Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete and
 the D28 gap audit is clean. All packages move in lockstep: new
@@ -96,6 +98,7 @@ exist just because it has a task.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-03 | Spawn captures resolve free names through the active lexical scope: capture and republish lookup is truncated at block, loop, conditional, block-expression, and match-arm boundaries, and arm pattern bindings enter the arm scope. Adds block/loop/match shadow and managed block-arm regressions. | `915137d`, run 41686527626 (attempt 2; attempt 1 hit a transient macOS crates.io DNS failure) |
 | 2026-11-03 | Channel messages landed: a once-initialized, thread-safe shared heap owns channel handles, queue buffers, and queued copies; `send` deep-copies the element by shape, `receive` copies into the receiver heap and frees the shared subgraph, and channel values are shared handles; adds bytes-after-join, reclamation, shared-heap, stress, and cross-backend conformance tests. `Channel<T>` rejects task handles (`NS4019`). TS match bindings over fallible calls now type the materialized `Result`. | `7b7dc29` + `1a61817` + `88d771e`, run 41633106216 |
 | 2026-11-03 | Release engineering started: lockstep version gate (root package, Cargo workspace, lockfile, orchestrator packages, both CLI constants) and a release script that bumps every version, moves `[Unreleased]` under a dated heading, refreshes `Cargo.lock`, and supports `--dry-run`; covered by a new test | `866a7dd` + `5890c23`, runs 41600987283 + 41602074448 |
 | 2026-11-02 | Cooperative cancellation landed (D1): tasks poll the flag at GC safepoints and managed allocations, blocked channel waits are sliced so cancellation interrupts them, and cancelling a finished task is a no-op; 3 lead tests plus the GC-stress leg | `6346339`, run 41472912629 |
