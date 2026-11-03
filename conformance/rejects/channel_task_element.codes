@@ -1,0 +1,2 @@
+# Task handles may not cross a channel boundary as copied values.
+NS4019

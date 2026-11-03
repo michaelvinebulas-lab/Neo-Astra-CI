@@ -33,6 +33,7 @@ const INVALID_MEMBER: &str = "NS4015";
 const INVALID_STRUCT_FIELD: &str = "NS4016";
 const INVALID_PATTERN: &str = "NS4017";
 const INVALID_TYPE_ARGUMENT: &str = "NS4018";
+const INVALID_CHANNEL_ELEMENT: &str = "NS4019";
 const MODE_REQUIREMENT: &str = "NS5001";
 const MODE_WIDENING: &str = "NS5002";
 const CAPABILITY_REQUIREMENT: &str = "NS5003";
@@ -1612,6 +1613,75 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// True when a value of this type carries a `Task` handle, directly or
+    /// inside a composite. A task handle has one owner and a heap-bound
+    /// record, so it must never cross a task boundary as a copied value.
+    fn contains_task(&mut self, ty: &Type) -> bool {
+        match ty {
+            Type::FixedArray(element, _)
+            | Type::Array(element)
+            | Type::Slice(element)
+            | Type::Option(element) => self.contains_task(element),
+            Type::Tuple(elements) => elements.iter().any(|element| self.contains_task(element)),
+            Type::Result(ok, error) => self.contains_task(ok) || self.contains_task(error),
+            Type::Map(key, value) => self.contains_task(key) || self.contains_task(value),
+            Type::Named(name, arguments) => match name.as_str() {
+                "Task" => true,
+                // A channel handle is shared, but a channel whose element type
+                // carries a task can move that task across a boundary.
+                "Channel" => arguments
+                    .iter()
+                    .any(|argument| self.contains_task(argument)),
+                "Ptr" | "Region" => false,
+                _ => {
+                    if let Some(struct_def) = self.resolve_struct(name) {
+                        let substitutions = substitutions(&struct_def.type_parameters, arguments);
+                        struct_def
+                            .fields
+                            .iter()
+                            .any(|field| self.contains_task(&field.ty.substitute(&substitutions)))
+                    } else if let Some(enum_def) = self.resolve_enum(name) {
+                        let substitutions = substitutions(&enum_def.type_parameters, arguments);
+                        enum_def.variants.iter().any(|variant| {
+                            variant.fields.iter().flatten().any(|field| {
+                                self.contains_task(&field.ty.substitute(&substitutions))
+                            })
+                        })
+                    } else {
+                        false
+                    }
+                }
+            },
+            _ => false,
+        }
+    }
+
+    /// Rejects a channel whose element type carries a task handle. Messages
+    /// are deep-copied across task heaps, and copying a task record would
+    /// duplicate its thread handle and heap pointer.
+    fn check_channel_element(&mut self, callee: &ast::Expr, return_type: &Type, span: Span) {
+        let Type::Named(name, arguments) = return_type else {
+            return;
+        };
+        if name != "Channel" || self.resolve_struct(name).is_some() {
+            return;
+        }
+        if !channel_create_callee(callee) {
+            return;
+        }
+        let Some(element) = arguments.first() else {
+            return;
+        };
+        if self.contains_task(element) {
+            self.error(
+                INVALID_CHANNEL_ELEMENT,
+                "Channel<T> cannot carry Task handles or values containing them.".to_owned(),
+                span,
+                "Send the task result instead; a task handle has a single owner.",
+            );
+        }
+    }
+
     /// Validates a scope header and returns the mode it selects.
     ///
     /// `scope_span` covers the whole `{@...; ...}` block, not just the header
@@ -2828,6 +2898,7 @@ impl<'a> Checker<'a> {
         // NS6002: once T is bound (explicitly or by inference), manual
         // allocation must not carry GC-managed references into `Ptr<T>`.
         self.check_manual_alloc_element(callee, &return_type, span);
+        self.check_channel_element(callee, &return_type, span);
 
         ExprInfo {
             ty: return_type,
@@ -4596,6 +4667,19 @@ fn builtin_constructor_name(callee: &ast::Expr) -> Option<&str> {
             Some(name)
         }
         _ => None,
+    }
+}
+
+/// True for the built-in `Channel.create<T>()` callee, with or without explicit
+/// type arguments.
+fn channel_create_callee(callee: &ast::Expr) -> bool {
+    match &callee.kind {
+        ast::ExprKind::Member { target, member } => {
+            member == "create"
+                && matches!(&target.kind, ast::ExprKind::Identifier(name) if name == "Channel")
+        }
+        ast::ExprKind::TypeArguments { target, .. } => channel_create_callee(target),
+        _ => false,
     }
 }
 
@@ -6566,6 +6650,39 @@ fn main() -> i32 {
 "#,
             "NS4015",
         );
+    }
+
+    #[test]
+    fn rejects_task_handles_in_channel_elements() {
+        // A task record names a thread handle and its owner's heap; copying it
+        // into a message would let two owners join the same thread.
+        for element in [
+            "Task<i32>",
+            "Option<Task<i32>>",
+            "[Task<i32>]",
+            "Channel<Task<i32>>",
+        ] {
+            let source = format!(
+                "pub fn main() -> i32 {{\n    let channel = Channel.create<{element}>()\n    return 0\n}}\n"
+            );
+            assert_code(&source, "NS4019");
+        }
+
+        assert_code(
+            r#"
+struct Holder { task: Task<i32> }
+enum MaybeTask { SomeTask(Task<i32>), None }
+pub fn main() -> i32 {
+    let a = Channel.create<Holder>()
+    let b = Channel.create<MaybeTask>()
+    return 0
+}
+"#,
+            "NS4019",
+        );
+
+        // A channel of plain values is still accepted.
+        assert!(check("pub fn main() -> i32 {\n    let channel = Channel.create<bytes>()\n    return 0\n}\n").is_ok());
     }
 
     #[test]

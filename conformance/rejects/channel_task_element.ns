@@ -1,0 +1,7 @@
+// D28: a task handle names one thread and one owner's heap. Copying it into a
+// channel message would let two owners join the same thread, so the element
+// type is rejected before code generation.
+pub fn main() -> i32 {
+    let channel = Channel.create<Task<i32>>()
+    return 0
+}
