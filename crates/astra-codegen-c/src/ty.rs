@@ -802,11 +802,10 @@ impl TyCtxt {
                 // A raw address and a manual-block handle are never traced
                 // (spec §8.4, NS6002 predicate).
                 "Ptr" | "Region" => "&NS_SHAPE_LEAF".to_owned(),
-                "Channel" => {
-                    let inner = args.first().cloned().unwrap_or(Type::Unit);
-                    let handle = self.channel_handle_shape_ref(&inner);
-                    self.record_shape(&format!("{{ 0, {handle} }}"), 1)
-                }
+                // A channel handle names process-lived shared state: the handle
+                // and its buffer live in the shared channel heap, so a copy
+                // shares the pointer instead of duplicating the handle.
+                "Channel" => "&NS_SHAPE_LEAF".to_owned(),
                 "Task" => {
                     // A `Task<T>` value is a pointer to a managed task record.
                     // Trace the pointer; the record's own allocation shape

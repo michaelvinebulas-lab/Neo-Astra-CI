@@ -2352,9 +2352,9 @@ pub fn main() -> i32 {
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines, vec!["hello", "world", "closed send"]);
     }
-    // Same program with a collection at every managed allocation. The channel
-    // helper allocates two blocks (handle + data buffer); the handle must stay
-    // rooted across the second allocation or the messages are lost.
+    // Same program with a collection at every managed allocation. Channel state
+    // lives in the shared heap, which is never a collection target; messages
+    // still cross the task heaps correctly.
     if let Some((ok, stdout, stderr)) =
         hosted_build_and_run_with_env(&out, &[("ASTRA_GC_STRESS", "1")])
     {
@@ -2364,6 +2364,58 @@ pub fn main() -> i32 {
             lines,
             vec!["hello", "world", "closed send"],
             "channel state was collected under stress"
+        );
+    }
+}
+
+/// CONC-001 9.3: a managed message is deep-copied into the shared channel heap
+/// on send, so receiving it still works after the sender's heap is released by
+/// an explicit join.
+#[test]
+fn channel_message_survives_the_sender_heap_after_join() {
+    let src = r#"
+fn show(message: bytes) -> () {
+    println(message.len())
+    println(message[0])
+    println(message[1])
+    println(message[2])
+}
+
+pub fn main() -> i32 {
+    let channel = Channel.create<bytes>()
+    let task = spawn || {
+        let mut buffer = bytes.new(3)
+        buffer[0] = 65
+        buffer[1] = 66
+        buffer[2] = 67
+        match channel.send(buffer) {
+            Ok(value) => (),
+            Err(error) => println("send failed"),
+        }
+    }
+    task.join()
+    match channel.receive() {
+        Ok(message) => show(message),
+        Err(error) => println("closed"),
+    }
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    for env in [None, Some([("ASTRA_GC_STRESS", "1")])] {
+        let run = match env {
+            None => hosted_build_and_run(&out),
+            Some(env) => hosted_build_and_run_with_env(&out, &env),
+        };
+        let Some((ok, stdout, stderr)) = run else {
+            return;
+        };
+        assert!(ok, "execution failed:\nstderr:\n{stderr}");
+        assert_eq!(
+            stdout.lines().collect::<Vec<_>>(),
+            vec!["3", "65", "66", "67"],
+            "message did not survive the sender heap release"
         );
     }
 }
@@ -2664,13 +2716,11 @@ pub fn main() {
     assert_eq!(stdout.replace("\r\n", "\n"), "7\n7\n");
 }
 
-/// Regression for the run-23 failure: `astra_channel_new` allocates the handle
-/// and then the message buffer. Under stress the second allocation collects at
-/// entry, so an unrooted handle was freed (the language cannot reference it
-/// yet). The live count proves both blocks exist, and the round-trip proves the
-/// handle was not recycled.
+/// CONC-001 C2: channel handles and queued messages live in the shared channel
+/// heap, not in the creating task's heap. The live count proves both blocks
+/// exist there, and the round-trip proves the handle is usable.
 #[test]
-fn channel_creation_keeps_the_handle_across_the_data_allocation() {
+fn channel_state_lives_in_the_shared_heap() {
     let harness = r#"
 #include <stdio.h>
 #include <stddef.h>
@@ -2678,14 +2728,15 @@ fn channel_creation_keeps_the_handle_across_the_data_allocation() {
 #include <stdbool.h>
 typedef struct NS_Gc_Shape NS_Gc_Shape;
 extern const NS_Gc_Shape NS_SHAPE_LEAF;
-extern void* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape);
+extern void* astra_channel_new(size_t elem_size, const NS_Gc_Shape* elem_shape, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape);
 extern bool astra_channel_send(void* channel, const void* value);
 extern bool astra_channel_receive(void* channel, void* out);
-extern size_t astra_arena_live_count(void);
+extern size_t astra_channel_heap_live_count(void);
+extern void astra_runtime_shutdown(void);
 int main(void) {
-    void* channel = astra_channel_new(sizeof(int32_t), &NS_SHAPE_LEAF, &NS_SHAPE_LEAF);
-    /* handle + message buffer: the handle survived the second allocation. */
-    if (astra_arena_live_count() != 2) {
+    void* channel = astra_channel_new(sizeof(int32_t), &NS_SHAPE_LEAF, &NS_SHAPE_LEAF, &NS_SHAPE_LEAF);
+    /* handle + message buffer, both in the shared heap. */
+    if (astra_channel_heap_live_count() != 2) {
         printf("CHANNEL_BLOCKS_FAIL\n");
         return 1;
     }
@@ -2695,21 +2746,75 @@ int main(void) {
     if (!astra_channel_receive(channel, &out)) { printf("RECEIVE_FAIL\n"); return 3; }
     if (out != 42) { printf("VALUE_FAIL\n"); return 4; }
     printf("CHANNEL_OK\n");
+    astra_runtime_shutdown();
     return 0;
 }
 "#;
     let Some((ok, stdout, stderr)) =
         hosted_build_and_run_with_env(harness, &[("ASTRA_GC_STRESS", "1")])
     else {
-        eprintln!(
-            "skipping channel_creation_keeps_the_handle_across_the_data_allocation: no hosted compiler"
-        );
+        eprintln!("skipping channel_state_lives_in_the_shared_heap: no hosted compiler");
         return;
     };
     assert!(ok, "channel harness did not run:\n{stderr}");
     assert!(
         stdout.contains("CHANNEL_OK"),
-        "channel creation lost its handle: {stdout}"
+        "channel state was not usable: {stdout}"
+    );
+}
+
+/// Each received message reclaims its shared-heap copy, so a long-lived channel
+/// with a bounded queue does not grow the shared heap without bound.
+#[test]
+fn channel_messages_are_reclaimed_on_receive() {
+    let harness = r#"
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
+typedef struct NS_Gc_Shape NS_Gc_Shape;
+typedef struct { const uint8_t* data; size_t len; } NS_Bytes;
+extern const NS_Gc_Shape NS_SHAPE_LEAF;
+extern const NS_Gc_Shape NS_SHAPE_STR;
+extern void* astra_channel_new(size_t elem_size, const NS_Gc_Shape* elem_shape, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape);
+extern bool astra_channel_send(void* channel, const void* value);
+extern bool astra_channel_receive(void* channel, void* out);
+extern size_t astra_channel_heap_live_count(void);
+extern void* astra_gc_alloc(const NS_Gc_Shape* shape, size_t n);
+extern void astra_runtime_shutdown(void);
+int main(void) {
+    void* channel = astra_channel_new(sizeof(NS_Bytes), &NS_SHAPE_STR, &NS_SHAPE_LEAF, &NS_SHAPE_LEAF);
+    size_t base = astra_channel_heap_live_count();
+    for (int i = 0; i < 64; i++) {
+        NS_Bytes message;
+        message.data = (const uint8_t*)astra_gc_alloc(&NS_SHAPE_LEAF, 4);
+        message.len = 4;
+        ((uint8_t*)message.data)[0] = (uint8_t)i;
+        if (!astra_channel_send(channel, &message)) { printf("SEND_FAIL\n"); return 1; }
+        NS_Bytes out;
+        if (!astra_channel_receive(channel, &out)) { printf("RECEIVE_FAIL\n"); return 2; }
+        if (out.len != 4 || out.data[0] != (uint8_t)i) {
+            printf("MESSAGE_FAIL\n");
+            return 3;
+        }
+    }
+    if (astra_channel_heap_live_count() != base) {
+        printf("CHANNEL_LEAK_FAIL\n");
+        return 4;
+    }
+    printf("CHANNEL_RECLAIM_OK\n");
+    astra_runtime_shutdown();
+    return 0;
+}
+"#;
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(harness) else {
+        eprintln!("skipping channel_messages_are_reclaimed_on_receive: no hosted compiler");
+        return;
+    };
+    assert!(ok, "reclaim harness did not run:\n{stderr}");
+    assert!(
+        stdout.contains("CHANNEL_RECLAIM_OK"),
+        "messages grew the shared heap: {stdout}"
     );
 }
 

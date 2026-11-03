@@ -37,10 +37,19 @@ typedef struct { NS_Str _0; } NS_SliceError;
    checker and the other backends use. */
 typedef struct { NS_Str _0; } NS_ParseIntError;
 typedef struct { NS_Str _0; } NS_OverflowError;
-/* Built-in `Channel` runtime (single-threaded V1 slice). `Channel<T>` maps to
-   `NS_Channel*`; messages are copied by value using `elem_size`. */
+/* Built-in `Channel` runtime (CONC-001). `Channel<T>` maps to `NS_Channel*`;
+   handles and queued messages live in the shared channel heap and every
+   message is deep-copied on send (spec 9.3). */
 typedef struct { char _unit; } NS_ChannelError;
-typedef struct { void* data; size_t len; size_t cap; size_t elem_size; bool closed; void* sync; } NS_Channel;
+typedef struct {
+    void* data;
+    size_t len;
+    size_t cap;
+    size_t elem_size;
+    const NS_Gc_Shape* elem_shape;
+    bool closed;
+    void* sync;
+} NS_Channel;
 /* Built-in `Region` (spec 8.4 manual API): a fixed-capacity block carved
    bump-style. A region is a header-plus-block handle, so every pointer it
    hands out stays valid until `region.free()`. */
@@ -229,16 +238,17 @@ extern bool astra_map_contains(const NS_Map* m, const void* key);
 extern size_t astra_map_len(const NS_Map* m);
 extern void* astra_map_key_at(const NS_Map* m, size_t i);
 
-/* Bounded single-threaded channels (CONC-001 first slice). `send` fails on a
-   closed channel and panics on a full open channel; `receive` fails on a closed
-   and empty channel and panics on an empty open channel (the JS/Nova deadlock
-   rule). Buffered messages remain readable after `close`. */
-/* handle_shape describes the NS_Channel handle block (its data field points at
-   the buffer); data_shape describes the message buffer. */
-extern NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape);
+/* Bounded channels (CONC-001). `send` fails on a closed channel and panics on
+   a full open channel; `receive` fails on a closed and empty channel and panics
+   on an empty open channel (the JS/Nova deadlock rule). Buffered messages
+   remain readable after `close`. */
+/* elem_shape describes one message value; handle_shape describes the handle
+   block; data_shape describes the shared queue buffer. */
+extern NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* elem_shape, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape);
 extern bool astra_channel_send(NS_Channel* c, const void* value);
 extern bool astra_channel_receive(NS_Channel* c, void* out);
 extern void astra_channel_close(NS_Channel* c);
+extern size_t astra_channel_heap_live_count(void);
 
 /* Task runtime (CONC-001 A2). A native `spawn` runs its body on one OS
    thread with a private heap. The generated code owns the typed Task<T>
@@ -439,6 +449,9 @@ typedef struct NS_Heap {
     void** mark_stack;
     size_t mark_len;
     size_t mark_cap;
+    /* The shared channel heap is process-lived: it is never a collection
+       target or a stress-collection target, and is released at shutdown. */
+    bool immortal;
 } NS_Heap;
 
 /* The main execution context's heap is static. A task binds its own heap to
@@ -626,7 +639,7 @@ static void* astra_gc_alloc_in(NS_Heap* h, const NS_Gc_Shape* shape, size_t n) {
     /* Under stress, collect before the new block exists: everything the caller
        still needs must already be published (§5.4 amendment, §8.1). */
     astra_gc_init_stress();
-    if (astra_gc_stress && astra_gc_copy_depth == 0) { astra_gc_collect_in(h); }
+    if (astra_gc_stress && astra_gc_copy_depth == 0 && !h->immortal) { astra_gc_collect_in(h); }
     size_t bytes = sizeof(NS_Gc_Head) + (n == 0 ? 1 : n);
     NS_Gc_Head* head = (NS_Gc_Head*)calloc(bytes, 1);
     if (!head) { astra_panic("out of memory"); }
@@ -938,9 +951,38 @@ static void astra_heap_release_state(NS_Heap* h) {
     h->bytes_since_gc = 0;
 }
 
+/* Channel sync blocks use platform threads. The type lives up here because
+   shutdown also destroys the registered per-channel syncs. */
+typedef struct {
+#if defined(_WIN32)
+    CRITICAL_SECTION mutex;
+    CONDITION_VARIABLE cond;
+#else
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+#endif
+} NS_Channel_Sync;
+
+/* The shared channel heap (CONC-001 C2). Channel handles, their message
+   buffers, and copied messages live here; no task collects it. Every mutation
+   takes the shared lock. */
+static NS_Heap astra_channel_heap;
+static NS_Channel_Sync astra_channel_shared_sync;
+
+static void astra_channel_shared_lock(void);
+static void astra_channel_shared_unlock(void);
+static void astra_channel_sync_release_all(void);
+
 void astra_runtime_shutdown(void) {
     NS_Heap* h = &astra_main_heap;
     astra_heap_release_state(h);
+    /* Channel state is process-lived; release it with the main heap so a host
+       that runs several programs does not retain the previous program's
+       channels. */
+    astra_channel_shared_lock();
+    astra_heap_release_state(&astra_channel_heap);
+    astra_channel_sync_release_all();
+    astra_channel_shared_unlock();
     /* A host may run another program in this process; the next entry point
        rebinds the main heap. Task heaps are released when their task joins. */
     astra_heap_current = &astra_main_heap;
@@ -1077,6 +1119,10 @@ ASTRA_NORETURN static void astra_task_abort(void) {
 }
 
 void astra_task_check(void) {
+    /* Cross-heap copies run under the shared channel-heap lock. Cancellation
+       must not abort in the middle of one: the copy is bounded, and the next
+       safepoint after the lock is released observes the cancellation. */
+    if (astra_gc_copy_depth > 0) { return; }
     NS_Task_Core* task = astra_task_current;
     if (task && task->canceled) { astra_task_abort(); }
 }
@@ -1156,6 +1202,52 @@ void astra_gc_copy_into(NS_Heap* dst, NS_Heap* src, const NS_Gc_Shape* shape, si
     astra_gc_copy_depth++;
     astra_gc_copy_value(dst, src, shape, n, dst_value, src_value);
     astra_gc_copy_depth--;
+}
+
+/* Shape-directed free of the managed blocks one value owns inside `h`. The
+   value itself is not a block: channel slots live in the shared queue buffer,
+   so only the blocks their pointer fields name are reclaimed. A pointer that
+   is not in `h` is static or shared and is left alone. */
+static void astra_gc_free_pointer_in(NS_Heap* h, void* pointer);
+
+static void astra_gc_free_value_in(NS_Heap* h, const NS_Gc_Shape* shape, size_t bytes, void* value) {
+    if (!shape || !value) { return; }
+    switch (shape->kind) {
+    case NS_SHAPE_KIND_LEAF:
+        break;
+    case NS_SHAPE_KIND_ARRAY: {
+        if (shape->elem_size == 0) { break; }
+        size_t elements = bytes / shape->elem_size;
+        for (size_t i = 0; i < elements; i++) {
+            astra_gc_free_value_in(h, shape->elem, 0,
+                (char*)value + i * shape->elem_size);
+        }
+        break;
+    }
+    case NS_SHAPE_KIND_RECORD:
+        for (size_t i = 0; i < shape->field_count; i++) {
+            astra_gc_free_pointer_in(h, *(void**)((char*)value + shape->fields[i].offset));
+        }
+        break;
+    case NS_SHAPE_KIND_VARIANT: {
+        if (shape->variant_count == 0) { break; }
+        int tag = *(int*)((char*)value + shape->tag_offset);
+        if (tag >= 0 && (size_t)tag < shape->variant_count && shape->variants[tag]) {
+            astra_gc_free_value_in(h, shape->variants[tag], 0, value);
+        }
+        break;
+    }
+    }
+}
+
+static void astra_gc_free_pointer_in(NS_Heap* h, void* pointer) {
+    if (!pointer) { return; }
+    size_t offset = 0;
+    NS_Arena_Node* node = astra_gc_block_containing(h, pointer, &offset);
+    if (!node) { return; }
+    NS_Gc_Head* head = astra_gc_head(node->ptr);
+    astra_gc_free_value_in(h, head->shape, head->bytes, node->ptr);
+    astra_gc_free_in(h, node->ptr);
 }
 
 NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src, const NS_Gc_Shape* shape) {
@@ -1434,16 +1526,6 @@ void* astra_map_key_at(const NS_Map* m, size_t i) {
 #define ASTRA_CHANNEL_CAP 16
 #define ASTRA_CHANNEL_DEFAULT_TIMEOUT 5.0
 
-typedef struct {
-#if defined(_WIN32)
-    CRITICAL_SECTION mutex;
-    CONDITION_VARIABLE cond;
-#else
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
-#endif
-} NS_Channel_Sync;
-
 /* Wall-clock seconds for the channel watchdog. `timespec_get` is C11 and stays
    visible under strict `-std=c17`; `clock_gettime`/`CLOCK_REALTIME` are POSIX
    and glibc hides them unless a feature-test macro is defined before the first
@@ -1548,21 +1630,108 @@ static bool astra_channel_wait(NS_Channel_Sync* sync, double seconds, bool* time
 #endif
 }
 
-NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape) {
-    /* Two managed blocks. The stress hook collects inside every managed
-       allocation, so the handle must be rooted while the data buffer is
-       allocated - otherwise the second allocation would free the handle, which
-       the language cannot reference yet. */
-    size_t root = astra_gc_temp_enter();
-    NS_Channel* c = (NS_Channel*)astra_gc_alloc(handle_shape, sizeof(NS_Channel));
-    astra_gc_publish(root, c);
-    c->data = astra_gc_alloc(data_shape, elem_size * ASTRA_CHANNEL_CAP);
-    astra_gc_temp_exit(root);
+/* The shared channel heap (CONC-001 C2): channel handles, their message
+   buffers, and the copies queued for receivers live in one process-lived heap.
+   No task's collector scans it, every mutation is serialized by the shared
+   lock, and blocks are reclaimed on receive (message subgraphs) or wholesale
+   at shutdown. A sender must never allocate into another task's heap. */
+#if defined(_WIN32)
+static INIT_ONCE astra_channel_shared_once = INIT_ONCE_STATIC_INIT;
+static BOOL CALLBACK astra_channel_shared_init(PINIT_ONCE once, PVOID param, PVOID* context) {
+    (void)once;
+    (void)param;
+    (void)context;
+    astra_channel_heap.immortal = true;
+    InitializeCriticalSection(&astra_channel_shared_sync.mutex);
+    InitializeConditionVariable(&astra_channel_shared_sync.cond);
+    return TRUE;
+}
+#else
+static pthread_once_t astra_channel_shared_once = PTHREAD_ONCE_INIT;
+static void astra_channel_shared_init(void) {
+    astra_channel_heap.immortal = true;
+    pthread_mutex_init(&astra_channel_shared_sync.mutex, NULL);
+    pthread_cond_init(&astra_channel_shared_sync.cond, NULL);
+}
+#endif
+
+static void astra_channel_shared_ensure(void) {
+#if defined(_WIN32)
+    InitOnceExecuteOnce(&astra_channel_shared_once, astra_channel_shared_init, NULL, NULL);
+#else
+    pthread_once(&astra_channel_shared_once, astra_channel_shared_init);
+#endif
+}
+
+static void astra_channel_shared_lock(void) {
+    astra_channel_shared_ensure();
+    astra_channel_lock(&astra_channel_shared_sync);
+}
+
+static void astra_channel_shared_unlock(void) {
+    astra_channel_unlock(&astra_channel_shared_sync);
+}
+
+/* Per-channel sync blocks are malloc'd and registered so shutdown can destroy
+   and free them alongside the shared heap. The registry is only touched while
+   the shared lock is held. */
+typedef struct NS_Channel_Sync_Node {
+    NS_Channel_Sync* sync;
+    struct NS_Channel_Sync_Node* next;
+} NS_Channel_Sync_Node;
+
+static NS_Channel_Sync_Node* astra_channel_sync_registry = NULL;
+
+static void astra_channel_sync_register(NS_Channel_Sync* sync) {
+    NS_Channel_Sync_Node* node = (NS_Channel_Sync_Node*)calloc(1, sizeof(NS_Channel_Sync_Node));
+    if (!node) { astra_panic("out of memory"); }
+    node->sync = sync;
+    node->next = astra_channel_sync_registry;
+    astra_channel_sync_registry = node;
+}
+
+static void astra_channel_sync_release_all(void) {
+    NS_Channel_Sync_Node* node = astra_channel_sync_registry;
+    while (node) {
+        NS_Channel_Sync_Node* next = node->next;
+#if defined(_WIN32)
+        DeleteCriticalSection(&node->sync->mutex);
+#else
+        pthread_mutex_destroy(&node->sync->mutex);
+        pthread_cond_destroy(&node->sync->cond);
+#endif
+        free(node->sync);
+        free(node);
+        node = next;
+    }
+    astra_channel_sync_registry = NULL;
+}
+
+size_t astra_channel_heap_live_count(void) {
+    astra_channel_shared_lock();
+    size_t live = astra_channel_heap.arena_live;
+    astra_channel_shared_unlock();
+    return live;
+}
+
+NS_Channel* astra_channel_new(size_t elem_size, const NS_Gc_Shape* elem_shape, const NS_Gc_Shape* handle_shape, const NS_Gc_Shape* data_shape) {
+    astra_task_check();
+    astra_channel_shared_lock();
+    /* The shared heap never collects, but a cancelled task must not abort
+       while the shared lock is held; defer cancellation to the next
+       safepoint. */
+    astra_gc_copy_depth++;
+    NS_Channel* c = (NS_Channel*)astra_gc_alloc_in(&astra_channel_heap, handle_shape, sizeof(NS_Channel));
+    c->data = astra_gc_alloc_in(&astra_channel_heap, data_shape, elem_size * ASTRA_CHANNEL_CAP);
+    c->sync = astra_channel_sync_new();
+    astra_channel_sync_register((NS_Channel_Sync*)c->sync);
+    astra_gc_copy_depth--;
+    astra_channel_shared_unlock();
     c->len = 0;
     c->cap = ASTRA_CHANNEL_CAP;
     c->elem_size = elem_size;
+    c->elem_shape = elem_shape;
     c->closed = false;
-    c->sync = astra_channel_sync_new();
     return c;
 }
 
@@ -1593,7 +1762,13 @@ bool astra_channel_send(NS_Channel* c, const void* value) {
         astra_channel_unlock(sync);
         return false;
     }
-    memcpy((char*)c->data + (c->len * c->elem_size), value, c->elem_size);
+    /* Deep-copy the managed value into the shared heap so it survives the
+       sender's task heap (spec 9.3). Holding the channel lock keeps this
+       channel stable; the shared lock serializes the heap mutation. */
+    void* slot = (char*)c->data + (c->len * c->elem_size);
+    astra_channel_shared_lock();
+    astra_gc_copy_into(&astra_channel_heap, astra_heap(), c->elem_shape, c->elem_size, slot, value);
+    astra_channel_shared_unlock();
     c->len++;
     astra_channel_signal(sync);
     astra_channel_unlock(sync);
@@ -1627,8 +1802,14 @@ bool astra_channel_receive(NS_Channel* c, void* out) {
         astra_channel_unlock(sync);
         return false;
     }
-    memcpy(out, c->data, c->elem_size);
-    memmove(c->data, (char*)c->data + c->elem_size, (c->len - 1) * c->elem_size);
+    /* Copy the message into the receiver's heap, then reclaim the queued
+       shared copy before the slot is reused. */
+    void* slot = c->data;
+    astra_channel_shared_lock();
+    astra_gc_copy_into(astra_heap(), &astra_channel_heap, c->elem_shape, c->elem_size, out, slot);
+    astra_gc_free_value_in(&astra_channel_heap, c->elem_shape, c->elem_size, slot);
+    memmove(slot, (char*)slot + c->elem_size, (c->len - 1) * c->elem_size);
+    astra_channel_shared_unlock();
     c->len--;
     astra_channel_signal(sync);
     astra_channel_unlock(sync);

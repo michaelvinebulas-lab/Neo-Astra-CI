@@ -2889,10 +2889,11 @@ impl<'a> Emitter<'a> {
                                 _ => Type::Unit,
                             };
                             let elem_c = self.tcx.c_type(&element);
+                            let elem_shape = self.tcx.value_shape_ref(&element);
                             let handle_shape = self.tcx.channel_handle_shape_ref(&element);
                             let data_shape = self.tcx.block_shape_ref(&element);
                             return format!(
-                                "astra_channel_new(sizeof({elem_c}), {handle_shape}, {data_shape})"
+                                "astra_channel_new(sizeof({elem_c}), {elem_shape}, {handle_shape}, {data_shape})"
                             );
                         }
                         // Manual memory (spec 8.4, proposal [P7]): `Memory.alloc<T>(count)`

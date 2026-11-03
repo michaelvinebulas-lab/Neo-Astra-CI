@@ -1,0 +1,30 @@
+fn produce(channel: Channel<bytes>) -> () ! ChannelError {
+    let mut buffer = bytes.new(3)
+    buffer[0] = 65
+    buffer[1] = 66
+    buffer[2] = 67
+    channel.send(buffer)!
+}
+
+fn show(message: bytes) -> () {
+    println(message.len())
+    println(message[0])
+    println(message[1])
+    println(message[2])
+}
+
+pub fn main() -> i32 {
+    let channel = Channel.create<bytes>()
+    let task = spawn || {
+        match produce(channel) {
+            Ok(value) => (),
+            Err(error) => println("send failed"),
+        }
+    }
+    task.join()
+    match channel.receive() {
+        Ok(message) => show(message),
+        Err(error) => println("closed"),
+    }
+    return 0
+}
