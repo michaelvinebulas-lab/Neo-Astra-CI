@@ -4,10 +4,10 @@ Single source of truth for project status, the queue, and decisions.
 Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
-**Last updated:** 2026-11-01
-**Phase:** V1 completion - packaging, toolchain, then concurrency.
-**Master:** `0af2b9d` (Tier-1 run 54 green: Linux, macOS, Windows).
-**Blockers:** none.
+**Last updated:** 2026-11-03
+**Phase:** V1 completion - toolchain fix round, channel message copies, then the release cut.
+**Master:** `0c37c3c` (Tier-1 run 41603015821 green: Linux, macOS, Windows).
+**Blockers:** toolchain fix round (Kilo); channel cross-heap message copies (D28/CONC-001); `TaskError` shape decision.
 
 ---
 
@@ -49,11 +49,12 @@ or frozen history (`Docs/archive/`).
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
 toolchain pinning (`[toolchain]`, resolution ladder, `astra doctor`, lockfile
-record) - Kilo.
+record) - Kilo; channel message deep copies and shared storage - lead.
 
-**Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete. All
-packages move in lockstep: new mode/backend/language = minor, fixes = patch,
-incompatible rework = major. Packages stay `0.1.0` until the cut.
+**Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete and
+the D28 gap audit is clean. All packages move in lockstep: new
+mode/backend/language = minor, fixes = patch, incompatible rework = major.
+Packages stay `0.1.0` until the cut.
 
 ## Decisions (index)
 
@@ -75,9 +76,12 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 | `high` mode | 2026-11-01 | New mode: `app` capabilities + ban list (`Memory`/`@memory:manual`, `Ptr`, `Region`, `ffi`, `@script`, C-ABI/`@export_as`) + full sugar (top-level statements, implicit main/exit 0, `print`, tail return, `fn main` mixing error, optional return-type inference); profile via manifest `defaultMode`; importable as app. Post-1.0. |
 | Languages | 2026-11-01 | Extend the C/Wasm/JS/TS pattern (targets, interop, toolchain rungs) to Rust, Go, Lua, Ruby, Java. Per-language scope decided on pickup; V2+. |
 | Versioning | 2026-11-01 | SemVer, lockstep, cut `1.0.0` at V1 end. |
+| D28 | 2026-11-03 | **Nothing half-made lands.** A slice is complete only when it implements every normative line it touches end to end, tests the success path and each failure mode (ownership and lifetime, cancellation, cross-heap copies, error paths), and contains no stub, silent fallback, or approximation. A known gap is either closed in the slice or recorded as an explicit principal decision before landing; "later" is not a deferral. `1.0.0` requires the 1.0 queue empty and zero known gaps in the shipped surface. |
 
-**Open questions:** none. If a new one comes up, it goes in `Task.md` marked
-**proposed** until the principal decides - never into the spec.
+**Open questions:** `TaskError` shape and the result of joining a cancelled or
+failed task (spec 9.5 leaves it to the standard library). Proposed options are
+in `Task.md`; not recorded until the principal decides. Everything else is
+governed by D28 - a gap is not allowed to exist just because it has a task.
 
 ## Log (recent, pruned)
 
@@ -116,6 +120,11 @@ addendum), and the proposal files in `Docs/archive/Design/`.
    parallel: neither edits the other's files, and commits use explicit paths. A
    handback without tests is complete work, not an incomplete one - coverage is
    added by the lead before landing.
+7. **Nothing half-made (D28).** No known correctness, memory-safety, or
+   spec-conformance gap lands. A slice with a stub, a silent fallback, or an
+   approximation is unfinished. Every failure mode it can hit gets a test. A
+   toolchain handback that fixes only part of its review is returned, not
+   landed. `1.0.0` waits for a clean gap audit.
 
 ## Verification protocol
 
@@ -126,3 +135,10 @@ explicit paths only, push to `ci`
 record the run number in the Log row. Tier-1 on the committed tree is
 authoritative; the mirror `origin` (`luminousvalentine-cell/Neo-Astra`) stays at
 `1199998` and is synced only on request.
+
+Before landing, the lead runs the D28 gap check: re-read the normative lines
+the slice implements, confirm the failure-mode tests exist, and confirm no
+stub, silent fallback, or raw approximation remains in the landed path. Before
+`1.0.0`, the lead audits the whole shipped surface (stubs, TODOs,
+approximations, deferred items) and closes each one or records a principal
+decision. The release waits until that audit is empty.

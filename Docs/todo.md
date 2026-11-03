@@ -56,15 +56,22 @@ Completed work is summarized at the bottom; the full history is in
       variable).
 - [x] Per-task heaps: every execution context owns an `NS_Heap`, TLS selects
       it, and captured values plus task results are deep-copied across heaps.
-- [ ] Thread-safe immortal heap for interned strings and static descriptors;
-      update the collector's single-heap assumption for shared descriptors.
+- [ ] (1.0 blocker, D28) Thread-safe shared heap for channel storage, reused for
+      interned strings and static descriptors when they exist. A sender must
+      never allocate into another task's single-threaded heap.
 - [x] Cooperative cancellation at collection safepoints and during blocked
       channel operations; cancellation of a finished or dead task is a no-op.
-- [ ] Specify the `TaskError` shape and the result of joining a cancelled task
-      (currently `T`'s zero value); record it in the standard-library spec.
+- [ ] (1.0 blocker, D28; needs principal decision) Specify the `TaskError` shape
+      and the result of joining a cancelled or failed task; record it in the
+      standard-library spec, then implement it.
 - [x] Re-pin the concurrency conformance case for the new blocking semantics
       and run the threaded matrix on Linux, macOS, and Windows.
-- [ ] Send copies managed values only; primitives and scalars move by value.
+- [ ] (1.0 blocker, D28) Channel messages: deep-copy managed values for the
+      receiving task's heap (spec 9.3); primitives and scalars move by value.
+      The conformance case must send a heap-built string, not only a literal.
+- [ ] (1.0 blocker, D28) Spawn captures resolve free names through the full
+      scope chain, not a flat locals map, so an out-of-scope shadowed local is
+      never captured.
 
 ### Release
 
@@ -74,7 +81,10 @@ Completed work is summarized at the bottom; the full history is in
 - [ ] Packaging: build every package and the native compiler; verify the
       bootstrap install from a clean machine.
 - [ ] Install and upgrade documentation.
-- [ ] Cut 1.0.0 across all packages, with release notes from the changelog.
+- [ ] (D28) Pre-1.0 gap audit: every stub, TODO, approximation, and deferred
+      item in the shipped surface is closed or recorded as a principal decision.
+- [ ] Cut 1.0.0 across all packages, with release notes from the changelog,
+      only when the 1.0 queue is empty and the D28 audit is clean.
 
 ## 1.1.0 - browser playground
 

@@ -25,6 +25,10 @@ do not invent decisions - mark the question instead.
 - The lead writes the tests for `orchestrator/**` (principal's decision,
   2026-11-02). Your deliverable is implementation code, the log entry, and a
   green gate; the lead adds coverage before landing.
+- **D28 quality bar (2026-11-03).** A partial fix is not a handback. Every item
+  in the lead review is fixed or explicitly returned with a reason; no known
+  gap, stub, or silent fallback lands. The lead re-runs the acceptance file and
+  the gate before landing.
 
 ## Status: OPEN - KILO (fix round: toolchain; see Lead review)
 
@@ -207,6 +211,27 @@ tree (29 cases; 10 currently fail on the gaps above, including the CLI and
 `nopm lock` cases). Run it after `npm run build`; it is lead-owned, so do not
 edit it. It is not yet wired into the `package.json` test list; the lead does
 that at landing.
+
+## Proposed decisions (principal)
+
+### `TaskError` shape and joining a cancelled or failed task
+
+Spec 9.5 requires a child error to be preserved and leaves the shape to the
+standard library. Today `join()` returns `T`, a child panic aborts the process,
+and a cancelled task yields `T`'s zero value. D28 makes this a 1.0 blocker.
+Options:
+
+1. `join() -> T`. A runtime failure (child panic, or cancellation before a
+   value) raises a structured `TaskError` that preserves the child's message;
+   a child that returns `Result<T, E>` propagates it unchanged inside `T`;
+   `task.canceled() -> bool` exposes the state without joining.
+2. `join() -> Result<T, TaskError>`. Every join is explicit, but a child that
+   returns `Result<T, E>` yields `Result<Result<T, E>, TaskError>`.
+
+Recommendation: (1). It keeps the common join ergonomic, keeps the child's own
+error union as the explicit propagation path the spec describes, and replaces
+the zero-value result with a clean structured failure. Not recorded until the
+principal decides.
 
 ## Kilo log
 
