@@ -4,10 +4,10 @@ Single source of truth for project status, the queue, and decisions.
 Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
-**Last updated:** 2026-11-03
-**Phase:** V1 completion - pinned toolchain download and release preparation.
-**Master:** `915137d` (Tier-1 run 41686527626, attempt 2: green on Linux, macOS, Windows).
-**Blockers:** pinned toolchain download (Kilo); `TaskError` shape decision; composite task-handle rule (proposed); `sys:` name validation; release packaging, install/upgrade docs, and the D28 gap audit.
+**Last updated:** 2026-11-04
+**Phase:** V1 completion - task-boundary guard, release preparation, and the D28 gap audit.
+**Master:** `5b6b5fc` (Tier-1 run 41846362813: green on Linux, macOS, Windows).
+**Blockers:** task-handle boundary guard (Kilo, in progress); `TaskError` shape decision; pinned toolchain download; release packaging and the D28 gap audit. Install/upgrade documentation, `astra doctor`, and `astra ast`/`explain` are done.
 
 ---
 
@@ -40,10 +40,11 @@ or frozen history (`Docs/archive/`).
 - **Concurrency:** OS-thread spawn bound to structured scopes, per-task heaps,
   cooperative cancellation, bounded channels with a deadlock watchdog, and a
   thread-safe process-lived shared heap for channel handles and messages.
-- **Toolchain:** `astra` CLI (check, fmt, build, run), NoPM (lock, tree,
-  install, search, audit, why, update), manifest formatting, registry adapters,
-  toolchain policy, the resolution ladder, `astra doctor`, and the lockfile
-  record.
+- **Toolchain:** `astra` CLI (check, fmt, build, doctor, ast, explain), NoPM
+  (lock, tree, install, search, audit, why, update), manifest formatting,
+  registry adapters, toolchain policy, the resolution ladder, and the lockfile
+  record. `nova` provides the development `run`, `eval`, `watch`, `repl`, and
+  `test` commands.
 - **Compiler API:** JSON-RPC/native + raw Wasm: `check`, `check_project`,
   `compile`, `compile_project`, `format`, `ast`, `explain`.
 - **Quality:** Tier-1 CI on three OSes; frontend and C-emitter fuzz suites
@@ -53,10 +54,10 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
-pinned toolchain download (artifact table, verification, cache) - Kilo;
-release preparation and the remaining 1.0 blockers - lead. Toolchain policy,
-doctor, lockfile records, channel messages, and spawn-capture scope resolution
-are done.
+the task-handle boundary guard in `crates/**` - Kilo; CLI inspection commands,
+release packaging, the D28 gap audit, and the remaining 1.0 blockers - lead.
+Toolchain policy, doctor, lockfile records, channel messages, spawn-capture
+scope resolution, and the install/upgrade documentation are done.
 
 **Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete and
 the D28 gap audit is clean. All packages move in lockstep: new
@@ -87,17 +88,20 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 
 **Open questions:** `TaskError` shape and the result of joining a cancelled or
 failed task (spec 9.5 leaves it to the standard library). Proposed options are
-in `Task.md`; not recorded until the principal decides. A second proposal: a
-task handle must not be nested in a value that crosses a task boundary (spawn
-captures, task results, channel messages). Channel elements already reject it
-with `NS4019` as a safety guard; whether that becomes the general rule is for
-the principal. Everything else is governed by D28 - a gap is not allowed to
-exist just because it has a task.
+in `Task.md`; not recorded until the principal decides. The task-boundary
+safety gap is being closed conservatively: `NS4019` rejects a task handle in a
+value that would cross a task boundary by copy (channel elements already do;
+spawn captures and task results are the active Rust slice). A future
+single-owner shared-handle design that allows such a value is a separate
+principal decision, not an implicit part of this guard. Everything else is
+governed by D28 - a gap is not allowed to exist just because it has a task.
 
 ## Log (recent, pruned)
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-04 | CLI inspection commands: `astra ast` prints the parsed AST and `astra explain` prints mode inference for a file or project entry; adds `--json`, `--mode`, `--target`, and `--compiler`; install/upgrade documentation and README/package status refreshed; release checklist corrected to the source-install model. | TS suite 225/225; Tier-1 pending |
+| 2026-11-03 | `sys:` names are validated before the installed probe, so a command like `node` that exists on `PATH` is still `NP0015` when it is not a supported system tool. Adds the `sys:node` CLI regression. | `5b6b5fc`, run 41846362813 |
 | 2026-11-03 | Spawn captures resolve free names through the active lexical scope: capture and republish lookup is truncated at block, loop, conditional, block-expression, and match-arm boundaries, and arm pattern bindings enter the arm scope. Adds block/loop/match shadow and managed block-arm regressions. | `915137d`, run 41686527626 (attempt 2; attempt 1 hit a transient macOS crates.io DNS failure) |
 | 2026-11-03 | Channel messages landed: a once-initialized, thread-safe shared heap owns channel handles, queue buffers, and queued copies; `send` deep-copies the element by shape, `receive` copies into the receiver heap and frees the shared subgraph, and channel values are shared handles; adds bytes-after-join, reclamation, shared-heap, stress, and cross-backend conformance tests. `Channel<T>` rejects task handles (`NS4019`). TS match bindings over fallible calls now type the materialized `Result`. | `7b7dc29` + `1a61817` + `88d771e`, run 41633106216 |
 | 2026-11-03 | Release engineering started: lockstep version gate (root package, Cargo workspace, lockfile, orchestrator packages, both CLI constants) and a release script that bumps every version, moves `[Unreleased]` under a dated heading, refreshes `Cargo.lock`, and supports `--dry-run`; covered by a new test | `866a7dd` + `5890c23`, runs 41600987283 + 41602074448 |

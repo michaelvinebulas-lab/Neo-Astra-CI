@@ -19,7 +19,9 @@ import { generateTypeScript } from "@neo-astra/codegen-ts";
 import {
   CompilerClient,
   CompilerClientError,
+  type AstResponse,
   type CompilerDiagnostic,
+  type ExplainResponse,
   type Mode,
 } from "@neo-astra/compiler-client";
 import {
@@ -60,8 +62,8 @@ Commands:
   doctor [dir] [--json]  Resolve and print the toolchain ladder
   build [dir]            Build the configured target
   fmt [path] [--check]   Format .ns source and core.json/core.toml
-  ast [dir]              Print the canonical AST (not implemented yet)
-  explain [dir]          Explain mode/capability inference (not implemented yet)
+  ast [path]             Print the parsed AST of a file or the project entry
+  explain [path]         Explain mode/capability inference for a file or entry
 
 Environment:
   ASTRA_CC               Override the C compiler (path or command)
@@ -81,10 +83,15 @@ fmt options:
   --json                 Print a machine-readable report
   --compiler <path>      Use a specific astra-compiler binary
 
+ast/explain options:
+  --json                 Print the full compiler response
+  --compiler <path>      Use a specific astra-compiler binary
+  --mode <mode>          core, app, web, or system (default: inferred)
+  --target <name>        Compiler target hint (default: js)
+
 Exit codes:
   0  success
   1  invalid input, project error, or build/codegen failure
-  2  command not implemented
 `;
 
 type CliErrorCode =
@@ -139,6 +146,14 @@ interface BuildOptions {
   readonly emit: string | undefined;
   readonly json: boolean;
   readonly compilerPath: string | undefined;
+}
+
+interface InspectionOptions {
+  readonly input: string;
+  readonly json: boolean;
+  readonly compilerPath: string | undefined;
+  readonly mode: Mode | undefined;
+  readonly target: string | undefined;
 }
 
 interface BuildReport {
@@ -237,6 +252,186 @@ function runCheck(args: readonly string[], cwd: string): number {
     process.stderr.write(`NS9000: ${message}\n`);
     return 1;
   }
+}
+
+function parseInspectionArgs(args: readonly string[], cwd: string): InspectionOptions {
+  let json = false;
+  let compilerPath: string | undefined;
+  let mode: Mode | undefined;
+  let target: string | undefined;
+  const positional: string[] = [];
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === undefined) {
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--compiler" || arg === "--mode" || arg === "--target") {
+      const value = args[index + 1];
+      if (value === undefined || value.startsWith("-")) {
+        throw new CliError("NS9000", `The ${arg} option requires a value.`);
+      }
+      if (arg === "--compiler") {
+        compilerPath = value;
+      } else if (arg === "--target") {
+        target = value;
+      } else {
+        if (!isMode(value)) {
+          throw new CliError(
+            "NS9000",
+            `Unknown mode '${value}'. Use core, app, web, or system.`,
+          );
+        }
+        mode = value;
+      }
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      throw new CliError("NS9000", `Unknown option '${arg}'.`);
+    }
+    positional.push(arg);
+  }
+
+  if (positional.length > 1) {
+    throw new CliError("NS9000", "Expected at most one file or directory path.");
+  }
+
+  return {
+    input: positional[0] ?? cwd,
+    json,
+    compilerPath,
+    mode,
+    target,
+  };
+}
+
+function resolveInspectionSource(
+  input: string,
+  cwd: string,
+): { readonly root: string; readonly file: SourceFile; readonly source: string } {
+  const absolute = resolve(cwd, input);
+  let stat;
+  try {
+    stat = statSync(absolute);
+  } catch (error) {
+    throw new CliError(
+      "NS9008",
+      `Unable to access '${input}': ${errorMessage(error)}`,
+      displayPath(absolute, cwd),
+    );
+  }
+
+  if (stat.isDirectory()) {
+    const manifests = loadProjectManifests(absolute);
+    const root = dirname(manifests.core.file.path);
+    const buildData = applyBuildDefaults(manifests.build?.data);
+    const nova = isRecord(buildData["nova"]) ? buildData["nova"] : {};
+    const entry =
+      typeof nova["entry"] === "string" && nova["entry"].length > 0
+        ? nova["entry"]
+        : "src/main.ns";
+    const path = resolve(root, entry);
+    const file: SourceFile = {
+      path,
+      displayPath: displayPath(path, cwd),
+      kind: "source",
+    };
+    return { root, file, source: readSource(file) };
+  }
+
+  if (!stat.isFile()) {
+    throw new CliError(
+      "NS9008",
+      "The path must be a .ns file or a project directory.",
+      displayPath(absolute, cwd),
+    );
+  }
+  if (extname(absolute).toLowerCase() !== SOURCE_EXTENSION) {
+    throw new CliError(
+      "NS9008",
+      "The path must be a .ns file or a project directory.",
+      displayPath(absolute, cwd),
+    );
+  }
+
+  const file: SourceFile = {
+    path: absolute,
+    displayPath: displayPath(absolute, cwd),
+    kind: "source",
+  };
+  return { root: dirname(absolute), file, source: readSource(file) };
+}
+
+function runInspection(command: "ast" | "explain", args: readonly string[], cwd: string): number {
+  if (args.includes("-h") || args.includes("--help")) {
+    printHelp();
+    return 0;
+  }
+
+  let options: InspectionOptions;
+  try {
+    options = parseInspectionArgs(args, cwd);
+  } catch (error) {
+    return emitFatal(error, false, isJsonFlag(args));
+  }
+
+  let resolved;
+  try {
+    resolved = resolveInspectionSource(options.input, cwd);
+  } catch (error) {
+    return emitFatal(error, false, options.json);
+  }
+
+  const client = new CompilerClient({
+    cwd: resolved.root,
+    ...(options.compilerPath === undefined ? {} : { binaryPath: options.compilerPath }),
+  });
+  const request = {
+    source: { path: resolved.file.displayPath, text: resolved.source },
+    target: options.target ?? "js",
+    ...(options.mode === undefined ? {} : { mode: options.mode }),
+  };
+
+  let response;
+  try {
+    response =
+      command === "ast" ? client.ast(request) : client.explain(request);
+  } catch (error) {
+    return emitFatal(error, false, options.json);
+  }
+
+  const diagnostics = response.diagnostics.map((diagnostic) =>
+    reportDiagnostic(resolved.file, resolved.source, diagnostic),
+  );
+  const hasError = diagnostics.some((diagnostic) => diagnostic.severity === "error");
+
+  if (options.json) {
+    process.stdout.write(
+      `${JSON.stringify({ ...response, diagnostics }, null, 2)}\n`,
+    );
+  } else {
+    for (const diagnostic of diagnostics) {
+      printDiagnostic(diagnostic);
+    }
+    if (!hasError) {
+      if (command === "ast") {
+        const ast = (response as AstResponse).ast;
+        process.stdout.write(`${JSON.stringify(ast ?? null, null, 2)}\n`);
+      } else {
+        const explained = response as ExplainResponse;
+        process.stdout.write(
+          `${explained.explanation ?? JSON.stringify(explained.inference ?? null, null, 2)}\n`,
+        );
+      }
+    }
+  }
+
+  return response.ok && !hasError ? 0 : 1;
 }
 
 function errorMessage(error: unknown): string {
@@ -2301,11 +2496,6 @@ function runDoctor(args: readonly string[], cwd: string): number {
   }
 }
 
-function runNotImplemented(command: string): number {
-  process.stderr.write(`astra ${command}: not implemented in the scaffold.\n`);
-  return 2;
-}
-
 export async function runCli(args: readonly string[], cwd = process.cwd()): Promise<number> {
   const [command, ...rest] = args;
 
@@ -2329,8 +2519,9 @@ export async function runCli(args: readonly string[], cwd = process.cwd()): Prom
     case "build":
       return runBuild(rest, cwd);
     case "ast":
+      return runInspection("ast", rest, cwd);
     case "explain":
-      return runNotImplemented(command);
+      return runInspection("explain", rest, cwd);
     default:
       process.stderr.write(`astra: unknown command '${command}'.\n\n`);
       printHelp();

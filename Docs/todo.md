@@ -28,7 +28,7 @@ Completed work is summarized at the bottom; the full history is in
       `sys:` entries never land in the dependency list.
 - [x] Bootstrap script delegates to the system source with unchanged dry-run
       output and no duplicated install logic.
-- [ ] Validate the `sys:` tool name before the installed check, so an unknown
+- [x] Validate the `sys:` tool name before the installed check, so an unknown
       tool that happens to exist on `PATH` is rejected with `NP0015` instead of
       reported as already installed.
 - [x] Toolchain section in the build manifest: parse it, resolve in order
@@ -74,12 +74,13 @@ Completed work is summarized at the bottom; the full history is in
 - [x] (1.0 blocker, D28) Spawn captures resolve free names through the full
       scope chain, not a flat locals map, so an out-of-scope shadowed local is
       never captured.
-- [ ] (1.0 blocker, D28; proposed rule) A task handle nested inside a composite
-      (struct, array, option, result) is deep-copied by the generic shape when
-      it crosses a task boundary; that duplicates its thread handle and owner
-      heap. Channel elements now reject it (`NS4019`). Extend the rule to spawn
-      captures and task results, or define a single-owner shared task handle,
-      after the principal decides.
+- [ ] (1.0 blocker, D28; in progress - Kilo) A task handle nested inside a
+      composite (struct, array, option, result) is deep-copied by the generic
+      shape when it crosses a task boundary; that duplicates its thread handle
+      and owner heap. Channel elements already reject it (`NS4019`). The
+      conservative guard now extends that rejection to spawn captures and task
+      results; a future single-owner shared-handle design is a separate
+      principal decision.
 
 ### Release
 
@@ -88,7 +89,7 @@ Completed work is summarized at the bottom; the full history is in
 - [x] Release script: lockstep bump, changelog section move, dry-run mode.
 - [ ] Packaging: build every package and the native compiler; verify the
       bootstrap install from a clean machine.
-- [ ] Install and upgrade documentation.
+- [x] Install and upgrade documentation.
 - [ ] (D28) Pre-1.0 gap audit: every stub, TODO, approximation, and deferred
       item in the shipped surface is closed or recorded as a principal decision.
 - [ ] Cut 1.0.0 across all packages, with release notes from the changelog,
@@ -199,7 +200,7 @@ One release per surface, in the order taken up:
 
 ## Housekeeping
 
-- [ ] Wire the already-implemented `astra ast` and `astra explain` commands
+- [x] Wire the already-implemented `astra ast` and `astra explain` commands
       into the CLI.
 - [ ] Finish the historical CI-failure repro notes.
 - [ ] Keep the fuzz and conformance corpora growing with each feature.

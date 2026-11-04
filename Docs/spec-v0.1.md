@@ -567,7 +567,7 @@ pattern_list    = pattern { "," pattern } ;
 
 Everywhere else — the operands of a binary operator, the elements of an array literal, the fields of a struct initializer, and the entries of a map literal — evaluation order is **target-native** and carries no portability guarantee. `&&` and `||` short-circuit the right operand when the result is already determined. To keep the portability trap out of systems code, the frontend's side-effect detection pass (system mode) rejects an expression that combines multiple state-changing subexpressions in a target-native-order position, such as `a() + b()`, and instructs the developer to hoist the calls into named bindings.
 
-> Implementation status: the call-argument rule is enforced by every backend and pinned by the `arg_order` conformance case. The system-mode side-effect rejection is the next frontend slice; until it lands, target-native positions evaluate in target order without a diagnostic.
+> Implementation status: the call-argument rule is enforced by every backend and pinned by the `arg_order` conformance case. The system-mode side-effect rejection is enforced by the frontend with `NS5007` and pinned by the `native_order_side_effects` conformance case.
 
 `fail_expr`:
 
@@ -1395,7 +1395,7 @@ Rules:
 | Nova | Eager inline (single-threaded interpreter) |
 | Async I/O | Separate I/O runtime |
 
-Decision record (2026-11-01, CONC-001): native threading is OS-thread-per-spawn (A2), blocked channel operations park with a watchdog panic (B3), native tasks use per-task heaps plus an immortal global heap (C2), and cancellation is cooperative at GC safepoints and channel operations (D1). Web Workers are deferred to the recorded gap beside the Wasm slice. Decided; implementation is pending and sequenced last in V1.
+Decision record (2026-11-01, CONC-001): native threading is OS-thread-per-spawn (A2), blocked channel operations park with a watchdog panic (B3), native tasks use per-task heaps plus an immortal global heap (C2), and cancellation is cooperative at GC safepoints and channel operations (D1). Web Workers are deferred to the recorded gap beside the Wasm slice. Implemented in V1: per-task heaps, thread-per-spawn scopes, parked channel operations, the shared channel heap, and cooperative cancellation.
 
 ### 9.5 Task results
 

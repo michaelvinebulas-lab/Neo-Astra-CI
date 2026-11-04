@@ -20,10 +20,12 @@ Use this checklist for every release. No step may be skipped.
 
 ## 3. Packaging
 
-- `npm run build` produces `orchestrator/packages/*/dist`.
-- `cargo build --release -p astra-compiler-api --bin astra-compiler`.
-- Verify the bootstrap script installs from a clean machine
-  (`npm run bootstrap:check`).
+- `npm run build` produces `orchestrator/packages/*/dist`; every package's
+  `main`/`bin` entry exists.
+- `cargo build --release -p astra-compiler-api --bin astra-compiler`; the
+  release binary answers an `initialize` JSON-RPC request.
+- Verify the bootstrap install on a clean Tier-1 runner
+  (`npm run bootstrap:verify`); `bootstrap:check` is the report-only probe.
 
 ## 4. Documentation
 
@@ -32,8 +34,10 @@ Use this checklist for every release. No step may be skipped.
 - Confirm `README.md`, `scripts/README.md`, and `orchestrator/README.md` match
   the shipped commands. Do not add status prose to `Docs/spec-v0.1.md`.
 
-## 5. Tag and publish
+## 5. Tag and release
 
 - Create an annotated tag `vX.Y.Z`.
-- Push the tag; CI publishes artifacts.
-- Write release notes from the changelog section.
+- Push the tag.
+- Write release notes from the changelog section and publish the GitHub
+  release from the tag. V1 has no npm publish: every package is private and
+  source installs build from the tag.

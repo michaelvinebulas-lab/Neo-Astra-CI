@@ -6,211 +6,169 @@ do not invent decisions - mark the question instead.
 
 ## Protocol
 
-- The Status line is the lock for `orchestrator/**`. While it says
-  `OPEN - KILO`, Kilo owns that tree; the lead works only in `crates/**`,
-  `conformance/**`, and lead-owned tests. Neither side edits the other's files,
-  and the lead commits explicit paths only.
-- While the lead's crates work is uncommitted, it verifies with the Rust legs
-  (`cargo fmt --all --check`, clippy with `-D warnings`, workspace tests, GC
-  stress). The full `npm run ci` gate runs when the tree has no other work in
-  progress; every push still gets a Tier-1 run.
+- The Status line names the tree owner for the **current order**.
+  `OPEN - KILO` means Kilo owns the tree named in the task (this round:
+  `crates/**`), and the lead works only in the parallel lane named below.
+  Neither side edits the other's files; the lead commits explicit paths only.
+- While either lane has uncommitted work, each side verifies with its own
+  legs: Rust (`cargo fmt --all --check`, clippy `-D warnings`, workspace tests,
+  GC stress) for crates; `npm run build` and the relevant package tests for
+  `orchestrator/**`. The full `npm run ci` gate runs on a clean tree before a
+  landing; every push still gets a Tier-1 run.
 - Neither side rewrites the other's section. Append only.
-- Kilo never commits, never pushes, never edits `Docs/**` or the spec. The
-  deliverable is code, a `## Kilo log` entry, and a Status update. The lead
-  reviews and lands.
+- Kilo never commits, never pushes, never edits `Docs/**`, `conformance/**`, or
+  `scripts/**`. The deliverable is code, a `## Kilo log` entry, and a Status
+  update. The lead reviews and lands.
 - Questions that need the principal: write them under `## Kilo log` and set
   Status to `BLOCKED - principal`.
-- Before handback: `cargo fmt --all` and the full gate (`npm run ci`) green,
-  with the output tail reported.
-- The lead writes the tests for `orchestrator/**` (principal's decision,
-  2026-11-02). Your deliverable is implementation code, the log entry, and a
-  green gate; the lead adds coverage before landing.
+- Before handback: the Rust legs above green, with the output tail reported.
+- The lead writes the tests for `orchestrator/**` and the shared conformance
+  corpus (principal's decision, 2026-11-02). Your deliverable is implementation
+  code, unit tests inside `crates/**`, the log entry, and a green Rust gate.
 - **D28 quality bar (2026-11-03).** A partial fix is not a handback. Every item
   in the lead review is fixed or explicitly returned with a reason; no known
   gap, stub, or silent fallback lands. The lead re-runs the acceptance file and
   the gate before landing.
 
-## Status: OPEN - KILO (fix round: toolchain; see Lead review)
+## Status: OPEN - KILO
 
-Read the task below, write your `## Kilo log` entry, then code. When the gate
-is green, write the report in the same block and set Status to `DONE - lead`.
+Read the task below, write your `## Kilo log` entry, then code. When the Rust
+gate is green, write the report in the same block and set Status to
+`DONE - lead`.
 
 ---
 
-# Task: toolchain policy, resolution ladder, `astra doctor`
+# Task: reject task handles at every copy boundary (Rust, `crates/**`)
 
-## Goal
+## Why
 
-Make build-time toolchain selection explicit, inspectable, and recorded, with
-no downloads and no elevation. The spec already defines the policy and the
-record: `build.*` `toolchain.c` is `auto` or a pinned id (§12.2), and the
-resolved toolchain goes into `core.lock.json` (§12.3). This slice implements
-that; it does not change the spec.
+`Channel<T>` already rejects an element type that carries a `Task` handle
+(`NS4019`, `check_channel_element`), because channel messages are deep-copied
+between task heaps. Two other boundaries still copy the same way:
 
-**Scope.** You own `orchestrator/**`. You may edit the root `tsconfig.json`
-only to add the reference for the new package. Do not touch `package.json`,
-`scripts/**`, or `Docs/**`.
+- a **spawn capture** whose type is a composite containing a `Task`
+  (`struct Holder { task: Task<i32> }`, `Option<Task<i32>>`, an array of tasks,
+  a `Result` carrying one, ...), and
+- a **spawn result** whose type contains a `Task` (a child returning a task
+  handle, directly or inside a composite).
 
-## 1. New package `@neo-astra/toolchain`
+The generic shape copy duplicates the task record: the thread handle and the
+owner heap would have two owners. That is a D28 memory-safety gap. This round
+closes it with the conservative rule: a task handle never crosses a task
+boundary as a copied value. The principal can later replace the rejection with
+a single-owner shared-handle design; that is a separate decision. Do not build
+that design now.
 
-Must have no dependency on the CLI or nopm, and must be testable without
-spawning: inject filesystem probes and command probes.
+Direct `Task` captures are rejected too. The emitter currently treats a bare
+`Task` capture as shared (`is_shared_capture`), which leaves two owners able to
+join the same thread. The safe rule is one owner, so reject it as well.
 
-- `parseToolchainPolicy(buildData)` -> `{ request: "auto" | string }`.
-  - `toolchain.c` defaults to `auto`; a non-string or empty value is
-    `NS9101`.
-  - A pin id matches `auto` or `<family>[@<version>]`, family in
-    `clang | gcc | zig | cc` (for example `zig@0.13.0`, `clang`, `gcc@14`).
-    Anything else is `NS9101`.
-- `resolveToolchain(options)` -> resolution record:
-  `{ rung: "env" | "cache" | "path", id, family, path, version }`.
-  `id` is the pin string when the policy is pinned; for `auto` and
-  `ASTRA_CC` it is the resolved family.
-  - **CLI `--compiler <path>`** is handled by the CLI, not this function; it
-    wins over everything.
-  - **`ASTRA_CC`** (non-empty) is rung `env`: the path must exist and answer
-    `--version`; otherwise `NS9103`.
-  - **Pinned id**: cache first at
-    `<project>/.tools/toolchain/<id>/`, which must contain
-    `toolchain.json` = `{ "id", "family", "version" }` and the binary at
-    `bin/<family>[.exe]` or `<family>[.exe]`. A missing marker, a marker whose
-    `id` differs, or a missing binary is `NS9102` ("pin mismatch"). A bare
-    family pin (`clang`, `gcc`) may fall back to PATH when the cache is absent;
-    a versioned pin (`clang@18`, `zig@0.13.0`) never trusts PATH - it fails
-    `NS9102` and names the missing cache entry.
-  - **`auto`**: PATH candidates `clang`, `gcc`, `cc` in that order, each
-    required to pass the hosted probe already used by `findNativeCompiler`
-    (`-std=c17 -fsyntax-only -x c -` with `#include <stdio.h>`), falling back
-    to the first that only answers `--version`. Family is derived from the
-    binary name (`clang` -> clang, `gcc`/`cc` -> gcc).
-  - No network, no `sys:` calls, no elevation anywhere in this slice.
-- `doctor(projectRoot)` -> the ladder attempts plus the winner, for printing.
-  It reports each rung tried (env, cache, path), the winner's rung/id/family/
-  path/version, or the failure reason.
+## Scope
 
-## 2. CLI
+You own **`crates/**`**. Do not edit `conformance/**`, `Docs/**`, `scripts/**`,
+or `orchestrator/**`. The lead is adding the negative conformance cases and
+will record `NS4019` in the spec; use the sources in **Acceptance** as your
+unit-test shapes.
 
-- `astra doctor [dir]`: load the project, print the resolved policy and the
-  ladder result. Resolved -> exit 0. Unresolved -> exit 1 with the reason.
-  `--json` may be added if it falls out naturally, but text is the contract.
-- `astra build` (and the second native path at the other
-  `findNativeCompiler()` call site): resolve through the new package instead of
-  the ad-hoc list. Precedence: `--compiler`, then `ASTRA_CC`, then
-  `toolchain.c`. Keep the current hosted-probe behavior for `auto` so existing
-  native tests pass on the PATH rung.
-- Update the help text for `doctor` and for `ASTRA_CC`.
+## Required behavior
 
-## 3. Lockfile
+1. **Reuse the existing predicate.** `Checker::contains_task` already walks
+   structs, enums, arrays, slices, fixed arrays, tuples, `Option`, `Result`,
+   `Map`, and `Channel`. Use it; do not write a second type walker.
+2. **Spawn result.** In `check_expr` for `ast::ExprKind::Spawn`, after
+   `check_block`, take the tail value type. If `contains_task(&value_type)`,
+   report `NS4019` at the spawn expression. The message must say that a spawn
+   result cannot carry a `Task` handle and that the child must join the task
+   and return the value. Keep returning `Task<value_type>` so checking
+   continues and one error does not cascade.
+3. **Spawn captures.** Run the free-name walker over the spawn body **after**
+   `check_block` has popped its scope (so the enclosing scopes are active),
+   then resolve every free name with `lookup_local`. If a resolved local's type
+   satisfies `contains_task`, report `NS4019` at the spawn expression naming
+   the captured local and type. Report at most one capture diagnostic per
+   spawn (the first offending capture); a result diagnostic may accompany it.
+   Names that resolve to functions, globals, or types are not captures; skip
+   them. The walker must handle the body's own shadowing (block, loop,
+   conditional, block-expression, match-arm pattern bindings, nested spawns)
+   exactly as the emitter's current walker does.
+4. **Shared non-task handles stay legal.** A spawn may still capture
+   `Channel`, `Region`, and `Ptr` handles, and a spawn may still return a
+   composite that does **not** contain a `Task`. Do not reject those.
+5. **Frontend is authoritative.** The rejection happens in `astra-core` before
+   any backend. Do not add a C/JS/TS backend diagnostic as the primary guard.
+   The CLI's `check` must report `NS4019` for these cases.
 
-- Add `toolchain: { rung, id, family, path, version } | null` to the lockfile
-  model, formatter, parser, and validator. nopm remains the only writer.
-- `nopm lock` and the re-lock inside `nopm add` / `nopm remove` resolve the
-  policy from the build manifest and record it.
-  - `auto` unresolved -> record `null`, do not fail the lock.
-  - pinned and unresolved -> fail `NS9102`.
-- `nopm tree` need not print it; the field is for `doctor`-level inspection
-  and reproducibility. Do not change `lockfileVersion`.
+## Implementation notes
+
+- The emitter already has the exact scoping walker:
+  `crates/astra-codegen-c/src/emit.rs`, `spawn_free_names` / `struct FreeNames`
+  (around line 5252). Move it to `astra-core` as a public function (a new
+  `free_names` module is fine), keep the behavior identical, and import it
+  from both the emitter and the checker. This is the one-walker rule: do not
+  leave a copy in `emit.rs` and add a second copy to `checker.rs`.
+  - The walker uses `unwrap_type_arguments` to avoid treating `foo<T>(...)`'s
+    callee as a value. Keep that helper with the walker, or reuse a core
+    equivalent if one exists.
+  - `crates/astra-codegen-c` already depends on `astra-core`; update the
+    import and remove the private copy.
+- In `checker.rs`, rename the `INVALID_CHANNEL_ELEMENT` constant to a boundary
+  name (for example `TASK_BOUNDARY`) while keeping the code string `NS4019`.
+  The existing channel message stays accurate for channels; the new messages
+  name the spawn boundary. Do not renumber or add a new code.
+- Remove `Task` from `is_shared_capture` in `emit.rs` and leave a comment that
+  the frontend now rejects every `Task` capture. `Channel`, `Region`, and
+  `Ptr` remain shared captures.
+- The checker's `contains_task` is `&mut self` because it resolves structs and
+  enums; call it in the order that keeps the borrow checker happy (clone the
+  local type before the call if needed).
+- Do not change `Task`'s runtime layout, `join`, cancellation, or channel
+  copying. This round is only the boundary guard.
 
 ## Acceptance
 
-- `npm run ci` green; existing native tests still pass on the PATH rung.
-- `astra doctor` names the rung and the binary for a cache hit, a PATH hit, and
-  an `ASTRA_CC` override; exits 1 with a clear reason when nothing resolves.
-- A versioned pin with no cache entry fails `NS9102` and never falls back to
-  PATH or to a download.
-- A cache marker whose id differs fails `NS9102`.
-- `nopm lock` writes the toolchain record; `auto` with no compiler writes
-  `null` and still succeeds; a pinned unresolved toolchain fails.
-- No network, no package-manager invocation, no elevation in any new path.
+The lead is adding these negative cases under `conformance/rejects/`; each is
+expected to report `NS4019`:
 
-## Lead review - toolchain round 1 (2026-11-02)
+- `spawn_capture_task.ns` - a spawn body reads a bare `Task<i32>` local.
+- `spawn_capture_composite_task.ns` - a spawn body reads a struct whose field
+  is a `Task<i32>`.
+- `spawn_capture_option_task.ns` - a spawn body reads `Option<Task<i32>>`.
+- `spawn_result_task.ns` - a spawn body's tail is a bare `Task<i32>`.
+- `spawn_result_composite_task.ns` - a spawn body's tail is a struct whose
+  field is a `Task<i32>`.
 
-The tree builds and the 171 existing TypeScript tests pass, so the layer is
-coherent. It is not landable yet: the lockfile writer is missing, the rung
-report is incomplete, and the error path loses the toolchain code. The lead
-writes the acceptance tests and lands. Fix the items below in
-`orchestrator/**`, append your report under `## Kilo log`, and set Status to
-`DONE - lead`.
+They must also stay rejected through `astra check` (the frontend runner in
+`crates/astra-core/tests/conformance_rejects.rs` is the contract).
 
-### `@neo-astra/toolchain`
+Add unit tests in `crates/astra-core/src/checker.rs` for:
 
-1. **Typed errors.** Throw a `ToolchainError` carrying `code` and a human
-   message (`NS9101` bad policy, `NS9102` pin mismatch, `NS9103` bad
-   `ASTRA_CC`). Never throw the bare string `"NS9101"`; the CLI must be able
-   to print the code and reason.
-2. **Policy validation.** If `toolchain` is present but not an object, or `c`
-   is not a string, fail `NS9101` (do not silently default to `auto`). Reject
-   a second `@`, an empty version, and a version containing whitespace.
-   Trim the pin.
-3. **`auto` order.** Make the two passes distinct: first the hosted probe
-   (`-std=c17 -fsyntax-only -x c -` with stdin), then the first candidate that
-   only answers `--version`. `hostedProbe` must not return true merely because
-   `--version` works. Record the candidate's family (`cc` -> gcc).
-4. **Pinned cache.**
-   - A marker whose `id` differs is `NS9102` for **both** bare and versioned
-     pins. Only a **missing** cache entry/marker may fall back to PATH for a
-     bare family pin.
-   - Validate the marker's `family`; for a versioned pin also validate its
-     `version` against the pin.
-   - A marker without a binary is `NS9102`.
-5. **`ASTRA_CC`.** Path must exist and answer `--version` (else `NS9103` with
-   a clear message). A bare command name is not a path; either resolve it on
-   PATH or fail with a reason that says so.
-6. **`doctor`.** Report every rung actually attempted, in order, with the
-   concrete detail: the env value, the cache marker path and why it failed,
-   each PATH candidate and its probe result. Then the winner
-   (`rung/id/family/path/version`) or the failure reason. No duplicate env
-   entry.
+- a spawn capturing a `Channel<str>` is accepted;
+- a spawn capturing a plain scalar or a struct without a `Task` is accepted;
+- a spawn returning a struct without a `Task` is accepted;
+- a spawn capturing a bare `Task` is `NS4019`;
+- a spawn capturing a struct containing a `Task` is `NS4019`;
+- a spawn returning a bare `Task` or a composite containing one is `NS4019`;
+- a shadowed inner binding (block/loop/match arm) that is not a `Task` does
+  not make an outer `Task` capture disappear; the outer capture is still
+  rejected. The existing scope regressions must keep passing.
 
-### CLI
+Run and report:
 
-7. **Do not swallow toolchain errors.** `resolveNativeCompiler` must let
-   `NS9101`/`NS9102`/`NS9103` reach the user with their code and message.
-   Only an unresolved `auto` may keep the current `NS9008` "no native
-   compiler" path. Keep the hosted-probe behavior so the existing native
-   tests still pass on the PATH rung.
-8. **Remove the unrelated `ast`/`explain` implementations** and the
-   `findCompilerBinary` import. This slice is `doctor` plus the build
-   resolver; those commands belong to a separate task.
-9. **`doctor` UX.** Parse `--json` independently of the directory argument
-   (`astra doctor --json` must work). Load only the build manifest; absent
-   means `auto`. Print policy, each rung, winner or reason, and exit 0/1.
-   Document `ASTRA_CC` in the help text.
-10. **Correction to the task:** the existing `--compiler` flag selects the
-    astra-compiler binary, not the C toolchain. Do not repurpose it. Native
-    precedence is `ASTRA_CC`, then `toolchain.c`. A dedicated `--cc` flag is
-    proposed to the principal; do not add it in this slice.
+```sh
+cargo fmt --all --check
+cargo test -p astra-core
+cargo test -p astra-codegen-c
+cargo clippy --workspace --all-targets -- -D warnings
+```
 
-### nopm
+The full `npm run ci` runs at landing, on the clean tree, by the lead.
 
-11. Add `@neo-astra/toolchain` to nopm's dependencies (and the nopm tsconfig
-    reference) and resolve + record `toolchain` in the single lock writer used
-    by `nopm lock`, `add`, and `remove`. There are three `createLockfile` call
-    sites in `nopm/src/cli.ts`; route them through one helper that resolves the
-    policy from the project's build manifest.
-    - parse the build manifest policy and resolve with the real probe;
-    - `auto` unresolved -> `toolchain: null`, lock still succeeds;
-    - pinned unresolved -> fail `NS9102`;
-    - do not change `lockfileVersion`.
-    The model/formatter/validator round-trip is already there; the writer is
-    the missing acceptance item.
+## Lead lane (parallel, do not touch)
 
-### Housekeeping
-
-12. Restore the original formatting in the root and CLI `tsconfig.json`; add
-    only the new reference line.
-13. Do not add `dist/` or `*.tsbuildinfo` (both are ignored).
-
-Note: the Tier-1 failure on `d8ed12e` was in the lead's concurrency slice
-(glibc hides `clock_gettime` under strict `-std=c17`), fixed in `ec4c5a8`;
-run 41470469664 is green. It was not the per-task heap work in `emit.rs` /
-`ty.rs`.
-
-The lead's acceptance file `orchestrator/tests/toolchain.test.mjs` is in the
-tree (29 cases; 10 currently fail on the gaps above, including the CLI and
-`nopm lock` cases). Run it after `npm run build`; it is lead-owned, so do not
-edit it. It is not yet wired into the `package.json` test list; the lead does
-that at landing.
+While this order is open the lead is working on `orchestrator/**`,
+`scripts/**`, `conformance/**`, and `Docs/**`: install/upgrade documentation,
+README/package status, packaging verification, the pre-1.0 gap audit, and the
+negative conformance cases above. No overlap with `crates/**`.
 
 ## Proposed decisions (principal)
 
@@ -233,6 +191,14 @@ error union as the explicit propagation path the spec describes, and replaces
 the zero-value result with a clean structured failure. Not recorded until the
 principal decides.
 
+### Shared task handles
+
+The boundary rejection above is the conservative safety fix. If the principal
+prefers a single-owner shared task handle that can cross a boundary without
+copying, that is a new language/runtime design and must be decided explicitly;
+it is not part of this round.
+
 ## Kilo log
 
-(Append the fix-round report here.)
+(The previous toolchain order is landed and recorded in the log/CHANGELOG; this
+channel is pruned to the active order. Append the new report here.)

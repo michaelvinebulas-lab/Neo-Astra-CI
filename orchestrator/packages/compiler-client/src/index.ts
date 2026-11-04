@@ -37,6 +37,23 @@ export interface FormatResponse {
   readonly diagnostics: readonly CompilerDiagnostic[];
 }
 
+/** Parsed surface AST returned by the `ast` command. */
+export interface AstResponse {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly ast?: unknown;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+}
+
+/** Mode-inference explanation returned by the `explain` command. */
+export interface ExplainResponse {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly inference?: unknown;
+  readonly explanation?: string;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+}
+
 /** Integer arithmetic policy selected by the manifest. */
 export type IntegerPolicy = "wrapping" | "safe-checked" | "arbitrary";
 
@@ -563,6 +580,143 @@ export class CompilerClient {
     options: Pick<FormatRequest, "target" | "mode"> = {},
   ): FormatResponse {
     return this.format({ source: { path, text }, ...options });
+  }
+
+  /** Parses one source unit and returns its surface AST. */
+  ast(request: CompileRequest): AstResponse {
+    const result = this.send(
+      "ast",
+      "astra-ast",
+      this.compileParams(request),
+      32 * 1024 * 1024,
+    );
+    if (
+      !isRecord(result) ||
+      typeof result["apiVersion"] !== "string" ||
+      typeof result["ok"] !== "boolean" ||
+      !Array.isArray(result["diagnostics"])
+    ) {
+      throw new CompilerClientError("NS9005", "Compiler returned an invalid AST result.");
+    }
+    if (result["apiVersion"] !== COMPILER_API_VERSION) {
+      throw new CompilerClientError(
+        "NS9005",
+        `Compiler returned API ${result["apiVersion"]}; expected ${COMPILER_API_VERSION}.`,
+      );
+    }
+    const ast = result["ast"];
+    return {
+      apiVersion: result["apiVersion"],
+      ok: result["ok"],
+      ...(ast === undefined ? {} : { ast }),
+      diagnostics: result["diagnostics"].map(parseDiagnostic),
+    };
+  }
+
+  /** Explains the least-privileged mode inferred for one source unit. */
+  explain(request: CompileRequest): ExplainResponse {
+    const result = this.send(
+      "explain",
+      "astra-explain",
+      this.compileParams(request),
+      32 * 1024 * 1024,
+    );
+    if (
+      !isRecord(result) ||
+      typeof result["apiVersion"] !== "string" ||
+      typeof result["ok"] !== "boolean" ||
+      !Array.isArray(result["diagnostics"])
+    ) {
+      throw new CompilerClientError("NS9005", "Compiler returned an invalid explain result.");
+    }
+    if (result["apiVersion"] !== COMPILER_API_VERSION) {
+      throw new CompilerClientError(
+        "NS9005",
+        `Compiler returned API ${result["apiVersion"]}; expected ${COMPILER_API_VERSION}.`,
+      );
+    }
+    const inference = result["inference"];
+    const explanation = result["explanation"];
+    return {
+      apiVersion: result["apiVersion"],
+      ok: result["ok"],
+      ...(inference === undefined ? {} : { inference }),
+      ...(typeof explanation === "string" ? { explanation } : {}),
+      diagnostics: result["diagnostics"].map(parseDiagnostic),
+    };
+  }
+
+  private compileParams(request: CompileRequest): Record<string, unknown> {
+    return {
+      apiVersion: COMPILER_API_VERSION,
+      source: request.source,
+      target: request.target ?? "js",
+      ...(request.mode === undefined ? {} : { mode: request.mode }),
+      ...(request.integerPolicy === undefined
+        ? {}
+        : { integerPolicy: request.integerPolicy }),
+    };
+  }
+
+  private send(
+    method: string,
+    id: string,
+    params: unknown,
+    maxBuffer: number,
+  ): unknown {
+    const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    const result = spawnSync(this.binaryPath, [], {
+      input: payload,
+      cwd: this.cwd,
+      encoding: "utf8",
+      maxBuffer,
+      windowsHide: true,
+      ...(this.timeoutMs === undefined ? {} : { timeout: this.timeoutMs }),
+    });
+
+    if (result.error !== undefined) {
+      throw new CompilerClientError(
+        "NS9004",
+        `Unable to run compiler '${this.binaryPath}': ${result.error.message}`,
+        { cause: result.error },
+      );
+    }
+    if (result.status !== 0) {
+      const detail = result.stderr.trim();
+      throw new CompilerClientError(
+        "NS9004",
+        `Compiler exited with status ${result.status ?? "unknown"}${detail.length === 0 ? "" : `: ${detail}`}`,
+      );
+    }
+
+    const output = result.stdout.trim();
+    if (output.length === 0) {
+      throw new CompilerClientError("NS9005", "Compiler returned an empty response.");
+    }
+
+    let response: unknown;
+    try {
+      response = JSON.parse(output);
+    } catch (error) {
+      throw new CompilerClientError("NS9005", "Compiler returned invalid JSON.", { cause: error });
+    }
+
+    if (!isRecord(response) || response["jsonrpc"] !== "2.0") {
+      throw new CompilerClientError("NS9005", "Compiler returned an invalid JSON-RPC response.");
+    }
+
+    if (response["error"] !== undefined && response["error"] !== null) {
+      const rpcError = response["error"];
+      const code =
+        isRecord(rpcError) && typeof rpcError["code"] === "number" ? rpcError["code"] : -32603;
+      const message =
+        isRecord(rpcError) && typeof rpcError["message"] === "string"
+          ? rpcError["message"]
+          : "Unknown compiler error.";
+      throw new CompilerClientError("NS9006", `Compiler request failed (${code}): ${message}`);
+    }
+
+    return response["result"];
   }
 }
 
