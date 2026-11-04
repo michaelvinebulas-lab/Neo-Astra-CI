@@ -30,6 +30,20 @@ export function isSysToolId(id: string): boolean {
   return id.startsWith("sys:");
 }
 
+/**
+ * Validates the tool name before any installed/managers probe. A command that
+ * happens to exist on PATH is not evidence that `sys:<name>` is supported.
+ */
+export function assertKnownSysTool(tool: string): void {
+  if (!(tool in TOOLS)) {
+    throw new NopmError(
+      "NP0015",
+      `Unknown system tool '${tool}'. Known tools: ${KNOWN_TOOLS.join(", ")}.`,
+      tool,
+    );
+  }
+}
+
 export function detectManagers(
   platform: NodeJS.Platform = process.platform,
   presence: (command: string, args: readonly string[]) => boolean = (cmd, args) => {
@@ -54,9 +68,7 @@ export function detectManagers(
 }
 
 export function planSysInstall(tool: string, context: SysInstallContext): SysToolPlan {
-  if (!(tool in TOOLS)) {
-    throw new NopmError("NP0015", `Unknown system tool '${tool}'. Known tools: ${KNOWN_TOOLS.join(", ")}.`, tool);
-  }
+  assertKnownSysTool(tool);
   const spec = TOOLS[tool]!;
 
   if (context.platform === "win32") {
@@ -142,9 +154,7 @@ export function executeSysInstall(
   context: SysInstallContext,
   runner: CommandRunner = defaultCommandRunner,
 ): SysToolPlan {
-  if (!(tool in TOOLS)) {
-    throw new NopmError("NP0015", `Unknown system tool '${tool}'. Known tools: ${KNOWN_TOOLS.join(", ")}.`, tool);
-  }
+  assertKnownSysTool(tool);
   if (detectInstalled(tool, runner)) {
     return { tool, manager: null, commands: [], installed: true };
   }

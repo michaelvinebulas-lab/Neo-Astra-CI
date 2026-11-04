@@ -36,7 +36,7 @@ import {
   type PackageDescriptor,
 } from "./index.js";
 import { defaultCommandRunner } from "./command.js";
-import { planSysInstall, executeSysInstall, detectInstalled, detectManagers } from "./sys-adapter.js";
+import { planSysInstall, executeSysInstall, detectInstalled, detectManagers, assertKnownSysTool } from "./sys-adapter.js";
 import { resolvePathPackage } from "./path-adapter.js";
 import { resolveNpmPackage, type AdapterResolution } from "./npm-adapter.js";
 import { resolveGitPackage } from "./git-adapter.js";
@@ -305,6 +305,9 @@ async function runAdd(options: CliOptions): Promise<number> {
   // System tool install: `nopm add sys:<tool>`
   if (id.startsWith("sys:")) {
     const tool = id.slice("sys:".length);
+    // Validate the supported name before probing PATH: an unrelated command
+    // with the same name must not be reported as an installed system tool.
+    assertKnownSysTool(tool);
     const context = {
       platform: process.platform,
       uid: typeof process.getuid === "function" ? process.getuid() : 0,

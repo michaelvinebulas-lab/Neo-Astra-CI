@@ -1199,6 +1199,12 @@ test("nopm add sys: writes nothing, and remove sys: is refused", () => {
     const unknown = runNopm(["add", "sys:bogus-not-real", "--dry-run"], directory);
     assert.notEqual(unknown.status, 0);
     assert.match(unknown.stderr, /NP0015/);
+
+    // A real command that is not a supported system tool must still fail the
+    // name check; being on PATH is not an installation plan.
+    const installedButUnknown = runNopm(["add", "sys:node", "--dry-run"], directory);
+    assert.notEqual(installedButUnknown.status, 0);
+    assert.match(installedButUnknown.stderr, /NP0015/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
