@@ -23,3 +23,11 @@ astra-codegen-c = { path = "crates/astra-codegen-c" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tempfile = "3"
+
+# Distributed binaries carry no debug symbols or source paths. The JS/TS
+# packages are compiled and minified by Bun in `scripts/package.mjs`.
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 1
+

@@ -27,8 +27,16 @@ npm run astra -- --help
 npm run astra -- fmt . --check
 ```
 
-See [`Docs/install.md`](Docs/install.md) for prerequisites, native builds,
-C-toolchain resolution, upgrades, and troubleshooting.
+Build a standalone host-native package that does not need Node.js or npm:
+
+```sh
+npm run package
+dist/neo-astra-*/bin/astra --version
+```
+
+See [`Docs/install.md`](Docs/install.md) for prerequisites, packaged
+installations, native builds, C-toolchain resolution, upgrades, and
+troubleshooting.
 
 ## Status
 
@@ -51,6 +59,11 @@ The `1.0.0` checkout provides:
 - Pinned C toolchains: verified Zig 0.13.0 downloads for Linux, macOS, and
   Windows, a project-local cache, `zig cc`/`zig ar`, lockfile records, and
   `--no-download` with manual instructions.
+- A standalone package: one host-native `astra` executable with
+  `astra nopm`, a tiny `nopm` launcher, the stripped Rust compiler and Nova
+  runtime, and the pinned native TypeScript compiler. It runs without Node.js,
+  npm, Cargo, or a source checkout; NoPM downloads other package managers only
+  when a project requests them.
 - The C backend: managed GC, manual memory, regions, FFI, generics, packages,
   native libraries, export attributes, per-task heaps, scoped OS-thread tasks,
   task cancellation, and channel messages. Inline `@script:js`,

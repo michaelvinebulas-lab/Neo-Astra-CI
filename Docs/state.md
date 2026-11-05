@@ -58,13 +58,15 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). The `1.0.0`
-release is fully implemented; the first clean install on the new CI caught stale
+release is cut: the release commit is tagged `v1.0.0`, the D28 pre-1.0 audit is
+clean, and `npm run package` produces the standalone host package. Tier-1 run
+`42084631705` is green on Ubuntu, Windows, and macOS; the packaging commit's
+run is recorded in the log. The first clean install on the new CI caught stale
 internal dependency ranges, now fixed in the release tooling. The local gate and
-`npm ci` are green. Tier-1 runs on `luminousvalentine-cell/Neo-Astra-CI`; tag and
-publish follow a green run. The D28 pre-1.0 audit is recorded below.
+`npm ci` are green.
 
-**Release:** the tree is at `1.0.0`; tag and publish after the final Tier-1 run
-is green for the release commit. All package versions move in lockstep: new
+**Release:** the tree is at `1.0.0`; the tag and GitHub release follow a green
+Tier-1 run for the release commit. All package versions move in lockstep: new
 mode/backend/language = minor, fixes = patch, incompatible rework = major.
 
 ## Decisions (index)
@@ -93,6 +95,7 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 | D28 audit | 2026-11-05 | Build every gap in the shipped surface before 1.0. Do not reclassify the JavaScript backend gaps or the private scaffolds as post-1.0. The non-shipped LSP and direct Wasm/LLVM scaffold packages are removed; V1 machine code stays on the C toolchain. |
 | FFI scope | 2026-11-05 | V1 FFI ships on the native C target. The JS/TS backend rejects a foreign module with `NS8001` and names the native target; this is the recorded stable unsupported path, not a silent fallback. The spec's v0.1 slice defines FFI for later target backends (§1, §3.6, §11). |
 | CI remote | 2026-11-05 | Tier-1 runs on `luminousvalentine-cell/Neo-Astra-CI` (remote `ci`). The previous `voidgod79-debug/Neo-Astra-CI` mirror cannot start jobs because of its Actions billing/spending limit. `origin` remains the source mirror at `1199998` and is never pushed. |
+| Distribution | 2026-11-06 | 1.0 ships one host-native `astra` executable compiled by Bun with `--minify --bytecode` (no source maps or comments), plus a tiny `nopm` launcher for `astra nopm`. The package also carries the symbol-stripped Rust compiler and Nova binaries and the pinned native `tsc` needed by `@script:ts`. No Node.js, npm, Cargo, or checkout is needed at runtime; NoPM downloads npm, Cargo, or system package managers only when a project requests a source that needs them. A fully native Rust CLI is 1.1 work; the principal chose the Bun binary for 1.0. |
 
 **Open questions:** the final shared-task-handle design. The safety rule is
 conservative: `NS4019` rejects a task handle in a value that would cross a task
@@ -123,6 +126,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-06 | Standalone 1.0 package: one Bun-compiled `astra` executable with `--minify --bytecode`, `astra nopm` dispatch, and a tiny `nopm` launcher; stripped Rust compiler/Nova binaries; pinned native `tsc` for `@script:ts`; no Node.js/npm/Cargo at runtime; `astra` discovers its compiler beside the executable and the release workflow packages all three hosts. | packaging commit; local `npm run ci` green; Tier-1 run pending; prior Tier-1 42084631705 green on `e40aee4` |
 | 2026-11-05 | `1.0.0` release commit: `TaskError` at join, `task.canceled()`, pinned Zig 0.13.0 download/verify/unpack with `zig cc`/`zig ar`, JavaScript map index/expression-block control flow/`abort`, removal of the LSP and Wasm/LLVM scaffolds, and the D28 audit. | `694ff63`; local `npm run ci` green; Tier-1 run 42081733665 could not start (GitHub Actions billing/spending limit) |
 | 2026-11-05 | Release tooling: the lockstep bump rewrites internal `@neo-astra/*` dependency ranges, the version gate rejects drift, and the release test covers the change. The clean-install failure on the new CI is fixed; CI moved to `luminousvalentine-cell/Neo-Astra-CI`. | release fix commit; local `npm run ci` and clean `npm ci` green |
 | 2026-11-05 | Task handles are rejected at every copy boundary: channel elements, spawn captures, and spawn results report `NS4019`, and the emitter no longer treats `Task` as shared. The error-code audit freezes one meaning per code, splits the overloaded `NS8001`/`NS9008` paths, documents every emitted code, adds `NS7007` FFI mapping validation to `astra check`, and adds the `scripts/check-error-codes.mjs` release gate. `astra check` now runs the frontend and reports source diagnostics, not just manifest validation. | `e52ee12`, run 41996931100 |

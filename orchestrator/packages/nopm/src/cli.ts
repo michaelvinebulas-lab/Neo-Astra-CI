@@ -104,9 +104,9 @@ interface Diagnostic {
   readonly path: string | null;
 }
 
-async function main(): Promise<number> {
+export async function runNopm(argv: readonly string[]): Promise<number> {
   try {
-    const options = parseArgs(process.argv.slice(2));
+    const options = parseArgs(argv);
     switch (options.command) {
       case "help":
         process.stdout.write(HELP);
@@ -136,7 +136,7 @@ async function main(): Promise<number> {
         throw usage(`Unknown command '${options.command}'.`);
     }
   } catch (error) {
-    return emitError(error, process.argv.includes("--json"));
+    return emitError(error, argv.includes("--json"));
   }
 }
 
@@ -875,5 +875,21 @@ function diagnosticFor(error: unknown): Diagnostic {
   };
 }
 
-// Keep the command entry point explicit for bundled binaries.
-process.exitCode = await main();
+// Keep the command entry point explicit for bundled binaries, but do not run
+// when another entry point imports this module (the combined `astra` binary).
+const entry = process.argv[1];
+const isDirectEntry =
+  entry !== undefined && /(?:^|[\\/])cli\.(?:js|ts)$/.test(entry);
+if (isDirectEntry) {
+  void runNopm(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (error: unknown) => {
+      process.stderr.write(
+        `${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exitCode = 1;
+    },
+  );
+}

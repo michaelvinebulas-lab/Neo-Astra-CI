@@ -26,6 +26,15 @@ Use this checklist for every release. No step may be skipped.
   `main`/`bin` entry exists.
 - `cargo build --release -p astra-compiler-api --bin astra-compiler`; the
   release binary answers an `initialize` JSON-RPC request.
+- `npm run package` on each Tier-1 OS. The resulting
+  `dist/neo-astra-<version>-<os>-<arch>/` contains one minified, bytecode
+  `astra` executable (which also serves `astra nopm`), the `nopm` launcher, the
+  stripped `astra-compiler` and `nova` binaries, and the pinned native
+  `typescript/tsc`. Run `astra --version`, `astra nopm --version`, `astra
+  check`, and a native and `@script:ts` build directly from the package with
+  Node.js and npm absent from `PATH`.
+- Confirm the archive and `.sha256` sidecar exist; record the digest in the
+  release notes.
 - Verify the bootstrap install on a clean Tier-1 runner
   (`npm run bootstrap:verify`); `bootstrap:check` is the report-only probe.
 
@@ -38,8 +47,12 @@ Use this checklist for every release. No step may be skipped.
 
 ## 5. Tag and release
 
-- Create an annotated tag `vX.Y.Z`.
+- Create an annotated tag `vX.Y.Z` on the release commit. If packaging changes
+  land after an earlier tag, move the tag before publishing; never publish two
+  trees under one version.
 - Push the tag.
 - Write release notes from the changelog section and publish the GitHub
-  release from the tag. V1 has no npm publish: every package is private and
-  source installs build from the tag.
+  release from the tag. Attach the host packages and `.sha256` files; the
+  `Release packages` workflow builds Linux, macOS, and Windows assets from the
+  tag. V1 has no npm publish: every package is private and source installs
+  build from the tag.

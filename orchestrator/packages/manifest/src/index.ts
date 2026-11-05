@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { basename, join } from "node:path";
 import { parse as parseToml } from "smol-toml";
+import * as taploImport from "@taplo/lib";
 import type { Taplo as TaploInstance } from "@taplo/lib";
 
 export const CORE_MANIFEST_NAMES = ["core.json", "core.toml"] as const;
@@ -63,10 +63,23 @@ export class ManifestError extends Error {
   }
 }
 
-const require = createRequire(import.meta.url);
-const taploModule = require("@taplo/lib") as {
-  Taplo: { initialize: () => Promise<TaploInstance> };
+// `@taplo/lib` is CommonJS. Node exposes its exports under `default`, while
+// Bun (and the compiled CLI) also exposes the named `Taplo` binding. Keep the
+// static import so Bun bundles the formatter, and support both shapes.
+const taploModule = taploImport as unknown as {
+  readonly Taplo?: { initialize: () => Promise<TaploInstance> };
+  readonly default?: { Taplo?: { initialize: () => Promise<TaploInstance> } };
 };
+function resolveTaploCompiler(): {
+  initialize: () => Promise<TaploInstance>;
+} {
+  const compiler = taploModule.Taplo ?? taploModule.default?.Taplo;
+  if (compiler === undefined) {
+    throw new Error("@taplo/lib did not expose Taplo");
+  }
+  return compiler;
+}
+const TaploCompiler = resolveTaploCompiler();
 let taploPromise: Promise<TaploInstance> | undefined;
 
 const CORE_ROOT_ORDER = [
@@ -242,7 +255,7 @@ function orderManifest(data: Record<string, unknown>, kind: "core" | "build" = "
 }
 
 function getTaplo(): Promise<TaploInstance> {
-  taploPromise ??= taploModule.Taplo.initialize();
+  taploPromise ??= TaploCompiler.initialize();
   return taploPromise;
 }
 

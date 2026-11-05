@@ -6,9 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-11-05
+## [1.0.0] - 2026-11-06
 
 ### Added
+- Standalone distribution: `npm run package` compiles the `astra` CLI and the
+  NoPM dispatch into one host-native executable with Bun bytecode, minified
+  identifiers, no source maps, and no comments; ships the Rust compiler and
+  Nova binaries with symbols stripped; and bundles the pinned native
+  TypeScript compiler for `@script:ts`. The package runs without Node.js, npm,
+  Cargo, or a source checkout. `nopm` is a small launcher for `astra nopm`, so
+  the runtime is embedded once.
 - Structured `TaskError` results at `join`: a child panic or cancellation that
   prevents a value raises `TaskError` in the joining task, while a child that
   returns `Result<T, E>` keeps that value. `task.canceled()` reports accepted

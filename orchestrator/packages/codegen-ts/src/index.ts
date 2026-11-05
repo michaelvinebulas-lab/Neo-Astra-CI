@@ -7,7 +7,7 @@
 //! never forks runtime semantics from the JavaScript backend.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -51,6 +51,89 @@ export function pinnedTypeScriptVersionError(
 }
 
 /**
+ * Resolves the pinned TypeScript native compiler.
+ *
+ * TypeScript 7 ships the compiler as a platform binary
+ * (`@typescript/typescript-<platform>-<arch>/lib/tsc[.exe]`). A packaged CLI
+ * carries a `typescript/` directory next to the executable; a source install
+ * resolves the optional platform package from `node_modules`. Neither path
+ * needs a Node launcher, so `@script:ts` works in the compiled CLI.
+ */
+function resolveNativeTypeScript():
+  | { readonly path: string; readonly error?: undefined }
+  | { readonly path?: undefined; readonly error: string } {
+  const executable = process.platform === "win32" ? "tsc.exe" : "tsc";
+  const packagedDir = join(dirname(process.execPath), "typescript");
+  const explicit = process.env["ASTRA_TSC_BIN"];
+  let installedVersion: string | undefined;
+  let tscPath: string | undefined;
+
+  const readVersion = (packageJsonPath: string): string | undefined => {
+    try {
+      const value = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
+        version?: unknown;
+      };
+      return typeof value.version === "string" ? value.version : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
+  try {
+    const packageJsonPath = requireFromCodegenTs.resolve("typescript/package.json");
+    installedVersion = readVersion(packageJsonPath);
+    const platformPackage = `@typescript/typescript-${process.platform}-${process.arch}`;
+    const platformJson = requireFromCodegenTs.resolve(
+      `${platformPackage}/package.json`,
+    );
+    tscPath = join(dirname(platformJson), "lib", executable);
+  } catch {
+    // A packaged CLI and an explicit override are resolved below.
+  }
+
+  const packagedJson = join(packagedDir, "package.json");
+  const packagedVersion = existsSync(packagedJson)
+    ? readVersion(packagedJson)
+    : undefined;
+  if (packagedVersion !== undefined) {
+    installedVersion = packagedVersion;
+  }
+  const packagedTsc = join(packagedDir, executable);
+  if (existsSync(packagedTsc)) {
+    tscPath = packagedTsc;
+  }
+  if (explicit !== undefined && explicit.length > 0) {
+    tscPath = explicit;
+    if (installedVersion === undefined) {
+      const version = spawnSync(explicit, ["--version"], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      installedVersion =
+        version.status === 0
+          ? (version.stdout.trim().replace(/^Version\s+/i, "") || undefined)
+          : undefined;
+    }
+  }
+
+  if (installedVersion === undefined) {
+    return {
+      error: `the pinned TypeScript compiler (typescript@${PINNED_TYPESCRIPT_VERSION}) is not installed`,
+    };
+  }
+  const versionError = pinnedTypeScriptVersionError(installedVersion);
+  if (versionError !== undefined) {
+    return { error: versionError };
+  }
+  if (tscPath === undefined || !existsSync(tscPath)) {
+    return {
+      error: `the pinned TypeScript native compiler (typescript@${PINNED_TYPESCRIPT_VERSION}) is not installed; install the platform package or set ASTRA_TSC_BIN`,
+    };
+  }
+  return { path: tscPath };
+}
+
+/**
  * Transpiles one `@script:ts` body with the pinned TypeScript compiler.
  *
  * The input is the script body padded with leading blank lines so the emitted
@@ -63,25 +146,9 @@ export function pinnedTypeScriptVersionError(
 export function transpileTypeScriptBody(
   paddedSource: string,
 ): TypeScriptTranspileOutcome {
-  let installedVersion: string;
-  let tscPath: string;
-  try {
-    const packageJsonPath = requireFromCodegenTs.resolve("typescript/package.json");
-    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8")) as {
-      version?: unknown;
-    };
-    installedVersion =
-      typeof packageJson.version === "string" ? packageJson.version : "unknown";
-    tscPath = join(dirname(packageJsonPath), "lib", "tsc.js");
-  } catch {
-    return {
-      ok: false,
-      message: `the pinned TypeScript compiler (typescript@${PINNED_TYPESCRIPT_VERSION}) is not installed`,
-    };
-  }
-  const versionError = pinnedTypeScriptVersionError(installedVersion);
-  if (versionError !== undefined) {
-    return { ok: false, message: versionError };
+  const tsc = resolveNativeTypeScript();
+  if (tsc.error !== undefined) {
+    return { ok: false, message: tsc.error };
   }
 
   const directory = mkdtempSync(join(tmpdir(), "astra-script-ts-"));
@@ -93,9 +160,8 @@ export function transpileTypeScriptBody(
     // opaque to Nova and may legitimately use host globals that a strict
     // library check would reject. Syntax errors are still hard errors.
     const result = spawnSync(
-      process.execPath,
+      tsc.path,
       [
-        tscPath,
         "--ignoreConfig",
         "--noCheck",
         "--target",

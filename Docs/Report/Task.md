@@ -402,3 +402,57 @@ here.)
   public registry. The release script now rewrites internal ranges,
   `scripts/check-versions.mjs` rejects drift, and `npm ci` succeeds from a clean
   install. The release test covers the dependency bump.
+
+## Standalone 1.0 packaging - 2026-11-06
+
+### Decision
+
+- The principal chose to keep the Bun-compiled CLI for 1.0 and do the native
+  Rust CLI in 1.1. The shipped package must still be self-contained: no
+  Node.js, npm, Cargo, or source checkout at runtime.
+- One `astra` executable serves both commands. `nopm` is a tiny OS launcher for
+  `astra nopm`, so the embedded runtime is paid once. The earlier two-binary
+  build and its scratch outputs were 1.4 GB; the final package is one binary
+  plus the Rust tools and the pinned native TypeScript compiler.
+
+### Build
+
+- `scripts/package.mjs` builds the Rust compiler/Nova in release mode
+  (`strip = "symbols"`, thin LTO, one codegen unit), compiles
+  `scripts/bin/astra.ts` with Bun `--compile --minify --bytecode
+  --sourcemap=none`, copies only `typescript/tsc`, writes the `nopm` launcher,
+  smoke-tests both command names, and writes the archive plus `.sha256`.
+- Bun minification removes comments, whitespace, and original identifiers; the
+  bytecode cache avoids shipping readable JavaScript. Rust release binaries
+  carry no source, comments, or debug symbols. The package contains no tests or
+  source trees.
+- `astra` discovers `astra-compiler` beside the executable (or via
+  `ASTRA_COMPILER_BIN`); `@script:ts` resolves the pinned native compiler beside
+  the executable, so it never spawns Node. The manifest formatter uses a static
+  `@taplo/lib` import that works in Node ESM and is bundled by Bun.
+- `nopm` exports `runNopm(argv)`; the direct `cli.js` entry still auto-runs, so
+  the package manager and the combined binary share one implementation.
+
+### Verification
+
+- `npm run ci` is green locally, including the GC-stress leg.
+- From the unpacked package with no npm invocation: `astra --version` ->
+  `astra 1.0.0`; `astra nopm --version` and `nopm.cmd --version` ->
+  `nopm 1.0.0`; `astra check` on the demo; `astra fmt --check` on a TOML
+  manifest; `astra build --target native` and the produced executable prints
+  `10`; `astra build --target ts` on a `@script:ts` project; `astra nopm lock`.
+- Windows sizes: `astra.exe` 189,926,400 bytes; `astra-compiler.exe`
+  2,316,800; `nova.exe` 2,146,304; `tsc.exe` 24,520,544; archive
+  88,259,266 bytes; SHA-256
+  `1a527f08d7c8b996b9edc5ededc35f98273ed8b34ce687be117079b36d334c2a`.
+  The package script itself smoke-tests `astra --version`, `astra nopm
+  --version`, the `nopm` launcher, and a `@script:ts` build before archiving.
+- The `Release packages` workflow builds and uploads Linux, macOS, and Windows
+  assets from the tag. The release tag is moved to the packaging commit before
+  publishing (the earlier tag did not include packaging).
+
+### Remaining
+
+- 1.1 native CLI (recorded in `Docs/todo.md`): remove the embedded Bun runtime
+  so the CLI is a few megabytes and uses `astra-core` directly; JS/TS and NoPM
+  may download the runtime/manager they need.

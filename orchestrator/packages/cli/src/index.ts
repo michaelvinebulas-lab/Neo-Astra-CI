@@ -2966,6 +2966,20 @@ export async function runCli(args: readonly string[], cwd = process.cwd()): Prom
 }
 
 const entry = process.argv[1];
-if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
-  process.exitCode = await runCli(process.argv.slice(2));
+const isDirectCliEntry =
+  entry !== undefined &&
+  /(?:^|[\\/])index\.js$/.test(entry) &&
+  import.meta.url === pathToFileURL(entry).href;
+if (isDirectCliEntry) {
+  void runCli(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (error: unknown) => {
+      process.stderr.write(
+        `${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exitCode = 1;
+    },
+  );
 }

@@ -108,14 +108,26 @@ Completed work is summarized at the bottom; the full history is in
       The audit table is in `Docs/state.md`; the LSP and Wasm/LLVM scaffolds were
       removed, the JavaScript backend gaps are closed, and JS/TS FFI is recorded
       as a stable unsupported target path.
-- [ ] Cut 1.0.0 across all packages, with release notes from the changelog,
-      only when the 1.0 queue is empty and the D28 audit is clean.
-      Versions and changelog are at `1.0.0`; the tag and publish wait for a green
-      Tier-1 run on `luminousvalentine-cell/Neo-Astra-CI`. The first clean
-      install there caught stale internal dependency ranges; the release tooling
-      now keeps them in lockstep.
+- [x] Standalone distribution: `npm run package` builds one host-native
+      `astra` executable (minified bytecode, no source maps/comments), a tiny
+      `nopm` launcher for `astra nopm`, the stripped Rust compiler/Nova
+      binaries, and the pinned native `tsc` for `@script:ts`. The package runs
+      without Node.js, npm, Cargo, or a checkout; NoPM downloads other package
+      managers only when a project requests them.
+- [x] Cut 1.0.0 across all packages, with release notes from the changelog,
+      only when the 1.0 queue is empty and the D28 audit is clean. The tag and
+      GitHub release are published from the green Tier-1 release commit; the
+      release workflow attaches the Linux, macOS, and Windows packages.
 
 ## 1.1.0 - browser playground
+
+### Native CLI
+
+- [ ] Replace the embedded Bun runtime in the distributed CLI with a small
+      native Rust CLI. Core commands (`check`, native `build`/`run`, `fmt`,
+      `ast`, `explain`, `doctor`) use `astra-core`/`astra-compiler` directly;
+      JS/TS codegen and NoPM may download a pinned runtime or package manager
+      on demand. The 1.0 package keeps the Bun binary by principal decision.
 
 ### Core bridge
 

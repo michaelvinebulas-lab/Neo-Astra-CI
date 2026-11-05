@@ -224,6 +224,23 @@ export function findCompilerBinary(
 
   addAncestors(cwd);
 
+  // A packaged CLI keeps `astra-compiler` next to the executable. Look there
+  // before the workspace `target` directories so a distributed binary is
+  // self-contained without requiring `cargo` or an environment override.
+  const entry = process.argv[1];
+  const entryDir = entry === undefined ? undefined : dirname(resolve(entry));
+  const packagedCandidates = [
+    ...(entryDir === undefined
+      ? []
+      : [join(entryDir, BINARY_NAME), join(entryDir, "..", "bin", BINARY_NAME)]),
+    join(dirname(process.execPath), BINARY_NAME),
+  ];
+  for (const candidate of packagedCandidates) {
+    if (isFile(candidate)) {
+      return candidate;
+    }
+  }
+
   try {
     addAncestors(fileURLToPath(new URL("../../../../", import.meta.url)));
   } catch {

@@ -1,13 +1,46 @@
 # Install and upgrade
 
-Neo Astra is installed from its source checkout for v1. There is no global
-installer, no published package, and no service to run. The checkout builds the
-TypeScript orchestrator and the Rust compiler; project caches stay inside the
-project.
+Neo Astra ships as a host-native package for v1. The source checkout remains the
+development and bootstrap path; the packaged binaries need no Node.js, npm,
+Cargo, or source checkout at runtime. There is no global installer and no
+service to run. Project caches stay inside the project.
+
+## Packaged distribution
+
+From a checkout, build the package for the current host:
+
+```sh
+npm run package
+```
+
+The archive and checksum are written under `dist/`; unpack it anywhere. The
+package contains:
+
+- `bin/astra` (`.exe` on Windows) - the `astra` CLI and `astra nopm`.
+- `bin/nopm` on POSIX, `bin/nopm.cmd` on Windows - a launcher for
+  `astra nopm`.
+- `bin/astra-compiler` - the native compiler.
+- `bin/nova` - the Nova development runtime.
+- `typescript/tsc` - the pinned native TypeScript compiler used by
+  `@script:ts`; Node.js is not needed to transpile a script block.
+
+The binaries are compiled and stripped; the package contains no TypeScript
+sources, source maps, comments, or debug symbols. NoPM downloads npm, Cargo, or
+system package managers only when a project requests a source that needs them.
+Native builds still need a C compiler on `PATH`, or a pinned toolchain declared
+in `build.json` (which `astra` downloads and verifies).
+
+```sh
+bin/astra --version
+bin/astra check path/to/project
+bin/astra build path/to/project --target native
+bin/nopm --version
+```
 
 ## Requirements
 
-- **Node.js 22+ with npm** - the only manual prerequisite.
+- **Node.js 22+ with npm** for the source checkout and for `npm run package`.
+  A packaged installation does not need either at runtime.
 - **Rust stable** - the bootstrap installs it through `rustup` when missing.
 - **A C compiler** for `native` and `c` builds: `clang`, `gcc`, or `cc`.
   `astra doctor` probes the hosted compiler; on Windows a hosted linker (the
