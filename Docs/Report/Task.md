@@ -389,3 +389,16 @@ here.)
 - The `v1.0.0` tag and publish wait for a green Tier-1 run. The principal needs
   to restore GitHub Actions billing or raise the spending limit; then re-run the
   gate for `694ff63` (or push the evidence commit and run that).
+
+## CI move and release fix - 2026-11-05
+
+- The principal asked for the gate to move to
+  `https://github.com/luminousvalentine-cell/Neo-Astra-CI`; the `ci` remote now
+  points there. The old `voidgod79-debug` mirror is abandoned because its
+  Actions billing cannot start jobs.
+- The first new-CI run caught a real release bug: `scripts/release.mjs` bumped
+  package versions but left internal `@neo-astra/*` dependency ranges at
+  `0.1.0`, so a clean `npm install` tried to fetch private packages from the
+  public registry. The release script now rewrites internal ranges,
+  `scripts/check-versions.mjs` rejects drift, and `npm ci` succeeds from a clean
+  install. The release test covers the dependency bump.

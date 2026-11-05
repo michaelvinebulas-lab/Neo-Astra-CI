@@ -131,6 +131,16 @@ test("release script bumps every version and moves the changelog", () => {
       readFileSync(join(project, "orchestrator/packages/nopm/src/cli.ts"), "utf8"),
       new RegExp(`const VERSION = "${nextPattern}";`),
     );
+    const cliManifest = JSON.parse(
+      readFileSync(join(project, "orchestrator/packages/cli/package.json"), "utf8"),
+    );
+    assert.equal(cliManifest.dependencies["@neo-astra/codegen-js"], next);
+    assert.equal(cliManifest.dependencies["@neo-astra/toolchain"], next);
+    const nopmManifest = JSON.parse(
+      readFileSync(join(project, "orchestrator/packages/nopm/package.json"), "utf8"),
+    );
+    assert.equal(nopmManifest.dependencies["@neo-astra/manifest"], next);
+    assert.equal(nopmManifest.dependencies["@neo-astra/toolchain"], next);
 
     const changelog = readFileSync(join(project, "CHANGELOG.md"), "utf8");
     assert.ok(

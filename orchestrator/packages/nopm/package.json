@@ -19,8 +19,8 @@
     "clean": "tsc -b --clean"
   },
   "dependencies": {
-    "@neo-astra/manifest": "0.1.0",
-    "@neo-astra/toolchain": "0.1.0",
-    "@neo-astra/registry": "0.1.0"
+    "@neo-astra/manifest": "1.0.0",
+    "@neo-astra/toolchain": "1.0.0",
+    "@neo-astra/registry": "1.0.0"
   }
 }

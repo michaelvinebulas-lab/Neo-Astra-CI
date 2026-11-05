@@ -178,6 +178,22 @@ for (const entry of readdirSync(join(root, PACKAGES), { withFileTypes: true })) 
   const path = `${PACKAGES}/${entry.name}/package.json`;
   const manifest = readJson(path);
   manifest.version = versionArg;
+  for (const section of [
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+  ]) {
+    const dependencies = manifest[section];
+    if (dependencies === null || typeof dependencies !== "object") {
+      continue;
+    }
+    for (const name of Object.keys(dependencies)) {
+      if (name.startsWith("@neo-astra/")) {
+        dependencies[name] = versionArg;
+      }
+    }
+  }
   writeFileSync(join(root, path), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 

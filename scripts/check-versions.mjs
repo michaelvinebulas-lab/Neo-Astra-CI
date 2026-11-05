@@ -69,6 +69,31 @@ for (const entry of readdirSync(join(root, packagesDir), { withFileTypes: true }
     continue;
   }
   expect(packagePath, manifest.version, expected);
+  // Workspace packages depend on each other by exact version. A clean
+  // `npm install` would otherwise fetch the old version from the registry and
+  // fail because these packages are private.
+  for (const section of [
+    "dependencies",
+    "devDependencies",
+    "peerDependencies",
+    "optionalDependencies",
+  ]) {
+    const dependencies = manifest[section];
+    if (dependencies === null || typeof dependencies !== "object") {
+      continue;
+    }
+    for (const [name, value] of Object.entries(dependencies)) {
+      if (!name.startsWith("@neo-astra/")) {
+        continue;
+      }
+      checked.push(`${packagePath} ${section} ${name}`);
+      if (value !== expected) {
+        errors.push(
+          `${packagePath} ${section} ${name}: ${String(value)}, expected ${expected}`,
+        );
+      }
+    }
+  }
 }
 
 // The CLIs print their version without importing package.json.

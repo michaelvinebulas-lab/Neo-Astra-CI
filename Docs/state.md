@@ -5,9 +5,9 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-05
-**Phase:** `1.0.0` release: local gate green; Tier-1 is blocked by GitHub Actions billing.
-**Master:** `694ff63` (release commit; local `npm run ci` green).
-**Blockers:** Tier-1 cannot start: all three jobs report "The job was not started because recent account payments have failed or your spending limit needs to be increased" (run 42081733665). The release tag and publish wait for a green Tier-1 run. Everything else is implemented and locally gated: `TaskError`, the JavaScript backend gaps, the pinned Zig 0.13.0 download/verify/unpack path, the task-handle boundary guard, the error-code split, `NS7007` FFI validation, install/upgrade documentation, `astra doctor`, and `astra ast`/`explain`.
+**Phase:** `1.0.0` release: release-tooling fix landed; Tier-1 on the new CI is pending.
+**Master:** `694ff63` release commit plus the release-tooling fix at `HEAD` (clean `npm ci` verified).
+**Blockers:** none code-side. The first clean install on `luminousvalentine-cell/Neo-Astra-CI` exposed stale internal `@neo-astra/*` dependency ranges after the version bump; `scripts/release.mjs` now rewrites them, `scripts/check-versions.mjs` rejects drift, and the release test covers it. Tier-1 rerun is pending; the tag and publish wait for a green run.
 
 ---
 
@@ -58,11 +58,10 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). The `1.0.0`
-release commit is `694ff63`; the local gate is green. Tier-1 run `42081733665`
-failed before starting because of the repository's GitHub Actions billing or
-spending limit, so the tag and publish are blocked on the principal fixing
-billing. The D28 pre-1.0 audit is recorded below. All implementation work is
-done.
+release is fully implemented; the first clean install on the new CI caught stale
+internal dependency ranges, now fixed in the release tooling. The local gate and
+`npm ci` are green. Tier-1 runs on `luminousvalentine-cell/Neo-Astra-CI`; tag and
+publish follow a green run. The D28 pre-1.0 audit is recorded below.
 
 **Release:** the tree is at `1.0.0`; tag and publish after the final Tier-1 run
 is green for the release commit. All package versions move in lockstep: new
@@ -93,6 +92,7 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 | Toolchain download | 2026-11-05 | Versioned C toolchain pins download official upstream archives only. A per-OS/arch table pins the URL, byte size, and SHA-256; the existing transport fetches it, the system `tar` unpacks it, and a project-local cache plus a lockfile record make it reproducible. Nothing elevates. Zig `0.13.0` is pinned on Linux/macOS/Windows for x64/arm64 and drives `zig cc` plus `zig ar`. `--no-download` disables the fetch; every failure names the archive and prints manual-install instructions. |
 | D28 audit | 2026-11-05 | Build every gap in the shipped surface before 1.0. Do not reclassify the JavaScript backend gaps or the private scaffolds as post-1.0. The non-shipped LSP and direct Wasm/LLVM scaffold packages are removed; V1 machine code stays on the C toolchain. |
 | FFI scope | 2026-11-05 | V1 FFI ships on the native C target. The JS/TS backend rejects a foreign module with `NS8001` and names the native target; this is the recorded stable unsupported path, not a silent fallback. The spec's v0.1 slice defines FFI for later target backends (§1, §3.6, §11). |
+| CI remote | 2026-11-05 | Tier-1 runs on `luminousvalentine-cell/Neo-Astra-CI` (remote `ci`). The previous `voidgod79-debug/Neo-Astra-CI` mirror cannot start jobs because of its Actions billing/spending limit. `origin` remains the source mirror at `1199998` and is never pushed. |
 
 **Open questions:** the final shared-task-handle design. The safety rule is
 conservative: `NS4019` rejects a task handle in a value that would cross a task
@@ -124,6 +124,7 @@ rejected this" invariant errors, not unfinished features.
 | Date | Change | Evidence |
 |---|---|---|
 | 2026-11-05 | `1.0.0` release commit: `TaskError` at join, `task.canceled()`, pinned Zig 0.13.0 download/verify/unpack with `zig cc`/`zig ar`, JavaScript map index/expression-block control flow/`abort`, removal of the LSP and Wasm/LLVM scaffolds, and the D28 audit. | `694ff63`; local `npm run ci` green; Tier-1 run 42081733665 could not start (GitHub Actions billing/spending limit) |
+| 2026-11-05 | Release tooling: the lockstep bump rewrites internal `@neo-astra/*` dependency ranges, the version gate rejects drift, and the release test covers the change. The clean-install failure on the new CI is fixed; CI moved to `luminousvalentine-cell/Neo-Astra-CI`. | release fix commit; local `npm run ci` and clean `npm ci` green |
 | 2026-11-05 | Task handles are rejected at every copy boundary: channel elements, spawn captures, and spawn results report `NS4019`, and the emitter no longer treats `Task` as shared. The error-code audit freezes one meaning per code, splits the overloaded `NS8001`/`NS9008` paths, documents every emitted code, adds `NS7007` FFI mapping validation to `astra check`, and adds the `scripts/check-error-codes.mjs` release gate. `astra check` now runs the frontend and reports source diagnostics, not just manifest validation. | `e52ee12`, run 41996931100 |
 | 2026-11-04 | CLI inspection commands: `astra ast` prints the parsed AST and `astra explain` prints mode inference for a file or project entry; adds `--json`, `--mode`, `--target`, and `--compiler`; install/upgrade documentation and README/package status refreshed; release checklist corrected to the source-install model. | `adeedf0`, run 41851239620 |
 | 2026-11-03 | `sys:` names are validated before the installed probe, so a command like `node` that exists on `PATH` is still `NP0015` when it is not a supported system tool. Adds the `sys:node` CLI regression. | `5b6b5fc`, run 41846362813 |
@@ -173,8 +174,8 @@ rejected this" invariant errors, not unfinished features.
 Every slice: `npm run ci` (TypeScript build + tests, boundary/Wasm build, fmt
 check, clippy `-D warnings`, workspace tests, GC stress leg), then commit with
 explicit paths only, push to `ci`
-(`voidgod79-debug/Neo-Astra-CI`), poll the Tier-1 run for the head SHA, and
-record the run number in the Log row. Tier-1 on the committed tree is
+(`luminousvalentine-cell/Neo-Astra-CI`), poll the Tier-1 run for the head SHA,
+and record the run number in the Log row. Tier-1 on the committed tree is
 authoritative; the mirror `origin` (`luminousvalentine-cell/Neo-Astra`) stays at
 `1199998` and is synced only on request.
 
