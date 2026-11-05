@@ -5,9 +5,9 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-04
-**Phase:** V1 completion - task-boundary guard, release preparation, and the D28 gap audit.
-**Master:** `5b6b5fc` (Tier-1 run 41846362813: green on Linux, macOS, Windows).
-**Blockers:** task-handle boundary guard (Kilo, in progress); `TaskError` shape decision; pinned toolchain download; release packaging and the D28 gap audit. Install/upgrade documentation, `astra doctor`, and `astra ast`/`explain` are done.
+**Phase:** V1 completion - error-code taxonomy, release preparation, and the D28 gap audit.
+**Master:** `adeedf0` (Tier-1 run 41851239620: green on Linux, macOS, Windows).
+**Blockers:** `TaskError` shape decision; pinned toolchain download; release packaging and the remaining D28 audit items. The task-handle boundary guard, error-code split, `NS7007` FFI validation, install/upgrade documentation, `astra doctor`, and `astra ast`/`explain` are done.
 
 ---
 
@@ -38,13 +38,15 @@ or frozen history (`Docs/archive/`).
 - **Memory:** managed arena + precise root frames + mark-sweep collector with
   `ASTRA_GC_STRESS=1`, boundary pinning, manual alloc/free, `Region`, C ABI.
 - **Concurrency:** OS-thread spawn bound to structured scopes, per-task heaps,
-  cooperative cancellation, bounded channels with a deadlock watchdog, and a
-  thread-safe process-lived shared heap for channel handles and messages.
+  cooperative cancellation, bounded channels with a deadlock watchdog, a
+  thread-safe process-lived shared heap for channel handles and messages, and
+  `NS4019` rejection of task handles at every copy boundary.
 - **Toolchain:** `astra` CLI (check, fmt, build, doctor, ast, explain), NoPM
   (lock, tree, install, search, audit, why, update), manifest formatting,
   registry adapters, toolchain policy, the resolution ladder, and the lockfile
-  record. `nova` provides the development `run`, `eval`, `watch`, `repl`, and
-  `test` commands.
+  record. `astra check` validates both manifests, runs the frontend over the
+  project entry, and validates `ffi` mappings (`NS7007`). `nova` provides the
+  development `run`, `eval`, `watch`, `repl`, and `test` commands.
 - **Compiler API:** JSON-RPC/native + raw Wasm: `check`, `check_project`,
   `compile`, `compile_project`, `format`, `ast`, `explain`.
 - **Quality:** Tier-1 CI on three OSes; frontend and C-emitter fuzz suites
@@ -54,10 +56,10 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
-the task-handle boundary guard in `crates/**` - Kilo; CLI inspection commands,
-release packaging, the D28 gap audit, and the remaining 1.0 blockers - lead.
-Toolchain policy, doctor, lockfile records, channel messages, spawn-capture
-scope resolution, and the install/upgrade documentation are done.
+the error-code taxonomy gate, release packaging, the D28 gap audit, and the
+remaining 1.0 blockers - lead. The task-handle boundary guard, CLI inspection
+commands, toolchain policy, doctor, lockfile records, channel messages,
+spawn-capture scope resolution, and the install/upgrade documentation are done.
 
 **Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete and
 the D28 gap audit is clean. All packages move in lockstep: new
@@ -100,7 +102,8 @@ governed by D28 - a gap is not allowed to exist just because it has a task.
 
 | Date | Change | Evidence |
 |---|---|---|
-| 2026-11-04 | CLI inspection commands: `astra ast` prints the parsed AST and `astra explain` prints mode inference for a file or project entry; adds `--json`, `--mode`, `--target`, and `--compiler`; install/upgrade documentation and README/package status refreshed; release checklist corrected to the source-install model. | TS suite 225/225; Tier-1 pending |
+| 2026-11-05 | Task handles are rejected at every copy boundary: channel elements, spawn captures, and spawn results report `NS4019`, and the emitter no longer treats `Task` as shared. The error-code audit freezes one meaning per code, splits the overloaded `NS8001`/`NS9008` paths, documents every emitted code, adds `NS7007` FFI mapping validation to `astra check`, and adds the `scripts/check-error-codes.mjs` release gate. `astra check` now runs the frontend and reports source diagnostics, not just manifest validation. | landing commit; Tier-1 pending |
+| 2026-11-04 | CLI inspection commands: `astra ast` prints the parsed AST and `astra explain` prints mode inference for a file or project entry; adds `--json`, `--mode`, `--target`, and `--compiler`; install/upgrade documentation and README/package status refreshed; release checklist corrected to the source-install model. | `adeedf0`, run 41851239620 |
 | 2026-11-03 | `sys:` names are validated before the installed probe, so a command like `node` that exists on `PATH` is still `NP0015` when it is not a supported system tool. Adds the `sys:node` CLI regression. | `5b6b5fc`, run 41846362813 |
 | 2026-11-03 | Spawn captures resolve free names through the active lexical scope: capture and republish lookup is truncated at block, loop, conditional, block-expression, and match-arm boundaries, and arm pattern bindings enter the arm scope. Adds block/loop/match shadow and managed block-arm regressions. | `915137d`, run 41686527626 (attempt 2; attempt 1 hit a transient macOS crates.io DNS failure) |
 | 2026-11-03 | Channel messages landed: a once-initialized, thread-safe shared heap owns channel handles, queue buffers, and queued copies; `send` deep-copies the element by shape, `receive` copies into the receiver heap and frees the shared subgraph, and channel values are shared handles; adds bytes-after-join, reclamation, shared-heap, stress, and cross-backend conformance tests. `Channel<T>` rejects task handles (`NS4019`). TS match bindings over fallible calls now type the materialized `Result`. | `7b7dc29` + `1a61817` + `88d771e`, run 41633106216 |

@@ -1,0 +1,16 @@
+// A struct carrying a task handle is deep-copied out of the child heap; the
+// copied task record would outlive the heap that owns it.
+struct Holder {
+    task: Task<i32>,
+}
+
+pub fn main() -> i32 {
+    let outer = spawn || {
+        let inner = spawn || { 1 }
+        let value = inner.join()
+        println(value)
+        Holder { task: inner }
+    }
+    let holder = outer.join()
+    return holder.task.join()
+}

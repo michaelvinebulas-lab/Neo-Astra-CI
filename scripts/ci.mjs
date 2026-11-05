@@ -41,6 +41,7 @@ function run(label, command, args, extraEnv = {}) {
 }
 
 run("Version check", "node", ["scripts/check-versions.mjs"]);
+run("Error-code table", "node", ["scripts/check-error-codes.mjs"]);
 run("TypeScript build", npm, ["run", "build"]);
 run("TypeScript tests", npm, ["test"]);
 run("Native/Wasm boundary", npm, ["run", "test:boundary"]);

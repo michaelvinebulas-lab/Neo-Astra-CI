@@ -637,7 +637,7 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
             modules: Vec::new(),
             host_shim: String::new(),
             diagnostics: vec![Diagnostic::error(
-                "NS8001",
+                "NS9009",
                 format!(
                     "Unsupported apiVersion '{}'; expected '{}'.",
                     request.api_version, API_VERSION
@@ -654,7 +654,7 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
             modules: Vec::new(),
             host_shim: String::new(),
             diagnostics: vec![Diagnostic::error(
-                "NS8001",
+                "NS9010",
                 "compile_project requires at least one source unit",
             )],
             metadata: json!({}),
@@ -1344,6 +1344,46 @@ mod tests {
         let response = CompileResponse::failure(vec![diagnostic]);
         assert!(response.program.is_none());
         assert_eq!(response.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn compile_project_uses_ns9009_for_an_unsupported_api_version() {
+        let request = super::ProjectCompileRequest {
+            api_version: "99.0".to_owned(),
+            sources: Vec::new(),
+            target: "c".to_owned(),
+            mode: None,
+            integer_policy: super::IntegerPolicy::Wrapping,
+            library: false,
+            import_map: Default::default(),
+        };
+        let response = super::compile_project(&request);
+        assert!(!response.ok);
+        assert!(
+            response.diagnostics.iter().any(|d| d.code == "NS9009"),
+            "{:?}",
+            response.diagnostics
+        );
+    }
+
+    #[test]
+    fn compile_project_uses_ns9010_for_an_empty_source_list() {
+        let request = super::ProjectCompileRequest {
+            api_version: API_VERSION.to_owned(),
+            sources: Vec::new(),
+            target: "c".to_owned(),
+            mode: None,
+            integer_policy: super::IntegerPolicy::Wrapping,
+            library: false,
+            import_map: Default::default(),
+        };
+        let response = super::compile_project(&request);
+        assert!(!response.ok);
+        assert!(
+            response.diagnostics.iter().any(|d| d.code == "NS9010"),
+            "{:?}",
+            response.diagnostics
+        );
     }
 
     #[test]

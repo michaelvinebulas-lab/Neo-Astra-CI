@@ -15,6 +15,8 @@ Use this checklist for every release. No step may be skipped.
 ## 2. Build and test
 
 - `npm run bootstrap:verify` (install + build + test + fmt-check + clippy).
+- `node scripts/check-error-codes.mjs` green: every emitted code has a spec row
+  and every spec row is implemented or explicitly reserved.
 - `npm run ci` green on Linux, macOS, and Windows (Tier-1 matrix).
 - Confirm the Tier-1 run recorded in `Docs/state.md` is for the release commit.
 

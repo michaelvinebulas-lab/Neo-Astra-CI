@@ -35,9 +35,10 @@ npm run astra -- build . --target native
 npm run astra -- doctor
 ```
 
-`check` performs manifest discovery and validation. `fmt` sends `.ns` source to
-the Rust core over JSON-RPC and preserves comments; it also formats `core.json`
-/ `core.toml`, preserving TOML `#` comments. `ast` prints the parsed tree and
+`check` performs manifest discovery and validation, runs the Rust frontend over
+the project entry, and validates the manifest `ffi` mappings (`NS7007`). `fmt`
+sends `.ns` source to the Rust core over JSON-RPC and preserves comments; it
+also formats `core.json` / `core.toml`, preserving TOML `#` comments. `ast` prints the parsed tree and
 `explain` prints the mode-inference result, both from the Rust compiler.
 `build` runs the selected backend (`js`, `ts`, `c`, or `native`) and writes the
 artifact; `--json` returns a machine-readable report. `doctor` prints the C

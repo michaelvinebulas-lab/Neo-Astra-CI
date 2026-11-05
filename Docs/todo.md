@@ -74,13 +74,11 @@ Completed work is summarized at the bottom; the full history is in
 - [x] (1.0 blocker, D28) Spawn captures resolve free names through the full
       scope chain, not a flat locals map, so an out-of-scope shadowed local is
       never captured.
-- [ ] (1.0 blocker, D28; in progress - Kilo) A task handle nested inside a
-      composite (struct, array, option, result) is deep-copied by the generic
-      shape when it crosses a task boundary; that duplicates its thread handle
-      and owner heap. Channel elements already reject it (`NS4019`). The
-      conservative guard now extends that rejection to spawn captures and task
-      results; a future single-owner shared-handle design is a separate
-      principal decision.
+- [x] (1.0 blocker, D28) A task handle nested inside a composite (struct,
+      array, option, result) is rejected at every copy boundary: channel
+      elements, spawn captures, and spawn results all report `NS4019`; the
+      emitter no longer treats `Task` as a shared capture. A future
+      single-owner shared-handle design is a separate principal decision.
 
 ### Release
 
@@ -90,6 +88,10 @@ Completed work is summarized at the bottom; the full history is in
 - [ ] Packaging: build every package and the native compiler; verify the
       bootstrap install from a clean machine.
 - [x] Install and upgrade documentation.
+- [x] Error-code audit: every emitted diagnostic has a normative row, the
+      overloaded `NS8001`/`NS9008` uses are split, `NS7007` FFI validation is
+      wired into `astra check`, and `scripts/check-error-codes.mjs` guards the
+      table in CI.
 - [ ] (D28) Pre-1.0 gap audit: every stub, TODO, approximation, and deferred
       item in the shipped surface is closed or recorded as a principal decision.
 - [ ] Cut 1.0.0 across all packages, with release notes from the changelog,

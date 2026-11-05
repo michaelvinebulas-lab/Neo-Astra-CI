@@ -1,0 +1,12 @@
+// A composite that contains a task handle is deep-copied by shape. Copying
+// the task record would duplicate its thread handle and owner heap.
+struct Holder {
+    task: Task<i32>,
+}
+
+pub fn main() -> i32 {
+    let inner = spawn || { 1 }
+    let holder = Holder { task: inner }
+    let outer = spawn || { holder.task.join() }
+    return outer.join()
+}

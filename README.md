@@ -40,10 +40,12 @@ The v1 stack is feature-complete except for the items listed in
   the package manifest edit API.
 - The Rust frontend: lexer, parser, AST, module resolver, capability/mode
   inference, type checker, error effects, the system-mode evaluation-order
-  rule (`NS5007`), the channel task-element guard (`NS4019`), and a JSON-RPC
-  compiler boundary exposed as a native binary and raw Wasm exports.
-- The `astra` CLI: `check`, `fmt`, `build`, `doctor`, `ast`, and `explain`,
-  with JavaScript, TypeScript, C, and native targets,
+  rule (`NS5007`), the task-handle copy-boundary guard (`NS4019`), and a
+  JSON-RPC compiler boundary exposed as a native binary and raw Wasm exports.
+- The `astra` CLI: `check`, `fmt`, `build`, `doctor`, `ast`, and `explain`.
+  `check` validates both manifests, runs the frontend over the project entry,
+  and validates `ffi` mappings; the other commands cover formatting, all four
+  targets, JavaScript/TypeScript/C/native code generation,
   executable/staticlib/cdylib emission, and `--json` reports.
   `ASTRA_COMPILER_BIN` and `--compiler` select the compiler binary;
   `ASTRA_CC` and `toolchain.c` select the C toolchain.

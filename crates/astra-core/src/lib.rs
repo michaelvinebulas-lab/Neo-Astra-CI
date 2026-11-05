@@ -8,6 +8,7 @@ pub mod ast;
 pub mod checker;
 pub mod diagnostic;
 pub mod formatter;
+pub mod free_names;
 pub mod hir;
 pub mod ir;
 pub mod lexer;

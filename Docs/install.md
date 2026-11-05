@@ -62,7 +62,9 @@ npm run nopm -- --help
 `npm run astra --` forwards everything after `--` to the `astra` CLI. The same
 works for `nova` and `nopm`.
 
-- `astra check` discovers and validates the project manifest.
+- `astra check` discovers and validates both manifests, runs the frontend over
+  the project entry, and rejects missing or inconsistent `ffi` mappings with
+  `NS7007`.
 - `astra fmt` formats `.ns` source and `core.json` / `core.toml`; `--check`
   reports differences without writing.
 - `astra ast` prints the parsed AST for a file or the project entry;

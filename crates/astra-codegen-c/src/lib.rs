@@ -85,7 +85,7 @@ impl BackendError {
     /// Creates the scaffold's not-implemented error.
     #[must_use]
     pub fn not_implemented() -> Self {
-        Self::new("NS8002", "The C backend does not support this request.")
+        Self::new("NS8001", "The C backend does not support this request.")
     }
 }
 

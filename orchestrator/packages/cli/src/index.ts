@@ -58,7 +58,7 @@ Usage:
   astra <command> [options]
 
 Commands:
-  check [dir] [--json]   Discover and validate the project manifest
+  check [dir] [--json]   Discover, validate, and check the project
   doctor [dir] [--json]  Resolve and print the toolchain ladder
   build [dir]            Build the configured target
   fmt [path] [--check]   Format .ns source and core.json/core.toml
@@ -96,11 +96,21 @@ Exit codes:
 
 type CliErrorCode =
   | "NS8001"
+  | "NS8002"
   | "NS8003"
+  | "NS8004"
   | "NS9000"
   | "NS9001"
   | "NS9007"
   | "NS9008"
+  | "NS9009"
+  | "NS9010"
+  | "NS9011"
+  | "NS9012"
+  | "NS9013"
+  | "NS9014"
+  | "NS9015"
+  | "NS9016"
   | "NS9101"
   | "NS9102"
   | "NS9103"
@@ -235,13 +245,348 @@ function commandDirectory(args: readonly string[], cwd: string): string {
   return candidate ?? cwd;
 }
 
+interface FfiDeclaration {
+  readonly kind: "foreign" | "script";
+  readonly name: string;
+  readonly span: CompilerDiagnostic["span"];
+}
+
+function collectFfiDeclarations(ast: unknown): readonly FfiDeclaration[] {
+  if (!isRecord(ast) || !Array.isArray(ast["items"])) {
+    return [];
+  }
+
+  const declarations: FfiDeclaration[] = [];
+  const visit = (items: readonly unknown[]): void => {
+    for (const item of items) {
+      if (!isRecord(item) || !isRecord(item["kind"])) {
+        continue;
+      }
+      const kind = item["kind"];
+      const foreign = kind["ForeignModule"];
+      if (isRecord(foreign) && typeof foreign["name"] === "string") {
+        declarations.push({
+          kind: "foreign",
+          name: foreign["name"],
+          span: isRecord(foreign["span"])
+            ? {
+                start: Number(foreign["span"]["start"]),
+                end: Number(foreign["span"]["end"]),
+              }
+            : null,
+        });
+        continue;
+      }
+      const script = kind["ScriptBlock"];
+      if (isRecord(script) && typeof script["name"] === "string") {
+        declarations.push({
+          kind: "script",
+          name: script["name"],
+          span: isRecord(script["span"])
+            ? {
+                start: Number(script["span"]["start"]),
+                end: Number(script["span"]["end"]),
+              }
+            : null,
+        });
+        continue;
+      }
+      const scoped = kind["ScopedItems"];
+      if (isRecord(scoped) && Array.isArray(scoped["items"])) {
+        visit(scoped["items"]);
+      }
+    }
+  };
+
+  visit(ast["items"]);
+  return declarations;
+}
+
+function ffiMappingProblems(
+  name: string,
+  mapping: unknown,
+  required: boolean,
+  activeTarget: string,
+): readonly CompilerDiagnostic[] {
+  if (mapping === undefined) {
+    return required
+      ? [
+          {
+            code: "NS7007",
+            severity: "error",
+            message: `Foreign module '${name}' has no manifest ffi mapping.`,
+            span: null,
+            hint: "Add an ffi entry for the module and its active target.",
+          },
+        ]
+      : [];
+  }
+
+  if (!isRecord(mapping)) {
+    return [
+      {
+        code: "NS7007",
+        severity: "error",
+        message: `The manifest ffi mapping for '${name}' must be an object.`,
+        span: null,
+        hint: "Map the module to one or more target configuration objects.",
+      },
+    ];
+  }
+
+  const targets = Object.entries(mapping);
+  if (targets.length === 0) {
+    return [
+      {
+        code: "NS7007",
+        severity: "error",
+        message: `The manifest ffi mapping for '${name}' is empty.`,
+        span: null,
+        hint: "Add at least one target mapping.",
+      },
+    ];
+  }
+
+  if (required && !Object.hasOwn(mapping, activeTarget)) {
+    return [
+      {
+        code: "NS7007",
+        severity: "error",
+        message: `Foreign module '${name}' has no manifest ffi mapping for active target '${activeTarget}'.`,
+        span: null,
+        hint: `Add an ffi entry for '${activeTarget}' or select a target with a mapping.`,
+      },
+    ];
+  }
+
+  const problems: CompilerDiagnostic[] = [];
+  for (const [target, targetMapping] of targets) {
+    if (!isRecord(targetMapping)) {
+      problems.push({
+        code: "NS7007",
+        severity: "error",
+        message: `The manifest ffi mapping for '${name}' target '${target}' must be an object.`,
+        span: null,
+        hint: "Provide source and type fields for the target.",
+      });
+      continue;
+    }
+    const source = targetMapping["source"];
+    const type = targetMapping["type"];
+    if (typeof source !== "string" || source.length === 0) {
+      problems.push({
+        code: "NS7007",
+        severity: "error",
+        message: `The manifest ffi mapping for '${name}' target '${target}' needs a non-empty source.`,
+        span: null,
+        hint: "Set source to a path, package specifier, or 'inline'.",
+      });
+    }
+    if (typeof type !== "string" || type.length === 0) {
+      problems.push({
+        code: "NS7007",
+        severity: "error",
+        message: `The manifest ffi mapping for '${name}' target '${target}' needs a non-empty type.`,
+        span: null,
+        hint: "Set type to a supported FFI mapping type.",
+      });
+    } else if (type.startsWith("inline-") && source !== "inline") {
+      problems.push({
+        code: "NS7007",
+        severity: "error",
+        message: `The manifest ffi mapping for '${name}' target '${target}' uses '${type}' but its source is not 'inline'.`,
+        span: null,
+        hint: "Inline mappings use source: \"inline\".",
+      });
+    }
+    for (const field of ["ownership", "threading", "errors"] as const) {
+      const value = targetMapping[field];
+      if (typeof value !== "string" || value.length === 0) {
+        problems.push({
+          code: "NS7007",
+          severity: "error",
+          message: `The manifest ffi mapping for '${name}' target '${target}' needs a non-empty ${field}.`,
+          span: null,
+          hint: "State ownership, threading, and error behavior for every FFI mapping.",
+        });
+      }
+    }
+  }
+  return problems;
+}
+
+function sourceCheckTarget(buildData: Record<string, unknown>): string {
+  const target = typeof buildData["defaultTarget"] === "string"
+    ? buildData["defaultTarget"]
+    : "js";
+  if (target === "native" || target === "c") {
+    return "c";
+  }
+  if (target === "ts") {
+    return "ts";
+  }
+  return "js";
+}
+
+function checkSourceProject(
+  root: string,
+  entryValue: string,
+  cwd: string,
+  manifest: ManifestDocument,
+  buildData: Record<string, unknown>,
+  diagnostics: ReportedDiagnostic[],
+): void {
+  const entryPath = resolve(root, entryValue);
+  if (!existsSync(entryPath) || extname(entryPath).toLowerCase() !== SOURCE_EXTENSION) {
+    return;
+  }
+
+  const entryKey = relative(root, entryPath).split(sep).join("/");
+  const modules = discoverProjectModules(root, entryPath, entryKey, cwd);
+  if (modules.length === 0) {
+    return;
+  }
+
+  const client = new CompilerClient({ cwd: root });
+  const target = sourceCheckTarget(buildData);
+  const activeTarget =
+    typeof buildData["defaultTarget"] === "string"
+      ? buildData["defaultTarget"]
+      : "native";
+  const modeValue = buildData["defaultMode"];
+  const mode = isMode(modeValue) ? modeValue : undefined;
+  const math = isRecord(buildData["math"]) ? buildData["math"] : {};
+  const policyValue = math["integers"];
+  const integerPolicy =
+    policyValue === "wrapping" ||
+    policyValue === "safe-checked" ||
+    policyValue === "arbitrary"
+      ? policyValue
+      : undefined;
+
+  const byKey = new Map(modules.map((module) => [module.key, module]));
+  const checked = client.checkProject({
+    sources: modules.map((module) => ({
+      key: module.key,
+      path: relative(root, module.absolutePath).split(sep).join("/"),
+      text: module.text,
+    })),
+    target,
+    ...(mode === undefined ? {} : { mode }),
+    ...(integerPolicy === undefined ? {} : { integerPolicy }),
+  });
+
+  for (const module of checked.modules) {
+    const sourceModule = byKey.get(module.key);
+    if (sourceModule === undefined) {
+      continue;
+    }
+    const file: SourceFile = {
+      path: sourceModule.absolutePath,
+      displayPath: displayPath(sourceModule.absolutePath, cwd),
+      kind: "source",
+    };
+    for (const diagnostic of module.diagnostics) {
+      diagnostics.push(reportDiagnostic(file, sourceModule.text, diagnostic));
+    }
+  }
+
+  const ffi = isRecord(manifest.data["ffi"]) ? manifest.data["ffi"] : undefined;
+  if (manifest.data["ffi"] !== undefined && ffi === undefined) {
+    diagnostics.push({
+      code: "NS7007",
+      severity: "error",
+      message: "The manifest 'ffi' field must be an object.",
+      hint: "Map each foreign module name to its target configuration.",
+      path: displayPath(manifest.file.path, cwd),
+      line: null,
+      column: null,
+    });
+    return;
+  }
+
+  for (const module of modules) {
+    const file: SourceFile = {
+      path: module.absolutePath,
+      displayPath: displayPath(module.absolutePath, cwd),
+      kind: "source",
+    };
+    const astResponse = client.ast({
+      source: {
+        path: relative(root, module.absolutePath).split(sep).join("/"),
+        text: module.text,
+      },
+      target,
+    });
+    if (!astResponse.ok || astResponse.ast === undefined) {
+      continue;
+    }
+    for (const declaration of collectFfiDeclarations(astResponse.ast)) {
+      const mapping = ffi?.[declaration.name];
+      const problems = ffiMappingProblems(
+        declaration.name,
+        mapping,
+        declaration.kind === "foreign",
+        activeTarget,
+      );
+      for (const problem of problems) {
+        diagnostics.push(
+          reportDiagnostic(file, module.text, {
+            ...problem,
+            span: problem.span ?? declaration.span,
+          }),
+        );
+      }
+    }
+  }
+}
+
 function runCheck(args: readonly string[], cwd: string): number {
   const json = isJsonFlag(args);
 
   try {
-    const manifest = loadManifest(commandDirectory(args, cwd));
-    process.stdout.write(json ? `${manifestJson(manifest)}\n` : manifestText(manifest));
-    return 0;
+    const manifests = loadProjectManifests(commandDirectory(args, cwd));
+    const manifest = manifests.core;
+    const root = dirname(manifest.file.path);
+    const buildData = applyBuildDefaults(manifests.build?.data);
+    const diagnostics: ReportedDiagnostic[] = [];
+    if (manifest.data["ffi"] !== undefined && !isRecord(manifest.data["ffi"])) {
+      diagnostics.push({
+        code: "NS7007",
+        severity: "error",
+        message: "The manifest 'ffi' field must be an object.",
+        hint: "Map each foreign module name to its target configuration.",
+        path: displayPath(manifest.file.path, cwd),
+        line: null,
+        column: null,
+      });
+    }
+
+    const nova = isRecord(buildData["nova"]) ? buildData["nova"] : {};
+    const entryValue =
+      typeof nova["entry"] === "string" && nova["entry"].length > 0
+        ? nova["entry"]
+        : "src/main.ns";
+
+    try {
+      checkSourceProject(root, entryValue, cwd, manifest, buildData, diagnostics);
+    } catch (error) {
+      return emitFatal(error, false, json);
+    }
+
+    const hasErrors = diagnostics.some((diagnostic) => diagnostic.severity === "error");
+    if (json) {
+      const base = JSON.parse(manifestJson(manifest)) as Record<string, unknown>;
+      process.stdout.write(
+        `${JSON.stringify({ ...base, ok: !hasErrors, diagnostics }, null, 2)}\n`,
+      );
+    } else {
+      process.stdout.write(manifestText(manifest));
+      for (const diagnostic of diagnostics) {
+        printDiagnostic(diagnostic);
+      }
+    }
+    return hasErrors ? 1 : 0;
   } catch (error) {
     if (error instanceof ManifestError) {
       process.stderr.write(json ? `${diagnosticJson(error)}\n` : `${error.code}: ${error.message}\n`);
@@ -487,7 +832,7 @@ function resolveNativeCompiler(buildData: Record<string, unknown>, projectRoot: 
     return r.path;
   } catch (error) {
     if (error instanceof ToolchainError) {
-      // Only an auto request with no compiler keeps the legacy NS9008 path.
+      // An auto request with no compiler falls back to the bundled toolchain.
       if (policy.request === "auto" && error.code === "NS9102") {
         return null;
       }
@@ -496,7 +841,7 @@ function resolveNativeCompiler(buildData: Record<string, unknown>, projectRoot: 
     if (policy.request === "auto") {
       return null;
     }
-    throw new CliError("NS9008", errorMessage(error));
+    throw new CliError("NS9000", errorMessage(error));
   }
 }
 
@@ -1235,7 +1580,7 @@ async function runFmt(args: readonly string[], cwd: string): Promise<number> {
     } catch (error) {
       return emitFatal(
         new CliError(
-          "NS9008",
+          "NS9014",
           `Unable to write the file: ${errorMessage(error)}`,
           result.file.displayPath,
         ),
@@ -1502,7 +1847,7 @@ function linkedPathPackages(
       packageRoot = resolve(root, raw["path"] as string);
       if (!existsSync(packageRoot)) {
         throw new CliError(
-          "NS9008",
+          "NS9016",
           `Path dependency '${name}' does not exist: ${displayPath(packageRoot, cwd)}`,
           displayPath(packageRoot, cwd),
         );
@@ -1554,7 +1899,7 @@ function linkedPathPackages(
     ) {
       if (isPath) {
         throw new CliError(
-          "NS9008",
+          "NS9016",
           `Path dependency '${name}' has an entry outside its package.`,
           displayPath(packageManifest.file.path, cwd),
         );
@@ -1645,7 +1990,7 @@ function runBuild(args: readonly string[], cwd: string): number {
 
     if (targetName === undefined || targetName.length === 0) {
       throw new CliError(
-        "NS9008",
+        "NS9011",
         "No build target was selected. Set --target, ASTRA_TARGET, or build.defaultTarget.",
         displayPath(manifest.file.path, cwd),
       );
@@ -1659,7 +2004,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       targetName !== "ts"
     ) {
       throw new CliError(
-        "NS8001",
+        "NS9011",
         `Target '${targetName}' is not declared in the manifest.`,
         displayPath(manifest.file.path, cwd),
       );
@@ -1703,7 +2048,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       emitKind !== "cdylib"
     ) {
       throw new CliError(
-        "NS9000",
+        "NS9012",
         `Unknown emit kind '${String(emitValue)}'. Use executable, staticlib, cdylib, or library.`,
         displayPath(manifest.file.path, cwd),
       );
@@ -1736,14 +2081,14 @@ function runBuild(args: readonly string[], cwd: string): number {
       relativeEntry.startsWith(`..${sep}`)
     ) {
       throw new CliError(
-        "NS9008",
+        "NS9013",
         "The configured entry point must be inside the project.",
         displayPath(entryPath, cwd),
       );
     }
     if (extname(entryPath).toLowerCase() !== SOURCE_EXTENSION) {
       throw new CliError(
-        "NS9008",
+        "NS9013",
         "The configured entry point must be a .ns file.",
         displayPath(entryPath, cwd),
       );
@@ -1763,7 +2108,7 @@ function runBuild(args: readonly string[], cwd: string): number {
     const modeValue = targetConfig["mode"] ?? build["defaultMode"];
     if (modeValue !== undefined && !isMode(modeValue)) {
       throw new CliError(
-        "NS9008",
+        "NS9012",
         `Unknown mode '${String(modeValue)}' for target '${targetName}'.`,
         displayPath(manifest.file.path, cwd),
       );
@@ -1773,7 +2118,7 @@ function runBuild(args: readonly string[], cwd: string): number {
     const policyValue = math["integers"];
     if (policyValue !== undefined && !isIntegerPolicy(policyValue)) {
       throw new CliError(
-        "NS9008",
+        "NS9012",
         `Unknown integer policy '${String(policyValue)}'.`,
         displayPath(manifest.file.path, cwd),
       );
@@ -1927,7 +2272,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         }
       } catch (error) {
         throw new CliError(
-          "NS9008",
+          "NS9014",
           `Unable to write generated C artifacts: ${errorMessage(error)}`,
           displayPath(outDir, cwd),
         );
@@ -1939,14 +2284,14 @@ function runBuild(args: readonly string[], cwd: string): number {
         const compilerBin = resolveNativeCompiler(buildData, root);
         if (!compilerBin) {
           throw new CliError(
-            "NS9008",
+            "NS9102",
             "No C compiler (clang, gcc, or cc) found on PATH to build a library.",
             displayPath(outDir, cwd),
           );
         }
         if (!mainCPath || !hostCPath) {
           throw new CliError(
-            "NS8001",
+            "NS8002",
             "Compiler did not produce the expected C artifacts for library emission.",
             displayPath(outDir, cwd),
           );
@@ -1957,7 +2302,7 @@ function runBuild(args: readonly string[], cwd: string): number {
           mkdirSync(objDir, { recursive: true });
         } catch (error) {
           throw new CliError(
-            "NS9008",
+            "NS9014",
             `Unable to create the object directory: ${errorMessage(error)}`,
             displayPath(objDir, cwd),
           );
@@ -1993,7 +2338,7 @@ function runBuild(args: readonly string[], cwd: string): number {
           );
           if (proc.status !== 0) {
             throw new CliError(
-              "NS9008",
+              "NS9015",
               `Library object compilation failed for ${basename(source)}:\n${proc.stderr}`,
               displayPath(outDir, cwd),
             );
@@ -2044,7 +2389,7 @@ function runBuild(args: readonly string[], cwd: string): number {
           if (!archiver) {
             rmSync(archive, { force: true });
             throw new CliError(
-              "NS9008",
+              "NS9102",
               "No archiver (ar, llvm-ar, or gcc-ar) could build a static library:\n" +
                 failures.join("\n"),
               displayPath(outDir, cwd),
@@ -2094,7 +2439,7 @@ function runBuild(args: readonly string[], cwd: string): number {
           });
           if (proc.status !== 0) {
             throw new CliError(
-              "NS9008",
+              "NS9015",
               `Shared library link failed with ${compilerBin}:\n${proc.stderr}`,
               displayPath(outDir, cwd),
             );
@@ -2104,7 +2449,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       } else if (backend === "native") {
         if (!mainCPath || !hostCPath) {
           throw new CliError(
-            "NS8001",
+            "NS8002",
             "Compiler did not produce the expected C artifacts for native compilation.",
             displayPath(outDir, cwd),
           );
@@ -2114,7 +2459,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         const compilerBin = resolveNativeCompiler(buildData, root);
         if (!compilerBin) {
           throw new CliError(
-            "NS9008",
+            "NS9102",
             "No C compiler (clang, gcc, or cc) found on PATH to build native binary.",
             displayPath(outDir, cwd),
           );
@@ -2142,7 +2487,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         );
         if (buildProc.status !== 0) {
           throw new CliError(
-            "NS9008",
+            "NS9015",
             `Native compilation failed with ${compilerBin}:\n${buildProc.stderr}`,
             displayPath(outDir, cwd),
           );
@@ -2215,7 +2560,7 @@ function runBuild(args: readonly string[], cwd: string): number {
     );
     if (missingModule !== undefined) {
       throw new CliError(
-        "NS8001",
+        "NS8002",
         `The compiler returned no typed module for '${missingModule.key}'.`,
         displayPath(entryPath, cwd),
       );
@@ -2254,7 +2599,7 @@ function runBuild(args: readonly string[], cwd: string): number {
         const moduleSource = moduleSources.get(module.key);
         if (outputPath === undefined || moduleSource === undefined) {
           throw new CliError(
-            "NS8001",
+            "NS8002",
             `No output path was resolved for '${module.key}'.`,
             displayPath(entryPath, cwd),
           );
@@ -2325,7 +2670,7 @@ function runBuild(args: readonly string[], cwd: string): number {
     const outputPath = outputs.get(entryKey);
     if (outputPath === undefined) {
       throw new CliError(
-        "NS8001",
+        "NS8002",
         "The entry module was not included in the project output.",
         displayPath(entryPath, cwd),
       );
@@ -2373,7 +2718,7 @@ function runBuild(args: readonly string[], cwd: string): number {
             isAbsolute(artifactRelative)
           ) {
             throw new CliError(
-              "NS8001",
+              "NS8004",
               `Script artifact '${artifact.path}' escapes the output directory.`,
               displayPath(entry.moduleSource.absolutePath, cwd),
             );
@@ -2417,7 +2762,7 @@ function runBuild(args: readonly string[], cwd: string): number {
       }
     } catch (error) {
       throw new CliError(
-        "NS9008",
+        "NS9014",
         `Unable to write the generated module: ${errorMessage(error)}`,
         displayPath(outputPath, cwd),
       );

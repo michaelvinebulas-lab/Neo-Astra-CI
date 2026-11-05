@@ -1857,7 +1857,9 @@ Each entry in `related` MUST contain `file`, `span`, and `message`.
 | `NS8xxx` | Backends and targets |
 | `NS9xxx` | Tooling and configuration |
 
-Codes are stable and MUST NOT be reused for different meanings.
+Codes are stable and MUST NOT be reused for different meanings. The release
+gate enforces this table: a code emitted by the implementation must have a row
+here, and a row without an emitter must be marked reserved with a reason.
 
 ### 14.4 Parser diagnostics
 
@@ -1896,6 +1898,7 @@ levels with `NS2002` instead of aborting on a stack overflow.
 | `NS4016` | Invalid, missing, or duplicate struct field |
 | `NS4017` | Invalid pattern or pattern arity |
 | `NS4018` | Invalid type argument or arity |
+| `NS4019` | A value carrying a `Task` handle would cross a task boundary by copy: a channel element, a spawn capture, or a spawn result |
 
 ### 14.6 Mode and capability diagnostics
 
@@ -1924,6 +1927,7 @@ Nova reports parse, resolve, type, mode, and capability failures with the same
 | `NV0005` | Panic, including the interpreted call stack |
 | `NV0006` | Abort without unwinding |
 | `NV0007` | Nova internal invariant failure |
+| `NV0008` | Foreign script requires a production target |
 
 `NV` codes are development-runtime diagnostics. They do not replace `NS` source
 diagnostics and do not appear in compiled target output.
@@ -1947,6 +1951,12 @@ lockfiles:
 | `NP0010` | Lockfile write failure |
 | `NP0011` | Package adapter, path, fetch, or installation failure |
 | `NP0012` | NoPM command-line usage error |
+| `NP0013` | Dependency is already declared |
+| `NP0014` | Dependency is not declared |
+| `NP0015` | Unknown system tool |
+| `NP0016` | NoPM does not uninstall system tools |
+| `NP0017` | No supported package manager was found |
+| `NP0018` | System tool installation failed |
 
 These codes are provisional until the V1 NoPM diagnostics table is frozen.
 
@@ -1977,9 +1987,21 @@ composites built only from pointer-free types are allowed.
 
 ### 14.10 FFI diagnostics
 
-The `NS7xxx` range (§14.3) covers FFI. The `@script` block diagnostics are
-`NS7001`–`NS7008` (see `archive/Design/V1/10-inline-script-interop.md` §6). The
-generic instantiation export diagnostics (§11.5) are:
+The `NS7xxx` range (§14.3) covers FFI. The `@script` block and mapping
+diagnostics are:
+
+| Code | Meaning |
+|---|---|
+| `NS7001` | Unknown or unsupported script language |
+| `NS7002` | Script language is not supported by the active target |
+| `NS7003` | Missing, empty, or duplicate `@exports` declaration |
+| `NS7004` | Malformed script block: missing `@end` or a required header field |
+| `NS7005` | Invalid or non-boundary-safe script export signature |
+| `NS7006` | Script namespace collision |
+| `NS7007` | Missing or inconsistent manifest `ffi` mapping for a foreign module or a required inline-script link/runtime entry |
+| `NS7008` | Script backend or link failure, missing implementation export, or no pinned TypeScript transpiler |
+
+The generic instantiation export diagnostics (§11.5) are:
 
 | Code | Meaning |
 |---|---|
@@ -1987,6 +2009,103 @@ generic instantiation export diagnostics (§11.5) are:
 | `NS7011` | `@export_as` binding list does not bind every type parameter exactly once |
 | `NS7012` | `@export_as` bound type is not C-boundary-safe |
 | `NS7013` | `@export_as` symbol is not a valid C identifier, or duplicates another symbol or instantiation |
+
+### 14.11 Lexical diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NS1001` | Invalid comment form |
+| `NS1002` | Invalid escape sequence or byte-literal value |
+| `NS1003` | Unterminated string or byte literal |
+| `NS1004` | Reserved: invalid UTF-8 source is reported by the CLI as `NS9007` |
+| `NS1005` | Invalid identifier, malformed literal, or unexpected character |
+
+### 14.12 Resolver diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NS3001` | Private declaration cannot be exported |
+| `NS3002` | Conflicting visibility modifiers |
+| `NS3003` | Duplicate export name |
+| `NS3004` | Duplicate default export |
+| `NS3005` | Unknown export target |
+| `NS3006` | Duplicate import binding |
+| `NS3007` | Imported name is not exported |
+| `NS3008` | Conflicting re-exports |
+| `NS3009` | Default export target is not a value |
+| `NS3010` | Private declaration leaks through a public API |
+| `NS3011` | Duplicate top-level declaration |
+| `NS3012` | Imported module cannot be resolved |
+| `NS3013` | Cyclic named import or re-export |
+
+### 14.13 Backend diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NS8001` | A backend or target does not support the requested construct or configuration |
+| `NS8002` | A backend request or response is malformed or incomplete: invalid typed module, missing module, output path, entry module, or expected artifact |
+| `NS8003` | Manual memory is not supported by the JavaScript or TypeScript backend |
+| `NS8004` | A generated artifact path escapes the build output directory |
+| `NS8017` | Calling this callee is not supported by the C backend first slice |
+| `NS8018` | A generic function requires monomorphization |
+| `NS8019` | Imports are not supported by the C backend first slice |
+| `NS8020` | C member error: undeclared enum, argument-less enum variant, or missing struct field |
+| `NS8021` | C `for`-loop iteration is limited to arrays, maps, and bytes in the first slice |
+| `NS8022` | Fixed-size arrays are not supported by the C backend first slice |
+| `NS8024` | Printing this value type is not supported by the C backend first slice |
+| `NS8025` | The tuple type is unavailable for this tuple expression in the C backend |
+| `NS8099` | `Never` appears as a stored type, which the C backend cannot emit |
+
+### 14.14 Tooling and configuration diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NS9000` | Unexpected CLI or tooling failure; not a source diagnostic |
+| `NS9001` | No manifest found; exactly one `core.json` or `core.toml` is required |
+| `NS9002` | Unable to read or parse a manifest |
+| `NS9003` | Compiler binary not found |
+| `NS9004` | Compiler process failed |
+| `NS9005` | Compiler returned an invalid, incomplete, or incompatible response |
+| `NS9006` | JSON-RPC request failed |
+| `NS9007` | Source or module is not valid UTF-8 |
+| `NS9008` | A project or source path cannot be resolved, read, or accessed |
+| `NS9009` | Unsupported compiler API version |
+| `NS9010` | A compiler request contains no source units |
+| `NS9011` | The build target is missing or not declared in the manifest |
+| `NS9012` | A build configuration value is invalid: target mode, integer policy, or emit kind |
+| `NS9013` | The entry point is missing, outside the project, or not a `.ns` file |
+| `NS9014` | A build output directory or file cannot be created or written |
+| `NS9015` | A native compile, link, or archive step failed |
+| `NS9016` | A path dependency is missing or escapes its package or project root |
+| `NS9101` | The build manifest or `toolchain` section is malformed |
+| `NS9102` | No cached or `PATH` toolchain was found for the requested family |
+| `NS9103` | `ASTRA_CC` does not exist or is not a usable compiler |
+| `NS9999` | Reserved sentinel; tests assert it never appears in output |
+
+### 14.15 Registry diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NR0001` | Package already exists (HTTP 409) |
+| `NR0002` | Unknown registry route, or signature/public-key verification failed |
+| `NR0003` | Package or version not found |
+| `NR0004` | Package is yanked |
+
+### 14.16 Playground Wasm bridge diagnostics
+
+| Code | Meaning |
+|---|---|
+| `PG0001` | Protocol version mismatch between the bridge and the compiler |
+| `PG0002` | Wasm trap or panic inside the compiler |
+| `PG0003` | Malformed or truncated compiler response |
+| `PG0004` | Allocation failure inside the Wasm instance |
+
+### 14.17 Historical and reserved codes
+
+`NS0001` is a test fixture used by the diagnostic and compiler-API unit tests;
+it is not a user-facing diagnostic. `NS0002`–`NS0004` are historical design-doc
+codes superseded by the NS4 family and are not emitted. `NS1004`, `NS2007`,
+`NS4008`, and `NS9999` are reserved as noted in their tables.
 
 ---
 

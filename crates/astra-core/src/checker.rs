@@ -33,7 +33,7 @@ const INVALID_MEMBER: &str = "NS4015";
 const INVALID_STRUCT_FIELD: &str = "NS4016";
 const INVALID_PATTERN: &str = "NS4017";
 const INVALID_TYPE_ARGUMENT: &str = "NS4018";
-const INVALID_CHANNEL_ELEMENT: &str = "NS4019";
+const TASK_BOUNDARY: &str = "NS4019";
 const MODE_REQUIREMENT: &str = "NS5001";
 const MODE_WIDENING: &str = "NS5002";
 const CAPABILITY_REQUIREMENT: &str = "NS5003";
@@ -1674,7 +1674,7 @@ impl<'a> Checker<'a> {
         };
         if self.contains_task(element) {
             self.error(
-                INVALID_CHANNEL_ELEMENT,
+                TASK_BOUNDARY,
                 "Channel<T> cannot carry Task handles or values containing them.".to_owned(),
                 span,
                 "Send the task result instead; a task handle has a single owner.",
@@ -2444,6 +2444,38 @@ impl<'a> Checker<'a> {
                     .map_or(Type::Unit, |tail| tail.ty.clone());
                 if let Some(tail) = info.tail {
                     self.report_effects(&tail.errors);
+                }
+                // Spawn result cannot carry a Task handle.
+                if self.contains_task(&value_type) {
+                    self.error(
+                        TASK_BOUNDARY,
+                        "a spawn result cannot carry a Task handle; the child must join the task and return the value.".to_owned(),
+                        expression.span,
+                        "Return the task's result value instead of the handle.",
+                    );
+                }
+                // Spawn captures: free names of the body after scope pop.
+                // check_block already popped its scope, so enclosing scopes are active.
+                let free = crate::free_names::spawn_free_names(body);
+                let mut reported_capture = false;
+                for name in &free {
+                    if reported_capture {
+                        break;
+                    }
+                    if let Some(local) = self.lookup_local(name) {
+                        let ty = local.ty.clone();
+                        if self.contains_task(&ty) {
+                            self.error(
+                                TASK_BOUNDARY,
+                                format!(
+                                    "spawn captures a Task handle via `{name}: {ty}`; task handles cannot cross a task boundary."
+                                ),
+                                expression.span,
+                                "Join the task inside the child and capture the result instead.",
+                            );
+                            reported_capture = true;
+                        }
+                    }
                 }
                 ExprInfo::value(Type::Named("Task".to_owned(), vec![value_type]))
             }
@@ -7079,5 +7111,164 @@ pub fn second<T>(value: T) -> T { return value }
         let codes = check_with_mode(source, Mode::System)
             .expect_err("a symbol shared by two declarations must be rejected");
         assert!(codes.contains(&"NS7013".to_owned()), "got {codes:?}");
+    }
+    #[test]
+    fn spawn_capture_channel_accepted() {
+        let source = r#"
+fn f() -> i32 {
+    let ch = Channel.create<i32>()
+    spawn || {
+        ch
+        return 0
+    }
+    return 0
+}
+"#;
+        check(source).expect("channel capture must be accepted");
+    }
+
+    #[test]
+    fn spawn_capture_scalar_accepted() {
+        let source = r#"
+fn f() -> i32 {
+    let x = 42
+    spawn || {
+        x
+        return 0
+    }
+    return 0
+}
+"#;
+        check(source).expect("scalar capture must be accepted");
+    }
+
+    #[test]
+    fn spawn_capture_struct_without_task_accepted() {
+        let source = r#"
+struct Holder { value: i32 }
+fn f() -> i32 {
+        let h = Holder { value: 1 }
+    spawn || {
+        h.value
+        return 0
+    }
+    return 0
+}
+"#;
+        check(source).expect("struct-without-task capture must be accepted");
+    }
+
+    #[test]
+    fn spawn_return_struct_without_task_accepted() {
+        let source = r#"
+struct Holder { value: i32 }
+fn f() -> i32 {
+    spawn || {
+        Holder { value: 1 }
+    }
+    return 0
+}
+"#;
+        check(source).expect("struct-without-task result must be accepted");
+    }
+
+    #[test]
+    fn spawn_capture_task_rejected() {
+        let source = r#"
+fn f() -> i32 {
+    let t = spawn || { return 0 }
+    spawn || {
+        t
+        return 0
+    }
+    return 0
+}
+"#;
+        let codes = check(source).expect_err("task capture must be rejected");
+        assert!(codes.contains(&"NS4019".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn spawn_capture_composite_task_rejected() {
+        let source = r#"
+struct Holder { task: Task<i32> }
+fn f() -> i32 {
+        let h = Holder { task: spawn || { return 0 } }
+    spawn || {
+        h
+        return 0
+    }
+    return 0
+}
+"#;
+        let codes = check(source).expect_err("composite task capture must be rejected");
+        assert!(codes.contains(&"NS4019".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn spawn_result_task_rejected() {
+        let source = r#"
+fn f() -> i32 {
+    spawn || {
+        spawn || { return 0 }
+    }
+    return 0
+}
+"#;
+        let codes = check(source).expect_err("task result must be rejected");
+        assert!(codes.contains(&"NS4019".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn spawn_result_composite_task_rejected() {
+        let source = r#"
+struct Holder { task: Task<i32> }
+fn f() -> i32 {
+    spawn || {
+        Holder { task: spawn || { return 0 } }
+    }
+    return 0
+}
+"#;
+        let codes = check(source).expect_err("composite task result must be rejected");
+        assert!(codes.contains(&"NS4019".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn spawn_shadowed_non_task_binding_does_not_hide_outer_task_capture() {
+        let source = r#"
+fn f() -> i32 {
+    let task = spawn || { 0 }
+    spawn || {
+        {
+            let task = 1
+            task
+        }
+        task.join()
+    }
+    return 0
+}
+"#;
+        let codes = check(source)
+            .expect_err("an outer task referenced after an inner shadowing block must be rejected");
+        assert!(codes.contains(&"NS4019".to_owned()), "got {codes:?}");
+    }
+
+    #[test]
+    fn spawn_shadowed_non_task_capture_is_accepted() {
+        let source = r#"
+fn f() -> i32 {
+    let outer = spawn || { 0 }
+    spawn || {
+        let outer = 1
+        outer
+    }
+    return outer.join()
+}
+"#;
+        // The inner spawn's body binds its own `outer` (i32), so it does not
+        // capture the outer Task handle. The outer handle is joined after both
+        // spawns and must remain legal.
+        check(source).expect("a shadowed non-task capture must be accepted");
     }
 }
