@@ -221,4 +221,4 @@ channel is pruned to the active order. Append the new report here.)
 - Added a shadowing acceptance test and a positive rejection test proving an outer `Task` capture is still found after an inner non-`Task` binding leaves scope.
 - Fixed the shadowing test body to return tail values; the original used `return` inside a spawn, which the frontend correctly typed as `()` and reported as `NS4001`.
 - Green locally: `npm run ci` (version/error-code gates, TypeScript, Rust fmt/clippy, full workspace tests, GC stress) and the new `astra check` tests.
-- Landing commit and Tier-1 run are recorded in `Docs/state.md`.
+- Landed as `e52ee12`; Tier-1 run 41996931100 is green on Linux, macOS, and Windows. The order is closed.
