@@ -5,9 +5,9 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-05
-**Phase:** `1.0.0` release: final Tier-1, tag, and publish.
-**Master:** `1.0.0` release commit (Tier-1 pending).
-**Blockers:** none known. The release commit is waiting on the final Tier-1 run and the tag/publish step. `TaskError`, the JavaScript backend gaps (map index, expression-block control flow, `abort`), the pinned Zig 0.13.0 download/verify/unpack path, the task-handle boundary guard, the error-code split, `NS7007` FFI validation, install/upgrade documentation, `astra doctor`, and `astra ast`/`explain` are implemented and covered by the local gate.
+**Phase:** `1.0.0` release: local gate green; Tier-1 is blocked by GitHub Actions billing.
+**Master:** `694ff63` (release commit; local `npm run ci` green).
+**Blockers:** Tier-1 cannot start: all three jobs report "The job was not started because recent account payments have failed or your spending limit needs to be increased" (run 42081733665). The release tag and publish wait for a green Tier-1 run. Everything else is implemented and locally gated: `TaskError`, the JavaScript backend gaps, the pinned Zig 0.13.0 download/verify/unpack path, the task-handle boundary guard, the error-code split, `NS7007` FFI validation, install/upgrade documentation, `astra doctor`, and `astra ast`/`explain`.
 
 ---
 
@@ -57,12 +57,12 @@ or frozen history (`Docs/archive/`).
 
 ## Current work
 
-Open tasks, grouped by version, live in [`todo.md`](todo.md). The `1.0.0` queue
-is empty apart from the release gate: final Tier-1, tag, and publish. The D28
-pre-1.0 audit is recorded below. The task-handle boundary guard, CLI inspection
-commands, toolchain policy, doctor, pinned downloads, lockfile records, channel
-messages, spawn-capture scope resolution, `TaskError`, the JavaScript backend
-gaps, and the install/upgrade documentation are done.
+Open tasks, grouped by version, live in [`todo.md`](todo.md). The `1.0.0`
+release commit is `694ff63`; the local gate is green. Tier-1 run `42081733665`
+failed before starting because of the repository's GitHub Actions billing or
+spending limit, so the tag and publish are blocked on the principal fixing
+billing. The D28 pre-1.0 audit is recorded below. All implementation work is
+done.
 
 **Release:** the tree is at `1.0.0`; tag and publish after the final Tier-1 run
 is green for the release commit. All package versions move in lockstep: new
@@ -123,6 +123,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-05 | `1.0.0` release commit: `TaskError` at join, `task.canceled()`, pinned Zig 0.13.0 download/verify/unpack with `zig cc`/`zig ar`, JavaScript map index/expression-block control flow/`abort`, removal of the LSP and Wasm/LLVM scaffolds, and the D28 audit. | `694ff63`; local `npm run ci` green; Tier-1 run 42081733665 could not start (GitHub Actions billing/spending limit) |
 | 2026-11-05 | Task handles are rejected at every copy boundary: channel elements, spawn captures, and spawn results report `NS4019`, and the emitter no longer treats `Task` as shared. The error-code audit freezes one meaning per code, splits the overloaded `NS8001`/`NS9008` paths, documents every emitted code, adds `NS7007` FFI mapping validation to `astra check`, and adds the `scripts/check-error-codes.mjs` release gate. `astra check` now runs the frontend and reports source diagnostics, not just manifest validation. | `e52ee12`, run 41996931100 |
 | 2026-11-04 | CLI inspection commands: `astra ast` prints the parsed AST and `astra explain` prints mode inference for a file or project entry; adds `--json`, `--mode`, `--target`, and `--compiler`; install/upgrade documentation and README/package status refreshed; release checklist corrected to the source-install model. | `adeedf0`, run 41851239620 |
 | 2026-11-03 | `sys:` names are validated before the installed probe, so a command like `node` that exists on `PATH` is still `NP0015` when it is not a supported system tool. Adds the `sys:node` CLI regression. | `5b6b5fc`, run 41846362813 |

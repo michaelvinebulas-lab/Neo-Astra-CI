@@ -378,3 +378,14 @@ here.)
   `nopm lock`, and both CLI `--no-download` paths. 44 tests green.
 - Landing is the lead's gate: `npm run ci`, explicit paths, push to `ci`, poll
   Tier-1, then record the run in `Docs/state.md`.
+
+## Release gate - 2026-11-05
+
+- Release commit `694ff63` is pushed to `ci/master`. Local `npm run ci` is green
+  (TypeScript, boundary/Wasm, fmt, clippy, workspace tests, GC stress).
+- Tier-1 run `42081733665` did not start: all three jobs report "The job was not
+  started because recent account payments have failed or your spending limit
+  needs to be increased." This is an account/billing blocker, not a code failure.
+- The `v1.0.0` tag and publish wait for a green Tier-1 run. The principal needs
+  to restore GitHub Actions billing or raise the spending limit; then re-run the
+  gate for `694ff63` (or push the evidence commit and run that).

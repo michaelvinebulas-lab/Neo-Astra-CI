@@ -110,6 +110,9 @@ Completed work is summarized at the bottom; the full history is in
       as a stable unsupported target path.
 - [ ] Cut 1.0.0 across all packages, with release notes from the changelog,
       only when the 1.0 queue is empty and the D28 audit is clean.
+      Versions and changelog are at `1.0.0` in `694ff63`; the tag and publish
+      wait for a green Tier-1 run. Run `42081733665` could not start because the
+      repository's GitHub Actions billing/spending limit needs attention.
 
 ## 1.1.0 - browser playground
 
