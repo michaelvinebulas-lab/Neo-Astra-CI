@@ -1,7 +1,7 @@
 # Neo Astra Orchestrator
 
-The TypeScript orchestrator owns the CLI, manifest handling, LSP, plugins, and
-the JavaScript/TypeScript code-generation boundary. It must never re-parse `.ns`
+The TypeScript orchestrator owns the CLI, manifest handling, plugins, and the
+JavaScript/TypeScript code-generation boundary. It must never re-parse `.ns`
 source; the Rust core is the single parser and semantic authority.
 
 ## Packages
@@ -11,14 +11,13 @@ source; the Rust core is the single parser and semantic authority.
 | `@neo-astra/manifest` | Locate and parse the project manifests (`core.*`, `build.*`) | Implemented, including strict key ownership |
 | `@neo-astra/compiler-client` | Native JSON-RPC compiler client | Implemented, including multi-source `checkProject()` |
 | `@neo-astra/cli` | `astra` command entrypoint | `check`, `fmt`, `build`, `doctor`, `ast`, and `explain` implemented |
-| `@neo-astra/toolchain` | C toolchain policy, resolution ladder, cache validation, and `doctor` reporting | Implemented (no downloads in v1) |
-| `@neo-astra/lsp` | Language server boundary | Stub |
+| `@neo-astra/toolchain` | C toolchain policy, resolution ladder, cache validation, pinned download/verify/unpack, and `doctor` reporting | Implemented, including `--no-download` |
 | `@neo-astra/plugins` | Package-source and backend adapter contracts | Contracts implemented; no plugin host |
 | `@neo-astra/nopm` | Universal package manager, adapters, lockfile, and store | Complete package model, lockfile/store, path/Git/npm/Cargo/PyPI/NuGet/OCI/sys adapters, and CLI add/remove/lock/tree/install/search/audit/why/update |
 | `@neo-astra/registry` | Optional universal registry gateway | HTTP gateway with publish/versions/search/yank/audit, Ed25519 signing, and upstream mirroring implemented; production key/hosting hardening remains |
 | `@neo-astra/codegen-js` | JavaScript ESM backend boundary | Implemented |
 | `@neo-astra/codegen-ts` | TypeScript backend boundary | Implemented |
-| `@neo-astra/playground` | Browser playground boundary | Stub (1.1) |
+| `@neo-astra/playground` | Browser-safe compiler Wasm bridge | Bridge implemented; browser UI staged for a later release |
 
 ## Commands
 
@@ -42,7 +41,11 @@ also formats `core.json` / `core.toml`, preserving TOML `#` comments. `ast` prin
 `explain` prints the mode-inference result, both from the Rust compiler.
 `build` runs the selected backend (`js`, `ts`, `c`, or `native`) and writes the
 artifact; `--json` returns a machine-readable report. `doctor` prints the C
-toolchain resolution ladder and the chosen compiler.
+toolchain resolution ladder and the chosen compiler. A versioned
+`toolchain.c` pin such as `zig@0.13.0` downloads the official upstream archive
+into `.tools/toolchain/<id>` after size and SHA-256 verification, then resolves
+`zig cc` for compilation and `zig ar` for archives. `--no-download` disables the
+fetch and prints manual-install instructions.
 
 The CLI discovers `target/debug/astra-compiler` automatically; set
 `ASTRA_COMPILER_BIN` or pass `--compiler <path>` to select a different compiler

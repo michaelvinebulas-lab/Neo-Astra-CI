@@ -548,14 +548,24 @@ impl Interpreter {
         loop {
             let tasks = std::mem::take(&mut scope.borrow_mut().tasks);
             for task in tasks {
-                let (joined, outcome) = {
+                let (joined, cancelled, outcome) = {
                     let mut task = task.borrow_mut();
                     let joined = task.joined;
                     task.joined = true;
-                    (joined, task.outcome.clone())
+                    (joined, task.cancelled, task.outcome.clone())
                 };
-                if !joined && let Some(Err(TaskFailure::Panic(panic))) = outcome {
-                    pending = Some(Fault::Panic(panic));
+                if !joined {
+                    match outcome {
+                        Some(Err(TaskFailure::Panic(panic))) => {
+                            pending = Some(
+                                self.task_error(&panic.message, panic.span.unwrap_or_default()),
+                            );
+                        }
+                        None if cancelled => {
+                            pending = Some(self.task_error("task was cancelled", Span::default()));
+                        }
+                        _ => {}
+                    }
                 }
             }
 
@@ -1202,23 +1212,32 @@ impl Interpreter {
                     task.joined = true;
                     (task.cancelled, task.outcome.clone())
                 };
-                if cancelled {
-                    return Ok(Value::Failure(Box::new(Value::tuple_struct(
-                        "TaskError",
-                        vec![Value::string("task was cancelled")],
-                    ))));
-                }
                 match outcome {
                     Some(Ok(value)) => Ok(value),
                     Some(Err(TaskFailure::Error(error))) => Ok(Value::Failure(Box::new(error))),
-                    Some(Err(TaskFailure::Panic(panic))) => Err(Fault::Panic(panic)),
+                    Some(Err(TaskFailure::Panic(panic))) => {
+                        Err(self.task_error(&panic.message, span))
+                    }
+                    None if cancelled => Err(self.task_error("task was cancelled", span)),
                     None => Err(self.internal("joined a task without an outcome")),
                 }
             }
             (Value::Task(task), "cancel") => {
                 expect_arguments(name, &arguments, 0)?;
-                task.borrow_mut().cancelled = true;
+                let mut task = task.borrow_mut();
+                /* A request after the task produced a result has no effect and
+                is not recorded; `canceled()` reports cancellation accepted
+                while the task was running. The eager interpreter completes
+                every spawn before control returns, so this is a no-op here
+                (spec 9.4). */
+                if task.outcome.is_none() {
+                    task.cancelled = true;
+                }
                 Ok(Value::Unit)
+            }
+            (Value::Task(task), "canceled") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::Bool(task.borrow().cancelled))
             }
             (Value::Channel(channel), "send") => {
                 let value = expect_argument(name, &arguments, 0)?.clone();
@@ -1724,7 +1743,7 @@ impl Interpreter {
                 .iter()
                 .find(|(key, _)| values_equal(key, &index))
                 .map(|(_, value)| value.clone())
-                .ok_or_else(|| self.panic(format!("map key {index} is not present"), span)),
+                .ok_or_else(|| self.panic("map key is not present", span)),
             Value::Tuple(elements) => {
                 let index = self.index_usize(&index, span)?;
                 elements.borrow().get(index).cloned().ok_or_else(|| {
@@ -2421,6 +2440,17 @@ impl Interpreter {
     fn panic(&self, message: impl Into<String>, span: Span) -> Fault {
         let stack = self.stack.iter().rev().cloned().collect();
         Fault::Panic(Panic::new(message, Some(span), stack))
+    }
+
+    /// Raises a structured `TaskError` at a join or scope boundary. A nested
+    /// join already carries the prefix, so propagation never doubles it.
+    fn task_error(&self, message: &str, span: Span) -> Fault {
+        let message = if message.starts_with("TaskError: ") {
+            message.to_owned()
+        } else {
+            format!("TaskError: {message}")
+        };
+        self.panic(message, span)
     }
 
     fn internal(&self, message: impl Into<String>) -> Fault {

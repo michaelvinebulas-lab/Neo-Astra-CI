@@ -41,6 +41,9 @@ typedef struct { NS_Str _0; } NS_OverflowError;
    handles and queued messages live in the shared channel heap and every
    message is deep-copied on send (spec 9.3). */
 typedef struct { char _unit; } NS_ChannelError;
+/* Built-in task failure payload. `_0` carries the child panic message or the
+   cancellation reason, matching the tuple-struct shape every backend uses. */
+typedef struct { NS_Str _0; } NS_TaskError;
 typedef struct {
     void* data;
     size_t len;
@@ -264,6 +267,9 @@ typedef struct {
     size_t child_count;        /* tasks this task started (cancellation safety) */
     bool started;
     bool finished;
+    bool has_value;            /* the body returned normally and staged a value */
+    bool panicked;             /* the body raised; panic_message preserves it */
+    char* panic_message;       /* owned copy; the joining task raises it */
     volatile bool canceled;    /* cooperative cancellation flag (D1) */
 } NS_Task_Core;
 
@@ -284,7 +290,14 @@ extern NS_Heap* astra_current_heap(void);
    stays alive until `astra_task_heap_free`, so the parent can copy the result
    out before the child's memory is released. */
 extern void astra_task_start(NS_Task_Core* task);
-extern void astra_task_join(NS_Task_Core* task);
+/* Waits for the task and reports whether it produced a value. A false result
+   means the task panicked or was cancelled before staging a result; call
+   `astra_task_raise` to raise the structured TaskError in the joining task. */
+extern bool astra_task_join(NS_Task_Core* task);
+/* Raises the joining task's structured TaskError. In `main` this aborts with
+   the preserved child message; inside another task it becomes that task's
+   panic and propagates at its join. Never returns. */
+ASTRA_NORETURN extern void astra_task_raise(const NS_Task_Core* task);
 extern void astra_task_heap_free(NS_Task_Core* task);
 /* Cooperative cancellation flag for the calling task (CONC-001 D1). */
 extern void astra_task_cancel(NS_Task_Core* task);
@@ -336,6 +349,12 @@ pub const HOST_SHIM: &str = r#"/* Neo Astra C runtime -- hosted implementation (
 #else
 #include <pthread.h>
 #endif
+
+/* The task owning the calling thread, if any. Declared before `astra_panic`
+   so a panic in a child thread is captured by the runtime instead of aborting
+   the whole process; declared again (definition only) beside the task code. */
+static _Thread_local NS_Task_Core* astra_task_current = NULL;
+ASTRA_NORETURN static void astra_task_abort(void);
 
 static void astra_write_str(NS_Str x) {
     if (x.len > 0) {
@@ -399,7 +418,33 @@ void astra_println_bytes(NS_Bytes x) { astra_print_bytes(x); putchar('\n'); }
 void astra_println_unit(void) { astra_print_unit(); putchar('\n'); }
 
 void astra_assert(bool cond) { if (!cond) { astra_panic("assertion failed"); } }
-void astra_panic(const char* msg) { fprintf(stderr, "panic: %s\n", msg); abort(); }
+
+/* `owned` is an optional heap buffer carrying `msg`; it is released once the
+   message has been copied (task capture) or printed (process abort). The
+   TaskError path composes its message dynamically, so it cannot leak. */
+ASTRA_NORETURN static void astra_panic_owned(char* owned, const char* msg) {
+    NS_Task_Core* task = astra_task_current;
+    if (task) {
+        /* A child panic must not tear down the process: capture it on the
+           task record and end only this thread. The joining task raises the
+           structured TaskError once it observes the failed result. */
+        size_t len = strlen(msg);
+        char* copy = (char*)malloc(len + 1);
+        if (copy) {
+            memcpy(copy, msg, len + 1);
+            free(task->panic_message);
+            task->panic_message = copy;
+        }
+        task->panicked = true;
+        free(owned);
+        astra_task_abort();
+    }
+    fprintf(stderr, "panic: %s\n", msg);
+    free(owned);
+    abort();
+}
+
+void astra_panic(const char* msg) { astra_panic_owned(NULL, msg); }
 void astra_abort(const char* msg) { fprintf(stderr, "abort: %s\n", msg); abort(); }
 
 /* GC block model (GC-001 Phase A). Builtin shapes for the runtime's own
@@ -1028,13 +1073,12 @@ void astra_heap_release(NS_Heap* h) {
 /* Task thread runtime (CONC-001 A2): one OS thread per spawn. The thread
    binds the task's private heap before the body runs. The heap is not freed
    here: the joining parent copies the result out of it first. */
-static _Thread_local NS_Task_Core* astra_task_current = NULL;
-
 static void astra_task_trampoline(void* arg) {
     NS_Task_Core* task = (NS_Task_Core*)arg;
     astra_heap_bind(task->heap);
     astra_task_current = task;
     task->entry(task->closure);
+    task->has_value = true;
     task->finished = true;
     astra_task_current = NULL;
 }
@@ -1071,26 +1115,35 @@ void astra_task_start(NS_Task_Core* task) {
 #endif
 }
 
-void astra_task_join(NS_Task_Core* task) {
-    if (!task->started) { return; }
+bool astra_task_join(NS_Task_Core* task) {
+    if (task->started) {
 #if defined(_WIN32)
-    WaitForSingleObject((HANDLE)task->handle, INFINITE);
-    CloseHandle((HANDLE)task->handle);
+        WaitForSingleObject((HANDLE)task->handle, INFINITE);
+        CloseHandle((HANDLE)task->handle);
 #else
-    pthread_join((pthread_t)task->handle, NULL);
+        pthread_join((pthread_t)task->handle, NULL);
 #endif
-    task->handle = 0;
-    task->started = false;
-    task->finished = true;
+        task->handle = 0;
+        task->started = false;
+        task->finished = true;
+    }
+    /* A cancellation request that lost the race against normal completion is
+       a no-op: the value exists, so join returns it. */
+    return task->has_value && !task->panicked;
 }
 
 void astra_task_heap_free(NS_Task_Core* task) {
+    if (task->panic_message) {
+        free(task->panic_message);
+        task->panic_message = NULL;
+    }
     if (!task->heap) { return; }
-    /* An aborted task skips its generated scope joins, so a child it started
-       may still be running and still name a record in this heap. Leaking the
-       heap is safer than a use-after-free; the process reclaims it at exit.
-       Normal completion joined every child first, so its heap is released. */
-    if (task->canceled && task->child_count > 0) {
+    /* An aborted or panicked task skips its generated scope joins, so a child
+       it started may still be running and still name a record in this heap.
+       Leaking the heap is safer than a use-after-free; the process reclaims it
+       at exit. Normal completion joined every child first, so its heap is
+       released. */
+    if ((task->canceled || task->panicked) && task->child_count > 0) {
         task->heap = NULL;
         return;
     }
@@ -1099,7 +1152,10 @@ void astra_task_heap_free(NS_Task_Core* task) {
 }
 
 void astra_task_cancel(NS_Task_Core* task) {
-    if (task) { task->canceled = true; }
+    /* A request after the task produced a result (or died) has no effect and
+       is not recorded: `canceled()` reports cancellation accepted while the
+       task was running. */
+    if (task && task->started && !task->finished) { task->canceled = true; }
 }
 
 bool astra_task_canceled(void) {
@@ -1111,11 +1167,44 @@ bool astra_task_canceled(void) {
    Deliberately no cleanup here: a cancelled task holds no runtime lock at a
    poll point, and its memory belongs to the per-task heap. */
 ASTRA_NORETURN static void astra_task_abort(void) {
+    if (astra_task_current) { astra_task_current->finished = true; }
 #if defined(_WIN32)
     ExitThread(0);
 #else
     pthread_exit(NULL);
 #endif
+}
+
+/* Raises a structured TaskError in the joining task. A nested task captures
+   this as its own panic, so the failure propagates at each join without ever
+   losing the original child message. The canonical message is
+   `TaskError: <detail>`; a nested TaskError is passed through unchanged. */
+static ASTRA_NORETURN void astra_task_error(const char* detail) {
+    static const char prefix[] = "TaskError: ";
+    const size_t prefix_len = sizeof(prefix) - 1;
+    if (detail && strncmp(detail, prefix, prefix_len) == 0) {
+        astra_panic(detail);
+    }
+    const size_t detail_len = detail ? strlen(detail) : 0;
+    char* message = (char*)malloc(prefix_len + detail_len + 1);
+    if (!message) { astra_panic(prefix); }
+    memcpy(message, prefix, prefix_len);
+    if (detail_len > 0) { memcpy(message + prefix_len, detail, detail_len); }
+    message[prefix_len + detail_len] = '\0';
+    astra_panic_owned(message, message);
+}
+
+ASTRA_NORETURN void astra_task_raise(const NS_Task_Core* task) {
+    /* A panic wins over a cancellation request: it is the failure that
+       actually ended the child. Cancellation only explains a task that ended
+       without staging a value. */
+    if (task->panicked) {
+        astra_task_error(task->panic_message ? task->panic_message : "child task panicked");
+    }
+    if (task->canceled) {
+        astra_task_error("task was cancelled");
+    }
+    astra_task_error("task failed without a value");
 }
 
 void astra_task_check(void) {

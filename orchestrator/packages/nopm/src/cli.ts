@@ -19,7 +19,7 @@ import { join, resolve } from "node:path";
 import { ManifestError } from "@neo-astra/manifest";
 import { addDependency, findCoreManifest, loadBuildManifest, removeDependency } from "@neo-astra/manifest";
 import type { LockfileToolchain } from "./index.js";
-import { parseToolchainPolicy, resolveToolchain, ToolchainError, type ToolchainProbe } from "@neo-astra/toolchain";
+import { parseToolchainPolicy, resolveToolchainAsync, ToolchainError, type ToolchainProbe } from "@neo-astra/toolchain";
 
 import {
   LOCKFILE_NAME,
@@ -48,7 +48,7 @@ import { resolveRegistryPackage } from "./registry-client.js";
 import { installLockedPackages } from "./store.js";
 import { readProject, type ProjectManifest } from "./project.js";
 
-const VERSION = "0.1.0";
+const VERSION = "1.0.0";
 const GENERATED_BY = `nopm/${VERSION}`;
 const COMPILER = { version: VERSION, apiVersion: "1.0" } as const;
 
@@ -263,13 +263,14 @@ async function runLockAsync(options: CliOptions): Promise<number> {
     resolved.descriptors,
     project.targets,
   );
+  const toolchain = await resolveProjectToolchain(project);
   const lockfile = createLockfile({
     resolution,
     generatedBy: GENERATED_BY,
     manifestHash: project.manifestHash,
     compiler: COMPILER,
     ffi: project.ffi,
-    toolchain: resolveProjectToolchain(project),
+    toolchain,
   });
   const path = join(project.directory, LOCKFILE_NAME);
   writeAtomically(path, formatLockfile(lockfile));
@@ -390,13 +391,14 @@ async function runAdd(options: CliOptions): Promise<number> {
     const requests = newProject.dependencies.map((d) => d.request);
     const resolved = await collectDescriptors(newProject, requests);
     const resolution = resolveForTargets(resolved.requests, resolved.descriptors, newProject.targets);
+    const toolchain = await resolveProjectToolchain(newProject);
     const lockfile = createLockfile({
       resolution,
       generatedBy: GENERATED_BY,
       manifestHash: newProject.manifestHash,
       compiler: COMPILER,
       ffi: newProject.ffi,
-      toolchain: resolveProjectToolchain(newProject),
+      toolchain,
     });
     writeAtomically(lockfilePath, formatLockfile(lockfile));
     lockfileWritten = true;
@@ -471,13 +473,14 @@ async function runRemove(options: CliOptions): Promise<number> {
     const requests = newProject.dependencies.map((d) => d.request);
     const resolved = await collectDescriptors(newProject, requests);
     const resolution = resolveForTargets(resolved.requests, resolved.descriptors, newProject.targets);
+    const toolchain = await resolveProjectToolchain(newProject);
     const lockfile = createLockfile({
       resolution,
       generatedBy: GENERATED_BY,
       manifestHash: newProject.manifestHash,
       compiler: COMPILER,
       ffi: newProject.ffi,
-      toolchain: resolveProjectToolchain(newProject),
+      toolchain,
     });
     writeAtomically(lockfilePath, formatLockfile(lockfile));
     lockfileWritten = true;
@@ -556,7 +559,7 @@ async function runInstallAsync(options: CliOptions): Promise<number> {
   return 0;
 }
 
-function resolveProjectToolchain(project: ProjectManifest): LockfileToolchain | null {
+async function resolveProjectToolchain(project: ProjectManifest): Promise<LockfileToolchain | null> {
   const buildData = (loadBuildManifest(project.directory)?.data ?? {}) as Record<string, unknown>;
   const policy = parseToolchainPolicy(buildData);
   const probe: ToolchainProbe = {
@@ -570,7 +573,7 @@ function resolveProjectToolchain(project: ProjectManifest): LockfileToolchain | 
   };
   const env = process.env["ASTRA_CC"] ? { ASTRA_CC: process.env["ASTRA_CC"] } : {};
   try {
-    const r = resolveToolchain({ projectRoot: project.directory, policy, env, probe });
+    const r = await resolveToolchainAsync({ projectRoot: project.directory, policy, env, probe, allowDownload: true });
     return { rung: r.rung, id: r.id, family: r.family, path: r.path, version: r.version };
   } catch (error) {
     // An auto request that finds no compiler records null; a malformed policy,

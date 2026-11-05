@@ -423,7 +423,7 @@ fn main() {
     let NovaError::Panic(panic) = output.result.unwrap_err() else {
         panic!("expected a task panic");
     };
-    assert_eq!(panic.message, "task panic");
+    assert_eq!(panic.message, "TaskError: task panic");
 }
 
 #[test]

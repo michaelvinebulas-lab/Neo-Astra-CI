@@ -8,7 +8,6 @@
     { "path": "orchestrator/packages/plugins" },
     { "path": "orchestrator/packages/codegen-js" },
     { "path": "orchestrator/packages/codegen-ts" },
-    { "path": "orchestrator/packages/lsp" },
     { "path": "orchestrator/packages/playground" },
     { "path": "orchestrator/packages/nopm" },
     { "path": "orchestrator/packages/cli" },

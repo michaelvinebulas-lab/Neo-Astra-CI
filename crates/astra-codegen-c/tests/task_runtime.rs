@@ -110,8 +110,10 @@ int main(void) {
     task->core.entry = body;
     task->core.closure = task;
     astra_task_start(&task->core);
-    astra_task_join(&task->core);
-    printf("%d\n", task->value);
+    if (!astra_task_join(&task->core)) { astra_task_raise(&task->core); }
+    /* Cancellation after completion is a no-op and is not recorded. */
+    astra_task_cancel(&task->core);
+    printf("%d %d\n", task->value, task->core.canceled ? 1 : 0);
     astra_task_heap_free(&task->core);
     astra_runtime_shutdown();
     return 0;
@@ -163,7 +165,7 @@ int main(void) {
     task->core.entry = body;
     task->core.closure = closure;
     astra_task_start(&task->core);
-    astra_task_join(&task->core);
+    if (!astra_task_join(&task->core)) { astra_task_raise(&task->core); }
 
     astra_gc_copy_into(astra_heap(), task->core.heap, &NS_SHAPE_STR,
         sizeof(NS_Str), &task->value, &closure->value);
@@ -183,7 +185,7 @@ fn a_thread_runs_and_joins() {
         return;
     };
     assert!(ok, "execution failed:\nstderr:\n{stderr}");
-    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["42"]);
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["42 0"]);
 }
 
 #[test]
@@ -193,4 +195,129 @@ fn a_capture_and_result_survive_the_child_heap() {
     };
     assert!(ok, "execution failed:\nstderr:\n{stderr}");
     assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["hello hello"]);
+}
+
+const JOINED_PANIC_BECOMES_TASK_ERROR: &str = r#"
+typedef struct { NS_Task_Core core; int value; } NS_Task_int;
+
+static void body(void* arg) {
+    (void)arg;
+    astra_panic("boom");
+}
+
+int main(void) {
+    NS_Task_int* task = (NS_Task_int*)astra_gc_alloc(&NS_SHAPE_LEAF, sizeof(NS_Task_int));
+    astra_gc_root_in(astra_heap(), task);
+    task->core.entry = body;
+    task->core.closure = task;
+    astra_task_start(&task->core);
+    printf("before\n");
+    fflush(stdout);
+    if (!astra_task_join(&task->core)) { astra_task_raise(&task->core); }
+    printf("after\n");
+    astra_task_heap_free(&task->core);
+    astra_runtime_shutdown();
+    return 0;
+}
+"#;
+
+#[test]
+fn a_child_panic_is_raised_as_a_task_error_at_join() {
+    let Some((ok, stdout, stderr)) = build_and_run(JOINED_PANIC_BECOMES_TASK_ERROR, false) else {
+        return;
+    };
+    assert!(!ok, "a joined child panic must fail the parent task");
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["before"]);
+    assert!(
+        stderr.contains("panic: TaskError: boom"),
+        "expected a structured TaskError, got:\n{stderr}"
+    );
+}
+
+const CANCELLED_TASK_BECOMES_TASK_ERROR: &str = r#"
+typedef struct { NS_Task_Core core; int value; } NS_Task_int;
+
+static void body(void* arg) {
+    (void)arg;
+    for (;;) { astra_task_check(); }
+}
+
+int main(void) {
+    NS_Task_int* task = (NS_Task_int*)astra_gc_alloc(&NS_SHAPE_LEAF, sizeof(NS_Task_int));
+    astra_gc_root_in(astra_heap(), task);
+    task->core.entry = body;
+    task->core.closure = task;
+    astra_task_start(&task->core);
+    astra_task_cancel(&task->core);
+    if (!task->core.canceled) {
+        printf("cancel was not recorded while the task was running\n");
+        return 2;
+    }
+    if (!astra_task_join(&task->core)) { astra_task_raise(&task->core); }
+    printf("after\n");
+    astra_task_heap_free(&task->core);
+    astra_runtime_shutdown();
+    return 0;
+}
+"#;
+
+#[test]
+fn a_cancelled_task_without_a_value_raises_a_task_error_at_join() {
+    let Some((ok, stdout, stderr)) = build_and_run(CANCELLED_TASK_BECOMES_TASK_ERROR, false) else {
+        return;
+    };
+    assert!(
+        !ok,
+        "a cancelled task without a value must fail the joining task"
+    );
+    assert_eq!(stdout, "", "the join must raise before the next statement");
+    assert!(
+        stderr.contains("panic: TaskError: task was cancelled"),
+        "expected a cancellation TaskError, got:\n{stderr}"
+    );
+}
+
+const VALUE_WINS_OVER_CANCELLATION: &str = r#"
+#include <stdatomic.h>
+
+typedef struct { NS_Task_Core core; int value; } NS_Task_int;
+
+static atomic_int started = 0;
+static atomic_int release = 0;
+
+static void body(void* arg) {
+    NS_Task_int* task = (NS_Task_int*)arg;
+    atomic_store(&started, 1);
+    while (!atomic_load(&release)) { }
+    task->value = 7;
+}
+
+int main(void) {
+    NS_Task_int* task = (NS_Task_int*)astra_gc_alloc(&NS_SHAPE_LEAF, sizeof(NS_Task_int));
+    astra_gc_root_in(astra_heap(), task);
+    task->core.entry = body;
+    task->core.closure = task;
+    astra_task_start(&task->core);
+    while (!atomic_load(&started)) { }
+    astra_task_cancel(&task->core);
+    if (!task->core.canceled) {
+        printf("cancel was not recorded while the task was running\n");
+        return 2;
+    }
+    atomic_store(&release, 1);
+    if (!astra_task_join(&task->core)) { astra_task_raise(&task->core); }
+    printf("%d\n", task->value);
+    astra_task_heap_free(&task->core);
+    astra_runtime_shutdown();
+    return 0;
+}
+"#;
+
+#[test]
+fn a_value_that_lost_the_cancellation_race_is_still_joined() {
+    let Some((ok, stdout, stderr)) = build_and_run(VALUE_WINS_OVER_CANCELLATION, false) else {
+        return;
+    };
+    assert!(ok, "execution failed:\nstderr:\n{stderr}");
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["7"]);
 }

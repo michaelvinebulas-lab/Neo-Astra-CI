@@ -335,7 +335,33 @@ fn task_panic_fails_scope() {
     let (result, out, _) =
         run("fn main() {\nlet task = spawn || { panic(\"task panic\") }\nprintln(\"after\")\n}");
     assert_eq!(out, "after\n");
-    assert!(matches!(result, Err(NovaError::Panic(_))));
+    match result {
+        Err(NovaError::Panic(panic)) => {
+            assert_eq!(panic.message, "TaskError: task panic");
+        }
+        other => panic!("expected a TaskError panic, got {other:?}"),
+    }
+}
+
+#[test]
+fn joined_task_panic_is_a_task_error() {
+    let (result, _, _) =
+        run("fn main() {\nlet task = spawn || { panic(\"task boom\") }\ntask.join()\n}");
+    match result {
+        Err(NovaError::Panic(panic)) => {
+            assert_eq!(panic.message, "TaskError: task boom");
+        }
+        other => panic!("expected a TaskError panic, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_cancel_request_after_completion_is_not_recorded() {
+    let (result, out, _) = run(
+        "fn main() {\nlet task = spawn || { 42 }\ntask.cancel()\nprintln(task.canceled())\nprintln(task.join())\n}",
+    );
+    assert!(result.is_ok(), "expected success, got {result:?}");
+    assert_eq!(out, "false\n42\n");
 }
 
 // ─── Builtins ─────────────────────────────────────────────────────────────────

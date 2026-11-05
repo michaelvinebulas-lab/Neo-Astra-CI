@@ -4,10 +4,10 @@ Single source of truth for project status, the queue, and decisions.
 Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
-**Last updated:** 2026-11-04
-**Phase:** V1 completion - error-code taxonomy, release preparation, and the D28 gap audit.
-**Master:** `e52ee12` (Tier-1 run 41996931100: green on Linux, macOS, Windows).
-**Blockers:** `TaskError` shape decision; pinned toolchain download; release packaging and the remaining D28 audit items. The task-handle boundary guard, error-code split, `NS7007` FFI validation, install/upgrade documentation, `astra doctor`, and `astra ast`/`explain` are done.
+**Last updated:** 2026-11-05
+**Phase:** `1.0.0` release: final Tier-1, tag, and publish.
+**Master:** `1.0.0` release commit (Tier-1 pending).
+**Blockers:** none known. The release commit is waiting on the final Tier-1 run and the tag/publish step. `TaskError`, the JavaScript backend gaps (map index, expression-block control flow, `abort`), the pinned Zig 0.13.0 download/verify/unpack path, the task-handle boundary guard, the error-code split, `NS7007` FFI validation, install/upgrade documentation, `astra doctor`, and `astra ast`/`explain` are implemented and covered by the local gate.
 
 ---
 
@@ -39,12 +39,14 @@ or frozen history (`Docs/archive/`).
   `ASTRA_GC_STRESS=1`, boundary pinning, manual alloc/free, `Region`, C ABI.
 - **Concurrency:** OS-thread spawn bound to structured scopes, per-task heaps,
   cooperative cancellation, bounded channels with a deadlock watchdog, a
-  thread-safe process-lived shared heap for channel handles and messages, and
-  `NS4019` rejection of task handles at every copy boundary.
+  thread-safe process-lived shared heap for channel handles and messages,
+  structured `TaskError` results at `join`, and `NS4019` rejection of task
+  handles at every copy boundary.
 - **Toolchain:** `astra` CLI (check, fmt, build, doctor, ast, explain), NoPM
   (lock, tree, install, search, audit, why, update), manifest formatting,
-  registry adapters, toolchain policy, the resolution ladder, and the lockfile
-  record. `astra check` validates both manifests, runs the frontend over the
+  registry adapters, toolchain policy, the resolution ladder, the lockfile
+  record, and verified pinned downloads (Zig 0.13.0, `zig cc`/`zig ar`,
+  `--no-download`). `astra check` validates both manifests, runs the frontend over the
   project entry, and validates `ffi` mappings (`NS7007`). `nova` provides the
   development `run`, `eval`, `watch`, `repl`, and `test` commands.
 - **Compiler API:** JSON-RPC/native + raw Wasm: `check`, `check_project`,
@@ -55,16 +57,16 @@ or frozen history (`Docs/archive/`).
 
 ## Current work
 
-Open tasks, grouped by version, live in [`todo.md`](todo.md). In progress:
-the error-code taxonomy gate, release packaging, the D28 gap audit, and the
-remaining 1.0 blockers - lead. The task-handle boundary guard, CLI inspection
-commands, toolchain policy, doctor, lockfile records, channel messages,
-spawn-capture scope resolution, and the install/upgrade documentation are done.
+Open tasks, grouped by version, live in [`todo.md`](todo.md). The `1.0.0` queue
+is empty apart from the release gate: final Tier-1, tag, and publish. The D28
+pre-1.0 audit is recorded below. The task-handle boundary guard, CLI inspection
+commands, toolchain policy, doctor, pinned downloads, lockfile records, channel
+messages, spawn-capture scope resolution, `TaskError`, the JavaScript backend
+gaps, and the install/upgrade documentation are done.
 
-**Release:** cut `1.0.0` when the `1.0.0` tasks in `todo.md` are complete and
-the D28 gap audit is clean. All packages move in lockstep: new
+**Release:** the tree is at `1.0.0`; tag and publish after the final Tier-1 run
+is green for the release commit. All package versions move in lockstep: new
 mode/backend/language = minor, fixes = patch, incompatible rework = major.
-Packages stay `0.1.0` until the cut.
 
 ## Decisions (index)
 
@@ -87,16 +89,35 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 | Languages | 2026-11-01 | Extend the C/Wasm/JS/TS pattern (targets, interop, toolchain rungs) to Rust, Go, Lua, Ruby, Java. Per-language scope decided on pickup; V2+. |
 | Versioning | 2026-11-01 | SemVer, lockstep, cut `1.0.0` at V1 end. |
 | D28 | 2026-11-03 | **Nothing half-made lands.** A slice is complete only when it implements every normative line it touches end to end, tests the success path and each failure mode (ownership and lifetime, cancellation, cross-heap copies, error paths), and contains no stub, silent fallback, or approximation. A known gap is either closed in the slice or recorded as an explicit principal decision before landing; "later" is not a deferral. `1.0.0` requires the 1.0 queue empty and zero known gaps in the shipped surface. |
+| TaskError | 2026-11-05 | `join() -> T`. A child panic or cancellation before a value raises a structured `TaskError` in the joining task; a child that returns `Result<T, E>` keeps that `Result` as the task value (no nested `Result`). `task.canceled() -> bool` reports whether cancellation was accepted while running, without joining. A cancellation after completion, or after the task died, is a no-op and is not recorded. A produced value wins the cancellation race; a recorded panic wins over cancellation at join. The canonical message is `TaskError: <detail>`, and nested propagation does not duplicate the prefix. |
+| Toolchain download | 2026-11-05 | Versioned C toolchain pins download official upstream archives only. A per-OS/arch table pins the URL, byte size, and SHA-256; the existing transport fetches it, the system `tar` unpacks it, and a project-local cache plus a lockfile record make it reproducible. Nothing elevates. Zig `0.13.0` is pinned on Linux/macOS/Windows for x64/arm64 and drives `zig cc` plus `zig ar`. `--no-download` disables the fetch; every failure names the archive and prints manual-install instructions. |
+| D28 audit | 2026-11-05 | Build every gap in the shipped surface before 1.0. Do not reclassify the JavaScript backend gaps or the private scaffolds as post-1.0. The non-shipped LSP and direct Wasm/LLVM scaffold packages are removed; V1 machine code stays on the C toolchain. |
+| FFI scope | 2026-11-05 | V1 FFI ships on the native C target. The JS/TS backend rejects a foreign module with `NS8001` and names the native target; this is the recorded stable unsupported path, not a silent fallback. The spec's v0.1 slice defines FFI for later target backends (§1, §3.6, §11). |
 
-**Open questions:** `TaskError` shape and the result of joining a cancelled or
-failed task (spec 9.5 leaves it to the standard library). Proposed options are
-in `Task.md`; not recorded until the principal decides. The task-boundary
-safety gap is being closed conservatively: `NS4019` rejects a task handle in a
-value that would cross a task boundary by copy (channel elements already do;
-spawn captures and task results are the active Rust slice). A future
+**Open questions:** the final shared-task-handle design. The safety rule is
+conservative: `NS4019` rejects a task handle in a value that would cross a task
+boundary by copy (channel elements, spawn captures, and task results). A future
 single-owner shared-handle design that allows such a value is a separate
 principal decision, not an implicit part of this guard. Everything else is
 governed by D28 - a gap is not allowed to exist just because it has a task.
+
+## D28 pre-1.0 audit (2026-11-05)
+
+| Surface | Result | Evidence |
+|---|---|---|
+| Frontend, checker, formatter | No stub; diagnostics are frozen by `scripts/check-error-codes.mjs` | `cargo test -p astra-core`; gate |
+| C backend | Managed/manual memory, GC, FFI, inline C/C++, tasks, channels, map index, `@export_as` | `cargo test -p astra-codegen-c`; conformance |
+| JavaScript/TypeScript | ESM/TS output, recoverable failures, tasks/`TaskError`, map index, expression-block control flow, `abort`; FFI and non-JS/TS scripts reject explicitly | `orchestrator/tests/codegen-js.test.mjs` and `codegen-ts.test.mjs`; conformance |
+| Nova | Typed interpreter, `TaskError`, map index, fallible operations | `cargo test -p astra-nova`; stress suite |
+| CLI and toolchain | `check`, `fmt`, `build`, `doctor`, `ast`, `explain`; pinned download/verify/unpack; `--no-download`; lockfile record | `toolchain.test.mjs`; CLI tests |
+| Packages and registry | Manifest editing, resolver/store, adapters, registry gateway | `nopm.test.mjs`, `registry.test.mjs` |
+| Private scaffolds | Removed the LSP stub and direct Wasm/LLVM backend crates; V1 machine code uses the C toolchain | workspace manifests; this audit |
+| Deferred, not shipped surface | Language server and plugin host, Wasm execution/Web Worker codegen, browser playground UI, `high` mode, extra language targets, thread pool, GC Wasm phase | `README.md`, `roadmap.md`, `todo.md` |
+
+No `TODO`/`FIXME`/`unimplemented!`/`todo!` remains in the shipped Rust or
+TypeScript code. The remaining "not implemented" strings are runtime shape
+guards for unsupported receivers and internal "type checking should have
+rejected this" invariant errors, not unfinished features.
 
 ## Log (recent, pruned)
 

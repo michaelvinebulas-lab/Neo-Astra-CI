@@ -15,13 +15,13 @@ The project follows semantic versioning, and every package moves together:
 - **Major** (`2.0.0`) - only for a change that makes older projects or older
   generated output incompatible.
 
-The current line is **0.1.0** (pre-1.0). **1.0.0 is cut when the "To be built"
-list under it is complete** - not before. Every entry below names the version it
-lands in; nothing is scheduled beyond what is written.
+The current line is **1.0.0**. Future releases move in lockstep; every entry
+below names the version it lands in, and nothing is scheduled beyond what is
+written.
 
 ---
 
-## Built (0.1.0)
+## Built (1.0.0)
 
 ### Language
 
@@ -31,7 +31,7 @@ lands in; nothing is scheduled beyond what is written.
   inference and stable diagnostics.
 - Modules, imports/exports, generics and monomorphization, structs, enums,
   `match`, `if` expressions, loops, error unions and `?`/`!`, defer, channels and
-  `spawn` (single-threaded), string/array/map/slice/tuple types.
+  `spawn`, string/array/map/slice/tuple types.
 - Annotations: `@requires`, `@tags`, `@mode`, `@memory`, `@script`, `@export_as`.
 - Canonical formatter with comment preservation; `astra fmt`.
 
@@ -47,13 +47,13 @@ lands in; nothing is scheduled beyond what is written.
 
 ### Tooling and quality
 
-- `astra` CLI: check, format, build, run.
+- `astra` CLI: check, fmt, build, doctor, ast, and explain; `nova` runs code.
 - Package manager: lock, tree, install, search, audit, why, update; registry
   adapters (npm, Cargo, PyPI, NuGet, OCI, git, path); manifest formatting.
 - Continuous integration on Linux, macOS, and Windows.
 - Conformance suite shared across backends; frontend and C-emitter fuzzing.
 
-### Completed since 0.1.0 (on the way to 1.0.0)
+### Completed on the way to 1.0.0
 
 - **Two-manifest project layout:** a required package manifest and an optional
   build manifest, with strict rejection of keys in the wrong file and a single
@@ -64,23 +64,21 @@ lands in; nothing is scheduled beyond what is written.
 - **System package source:** `nopm add sys:<tool>` installs git, cmake, or
   clang through winget, brew, apt, dnf, pacman, zypper, or apk, with the exact
   command lines unit-tested and bootstrap delegating to the adapter.
+- **Multithreaded concurrency:** an OS thread per spawn bound to its structured
+  scope, parked channel operations with a deadlock watchdog, per-task heaps,
+  cooperative cancellation, and structured `TaskError` results at `join`.
+- **Pinned toolchain download:** official upstream archives with per-OS/arch
+  SHA-256 verification, a project-local cache, `zig cc`/`zig ar`, a lockfile
+  record, `--no-download`, and manual instructions on every failure.
+- **Error-code and D28 gates:** one meaning per diagnostic code, a consistency
+  check in CI, and a pre-1.0 audit that closes shipped-surface gaps rather than
+  hiding them as later work.
+- **Release engineering:** lockstep `1.0.0` versions, changelog freeze,
+  packaging, and the clean-machine install verification.
 
 ---
 
 ## To be built
-
-### 1.0.0 - complete the stack
-
-- **Toolchain pinning:** a toolchain section in the build manifest, a resolution
-  ladder (pin, then local cache, then PATH), and a doctor command that explains
-  what was found.
-- **Pinned toolchain download:** fetch and verify a pinned Zig compiler
-  (`zig cc`) for cross-compilation, offline-safe, without implicit elevation.
-- **Multithreaded concurrency:** an OS thread per spawn bound to its structured
-  scope, channel operations that park instead of spin, a deadlock watchdog,
-  per-task heaps, and cooperative cancellation.
-- **Release engineering:** version and changelog automation, packaging, install
-  and upgrade documentation, and the 1.0 release itself.
 
 ### 1.1.0 - Browser playground
 
@@ -100,7 +98,7 @@ lands in; nothing is scheduled beyond what is written.
 One release per surface, in the order we take them up:
 
 - Rust, Go, Lua, Ruby, and Java as build targets and interop surfaces, following
-  the pattern already used for C, Wasm, JavaScript, and TypeScript.
+  the pattern already used for C, JavaScript, and TypeScript.
 - WebAssembly as a first-class managed target (including garbage collection in
   linear memory).
 - A first-party machine-code backend, replacing the current path of generating C

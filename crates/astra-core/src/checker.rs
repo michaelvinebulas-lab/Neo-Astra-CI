@@ -4906,6 +4906,12 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                 return_type: Box::new(Type::Unit),
                 errors: Vec::new(),
             },
+            "canceled" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Bool),
+                errors: Vec::new(),
+            },
             _ => return None,
         },
         Type::Named(name, arguments) if name == "Ptr" => {

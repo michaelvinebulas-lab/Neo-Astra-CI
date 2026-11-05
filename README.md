@@ -13,7 +13,7 @@ targets. Source files use `.ns`; the CLI is `astra`.
 - [`Docs/todo.md`](Docs/todo.md) - open tasks, grouped by version
 - [`Docs/archive/`](Docs/archive/) - frozen history: design baseline, proposals, earlier status docs
 - [`Docs/Agent/`](Docs/Agent/) - agent operating system
-- [`orchestrator/`](orchestrator/) - TypeScript CLI, manifest, LSP, plugin, and codegen workspace
+- [`orchestrator/`](orchestrator/) - TypeScript CLI, manifest, plugin contracts, and codegen workspace
 - [`crates/`](crates/) - Rust compiler core, capabilities, protocol, and backend boundaries
 
 ## Quick start
@@ -32,8 +32,7 @@ C-toolchain resolution, upgrades, and troubleshooting.
 
 ## Status
 
-The v1 stack is feature-complete except for the items listed in
-[`Docs/todo.md`](Docs/todo.md). The current checkout provides:
+The `1.0.0` checkout provides:
 
 - The two-manifest project model (`core.json` / `core.toml`, optional
   `build.json` / `build.toml`), strict key ownership, canonical formatting, and
@@ -49,6 +48,9 @@ The v1 stack is feature-complete except for the items listed in
   executable/staticlib/cdylib emission, and `--json` reports.
   `ASTRA_COMPILER_BIN` and `--compiler` select the compiler binary;
   `ASTRA_CC` and `toolchain.c` select the C toolchain.
+- Pinned C toolchains: verified Zig 0.13.0 downloads for Linux, macOS, and
+  Windows, a project-local cache, `zig cc`/`zig ar`, lockfile records, and
+  `--no-download` with manual instructions.
 - The C backend: managed GC, manual memory, regions, FFI, generics, packages,
   native libraries, export attributes, per-task heaps, scoped OS-thread tasks,
   task cancellation, and channel messages. Inline `@script:js`,
@@ -64,8 +66,8 @@ The v1 stack is feature-complete except for the items listed in
   `search`/`audit`/`why`/`update`, a `sys:` system-package source, and the
   optional signed registry gateway.
 
-Still staged for a later release: the LSP and plugin host, the Wasm execution
-backend, Web Worker code generation, the browser playground, and pinned
-toolchain downloads. Inline scripts for languages other than JS, TS, C, and C++
-are not generated in v1; unsupported targets reject explicitly rather than
-emulating different semantics.
+Still staged for a later release: the language server and plugin host, the Wasm
+execution backend, Web Worker code generation, and the browser playground UI.
+Inline scripts for languages other than JS, TS, C, and C++ are not generated in
+v1; unsupported targets reject explicitly rather than emulating different
+semantics.

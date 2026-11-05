@@ -1779,7 +1779,9 @@ impl<'a> Emitter<'a> {
         let shape = self.tcx.value_shape_ref(&inner);
         let var = &task.var;
         let mut code = String::new();
-        let _ = writeln!(code, "    astra_task_join(&{var}->core);");
+        let _ = writeln!(code, "    if (!astra_task_join(&{var}->core)) {{");
+        let _ = writeln!(code, "        astra_task_raise(&{var}->core);");
+        let _ = writeln!(code, "    }}");
         let _ = writeln!(code, "    if ({var}->core.heap) {{");
         let _ = writeln!(
             code,
@@ -2820,6 +2822,25 @@ impl<'a> Emitter<'a> {
                 "(astra_bytes_set(&({buffer_c}), {index_c}, (uint8_t)({value_c})), (NS_Unit){{0}})"
             );
         }
+        if let ExprKind::Index { target: map, index } = &target.kind
+            && let Some(Type::Map(key_ty, val_ty)) = self.type_of(map).cloned()
+        {
+            let container_ty = Type::Map(key_ty.clone(), val_ty.clone());
+            let map_c = self.tcx.c_type(&container_ty);
+            let key_c = self.tcx.c_type(&key_ty);
+            let val_c = self.tcx.c_type(&val_ty);
+            let map_lhs = self.lvalue(map);
+            let key = self.expr(index);
+            let value = self.expr(value);
+            let mtmp = self.freshid("mr");
+            let ktmp = self.freshid("mk");
+            let vtmp = self.freshid("mv");
+            let _ = writeln!(self.pre, "    {map_c}* {mtmp} = &({map_lhs});");
+            let _ = writeln!(self.pre, "    {key_c} {ktmp} = {key};");
+            let _ = writeln!(self.pre, "    {val_c} {vtmp} = {value};");
+            let _ = writeln!(self.pre, "    astra_map_set({mtmp}, &{ktmp}, &{vtmp});");
+            return "(NS_Unit){0}".into();
+        }
         let lhs = self.lvalue(target);
         let rhs = self.expr(value);
         format!("({lhs} = {rhs})")
@@ -2830,11 +2851,29 @@ impl<'a> Emitter<'a> {
         match &e.kind {
             ExprKind::Identifier(name) => format!("v_{}", sanitize(name)),
             ExprKind::Member { target, member } => {
-                let t = self.expr(target);
+                let t = self.lvalue(target);
                 let f = field_c(member);
                 format!("({t}).{f}")
             }
             ExprKind::Index { target, index } => {
+                if let Some(Type::Map(key_ty, val_ty)) = self.type_of(target).cloned() {
+                    let key_c = self.tcx.c_type(&key_ty);
+                    let val_c = self.tcx.c_type(&val_ty);
+                    let map_lhs = self.lvalue(target);
+                    let key = self.expr(index);
+                    let ktmp = self.freshid("mk");
+                    let ptr = self.freshid("mv");
+                    let _ = writeln!(self.pre, "    {key_c} {ktmp} = {key};");
+                    let _ = writeln!(
+                        self.pre,
+                        "    void* {ptr} = astra_map_get(&({map_lhs}), &{ktmp});"
+                    );
+                    let _ = writeln!(
+                        self.pre,
+                        "    if ({ptr} == NULL) {{ astra_panic(\"map key is not present\"); }}"
+                    );
+                    return format!("(*({val_c}*){ptr})");
+                }
                 let elem_ty = self.elem_type_of(target);
                 let t = self.expr(target);
                 let i = self.expr(index);
@@ -3330,6 +3369,14 @@ impl<'a> Emitter<'a> {
                 let _ = writeln!(self.pre, "    astra_task_cancel(&{task}->core);");
                 "(NS_Unit){0}".into()
             }
+            (Some(Type::Named(type_name, _)), "canceled") if type_name == "Task" => {
+                let receiver_c = self.expr(receiver);
+                let task_ty = self.type_of(receiver).cloned().unwrap_or(Type::Unit);
+                let task_c = self.tcx.c_type(&task_ty);
+                let task = self.fresh_id("task");
+                let _ = writeln!(self.pre, "    {task_c} {task} = {receiver_c};");
+                format!("({task}->core.canceled)")
+            }
             // Manual-memory pointer access (spec Â§8.4): `Ptr<T>` lowers to
             // `T*`, so `ptr.read(i)` is `ptr[i]` and `ptr.write(i, v)` is the
             // statement `ptr[i] = v`. Both are unchecked by design - the
@@ -3800,6 +3847,25 @@ impl<'a> Emitter<'a> {
         let i = self.expr(index);
         if matches!(tt, Some(Type::Bytes)) {
             return format!("astra_bytes_get({t}, {i})");
+        }
+        if let Some(Type::Map(key_ty, val_ty)) = &tt {
+            let map_c = self.tcx.c_type(tt.as_ref().expect("map type"));
+            let key_c = self.tcx.c_type(key_ty);
+            let val_c = self.tcx.c_type(val_ty);
+            let mtmp = self.freshid("mx");
+            let ktmp = self.freshid("mk");
+            let ptr = self.freshid("mv");
+            let _ = writeln!(self.pre, "    {map_c} {mtmp} = {t};");
+            let _ = writeln!(self.pre, "    {key_c} {ktmp} = {i};");
+            let _ = writeln!(
+                self.pre,
+                "    void* {ptr} = astra_map_get(&{mtmp}, &{ktmp});"
+            );
+            let _ = writeln!(
+                self.pre,
+                "    if ({ptr} == NULL) {{ astra_panic(\"map key is not present\"); }}"
+            );
+            return format!("(*({val_c}*){ptr})");
         }
         let elem_ty = self.elem_type_of(target);
         let elem_c = self.tcx.c_type(&elem_ty);

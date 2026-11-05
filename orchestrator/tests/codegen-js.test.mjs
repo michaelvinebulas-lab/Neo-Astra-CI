@@ -195,6 +195,47 @@ test("javascript backend executes structs, enums, options, maps, and defer", () 
   );
 });
 
+test("javascript backend reads and writes map index syntax", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let mut values = {"a": 1, "b": 2}',
+      '    println(values["a"])',
+      '    values["b"] = 3',
+      '    values["c"] = 4',
+      '    println(values["b"])',
+      '    println(values["c"])',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$mapIndex\(map, key\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "1\n3\n4\nRETURN=0");
+});
+
+test("javascript backend panics on a missing map index key", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let values = {"a": 1}',
+      '    println(values["missing"])',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /panic: map key is not present/);
+});
+
 test("javascript backend implements wrapping and checked integer policies", () => {
   const wrapping = generate(
     [
@@ -336,7 +377,50 @@ test("javascript backend propagates panics from joined tasks", () => {
 
   const result = runGenerated(generated.code);
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /panic: task boom/);
+  assert.match(result.stderr, /panic: TaskError: task boom/);
+});
+
+test("javascript backend reports task cancellation state without joining", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let task = spawn || { 42 }",
+      "    task.cancel()",
+      "    println(task.canceled())",
+      "    return task.join()",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$taskCanceled\(task\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "false\nRETURN=42");
+});
+
+test("javascript backend does not nest TaskError messages across joins", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let outer = spawn || {",
+      "        let inner = spawn || { panic(\"deep boom\") }",
+      "        inner.join()",
+      "        0",
+      "    }",
+      "    outer.join()",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /panic: TaskError: deep boom/);
+  assert.doesNotMatch(result.stderr, /TaskError: TaskError/);
 });
 
 test("javascript backend fails a scope for unjoined task panics", () => {
@@ -355,7 +439,28 @@ test("javascript backend fails a scope for unjoined task panics", () => {
   const result = runGenerated(generated.code);
   assert.notEqual(result.status, 0);
   assert.equal(result.stdout, "after\n");
-  assert.match(result.stderr, /panic: scope boom/);
+  assert.match(result.stderr, /panic: TaskError: scope boom/);
+});
+
+test("javascript backend aborts immediately without running defers", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    defer println("deferred")',
+      '    abort("stop")',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$abort\(message\)/);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /abort: stop/);
+  assert.doesNotMatch(result.stdout, /deferred/);
 });
 
 test("javascript backend preserves float values and rendering", () => {
@@ -498,27 +603,73 @@ test("javascript backend emits statement-position if and match control flow", ()
   assert.equal(result.stdout, "3\n-1\n-1\nRETURN=0");
 });
 
-test("javascript backend rejects control flow inside value-position expressions", () => {
+test("javascript backend returns from inside value-position expressions", () => {
   const generated = generate(
     [
       "fn choose(value: i32) -> i32 {",
-      "    let picked = match value {",
-      "        1 => { return 10 }",
-      "        _ => { return 20 }",
+      "    let picked: i32 = match value {",
+      "        1 => { return 10 },",
+      "        _ => { 20 },",
       "    }",
       "    return picked",
       "}",
-      "pub fn main() -> i32 { return choose(1) }",
+      "fn first_negative(values: [i32]) -> i32 {",
+      "    for value in values {",
+      "        let ignored: i32 = if value < 0 { return value } else { 0 }",
+      "    }",
+      "    return 0",
+      "}",
+      "pub fn main() -> i32 {",
+      "    println(choose(1))",
+      "    println(choose(2))",
+      "    println(first_negative([1, -7, 3]))",
+      "    let task = spawn || {",
+      "        let result: i32 = match 1 {",
+      "            1 => { return 5 },",
+      "            _ => { 0 },",
+      "        }",
+      "        result",
+      "    }",
+      "    println(task.join())",
+      "    return 0",
+      "}",
       "",
     ].join("\n"),
   );
-  assert.ok(
-    generated.diagnostics.some(
-      (diagnostic) =>
-        diagnostic.code === "NS8001" &&
-        diagnostic.message.includes("Control flow that exits an expression block"),
-    ),
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "10\n20\n-7\n5\nRETURN=0");
+});
+
+test("javascript backend breaks and continues through value-position expressions", () => {
+  const generated = generate(
+    [
+      "fn scan(values: [i32]) -> i32 {",
+      "    let mut total = 0",
+      "    for value in values {",
+      "        let step: i32 = if value < 0 { continue } else { value }",
+      "        if value == 99 {",
+      "            let stop: i32 = match value {",
+      "                99 => { break },",
+      "                _ => { 0 },",
+      "            }",
+      "        }",
+      "        total = total + step",
+      "    }",
+      "    return total",
+      "}",
+      "pub fn main() -> i32 {",
+      "    println(scan([1, -2, 3, 99, 4]))",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
   );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "4\nRETURN=0");
 });
 
 test("javascript backend rejects project imports explicitly", () => {
@@ -1135,7 +1286,7 @@ test("astra build rejects a TypeScript script on the JavaScript target", () => {
     assert.equal(result.status, 1);
     const output = `${result.stdout}${result.stderr}`;
     assert.match(output, /NS7008/);
-    assert.match(output, /cannot be emitted by the JavaScript backend/);
+    assert.match(output, /is not supported by the JavaScript backend/);
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

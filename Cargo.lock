@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "astra-capabilities"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "astra-core",
  "serde",
@@ -12,7 +12,7 @@ dependencies = [
 
 [[package]]
 name = "astra-codegen-c"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "astra-capabilities",
  "astra-compiler-api",
@@ -21,22 +21,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "astra-codegen-llvm"
-version = "0.1.0"
-dependencies = [
- "astra-core",
-]
-
-[[package]]
-name = "astra-codegen-wasm"
-version = "0.1.0"
-dependencies = [
- "astra-core",
-]
-
-[[package]]
 name = "astra-compiler-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "astra-capabilities",
  "astra-codegen-c",
@@ -47,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "astra-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "serde",
  "unicode-ident",
@@ -55,7 +41,7 @@ dependencies = [
 
 [[package]]
 name = "astra-nova"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "astra-capabilities",
  "astra-core",
@@ -65,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "astra-wasm"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "astra-compiler-api",
 ]

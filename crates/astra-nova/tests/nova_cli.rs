@@ -151,10 +151,9 @@ fn json_result(stdout: &str) -> JsonValue {
 fn version_prints_nova_version() {
     let out = run_nova(&["version"]);
     assert_eq!(out.status, 0);
-    assert!(
-        out.stdout.trim().starts_with("nova 0.1.0"),
-        "unexpected version: {}",
-        out.stdout
+    assert_eq!(
+        out.stdout.trim(),
+        format!("nova {}", env!("CARGO_PKG_VERSION"))
     );
 }
 

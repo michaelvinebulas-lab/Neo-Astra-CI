@@ -6,7 +6,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-05
+
 ### Added
+- Structured `TaskError` results at `join`: a child panic or cancellation that
+  prevents a value raises `TaskError` in the joining task, while a child that
+  returns `Result<T, E>` keeps that value. `task.canceled()` reports accepted
+  cancellation without joining; a late cancellation is not recorded, a produced
+  value wins, and a recorded panic wins at join. The scope applies the same rule
+  to unjoined children (`Docs/spec-v0.1.md` 9.5).
+- Pinned C toolchain downloads: official Zig 0.13.0 archives for Linux, macOS,
+  and Windows on x64/arm64, with per-host URL, size, and SHA-256; verified
+  download into the project cache; `zig cc` compilation and `zig ar` archives;
+  a lockfile record; `--no-download`; and manual-install instructions on every
+  refusal or failure. No elevation and no writes outside the project.
+- JavaScript backend map indexing (`map[key]` panics on a missing key;
+  `map[key] = value` inserts or replaces), `return`/`break`/`continue` through
+  value-position expression blocks, and `abort` through the host termination
+  primitive, each with success and failure tests.
 - `@script:c` §5.1 foreign-frame root registration (`astra_gc_scope_enter` /
   `astra_gc_root` / `astra_gc_scope_exit`) at managed-argument boundaries.
 - Normative left-to-right call-argument evaluation order (D27; spec §3.10). Other expression positions - binary operands, array elements, struct fields, map entries - are target-native and carry no portability guarantee; the system-mode side-effect rejection pass is specced and queued.
@@ -23,7 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ASTRA_CHANNEL_DEADLOCK_TIMEOUT` in tests) turns a deadlock into a structured
   panic; native tasks get per-task heaps plus a thread-safe immortal heap;
   cancellation is cooperative at GC safepoints and channel operations. Spec
-  9 updated; implementation is the last V1 item.
+  9 updated; the implementation landed with structured `TaskError` results.
 - Compiler API `ast` and `explain` (both were advertised and stubbed): `ast`
   returns the parsed surface tree, `explain` returns the least-privileged mode
   inference as structured evidence plus its human-readable rendering. Parse
@@ -46,6 +63,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nested blocks took exponential time (28 levels parsed for minutes).
 
 ### Changed
+- The V1 tree no longer contains the private LSP stub or the direct Wasm/LLVM
+  backend scaffolds. V1 machine code stays on the C toolchain; unsupported
+  targets and foreign modules on the JS/TS backends reject explicitly with a
+  stable diagnostic.
 - Script translation units now include the runtime header so managed types are
   nameable from foreign bodies.
 - C backend hoists side-effecting call arguments into temporaries to preserve

@@ -35,9 +35,9 @@ import {
   manifestFileForPath,
   type ManifestDocument,
 } from "@neo-astra/manifest";
-import { parseToolchainPolicy, resolveToolchain, doctor, ToolchainError, type ToolchainPolicy, type ToolchainProbe } from "@neo-astra/toolchain";
+import { parseToolchainPolicy, resolveToolchainAsync, doctorAsync, ToolchainError, compilerInvocation, type ToolchainPolicy, type ToolchainProbe } from "@neo-astra/toolchain";
 
-const VERSION = "0.1.0";
+const VERSION = "1.0.0";
 const SOURCE_EXTENSION = ".ns";
 
 const IGNORED_DIRECTORIES = new Set([
@@ -77,6 +77,11 @@ build options:
   --emit <kind>          Artifact kind: executable, staticlib, or cdylib
   --compiler <path>      Use a specific astra-compiler binary
   --json                 Print a machine-readable build report
+  --no-download          Do not fetch a missing pinned C toolchain
+
+doctor options:
+  --json                 Print a machine-readable diagnosis
+  --no-download          Do not fetch a missing pinned C toolchain
 
 fmt options:
   --check                Report formatting differences without writing
@@ -156,6 +161,7 @@ interface BuildOptions {
   readonly emit: string | undefined;
   readonly json: boolean;
   readonly compilerPath: string | undefined;
+  readonly noDownload: boolean;
 }
 
 interface InspectionOptions {
@@ -807,7 +813,11 @@ function displayPath(path: string, cwd: string): string {
  * first binary that answers `--version`, and keep the old first-responder as a
  * fallback so the compiler's own error still reaches the user.
  */
-function resolveNativeCompiler(buildData: Record<string, unknown>, projectRoot: string): string | null {
+async function resolveNativeCompiler(
+  buildData: Record<string, unknown>,
+  projectRoot: string,
+  allowDownload: boolean,
+): Promise<{ bin: string; args: readonly string[]; family: string } | null> {
   let policy: ToolchainPolicy;
   try {
     policy = parseToolchainPolicy(buildData);
@@ -828,8 +838,14 @@ function resolveNativeCompiler(buildData: Record<string, unknown>, projectRoot: 
   };
   const env = process.env["ASTRA_CC"] ? { ASTRA_CC: process.env["ASTRA_CC"] } : {};
   try {
-    const r = resolveToolchain({ projectRoot, policy, env, probe });
-    return r.path;
+    const resolution = await resolveToolchainAsync({
+      projectRoot,
+      policy,
+      env,
+      probe,
+      allowDownload,
+    });
+    return { ...compilerInvocation(resolution), family: resolution.family };
   } catch (error) {
     if (error instanceof ToolchainError) {
       // An auto request with no compiler falls back to the bundled toolchain.
@@ -841,7 +857,7 @@ function resolveNativeCompiler(buildData: Record<string, unknown>, projectRoot: 
     if (policy.request === "auto") {
       return null;
     }
-    throw new CliError("NS9000", errorMessage(error));
+    throw new CliError("NS9008", errorMessage(error));
   }
 }
 
@@ -874,16 +890,25 @@ function buildCflags(targetConfig: Record<string, unknown>): string[] {
  * `--version`: Apple's `ar` rejects GNU long options, so a version probe would
  * wrongly report "no archiver" on macOS even though the tool works.
  */
-function archiverCandidates(compilerBin: string): string[] {
+function archiverCandidates(compiler: {
+  bin: string;
+  args: readonly string[];
+  family: string;
+}): string[] {
   const candidates: string[] = [];
-  const printed = spawnSync(compilerBin, ["-print-prog-name=ar"], {
-    windowsHide: true,
-    encoding: "utf8",
-  });
-  if (printed.status === 0) {
-    const value = printed.stdout.trim();
-    if (value.length > 0) {
-      candidates.push(value);
+  if (compiler.family === "zig") {
+    // `zig ar` is the archiver paired with `zig cc`.
+    candidates.push(compiler.bin);
+  } else {
+    const printed = spawnSync(compiler.bin, [...compiler.args, "-print-prog-name=ar"], {
+      windowsHide: true,
+      encoding: "utf8",
+    });
+    if (printed.status === 0) {
+      const value = printed.stdout.trim();
+      if (value.length > 0) {
+        candidates.push(value);
+      }
     }
   }
   for (const candidate of ["llvm-ar", "gcc-ar", "ar"]) {
@@ -892,6 +917,18 @@ function archiverCandidates(compilerBin: string): string[] {
     }
   }
   return candidates;
+}
+
+/** Adds the Zig subcommand prefix, choosing `cc` or `c++` for the source. */
+function invocationArgs(
+  compilerArgs: readonly string[],
+  family: string,
+  cpp: boolean,
+): string[] {
+  if (family === "zig" && cpp) {
+    return compilerArgs.map((argument) => (argument === "cc" ? "c++" : argument));
+  }
+  return [...compilerArgs];
 }
 
 /**
@@ -903,8 +940,11 @@ function archiverCandidates(compilerBin: string): string[] {
  * `.lib` import library. Everything else (MinGW, Darwin, ELF) uses GNU-style
  * flags. An unsupported `-dumpmachine` falls back to GNU, the historical path.
  */
-function compilerFlavor(compilerBin: string): "msvc" | "gnu" {
-  const probe = spawnSync(compilerBin, ["-dumpmachine"], {
+function compilerFlavor(
+  compilerBin: string,
+  compilerArgs: readonly string[] = [],
+): "msvc" | "gnu" {
+  const probe = spawnSync(compilerBin, [...compilerArgs, "-dumpmachine"], {
     windowsHide: true,
     encoding: "utf8",
   });
@@ -1008,6 +1048,7 @@ function parseBuildArgs(args: readonly string[], cwd: string): BuildOptions {
   let target: string | undefined;
   let emit: string | undefined;
   let compilerPath: string | undefined;
+  let noDownload = false;
   const positional: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -1023,6 +1064,11 @@ function parseBuildArgs(args: readonly string[], cwd: string): BuildOptions {
 
     if (arg === "--json") {
       json = true;
+      continue;
+    }
+
+    if (arg === "--no-download") {
+      noDownload = true;
       continue;
     }
 
@@ -1059,6 +1105,7 @@ function parseBuildArgs(args: readonly string[], cwd: string): BuildOptions {
     emit,
     json,
     compilerPath,
+    noDownload,
   };
 }
 
@@ -1940,7 +1987,7 @@ function relativeModuleSpecifier(fromOutput: string, targetOutput: string): stri
   return value.startsWith(".") ? value : `./${value}`;
 }
 
-function runBuild(args: readonly string[], cwd: string): number {
+async function runBuild(args: readonly string[], cwd: string): Promise<number> {
   if (args.includes("-h") || args.includes("--help")) {
     printHelp();
     return 0;
@@ -2281,7 +2328,8 @@ function runBuild(args: readonly string[], cwd: string): number {
       let outputPath: string = mainCPath || outDir;
 
       if (libraryMode) {
-        const compilerBin = resolveNativeCompiler(buildData, root);
+        const compilerInv = await resolveNativeCompiler(buildData, root, !options.noDownload);
+        const compilerBin = compilerInv?.bin ?? null;
         if (!compilerBin) {
           throw new CliError(
             "NS9102",
@@ -2289,6 +2337,8 @@ function runBuild(args: readonly string[], cwd: string): number {
             displayPath(outDir, cwd),
           );
         }
+        const compilerArgs = compilerInv?.args ?? [];
+        const compilerFamily = compilerInv?.family ?? "unknown";
         if (!mainCPath || !hostCPath) {
           throw new CliError(
             "NS8002",
@@ -2310,6 +2360,15 @@ function runBuild(args: readonly string[], cwd: string): number {
 
         const compileObject = (source: string, object: string): void => {
           const isCpp = source.endsWith(".cpp");
+          const sourceInvocation = invocationArgs(
+            compilerArgs,
+            compilerFamily,
+            isCpp,
+          );
+          const sourceLabel =
+            compilerFamily === "zig"
+              ? `${compilerBin} ${isCpp ? "c++" : "cc"}`
+              : compilerBin;
           // A shared object on ELF must be position independent. The shim now
           // exports data symbols (the builtin GC shapes), so non-PIC objects
           // fail to link with "relocation ... can not be used when making a
@@ -2318,12 +2377,13 @@ function runBuild(args: readonly string[], cwd: string): number {
           const pic =
             emitKind === "cdylib" &&
             process.platform !== "win32" &&
-            compilerFlavor(compilerBin) !== "msvc"
+            compilerFlavor(compilerBin, sourceInvocation) !== "msvc"
               ? ["-fPIC"]
               : [];
           const proc = spawnSync(
             compilerBin,
             [
+              ...sourceInvocation,
               isCpp ? "-std=c++17" : "-std=c17",
               "-Wall",
               "-Wno-unused-variable",
@@ -2339,7 +2399,7 @@ function runBuild(args: readonly string[], cwd: string): number {
           if (proc.status !== 0) {
             throw new CliError(
               "NS9015",
-              `Library object compilation failed for ${basename(source)}:\n${proc.stderr}`,
+              `Library object compilation failed with ${sourceLabel} for ${basename(source)}:\n${proc.stderr}`,
               displayPath(outDir, cwd),
             );
           }
@@ -2367,13 +2427,20 @@ function runBuild(args: readonly string[], cwd: string): number {
           const archive = resolve(outDir, `${libStem}.a`);
           const failures: string[] = [];
           let archiver: string | null = null;
-          for (const candidate of archiverCandidates(compilerBin)) {
+          for (const candidate of archiverCandidates({
+            bin: compilerBin,
+            args: compilerArgs,
+            family: compilerFamily,
+          })) {
             rmSync(archive, { force: true });
-            const proc = spawnSync(
-              candidate,
-              ["rcs", archive, ...objects],
-              { windowsHide: true, encoding: "utf8" },
-            );
+            const isZig = compilerFamily === "zig" && candidate === compilerBin;
+            const arArgs = isZig
+              ? ["ar", "rcs", archive, ...objects]
+              : ["rcs", archive, ...objects];
+            const proc = spawnSync(candidate, arArgs, {
+              windowsHide: true,
+              encoding: "utf8",
+            });
             if (proc.status === 0) {
               archiver = candidate;
               break;
@@ -2390,7 +2457,7 @@ function runBuild(args: readonly string[], cwd: string): number {
             rmSync(archive, { force: true });
             throw new CliError(
               "NS9102",
-              "No archiver (ar, llvm-ar, or gcc-ar) could build a static library:\n" +
+              "No archiver (zig ar, ar, llvm-ar, or gcc-ar) could build a static library:\n" +
                 failures.join("\n"),
               displayPath(outDir, cwd),
             );
@@ -2407,7 +2474,16 @@ function runBuild(args: readonly string[], cwd: string): number {
           const sharedExt = process.platform === "win32" ? ".dll" : ".so";
           const shared = resolve(outDir, `${libStem}${sharedExt}`);
           const linkArgs = ["-shared", "-o", shared, ...objects, hostObject];
-          const flavor = compilerFlavor(compilerBin);
+          const linkInvocation = invocationArgs(
+            compilerArgs,
+            compilerFamily,
+            hasCpp,
+          );
+          const linkLabel =
+            compilerFamily === "zig"
+              ? `${compilerBin} ${hasCpp ? "c++" : "cc"}`
+              : compilerBin;
+          const flavor = compilerFlavor(compilerBin, linkInvocation);
           if (flavor === "msvc") {
             const exports = [
               ...new Set(headerPaths.flatMap(exportedSymbolsFromHeader)),
@@ -2433,14 +2509,14 @@ function runBuild(args: readonly string[], cwd: string): number {
           if (hasCpp && flavor === "gnu") {
             linkArgs.push("-lstdc++");
           }
-          const proc = spawnSync(compilerBin, linkArgs, {
+          const proc = spawnSync(compilerBin, [...linkInvocation, ...linkArgs], {
             windowsHide: true,
             encoding: "utf8",
           });
           if (proc.status !== 0) {
             throw new CliError(
               "NS9015",
-              `Shared library link failed with ${compilerBin}:\n${proc.stderr}`,
+              `Shared library link failed with ${linkLabel}:\n${proc.stderr}`,
               displayPath(outDir, cwd),
             );
           }
@@ -2456,7 +2532,8 @@ function runBuild(args: readonly string[], cwd: string): number {
         }
         const exeName = process.platform === "win32" ? "main.exe" : "main";
         const exePath = resolve(outDir, exeName);
-        const compilerBin = resolveNativeCompiler(buildData, root);
+        const compilerInv = await resolveNativeCompiler(buildData, root, !options.noDownload);
+        const compilerBin = compilerInv?.bin ?? null;
         if (!compilerBin) {
           throw new CliError(
             "NS9102",
@@ -2464,8 +2541,19 @@ function runBuild(args: readonly string[], cwd: string): number {
             displayPath(outDir, cwd),
           );
         }
+        const compilerArgs = compilerInv?.args ?? [];
+        const compilerFamily = compilerInv?.family ?? "unknown";
         const cflags = buildCflags(targetConfig);
         const hasCpp = scriptPaths.some((p) => p.endsWith(".cpp"));
+        const linkInvocation = invocationArgs(
+          compilerArgs,
+          compilerFamily,
+          hasCpp,
+        );
+        const linkLabel =
+          compilerFamily === "zig"
+            ? `${compilerBin} ${hasCpp ? "c++" : "cc"}`
+            : compilerBin;
         const compileArgs = [
           "-std=c17",
           "-Wall",
@@ -2482,13 +2570,13 @@ function runBuild(args: readonly string[], cwd: string): number {
         }
         const buildProc = spawnSync(
           compilerBin,
-          compileArgs,
+          [...linkInvocation, ...compileArgs],
           { windowsHide: true, encoding: "utf8" },
         );
         if (buildProc.status !== 0) {
           throw new CliError(
             "NS9015",
-            `Native compilation failed with ${compilerBin}:\n${buildProc.stderr}`,
+            `Native compilation failed with ${linkLabel}:\n${buildProc.stderr}`,
             displayPath(outDir, cwd),
           );
         }
@@ -2796,7 +2884,7 @@ function runBuild(args: readonly string[], cwd: string): number {
   }
 }
 
-function runDoctor(args: readonly string[], cwd: string): number {
+async function runDoctor(args: readonly string[], cwd: string): Promise<number> {
   const directory = args.find((a) => !a.startsWith("--")) ?? ".";
   const root = resolve(cwd, directory);
   const json = args.includes("--json");
@@ -2815,7 +2903,10 @@ function runDoctor(args: readonly string[], cwd: string): number {
       readdir: (p: string) => readdirSync(p),
     };
     const env = process.env["ASTRA_CC"] ? { ASTRA_CC: process.env["ASTRA_CC"] } : {};
-    const result = doctor(root, policy, env, probe);
+    const noDownload = args.includes("--no-download");
+    const result = await doctorAsync(root, policy, env, probe, {
+      allowDownload: !noDownload,
+    });
     if (json) {
       process.stdout.write(JSON.stringify({ ok: result.winner !== null, doctor: result }, null, 2) + "\n");
     } else {
@@ -2856,13 +2947,13 @@ export async function runCli(args: readonly string[], cwd = process.cwd()): Prom
 
   switch (command) {
     case "doctor":
-      return runDoctor(rest, cwd);
+      return await runDoctor(rest, cwd);
     case "check":
       return runCheck(rest, cwd);
     case "fmt":
       return runFmt(rest, cwd);
     case "build":
-      return runBuild(rest, cwd);
+      return await runBuild(rest, cwd);
     case "ast":
       return runInspection("ast", rest, cwd);
     case "explain":

@@ -490,6 +490,8 @@ match_arm      = pattern "=>" ( expression | block ) ;
 
 `break` and `continue` are valid only inside a loop body. `defer` may appear anywhere in a block and captures the current scope for cleanup at exit.
 
+A block used in value position (`let x = if ...`, a `match` arm) produces the value of its final expression. A `return` inside such a block returns from the enclosing function, and a `break` or `continue` inside such a block targets the nearest enclosing loop outside the block. They are not local jumps to the block boundary.
+
 ### 3.9 Patterns
 
 ```ebnf
@@ -1013,6 +1015,17 @@ v0.1 does not support typeclasses, traits, higher-kinded types, or specializatio
 | Concurrency | Scoped tasks and channels | Web Workers | OS thread pool | Threads or workers |
 | FFI | Manifest-resolved | ESM imports | C ABI | Wasm imports |
 
+### 4.9 Map indexing
+
+`map[key]` returns the value stored under `key`. A missing key MUST raise a
+runtime panic; it MUST NOT return a default value or silently insert an entry.
+Use `map.get(key)` when absence is expected, because `get` returns
+`Option<V>`.
+
+`map[key] = value` inserts a new entry when the key is absent and replaces the
+value when it is present. Inserting a new key preserves insertion order at the
+end of the map.
+
 ---
 
 ## 5. Integer semantics
@@ -1227,6 +1240,7 @@ abort("unrecoverable")
 
 - `panic` reports a programmer bug and terminates the current task.
 - `abort` terminates immediately without unwinding.
+- A target that cannot terminate without unwinding MUST use its strongest host termination primitive. The JavaScript backend exits a Node process with status 134, closes a worker when that primitive exists, and otherwise raises an uncaught host error.
 - `panic` and `abort` have type `Never` and may appear where any type is expected.
 - Panics MUST NOT cross an FFI boundary silently.
 - Panics MUST produce a clean message and, where supported, a stack trace.

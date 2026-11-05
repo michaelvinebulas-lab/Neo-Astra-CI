@@ -20,6 +20,7 @@ const BUILTIN_NOMINALS: &[&str] = &[
     "ParseIntError",
     "OverflowError",
     "ChannelError",
+    "TaskError",
 ];
 
 /// Resolves a built-in nominal name (as written in source) to its shared C
@@ -815,7 +816,7 @@ impl TyCtxt {
                 // Built-in nominal payloads declared in the runtime header:
                 // the string-carrying error tuples hold an NS_Str at `_0`;
                 // the rest are payload-free.
-                "SliceError" | "ParseIntError" | "OverflowError" => {
+                "SliceError" | "ParseIntError" | "OverflowError" | "TaskError" => {
                     let c = self.c_type(ty);
                     self.record_shape(&format!("{{ offsetof({c}, _0), &NS_SHAPE_STR }}"), 1)
                 }
@@ -981,7 +982,7 @@ impl TyCtxt {
                 // A `Channel<T>` value is the `NS_Channel*` handle itself.
                 "Channel" => vec![format!("(void*)({base})")],
                 "Task" => vec![format!("(void*)({base})")],
-                "SliceError" | "ParseIntError" | "OverflowError" => {
+                "SliceError" | "ParseIntError" | "OverflowError" | "TaskError" => {
                     vec![format!("(void*)(({base})._0.data)")]
                 }
                 "ChannelError" => Vec::new(),

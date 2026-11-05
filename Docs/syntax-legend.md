@@ -418,6 +418,8 @@ for item in items {
 
 No parentheses are required around `if` or `while` conditions. There is no implicit truthiness.
 
+A block in value position produces its final expression. A `return` inside it returns from the enclosing function, and a `break`/`continue` inside it targets the nearest enclosing loop outside the block; these are not local jumps to the block boundary.
+
 ### 8.3 Match
 
 ```ns
@@ -454,7 +456,8 @@ Patterns:
 | `f(a, b)` | Function call |
 | `value.field` | Field access |
 | `tuple.0` | Tuple element |
-| `value[index]` | Indexing |
+| `value[index]` | Indexing; map indexing panics when the key is missing |
+| `map[key] = value` | Insert a map entry or replace the existing value |
 | `[a, b]` | Array/slice literal |
 | `{"a": 1}` | Map literal |
 | `User { id: 1 }` | Struct initializer |
@@ -606,8 +609,11 @@ fn main() {
 | `channel.close()` | Close explicitly |
 | `task.join()` | Wait for a task result |
 | `task.cancel()` | Request cooperative cancellation |
+| `task.canceled()` | Report whether cancellation was accepted, without joining |
 
 A `spawn` expression evaluates to `Task<T>`. The parent scope waits for children before exiting. Detached tasks are not allowed in the portable core.
+
+`join()` returns `T`. A child panic, or a cancellation that prevents a value, raises a structured `TaskError` in the joining task; a child returning `Result<T, E>` keeps that `Result` as the task value. A cancellation after the task produced a value is a no-op and is not recorded: the value wins. A recorded panic wins over cancellation at join. Unjoined children fail their scope with the same `TaskError`.
 
 ---
 
@@ -626,12 +632,9 @@ foreign module math_engine {
 | Manifest `ffi` entry | Maps the foreign module to ESM, C ABI, or Wasm imports |
 | Ownership annotation | Required for foreign pointers; never inferred |
 
-FFI is unsafe by default. Panics must not cross an FFI boundary silently.
+FFI is unsafe by default. Panics must not cross an FFI boundary silently. V1 ships FFI on the native C target; the JavaScript and TypeScript backends reject a foreign module with `NS8001` and name the native target instead.
 
-> **Proposed V1 syntax, not part of v0.1:** inline `@script` blocks let a `.ns`
-> file contain a bounded foreign implementation with a typed export surface. See
-> [`archive/Design/V1/10-inline-script-interop.md`](./archive/Design/V1/10-inline-script-interop.md).
-> The block is not accepted by the current parser.
+Inline `@script:js`, `@script:ts`, `@script:c`, and `@script:cpp` blocks are implemented with typed boundary validation. Other script languages are parsed but not generated in v1 and reject explicitly.
 
 ---
 

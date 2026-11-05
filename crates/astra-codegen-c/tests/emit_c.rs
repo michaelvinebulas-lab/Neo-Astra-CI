@@ -2536,6 +2536,57 @@ pub fn main() -> i32 {
     assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["1", "11"]);
 }
 
+/// TaskError option 1: a child panic observed at `join` fails the joining task
+/// with the structured `TaskError`, not the raw child panic.
+#[test]
+fn joined_task_panic_is_a_task_error() {
+    let src = r#"
+pub fn main() -> i32 {
+    let task = spawn || {
+        panic("task boom")
+        0
+    }
+    task.join()
+    println("after")
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, _stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(!ok, "a joined child panic must fail the parent task");
+    assert!(
+        stderr.contains("panic: TaskError: task boom"),
+        "expected a structured TaskError, got:\n{stderr}"
+    );
+}
+
+/// TaskError option 1: `canceled()` reports cancellation state without
+/// joining; a request after completion is a no-op.
+#[test]
+fn task_canceled_exposes_completion_state() {
+    let src = r#"
+pub fn main() -> i32 {
+    let task = spawn || { 42 }
+    let value = task.join()
+    task.cancel()
+    println(task.canceled())
+    println(value)
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert!(out.contains("astra_task_canceled"), "{out}");
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "execution failed:\nstderr:\n{stderr}");
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["false", "42"]);
+}
+
 /// D28/CONC-001: a spawn resolves free names from the scope active at the
 /// spawn site. A shadowed binding in an earlier block or loop is out of scope
 /// and must not supply the capture's type (it would otherwise emit a closure
@@ -2676,8 +2727,8 @@ pub fn main() {
 
 /// D1: cancellation is polled at managed allocations and GC safepoints. The
 /// child reports readiness, then allocates in a long loop; the parent cancels
-/// and joins. The result slot was never written, so the join yields T's zero
-/// value and the run exits cleanly instead of waiting for the loop.
+/// and joins. The loop never stages a value, so the join raises the structured
+/// cancellation `TaskError` instead of waiting for the loop.
 #[test]
 fn a_cancelled_task_stops_at_the_next_allocation() {
     let src = r#"
@@ -2708,13 +2759,18 @@ pub fn main() {
     let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
         return;
     };
-    assert!(ok, "a cancelled task must join cleanly; stderr:\n{stderr}");
-    assert_eq!(stdout.replace("\r\n", "\n"), "0\n");
+    assert!(!ok, "a cancelled join must raise TaskError");
+    assert_eq!(stdout, "", "the join must not return a value");
+    assert!(
+        stderr.contains("panic: TaskError: task was cancelled"),
+        "expected a cancellation TaskError; stderr:\n{stderr}"
+    );
 }
 
 /// D1: cancellation interrupts a blocked channel operation via the sliced
 /// wait, not the watchdog. A short watchdog makes the distinction observable:
-/// if cancellation fails, the child panics at the deadline and the run fails.
+/// if cancellation fails, the child panics at the deadline with the deadlock
+/// message instead of the cancellation `TaskError`.
 #[test]
 fn cancelling_a_blocked_receive_interrupts_the_wait() {
     let src = r#"
@@ -2748,10 +2804,18 @@ pub fn main() {
         return;
     };
     assert!(
-        ok,
-        "a cancelled wait must join before the watchdog; stderr:\n{stderr}"
+        !ok,
+        "a cancelled join must raise TaskError before the watchdog"
     );
-    assert_eq!(stdout.replace("\r\n", "\n"), "done\n");
+    assert_eq!(stdout, "", "the join must not reach the next statement");
+    assert!(
+        stderr.contains("panic: TaskError: task was cancelled"),
+        "expected a cancellation TaskError; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("deadlock"),
+        "cancellation must interrupt the wait, not wait for the watchdog; stderr:\n{stderr}"
+    );
 }
 
 /// Cancelling a task that already finished (and was joined) is a no-op: a
@@ -4062,4 +4126,50 @@ pub fn main() -> i32 {
 "#;
     let out = compile_and_emit(src);
     assert_clang_ok(&out);
+}
+
+/// Map index syntax reads an existing value and inserts/updates on assignment,
+/// matching the interpreter's semantics.
+#[test]
+fn map_index_reads_and_writes() {
+    let src = r#"
+pub fn main() -> i32 {
+    let mut values = {"a": 1, "b": 2}
+    println(values["a"])
+    values["b"] = 3
+    values["c"] = 4
+    println(values["b"])
+    println(values["c"])
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "execution failed:\nstderr:\n{stderr}");
+    assert_eq!(stdout.lines().collect::<Vec<_>>(), vec!["1", "3", "4"]);
+}
+
+/// A missing map key is a runtime panic, not a zero value or a silent insert.
+#[test]
+fn map_index_missing_key_panics() {
+    let src = r#"
+pub fn main() -> i32 {
+    let values = {"a": 1}
+    println(values["missing"])
+    return 0
+}
+"#;
+    let out = compile_and_emit(src);
+    assert_clang_ok(&out);
+    let Some((ok, _stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(!ok, "a missing map key must panic");
+    assert!(
+        stderr.contains("map key is not present"),
+        "expected the map index panic, got:\n{stderr}"
+    );
 }

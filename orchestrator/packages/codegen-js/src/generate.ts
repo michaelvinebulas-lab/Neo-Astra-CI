@@ -2,7 +2,7 @@
 //!
 //! The backend consumes the checked AST and resolved HIR exported by the Rust
 //! compiler. It emits framework-free ESM and rejects constructs whose semantics
-//! are not implemented yet rather than silently changing them.
+//! are rejected explicitly rather than silently changing them.
 
 import {
   type AstItem,
@@ -157,10 +157,12 @@ const HELPER_ORDER = [
   "abort",
   "failure",
   "fail",
+  "taskError",
   "taskScope",
   "spawn",
   "taskJoin",
   "taskCancel",
+  "taskCanceled",
   "channel",
   "renderFloat",
   "render",
@@ -193,6 +195,8 @@ const HELPER_ORDER = [
   "mapInsert",
   "mapKeys",
   "eq",
+  "mapIndex",
+  "mapIndexSet",
   "none",
   "some",
   "ok",
@@ -229,8 +233,10 @@ type HelperName = (typeof HELPER_ORDER)[number];
 
 const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = {
   fail: ["failure"],
-  spawn: ["taskScope"],
-  taskJoin: ["failure"],
+  taskError: ["panic"],
+  taskScope: ["taskError"],
+  spawn: ["taskScope", "taskJoin", "taskCancel", "taskCanceled"],
+  taskJoin: ["failure", "taskError"],
   render: ["renderFloat"],
   print: ["write", "render"],
   println: ["write", "render"],
@@ -248,6 +254,8 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   index: ["panic"],
   mapGet: ["eq", "none"],
   mapInsert: ["eq", "none", "some"],
+  mapIndex: ["eq", "panic"],
+  mapIndexSet: ["eq"],
   mapKeys: [],
   getArray: ["none"],
   parseInt: ["ok", "err"],
@@ -278,7 +286,15 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   ],
   abort: [
     "function $abort(message) {",
-    '  throw new Error("abort: " + message);',
+    "  const runtime = globalThis;",
+    "  if (runtime.process !== undefined && typeof runtime.process.exit === \"function\") {",
+    "    if (runtime.process.stderr && typeof runtime.process.stderr.write === \"function\") {",
+    "      runtime.process.stderr.write(\"abort: \" + message + \"\\n\");",
+    "    }",
+    "    runtime.process.exit(134);",
+    "  }",
+    "  if (typeof runtime.close === \"function\") runtime.close();",
+    "  throw new Error(\"abort: \" + message);",
     "}",
   ],
   failure: [
@@ -291,6 +307,13 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  throw $failure(error);",
     "}",
   ],
+  taskError: [
+    "function $taskError(value) {",
+    '  let text = value instanceof Error ? value.message : String(value);',
+    '  if (text.startsWith("panic: ")) text = text.slice(7);',
+    '  $panic(text.startsWith("TaskError: ") ? text : "TaskError: " + text);',
+    "}",
+  ],
   taskScope: [
     "const $taskScopes = [];",
     "function $enterTaskScope() {",
@@ -301,13 +324,26 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "function $exitTaskScope(scope) {",
     "  $taskScopes.pop();",
     "  for (const task of scope.tasks) {",
-    "    if (!task.joined && task.outcome && task.outcome.panic !== undefined) throw task.outcome.panic;",
+    "    if (task.joined) continue;",
+    "    if (task.outcome === undefined) {",
+    '      if (task.cancelled) $taskError("task was cancelled");',
+    '      $taskError("task failed without a value");',
+    "    }",
+    "    if (task.outcome.panic !== undefined) $taskError(task.outcome.panic);",
     "  }",
     "}",
   ],
   spawn: [
     "function $spawn(body) {",
-    "  const task = { $task: true, cancelled: false, joined: false, outcome: undefined };",
+    "  const task = {",
+    "    $task: true,",
+    "    cancelled: false,",
+    "    joined: false,",
+    "    outcome: undefined,",
+    "    join() { return $taskJoin(this); },",
+    "    cancel() { return $taskCancel(this); },",
+    "    canceled() { return $taskCanceled(this); },",
+    "  };",
     "  try {",
     "    task.outcome = { ok: true, value: body() };",
     "  } catch (error) {",
@@ -321,18 +357,26 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   taskJoin: [
     "function $taskJoin(task) {",
     "  task.joined = true;",
-    "  if (task.cancelled) {",
-    '    return $failure({ $type: "TaskError", 0: "task was cancelled" });',
+    "  if (task.outcome === undefined) {",
+    '    if (task.cancelled) $taskError("task was cancelled");',
+    '    $taskError("task failed without a value");',
     "  }",
-    "  if (task.outcome.panic !== undefined) throw task.outcome.panic;",
+    "  if (task.outcome.panic !== undefined) $taskError(task.outcome.panic);",
     "  if (!task.outcome.ok) return $failure(task.outcome.error);",
     "  return task.outcome.value;",
     "}",
   ],
   taskCancel: [
     "function $taskCancel(task) {",
-    "  task.cancelled = true;",
+    "  /* A request after the task produced a result has no effect and is not",
+    "     recorded; the eager runtime completes every spawn inline. */",
+    "  if (task.outcome === undefined) task.cancelled = true;",
     "  return undefined;",
+    "}",
+  ],
+  taskCanceled: [
+    "function $taskCanceled(task) {",
+    "  return task.cancelled;",
     "}",
   ],
   channel: [
@@ -624,6 +668,21 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  return $some(previous);",
     "}",
   ],
+  mapIndex: [
+    "function $mapIndex(map, key) {",
+    "  const entry = map.$map.find(([candidate]) => $eq(candidate, key));",
+    '  if (entry === undefined) $panic("map key is not present");',
+    "  return entry[1];",
+    "}",
+  ],
+  mapIndexSet: [
+    "function $mapIndexSet(map, key, value) {",
+    "  const index = map.$map.findIndex(([candidate]) => $eq(candidate, key));",
+    "  if (index < 0) map.$map.push([key, value]);",
+    "  else map.$map[index] = [key, value];",
+    "  return undefined;",
+    "}",
+  ],
   mapKeys: [
     "function $mapKeys(map) {",
     "  return map.$map.map(([key]) => key);",
@@ -903,6 +962,9 @@ const LOOSE_TYPE_DECLARATIONS: Record<LooseTypeName, string> = {
     "    | { readonly ok: false; readonly error: unknown }",
     "    | { readonly panic: unknown }",
     "    | undefined;",
+    "  join(): T;",
+    "  cancel(): undefined;",
+    "  canceled(): boolean;",
     "}",
   ].join("\n"),
   AstraChannel: [
@@ -948,9 +1010,11 @@ const TS_HELPER_SIGNATURES: Partial<Record<HelperName, string>> = {
   abort: "function $abort(message: string): never {",
   failure: "function $failure(error: unknown): { readonly $failure: true; readonly error: unknown } {",
   fail: "function $fail(error: unknown): never {",
+  taskError: "function $taskError(value: unknown): never {",
   spawn: "function $spawn<T>(body: () => T): AstraTask<T> {",
   taskJoin: "function $taskJoin<T>(task: AstraTask<T>): T | { readonly $failure: true; readonly error: unknown } {",
   taskCancel: "function $taskCancel<T>(task: AstraTask<T>): undefined {",
+  taskCanceled: "function $taskCanceled<T>(task: AstraTask<T>): boolean {",
   channel: "function $channel<T>(): AstraChannel<T> {",
   renderFloat: "function $renderFloat(value: number): string {",
   render: "function $render(value: unknown, debug = false): string {",
@@ -983,6 +1047,8 @@ const TS_HELPER_SIGNATURES: Partial<Record<HelperName, string>> = {
   mapInsert: "function $mapInsert<K, V>(map: { readonly $map: Array<readonly [K, V]> }, key: K, value: V): { readonly $option: true; readonly value: V } | { readonly $option: false } {",
   mapKeys: "function $mapKeys<K, V>(map: { readonly $map: ReadonlyArray<readonly [K, V]> }): K[] {",
   eq: "function $eq(left: unknown, right: unknown): boolean {",
+  mapIndex: "function $mapIndex<K, V>(map: { readonly $map: ReadonlyArray<readonly [K, V]> }, key: K): V {",
+  mapIndexSet: "function $mapIndexSet<K, V>(map: { readonly $map: Array<readonly [K, V]> }, key: K, value: V): undefined {",
   none: "const $none: { readonly $option: false } = Object.freeze({ $option: false });",
   some: "function $some<T>(value: T): { readonly $option: true; readonly value: T } {",
   ok: "function $ok<T>(value: T): { readonly $result: true; readonly ok: true; readonly value: T } {",
@@ -1018,6 +1084,25 @@ const TS_HELPER_SIGNATURES: Partial<Record<HelperName, string>> = {
 
 /** Helpers whose TypeScript bodies differ from the shared JavaScript text. */
 const TS_HELPER_OVERRIDES: Partial<Record<HelperName, readonly string[]>> = {
+  abort: [
+    "function $abort(message: string): never {",
+    "  const runtime = globalThis as unknown as {",
+    "    readonly process?: {",
+    "      readonly exit?: (code: number) => never;",
+    "      readonly stderr?: { readonly write?: (chunk: string) => void };",
+    "    };",
+    "    readonly close?: () => void;",
+    "  };",
+    "  if (runtime.process !== undefined && typeof runtime.process.exit === \"function\") {",
+    "    if (runtime.process.stderr && typeof runtime.process.stderr.write === \"function\") {",
+    "      runtime.process.stderr.write(\"abort: \" + message + \"\\n\");",
+    "    }",
+    "    runtime.process.exit(134);",
+    "  }",
+    "  if (typeof runtime.close === \"function\") runtime.close();",
+    "  throw new Error(\"abort: \" + message);",
+    "}",
+  ],
   write: [
     "function $write(text: string): undefined {",
     "  const runtime = globalThis as unknown as {",
@@ -1077,15 +1162,28 @@ const TS_HELPER_OVERRIDES: Partial<Record<HelperName, readonly string[]>> = {
     "function $exitTaskScope(scope: { tasks: Array<AstraTask<unknown>> }): undefined {",
     "  $taskScopes.pop();",
     "  for (const task of scope.tasks) {",
+    "    if (task.joined) continue;",
     "    const outcome = task.outcome as { readonly ok?: boolean; readonly panic?: unknown } | undefined;",
-    "    if (!task.joined && outcome !== undefined && outcome.panic !== undefined) throw outcome.panic;",
+    "    if (outcome === undefined) {",
+    '      if (task.cancelled) $taskError("task was cancelled");',
+    '      $taskError("task failed without a value");',
+    "    }",
+    "    if (outcome.panic !== undefined) $taskError(outcome.panic);",
     "  }",
     "  return undefined;",
     "}",
   ],
   spawn: [
     "function $spawn<T>(body: () => T): AstraTask<T> {",
-    "  const task: AstraTask<T> = { $task: true, cancelled: false, joined: false, outcome: undefined };",
+    "  const task: AstraTask<T> = {",
+    "    $task: true,",
+    "    cancelled: false,",
+    "    joined: false,",
+    "    outcome: undefined,",
+    "    join() { return $taskJoin(this) as T; },",
+    "    cancel() { $taskCancel(this); },",
+    "    canceled() { return $taskCanceled(this); },",
+    "  };",
     "  try {",
     "    task.outcome = { ok: true, value: body() };",
     "  } catch (error) {",
@@ -1103,11 +1201,12 @@ const TS_HELPER_OVERRIDES: Partial<Record<HelperName, readonly string[]>> = {
     "  const outcome = task.outcome as",
     "    | { readonly ok?: boolean; readonly error?: unknown; readonly panic?: unknown }",
     "    | undefined;",
-    "  if (task.cancelled) {",
-    '    return $failure({ $type: "TaskError", 0: "task was cancelled" });',
+    "  if (outcome === undefined) {",
+    '    if (task.cancelled) $taskError("task was cancelled");',
+    '    $taskError("task failed without a value");',
     "  }",
-    "  if (outcome !== undefined && outcome.panic !== undefined) throw outcome.panic;",
-    "  if (outcome !== undefined && !outcome.ok) return $failure(outcome.error);",
+    "  if (outcome.panic !== undefined) $taskError(outcome.panic);",
+    "  if (!outcome.ok) return $failure(outcome.error);",
     "  return (task.outcome as { readonly ok: true; readonly value: T }).value;",
     "}",
   ],
@@ -1375,6 +1474,15 @@ class JavaScriptGenerator {
   private tempIndex = 0;
   private defaultExpression: Expr | undefined;
   private currentSuccessWrap = false;
+  /** Block-expression nesting: a `return` inside one becomes a signal. */
+  private expressionDepth = 0;
+  /** Loop depth at each open block expression, innermost last. */
+  private expressionLoopBases: number[] = [];
+  /** Loop nesting for native break/continue and signal targeting. */
+  private loopDepth = 0;
+  private loopSignals: Array<{ break: boolean; continue: boolean }> = [];
+  /** Set when the current function or spawn body emitted a return signal. */
+  private usesReturnSignal = false;
 
   constructor(
     ir: ModuleIr,
@@ -1663,6 +1771,8 @@ class JavaScriptGenerator {
         "  readonly $task: true;",
         "  readonly cancelled: boolean;",
         "  join(): T;",
+        "  cancel(): void;",
+        "  canceled(): boolean;",
         "}",
       );
     }
@@ -1862,7 +1972,7 @@ class JavaScriptGenerator {
       case "ForeignModule":
         this.unsupported(
           item.span,
-          `Foreign module '${item.name}' requires a target adapter that the ${this.backendName} backend does not have yet.`,
+          `Foreign module '${item.name}' is not supported by the ${this.backendName} backend; use the native C target for FFI.`,
         );
         return "";
       case "ScriptBlock":
@@ -1908,7 +2018,11 @@ class JavaScriptGenerator {
     const wrapsSuccess = fallible && !isResultReturnType(declaration.return_type);
     const previousWrap = this.currentSuccessWrap;
     this.currentSuccessWrap = wrapsSuccess;
+    const previousReturnSignal = this.usesReturnSignal;
+    this.usesReturnSignal = false;
     let body = this.emitBlock(declaration.body, "statement");
+    const usesReturnSignal = this.usesReturnSignal;
+    this.usesReturnSignal = previousReturnSignal;
     // A void fallible function has no explicit `return`, but callers still
     // expect a Result-shaped success value when they `match` the call.
     if (wrapsSuccess) {
@@ -1937,7 +2051,31 @@ class JavaScriptGenerator {
       ? `function ${name}${typeParameters}(${parameters.join(", ")}): ${returnTypeText}`
       : `function ${name}(${parameters.join(", ")})`;
     if (!fallible) {
-      return `${signature} ${body}`;
+      if (!usesReturnSignal) {
+        return `${signature} ${body}`;
+      }
+      const caught = this.temporary("caught");
+      if (this.isTs) {
+        return [
+          `${signature} {`,
+          `  try ${body}`,
+          `  catch (${caught}) {`,
+          `    const signal = ${caught} as { readonly $return?: boolean; readonly value?: unknown } | null | undefined;`,
+          `    if (signal !== null && signal !== undefined && signal.$return) return signal.value as unknown as ${returnTypeText};`,
+          `    throw ${caught};`,
+          "  }",
+          "}",
+        ].join("\n");
+      }
+      return [
+        `${signature} {`,
+        `  try ${body}`,
+        `  catch (${caught}) {`,
+        `    if (${caught} && ${caught}.$return) return ${caught}.value;`,
+        `    throw ${caught};`,
+        "  }",
+        "}",
+      ].join("\n");
     }
 
     // A recoverable failure unwinds the current function like `?` does in the
@@ -1949,7 +2087,8 @@ class JavaScriptGenerator {
         `${signature} {`,
         `  try ${body}`,
         `  catch (${caught}) {`,
-        `    const sentinel = ${caught} as { readonly $failure?: boolean; readonly error?: unknown } | null | undefined;`,
+        `    const sentinel = ${caught} as { readonly $failure?: boolean; readonly $return?: boolean; readonly error?: unknown; readonly value?: unknown } | null | undefined;`,
+        `    if (sentinel !== null && sentinel !== undefined && sentinel.$return) return sentinel.value as unknown as ${returnTypeText};`,
         `    if (sentinel !== null && sentinel !== undefined && sentinel.$failure) return ${caught} as unknown as ${returnTypeText};`,
         `    throw ${caught};`,
         "  }",
@@ -1960,6 +2099,7 @@ class JavaScriptGenerator {
       `${signature} {`,
       `  try ${body}`,
       `  catch (${caught}) {`,
+      `    if (${caught} && ${caught}.$return) return ${caught}.value;`,
       `    if (${caught} && ${caught}.$failure) return ${caught};`,
       `    throw ${caught};`,
       "  }",
@@ -2130,7 +2270,7 @@ class JavaScriptGenerator {
     if (block.language !== "js" && !transpiling) {
       this.diagnostic(
         "NS7008",
-        `Script language '${block.language}' cannot be emitted by the ${this.backendName} backend yet. Use @script:js or a matching target backend.`,
+        `Script language '${block.language}' is not supported by the ${this.backendName} backend; use @script:js, @script:ts, @script:c, or a matching target backend.`,
         block.header_span,
       );
       return;
@@ -2140,7 +2280,7 @@ class JavaScriptGenerator {
         "NS7008",
         this.backend === "ts"
           ? `Script block '${block.name}' is TypeScript, but no pinned TypeScript transpiler is available. A missing transpiler is a hard error; there is no best-effort fallback.`
-          : `Script language 'ts' cannot be emitted by the ${this.backendName} backend yet. Use @script:js or a matching target backend.`,
+          : `Script language 'ts' is not supported by the ${this.backendName} backend; use @script:js or a matching target backend.`,
         block.header_span,
       );
       return;
@@ -2460,7 +2600,7 @@ class JavaScriptGenerator {
       } else {
         this.unsupported(
           defaultExport.span,
-          "The JavaScript backend does not implement this default export form yet.",
+          "The JavaScript backend does not support this default export form.",
         );
       }
     }
@@ -2567,6 +2707,14 @@ class JavaScriptGenerator {
         const data = structPayload<{ value: Expr | null }>(kind, "Return");
         const value =
           data.value === null ? "undefined" : this.emitExpr(data.value);
+        const wrapped = this.currentSuccessWrap ? `$ok(${value})` : value;
+        if (this.expressionDepth > 0) {
+          this.usesReturnSignal = true;
+          if (this.currentSuccessWrap) {
+            this.useHelper("ok");
+          }
+          return `throw { $return: true, value: ${wrapped} };`;
+        }
         if (this.currentSuccessWrap) {
           this.useHelper("ok");
           return `return $ok(${value});`;
@@ -2574,9 +2722,9 @@ class JavaScriptGenerator {
         return data.value === null ? "return;" : `return ${value};`;
       }
       case "Break":
-        return "break;";
+        return this.emitLoopControl("break", "$break");
       case "Continue":
-        return "continue;";
+        return this.emitLoopControl("continue", "$continue");
       case "Defer": {
         this.unsupported(
           statement.span,
@@ -2586,10 +2734,9 @@ class JavaScriptGenerator {
       }
       case "While": {
         const data = structPayload<{ condition: Expr; body: Block }>(kind, "While");
-        return `while (${this.emitExpr(data.condition)}) ${this.emitBlock(
-          data.body,
-          "statement",
-        )}`;
+        const condition = this.emitExpr(data.condition);
+        const body = this.emitLoopBody(data.body);
+        return `while (${condition}) ${body}`;
       }
       case "For": {
         const data = structPayload<{
@@ -2597,9 +2744,9 @@ class JavaScriptGenerator {
           iterable: Expr;
           body: Block;
         }>(kind, "For");
-        return `for (const ${jsName(data.binding)} of ${this.emitIterable(
-          data.iterable,
-        )}) ${this.emitBlock(data.body, "statement")}`;
+        const iterable = this.emitIterable(data.iterable);
+        const body = this.emitLoopBody(data.body);
+        return `for (const ${jsName(data.binding)} of ${iterable}) ${body}`;
       }
       case "Expr": {
         const expression = payloadOf(kind) as Expr;
@@ -2689,6 +2836,10 @@ class JavaScriptGenerator {
           );
           const targetType = this.typeAt(indexTarget.target.span);
           const targetTag = targetType === undefined ? undefined : typeTag(targetType);
+          if (targetTag === "Map") {
+            this.useHelper("mapIndexSet");
+            return `$mapIndexSet(${this.emitExpr(indexTarget.target)}, ${this.emitExpr(indexTarget.index)}, ${this.emitExpr(data.value)})`;
+          }
           if (targetTag !== undefined && isSequence(targetTag)) {
             this.useHelper("indexSet");
             return `$indexSet(${this.emitExpr(indexTarget.target)}, ${this.emitExpr(indexTarget.index)}, ${this.emitExpr(data.value)})`;
@@ -2799,11 +2950,51 @@ class JavaScriptGenerator {
       case "Spawn": {
         const block = structPayload<{ body: Block }>(kind, "Spawn").body;
         const previousWrap = this.currentSuccessWrap;
+        const previousDepth = this.expressionDepth;
+        const previousBases = this.expressionLoopBases;
+        const previousLoopDepth = this.loopDepth;
+        const previousLoopSignals = this.loopSignals;
+        const previousReturnSignal = this.usesReturnSignal;
         this.currentSuccessWrap = false;
+        this.expressionDepth = 0;
+        this.expressionLoopBases = [];
+        this.loopDepth = 0;
+        this.loopSignals = [];
+        this.usesReturnSignal = false;
         const body = this.emitBlock(block, "value");
+        const usesReturnSignal = this.usesReturnSignal;
         this.currentSuccessWrap = previousWrap;
+        this.expressionDepth = previousDepth;
+        this.expressionLoopBases = previousBases;
+        this.loopDepth = previousLoopDepth;
+        this.loopSignals = previousLoopSignals;
+        this.usesReturnSignal = previousReturnSignal;
         this.useHelper("spawn");
-        return `$spawn(() => ${body})`;
+        if (!usesReturnSignal) {
+          return `$spawn(() => ${body})`;
+        }
+        const caught = this.temporary("caught");
+        const arrow = this.isTs
+          ? [
+              "{",
+              `  try ${body}`,
+              `  catch (${caught}) {`,
+              `    const signal = ${caught} as { readonly $return?: boolean; readonly value?: unknown } | null | undefined;`,
+              "    if (signal !== null && signal !== undefined && signal.$return) return signal.value as never;",
+              `    throw ${caught};`,
+              "  }",
+              "}",
+            ].join("\n")
+          : [
+              "{",
+              `  try ${body}`,
+              `  catch (${caught}) {`,
+              `    if (${caught} && ${caught}.$return) return ${caught}.value;`,
+              `    throw ${caught};`,
+              "  }",
+              "}",
+            ].join("\n");
+        return `$spawn(() => ${arrow})`;
       }
       case "Fail": {
         const data = structPayload<{ error: TypePath; arguments: unknown }>(
@@ -2824,11 +3015,10 @@ class JavaScriptGenerator {
         return `$panic($render(${this.emitExpr(message)}))`;
       }
       case "Abort": {
-        this.unsupported(
-          expression.span,
-          "Abort without unwinding is not representable in JavaScript yet.",
-        );
-        return "undefined";
+        const message = structPayload<{ message: Expr }>(kind, "Abort").message;
+        this.useHelper("abort");
+        this.useHelper("render");
+        return `$abort($render(${this.emitExpr(message)}))`;
       }
       default:
         this.unsupported(expression.span, "Unknown expression kind.");
@@ -3357,6 +3547,9 @@ class JavaScriptGenerator {
           case "cancel":
             this.useHelper("taskCancel");
             return `$taskCancel(${target})`;
+          case "canceled":
+            this.useHelper("taskCanceled");
+            return `$taskCanceled(${target})`;
           default:
             break;
         }
@@ -3486,11 +3679,8 @@ class JavaScriptGenerator {
       return `$strAt(${targetText}, ${indexText})`;
     }
     if (tag === "Map") {
-      this.unsupported(
-        target.span,
-        "Map index syntax is not implemented by the JavaScript backend; use get().",
-      );
-      return "undefined";
+      this.useHelper("mapIndex");
+      return `$mapIndex(${targetText}, ${indexText})`;
     }
     if (tag !== undefined && isSequence(tag)) {
       this.useHelper("index");
@@ -3513,15 +3703,79 @@ class JavaScriptGenerator {
     return `${targetText}${memberAccess(member)}`;
   }
 
-  private emitBlockExpression(block: Block): string {
-    if (this.scanStatements(block.statements, 0)) {
-      this.unsupported(
-        block.span,
-        "Control flow that exits an expression block is not implemented by the JavaScript backend yet.",
-      );
-      return "undefined";
+  private emitLoopControl(keyword: "break" | "continue", signal: "$break" | "$continue"): string {
+    const target = this.loopSignals[this.loopSignals.length - 1];
+    const base = this.expressionLoopBases[this.expressionLoopBases.length - 1];
+    if (target !== undefined && base !== undefined && this.loopDepth <= base) {
+      if (keyword === "break") target.break = true;
+      else target.continue = true;
+      return `throw { ${signal}: true };`;
     }
-    return `(() => ${this.emitBlock(block, "value")})()`;
+    return `${keyword};`;
+  }
+
+  private emitLoopBody(block: Block): string {
+    const signals = { break: false, continue: false };
+    this.loopSignals.push(signals);
+    this.loopDepth += 1;
+    const body = this.emitBlock(block, "statement");
+    this.loopDepth -= 1;
+    this.loopSignals.pop();
+    return this.wrapLoopSignals(body, signals);
+  }
+
+  private wrapLoopSignals(
+    body: string,
+    signals: { break: boolean; continue: boolean },
+  ): string {
+    if (!signals.break && !signals.continue) {
+      return body;
+    }
+    const caught = this.temporary("signal");
+    if (this.isTs) {
+      const lines = [
+        "{",
+        `  try ${body}`,
+        `  catch (${caught}) {`,
+        `    const signal = ${caught} as { readonly $break?: boolean; readonly $continue?: boolean } | null | undefined;`,
+      ];
+      if (signals.break) {
+        lines.push("    if (signal !== null && signal !== undefined && signal.$break) break;");
+      }
+      if (signals.continue) {
+        lines.push(
+          "    if (signal !== null && signal !== undefined && signal.$continue) continue;",
+        );
+      }
+      lines.push(`    throw ${caught};`, "  }", "}");
+      return lines.join("\n");
+    }
+    const lines = ["{", `  try ${body}`, `  catch (${caught}) {`];
+    if (signals.break) {
+      lines.push(`    if (${caught} && ${caught}.$break) break;`);
+    }
+    if (signals.continue) {
+      lines.push(`    if (${caught} && ${caught}.$continue) continue;`);
+    }
+    lines.push(`    throw ${caught};`, "  }", "}");
+    return lines.join("\n");
+  }
+
+  private enterExpressionBlock(): void {
+    this.expressionDepth += 1;
+    this.expressionLoopBases.push(this.loopDepth);
+  }
+
+  private exitExpressionBlock(): void {
+    this.expressionLoopBases.pop();
+    this.expressionDepth -= 1;
+  }
+
+  private emitBlockExpression(block: Block): string {
+    this.enterExpressionBlock();
+    const body = this.emitBlock(block, "value");
+    this.exitExpressionBlock();
+    return `(() => ${body})()`;
   }
 
   private emitIfExpression(data: {
@@ -3529,27 +3783,7 @@ class JavaScriptGenerator {
     readonly then_branch: Block;
     readonly else_branch: unknown;
   }): string {
-    if (this.scanStatements(data.then_branch.statements, 0)) {
-      this.unsupported(
-        data.then_branch.span,
-        "Control flow that exits an expression block is not implemented by the JavaScript backend yet.",
-      );
-      return "undefined";
-    }
-    if (
-      data.else_branch !== null &&
-      data.else_branch !== undefined &&
-      variantOf(data.else_branch) === "Block"
-    ) {
-      const block = payloadOf(data.else_branch) as Block;
-      if (this.scanStatements(block.statements, 0)) {
-        this.unsupported(
-          block.span,
-          "Control flow that exits an expression block is not implemented by the JavaScript backend yet.",
-        );
-        return "undefined";
-      }
-    }
+    this.enterExpressionBlock();
     const condition = this.emitExpr(data.condition);
     const thenBranch = this.emitBlock(data.then_branch, "value");
     let otherwise = "";
@@ -3560,6 +3794,7 @@ class JavaScriptGenerator {
         otherwise = ` else return ${this.emitExpr(payloadOf(data.else_branch) as Expr)};`;
       }
     }
+    this.exitExpressionBlock();
     return `(() => {\n  if (${condition}) ${thenBranch}${otherwise}\n})()`;
   }
 
@@ -3595,32 +3830,7 @@ class JavaScriptGenerator {
   }
 
   private emitMatchExpression(value: Expr, arms: readonly MatchArm[]): string {
-    if (this.scanExpression(value, 0)) {
-      this.unsupported(
-        value.span,
-        "Control flow that exits an expression block is not implemented by the JavaScript backend yet.",
-      );
-      return "undefined";
-    }
-    for (const arm of arms) {
-      if (variantOf(arm.body) === "Block") {
-        const block = payloadOf(arm.body) as Block;
-        if (this.scanStatements(block.statements, 0)) {
-          this.unsupported(
-            block.span,
-            "Control flow that exits an expression block is not implemented by the JavaScript backend yet.",
-          );
-          return "undefined";
-        }
-      } else if (this.scanExpression(payloadOf(arm.body) as Expr, 0)) {
-        this.unsupported(
-          arm.span,
-          "Control flow that exits an expression block is not implemented by the JavaScript backend yet.",
-        );
-        return "undefined";
-      }
-    }
-
+    this.enterExpressionBlock();
     const scrutinee = this.prepareMatchScrutinee(value);
     const lines: string[] = [...scrutinee.lines];
     let hasCatchAll = false;
@@ -3652,6 +3862,7 @@ class JavaScriptGenerator {
 
     this.useHelper("panic");
     lines.push('$panic("non-exhaustive match");');
+    this.exitExpressionBlock();
     return `(() => {\n${indent(lines.join("\n"))}\n})()`;
   }
 
@@ -3744,196 +3955,6 @@ class JavaScriptGenerator {
         ? { kind: "semantic", ty: rootSemantic }
         : undefined;
     return { temporary, lines, bindingType };
-  }
-
-  private scanStatements(statements: readonly Stmt[], loopDepth: number): boolean {
-    for (const statement of statements) {
-      if (this.scanStatement(statement, loopDepth)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private scanStatement(statement: Stmt, loopDepth: number): boolean {
-    const kind = statement.kind;
-    switch (variantOf(kind)) {
-      case "Return":
-        return true;
-      case "Break":
-      case "Continue":
-        return loopDepth === 0;
-      case "Let":
-        return this.scanExpression(
-          structPayload<{ value: Expr }>(kind, "Let").value,
-          loopDepth,
-        );
-      case "Defer":
-        return this.scanStatement(payloadOf(kind) as Stmt, loopDepth);
-      case "While": {
-        const data = structPayload<{ condition: Expr; body: Block }>(kind, "While");
-        return (
-          this.scanExpression(data.condition, loopDepth) ||
-          this.scanStatements(data.body.statements, loopDepth + 1)
-        );
-      }
-      case "For": {
-        const data = structPayload<{ iterable: Expr; body: Block }>(kind, "For");
-        return (
-          this.scanExpression(data.iterable, loopDepth) ||
-          this.scanStatements(data.body.statements, loopDepth + 1)
-        );
-      }
-      case "Expr":
-        return this.scanExpression(payloadOf(kind) as Expr, loopDepth);
-      case "Scoped": {
-        const data = structPayload<{ statements: readonly Stmt[] }>(kind, "Scoped");
-        return this.scanStatements(data.statements, loopDepth);
-      }
-      default:
-        return false;
-    }
-  }
-
-  private scanExpression(expression: Expr, loopDepth: number): boolean {
-    const kind = expression.kind;
-    switch (variantOf(kind)) {
-      case "Literal":
-      case "Identifier":
-        return false;
-      case "Unary":
-        return this.scanExpression(
-          structPayload<{ operand: Expr }>(kind, "Unary").operand,
-          loopDepth,
-        );
-      case "Binary": {
-        const data = structPayload<{ left: Expr; right: Expr }>(kind, "Binary");
-        return (
-          this.scanExpression(data.left, loopDepth) ||
-          this.scanExpression(data.right, loopDepth)
-        );
-      }
-      case "Assign": {
-        const data = structPayload<{ target: Expr; value: Expr }>(kind, "Assign");
-        return (
-          this.scanExpression(data.target, loopDepth) ||
-          this.scanExpression(data.value, loopDepth)
-        );
-      }
-      case "Call": {
-        const data = structPayload<{
-          callee: Expr;
-          arguments: readonly Expr[];
-        }>(kind, "Call");
-        return (
-          this.scanExpression(data.callee, loopDepth) ||
-          data.arguments.some((argument) => this.scanExpression(argument, loopDepth))
-        );
-      }
-      case "Index": {
-        const data = structPayload<{ target: Expr; index: Expr }>(kind, "Index");
-        return (
-          this.scanExpression(data.target, loopDepth) ||
-          this.scanExpression(data.index, loopDepth)
-        );
-      }
-      case "Member":
-        return this.scanExpression(
-          structPayload<{ target: Expr }>(kind, "Member").target,
-          loopDepth,
-        );
-      case "TypeArguments":
-        return this.scanExpression(
-          structPayload<{ target: Expr }>(kind, "TypeArguments").target,
-          loopDepth,
-        );
-      case "Propagate":
-        return this.scanExpression(payloadOf(kind) as Expr, loopDepth);
-      case "Array":
-      case "Tuple": {
-        const values = payloadOf(kind) as readonly Expr[];
-        return values.some((value) => this.scanExpression(value, loopDepth));
-      }
-      case "Map": {
-        const entries = payloadOf(kind) as readonly {
-          readonly key: Expr;
-          readonly value: Expr;
-        }[];
-        return entries.some(
-          (entry) =>
-            this.scanExpression(entry.key, loopDepth) ||
-            this.scanExpression(entry.value, loopDepth),
-        );
-      }
-      case "StructInit": {
-        const fields = structPayload<{
-          fields: readonly { readonly value: Expr }[];
-        }>(kind, "StructInit").fields;
-        return fields.some((field) => this.scanExpression(field.value, loopDepth));
-      }
-      case "Block":
-        return this.scanStatements((payloadOf(kind) as Block).statements, loopDepth);
-      case "If": {
-        const data = structPayload<{
-          condition: Expr;
-          then_branch: Block;
-          else_branch: unknown;
-        }>(kind, "If");
-        if (
-          this.scanExpression(data.condition, loopDepth) ||
-          this.scanStatements(data.then_branch.statements, loopDepth)
-        ) {
-          return true;
-        }
-        if (data.else_branch === null || data.else_branch === undefined) {
-          return false;
-        }
-        return variantOf(data.else_branch) === "Block"
-          ? this.scanStatements(
-              (payloadOf(data.else_branch) as Block).statements,
-              loopDepth,
-            )
-          : this.scanExpression(payloadOf(data.else_branch) as Expr, loopDepth);
-      }
-      case "Match": {
-        const data = structPayload<{
-          value: Expr;
-          arms: readonly MatchArm[];
-        }>(kind, "Match");
-        if (this.scanExpression(data.value, loopDepth)) {
-          return true;
-        }
-        return data.arms.some((arm) =>
-          variantOf(arm.body) === "Block"
-            ? this.scanStatements(
-                (payloadOf(arm.body) as Block).statements,
-                loopDepth,
-              )
-            : this.scanExpression(payloadOf(arm.body) as Expr, loopDepth),
-        );
-      }
-      case "Spawn":
-        return false;
-      case "Fail": {
-        const args = structPayload<{ arguments: unknown }>(kind, "Fail").arguments;
-        if (variantOf(args) === "Tuple") {
-          return (payloadOf(args) as readonly Expr[]).some((arg) =>
-            this.scanExpression(arg, loopDepth),
-          );
-        }
-        return (payloadOf(args) as readonly { readonly value: Expr }[]).some(
-          (field) => this.scanExpression(field.value, loopDepth),
-        );
-      }
-      case "Panic":
-      case "Abort":
-        return this.scanExpression(
-          structPayload<{ message: Expr }>(kind, variantOf(kind)).message,
-          loopDepth,
-        );
-      default:
-        return false;
-    }
   }
 
   private lowerPattern(

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -77,6 +79,97 @@ function expectCode(fn, code) {
     assert.equal(actual, code, `expected ${code}, got ${String(error)}`);
     return true;
   });
+}
+
+async function expectCodeAsync(promise, code) {
+  let caught;
+  await assert.rejects(promise, (error) => {
+    caught = error;
+    const actual =
+      error !== null && typeof error === "object" && "code" in error
+        ? error.code
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    assert.equal(actual, code, `expected ${code}, got ${String(error)}`);
+    return true;
+  });
+  return caught;
+}
+
+function hostPlatform() {
+  return process.platform;
+}
+
+function hostArch() {
+  if (process.arch === "x64" || process.arch === "arm64") return process.arch;
+  return process.arch;
+}
+
+/**
+ * Builds a tiny archive with the same shape as a real Zig release: one
+ * top-level directory containing the `zig` binary. Windows uses zip; POSIX uses
+ * tar.xz, so the production extractor is exercised on every host.
+ */
+function makeToolchainArchive(binaryName = process.platform === "win32" ? "zig.exe" : "zig") {
+  const source = mkdtempSync(join(tmpdir(), "astra-archive-"));
+  try {
+    const top = join(source, "zig-test");
+    mkdirSync(top, { recursive: true });
+    writeFileSync(join(top, binaryName), "fake zig binary\n", "utf8");
+    const archivePath = join(source, process.platform === "win32" ? "archive.zip" : "archive.tar.xz");
+    const tarArgs =
+      process.platform === "win32"
+        ? ["-a", "-cf", archivePath, "-C", source, "zig-test"]
+        : ["-cJf", archivePath, "-C", source, "zig-test"];
+    const tar = process.platform === "win32"
+      ? `${process.env["SystemRoot"] ?? "C:\\Windows"}\\System32\\tar.exe`
+      : "tar";
+    const result = spawnSync(tar, tarArgs, { windowsHide: true, encoding: "utf8" });
+    assert.equal(result.status, 0, `archive creation failed: ${result.stderr}`);
+    const bytes = readFileSync(archivePath);
+    return {
+      bytes,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      size: bytes.length,
+    };
+  } finally {
+    rmSync(source, { recursive: true, force: true });
+  }
+}
+
+function fakeArtifact(archive, overrides = {}) {
+  return {
+    id: "zig@0.13.0",
+    version: "0.13.0",
+    family: "zig",
+    platform: hostPlatform(),
+    arch: hostArch(),
+    url: "https://example.invalid/zig-test-archive",
+    sha256: archive.sha256,
+    size: archive.size,
+    format: process.platform === "win32" ? "zip" : "tar.xz",
+    ...overrides,
+  };
+}
+
+function fakeFetch(bytes, { status = 200 } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push([url, init]);
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      async arrayBuffer() {
+        return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+      },
+    };
+  };
+  return { calls, fetchImpl };
+}
+
+function makeEmptyProject() {
+  return mkdtempSync(join(tmpdir(), "astra-pinned-"));
 }
 
 function parsePolicy(c) {
@@ -531,6 +624,502 @@ test("nopm lock fails NS9102 for an unresolved versioned pin", () => {
     });
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}${result.stderr}`, /NS9102/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("nopm lock records a pre-seeded pinned cache toolchain", () => {
+  const project = makeProject("zig@0.13.0");
+  const cache = join(project, ".tools", "toolchain", "zig@0.13.0");
+  const binary = process.platform === "win32" ? "zig.exe" : "zig";
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(
+    join(cache, "toolchain.json"),
+    JSON.stringify({
+      id: "zig@0.13.0",
+      family: "zig",
+      version: "0.13.0",
+    }),
+    "utf8",
+  );
+  writeFileSync(join(cache, binary), "fake zig binary\n", "utf8");
+  try {
+    const result = runNode([nopmCli, "lock", project], {
+      env: { ...process.env, ASTRA_CC: "" },
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const lockfile = JSON.parse(
+      readFileSync(join(project, "core.lock.json"), "utf8"),
+    );
+    assert.equal(lockfile.toolchain?.rung, "cache");
+    assert.equal(lockfile.toolchain?.id, "zig@0.13.0");
+    assert.equal(lockfile.toolchain?.family, "zig");
+    assert.ok(String(lockfile.toolchain?.path).endsWith(binary));
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+const OFFICIAL_ARTIFACTS = [
+  [
+    "linux",
+    "x64",
+    "https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz",
+    "d45312e61ebcc48032b77bc4cf7fd6915c11fa16e4aad116b66c9468211230ea",
+    47082308,
+  ],
+  [
+    "linux",
+    "arm64",
+    "https://ziglang.org/download/0.13.0/zig-linux-aarch64-0.13.0.tar.xz",
+    "041ac42323837eb5624068acd8b00cd5777dac4cf91179e8dad7a7e90dd0c556",
+    43090688,
+  ],
+  [
+    "darwin",
+    "x64",
+    "https://ziglang.org/download/0.13.0/zig-macos-x86_64-0.13.0.tar.xz",
+    "8b06ed1091b2269b700b3b07f8e3be3b833000841bae5aa6a09b1a8b4773effd",
+    48857012,
+  ],
+  [
+    "darwin",
+    "arm64",
+    "https://ziglang.org/download/0.13.0/zig-macos-aarch64-0.13.0.tar.xz",
+    "46fae219656545dfaf4dce12fb4e8685cec5b51d721beee9389ab4194d43394c",
+    44892040,
+  ],
+  [
+    "win32",
+    "x64",
+    "https://ziglang.org/download/0.13.0/zig-windows-x86_64-0.13.0.zip",
+    "d859994725ef9402381e557c60bb57497215682e355204d754ee3df75ee3c158",
+    79163968,
+  ],
+  [
+    "win32",
+    "arm64",
+    "https://ziglang.org/download/0.13.0/zig-windows-aarch64-0.13.0.zip",
+    "95ff88427af7ba2b4f312f45d2377ce7a033e5e3c620c8caaa396a9aba20efda",
+    75119033,
+  ],
+];
+
+test("pinned artifacts are the official Zig 0.13.0 archives", () => {
+  assert.equal(toolchain.PINNED_ARTIFACTS.length, OFFICIAL_ARTIFACTS.length);
+  for (const [platform, arch, url, sha256, size] of OFFICIAL_ARTIFACTS) {
+    const artifact = toolchain.pinnedArtifact("zig@0.13.0", platform, arch);
+    assert.ok(artifact, `${platform}/${arch} must be pinned`);
+    assert.equal(artifact.url, url);
+    assert.equal(artifact.sha256, sha256);
+    assert.equal(artifact.size, size);
+    assert.equal(artifact.version, "0.13.0");
+    assert.equal(artifact.family, "zig");
+  }
+  assert.equal(toolchain.pinnedArtifact("zig@0.12.0", "linux", "x64"), null);
+  assert.equal(toolchain.pinnedArtifact("zig@0.13.0", "freebsd", "x64"), null);
+  assert.equal(toolchain.pinnedArtifact("zig@0.13.0", "linux", "ia32"), null);
+  assert.equal(toolchain.pinnedArtifact("zig@0.13.0", "linux", "x86_64")?.arch, "x64");
+  assert.equal(toolchain.pinnedArtifact("zig@0.13.0", "darwin", "aarch64")?.arch, "arm64");
+  assert.equal(
+    toolchain.pinnedArtifact("zig@0.13.0", "linux", "x64", []),
+    null,
+  );
+});
+
+test("zig resolves through zig cc and zig ar", () => {
+  const resolution = {
+    rung: "cache",
+    id: "zig@0.13.0",
+    family: "zig",
+    path: "/cache/zig",
+    version: "0.13.0",
+  };
+  assert.deepEqual(toolchain.compilerInvocation(resolution), {
+    bin: "/cache/zig",
+    args: ["cc"],
+  });
+  assert.deepEqual(toolchain.archiverInvocation(resolution), {
+    bin: "/cache/zig",
+    args: ["ar"],
+  });
+  const clang = {
+    rung: "path",
+    id: "clang",
+    family: "clang",
+    path: "clang",
+    version: "18",
+  };
+  assert.deepEqual(toolchain.compilerInvocation(clang), {
+    bin: "clang",
+    args: [],
+  });
+  assert.deepEqual(toolchain.archiverInvocation(clang), {
+    bin: "clang",
+    args: [],
+  });
+});
+
+test("pinned toolchain download verifies and installs into the project cache", async () => {
+  const project = makeEmptyProject();
+  const archive = makeToolchainArchive();
+  const artifact = fakeArtifact(archive);
+  const fetched = fakeFetch(archive.bytes);
+  try {
+    const resolution = await toolchain.installPinnedToolchain(
+      project,
+      "zig@0.13.0",
+      { artifacts: [artifact], fetchImpl: fetched.fetchImpl },
+    );
+    assert.equal(fetched.calls.length, 1);
+    assert.equal(fetched.calls[0][0], artifact.url);
+    assert.equal(resolution.rung, "cache");
+    assert.equal(resolution.id, "zig@0.13.0");
+    assert.equal(resolution.family, "zig");
+    assert.equal(resolution.version, "0.13.0");
+    const binaryName = process.platform === "win32" ? "zig.exe" : "zig";
+    assert.ok(resolution.path.endsWith(binaryName), resolution.path);
+    assert.ok(resolution.path.includes("zig@0.13.0"), resolution.path);
+    const cache = join(project, ".tools", "toolchain", "zig@0.13.0");
+    const marker = JSON.parse(
+      readFileSync(join(cache, "toolchain.json"), "utf8"),
+    );
+    assert.equal(marker.id, "zig@0.13.0");
+    assert.equal(marker.family, "zig");
+    assert.equal(marker.version, "0.13.0");
+    assert.equal(marker.sha256, archive.sha256);
+    assert.ok(existsSync(join(cache, binaryName)));
+    assert.deepEqual(
+      readdirSync(join(project, ".tools", "toolchain")),
+      ["zig@0.13.0"],
+    );
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("a second pinned resolve uses the verified cache without fetching", async () => {
+  const project = makeEmptyProject();
+  const archive = makeToolchainArchive();
+  const artifact = fakeArtifact(archive);
+  const first = fakeFetch(archive.bytes);
+  try {
+    const installed = await toolchain.installPinnedToolchain(
+      project,
+      "zig@0.13.0",
+      { artifacts: [artifact], fetchImpl: first.fetchImpl },
+    );
+    const unexpected = fakeFetch(Buffer.from("unused"));
+    const resolved = await toolchain.resolveToolchainAsync({
+      projectRoot: project,
+      policy: { request: "zig@0.13.0" },
+      env: {},
+      allowDownload: true,
+      artifacts: [artifact],
+      fetchImpl: unexpected.fetchImpl,
+    });
+    assert.equal(unexpected.calls.length, 0);
+    assert.equal(resolved.rung, "cache");
+    assert.equal(resolved.path, installed.path);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("a corrupt pinned cache is authoritative and is not overwritten", async () => {
+  const project = makeEmptyProject();
+  const archive = makeToolchainArchive();
+  const artifact = fakeArtifact(archive);
+  const fetched = fakeFetch(archive.bytes);
+  const cache = join(project, ".tools", "toolchain", "zig@0.13.0");
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(
+    join(cache, "toolchain.json"),
+    JSON.stringify({ id: "zig@0.13.0", family: "zig", version: "0.12.0" }),
+    "utf8",
+  );
+  writeFileSync(join(cache, process.platform === "win32" ? "zig.exe" : "zig"), "old", "utf8");
+  try {
+    const error = await expectCodeAsync(
+      toolchain.installPinnedToolchain(project, "zig@0.13.0", {
+        artifacts: [artifact],
+        fetchImpl: fetched.fetchImpl,
+      }),
+      "NS9102",
+    );
+    assert.match(String(error.message), /Manual install/);
+    assert.equal(fetched.calls.length, 0);
+    const marker = JSON.parse(
+      readFileSync(join(cache, "toolchain.json"), "utf8"),
+    );
+    assert.equal(marker.version, "0.12.0");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("pinned download rejects HTTP, transport, size, hash, and archive failures", async () => {
+  const project = makeEmptyProject();
+  const archive = makeToolchainArchive();
+  const artifact = fakeArtifact(archive);
+  const httpFailure = async () => ({
+    ok: false,
+    status: 403,
+    async arrayBuffer() {
+      return new ArrayBuffer(0);
+    },
+  });
+  try {
+    await expectCodeAsync(
+      toolchain.installPinnedToolchain(project, "zig@0.13.0", {
+        artifacts: [artifact],
+        fetchImpl: httpFailure,
+      }),
+      "NS9102",
+    );
+    await expectCodeAsync(
+      toolchain.installPinnedToolchain(project, "zig@0.13.0", {
+        artifacts: [artifact],
+        fetchImpl: async () => {
+          throw new Error("network down");
+        },
+      }),
+      "NS9102",
+    );
+    await expectCodeAsync(
+      toolchain.installPinnedToolchain(project, "zig@0.13.0", {
+        artifacts: [fakeArtifact(archive, { size: archive.size + 1 })],
+        fetchImpl: fakeFetch(archive.bytes).fetchImpl,
+      }),
+      "NS9102",
+    );
+    await expectCodeAsync(
+      toolchain.installPinnedToolchain(project, "zig@0.13.0", {
+        artifacts: [fakeArtifact(archive, { sha256: "0".repeat(64) })],
+        fetchImpl: fakeFetch(archive.bytes).fetchImpl,
+      }),
+      "NS9102",
+    );
+
+    const badBytes = Buffer.from("this is not a toolchain archive", "utf8");
+    const badArchive = {
+      bytes: badBytes,
+      sha256: createHash("sha256").update(badBytes).digest("hex"),
+      size: badBytes.length,
+    };
+    await expectCodeAsync(
+      toolchain.installPinnedToolchain(project, "zig@0.13.0", {
+        artifacts: [fakeArtifact(badArchive)],
+        fetchImpl: fakeFetch(badArchive.bytes).fetchImpl,
+      }),
+      "NS9102",
+    );
+
+    const missingBinary = makeToolchainArchive("not-zig");
+    await expectCodeAsync(
+      toolchain.installPinnedToolchain(project, "zig@0.13.0", {
+        artifacts: [fakeArtifact(missingBinary)],
+        fetchImpl: fakeFetch(missingBinary.bytes).fetchImpl,
+      }),
+      "NS9102",
+    );
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("an unknown pinned artifact fails before any network request", async () => {
+  const project = makeEmptyProject();
+  const fetched = fakeFetch(Buffer.from("unused"));
+  try {
+    const error = await expectCodeAsync(
+      toolchain.installPinnedToolchain(project, "zig@0.13.0", {
+        artifacts: [],
+        fetchImpl: fetched.fetchImpl,
+      }),
+      "NS9102",
+    );
+    assert.equal(fetched.calls.length, 0);
+    assert.match(String(error.message), /Manual install/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("resolveToolchainAsync downloads a missing versioned pin when allowed", async () => {
+  const project = makeEmptyProject();
+  const archive = makeToolchainArchive();
+  const artifact = fakeArtifact(archive);
+  const fetched = fakeFetch(archive.bytes);
+  try {
+    const resolution = await toolchain.resolveToolchainAsync({
+      projectRoot: project,
+      policy: { request: "zig@0.13.0" },
+      env: {},
+      allowDownload: true,
+      artifacts: [artifact],
+      fetchImpl: fetched.fetchImpl,
+    });
+    assert.equal(resolution.rung, "cache");
+    assert.equal(fetched.calls.length, 1);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("resolveToolchainAsync never downloads for auto or bare pins", async () => {
+  const project = makeEmptyProject();
+  const fetched = fakeFetch(Buffer.from("unused"));
+  try {
+    await expectCodeAsync(
+      toolchain.resolveToolchainAsync({
+        projectRoot: project,
+        policy: { request: "auto" },
+        env: {},
+        probe: fakeProbe(),
+        allowDownload: true,
+        fetchImpl: fetched.fetchImpl,
+      }),
+      "NS9102",
+    );
+    await expectCodeAsync(
+      toolchain.resolveToolchainAsync({
+        projectRoot: project,
+        policy: { request: "zig" },
+        env: {},
+        probe: fakeProbe(),
+        allowDownload: true,
+        fetchImpl: fetched.fetchImpl,
+      }),
+      "NS9102",
+    );
+    assert.equal(fetched.calls.length, 0);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("resolveToolchainAsync refuses a download under --no-download", async () => {
+  const project = makeEmptyProject();
+  const archive = makeToolchainArchive();
+  const artifact = fakeArtifact(archive);
+  const fetched = fakeFetch(archive.bytes);
+  try {
+    const error = await expectCodeAsync(
+      toolchain.resolveToolchainAsync({
+        projectRoot: project,
+        policy: { request: "zig@0.13.0" },
+        env: {},
+        probe: fakeProbe(),
+        allowDownload: false,
+        artifacts: [artifact],
+        fetchImpl: fetched.fetchImpl,
+      }),
+      "NS9102",
+    );
+    assert.match(String(error.message), /download disabled/);
+    assert.match(String(error.message), /Manual install/);
+    assert.equal(fetched.calls.length, 0);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("resolveToolchainAsync reports manual instructions for an invalid cache marker", async () => {
+  const project = makeEmptyProject();
+  const cache = join(project, ".tools", "toolchain", "zig@0.13.0");
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(
+    join(cache, "toolchain.json"),
+    JSON.stringify({ id: "zig@0.12.0", family: "zig", version: "0.12.0" }),
+    "utf8",
+  );
+  writeFileSync(join(cache, process.platform === "win32" ? "zig.exe" : "zig"), "old", "utf8");
+  const archive = makeToolchainArchive();
+  const artifact = fakeArtifact(archive);
+  const fetched = fakeFetch(archive.bytes);
+  try {
+    const error = await expectCodeAsync(
+      toolchain.resolveToolchainAsync({
+        projectRoot: project,
+        policy: { request: "zig@0.13.0" },
+        env: {},
+        allowDownload: true,
+        artifacts: [artifact],
+        fetchImpl: fetched.fetchImpl,
+      }),
+      "NS9102",
+    );
+    assert.match(String(error.message), /Manual install/);
+    assert.equal(fetched.calls.length, 0);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("doctorAsync downloads a missing pinned toolchain and reports it", async () => {
+  const project = makeEmptyProject();
+  const archive = makeToolchainArchive();
+  const artifact = fakeArtifact(archive);
+  const fetched = fakeFetch(archive.bytes);
+  try {
+    const result = await toolchain.doctorAsync(
+      project,
+      { request: "zig@0.13.0" },
+      {},
+      fakeProbe(),
+      {
+        allowDownload: true,
+        artifacts: [artifact],
+        fetchImpl: fetched.fetchImpl,
+      },
+    );
+    assert.equal(result.winner?.rung, "cache");
+    assert.equal(result.error, null);
+    assert.ok(
+      result.attempts.some((attempt) => attempt.detail.includes("downloaded")),
+    );
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra doctor --no-download refuses a missing pinned toolchain", () => {
+  const project = makeProject("zig@0.13.0");
+  try {
+    const result = runNode([cli, "doctor", project, "--no-download"], {
+      env: { ...process.env, ASTRA_CC: "" },
+    });
+    assert.notEqual(result.status, 0);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /NS9102/);
+    assert.match(output, /download disabled/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --no-download refuses a missing pinned toolchain", () => {
+  const project = makeProject("zig@0.13.0");
+  try {
+    const result = runNode(
+      [
+        cli,
+        "build",
+        project,
+        "--compiler",
+        astraCompiler,
+        "--target",
+        "native",
+        "--no-download",
+      ],
+      { env: { ...process.env, ASTRA_CC: "" } },
+    );
+    assert.notEqual(result.status, 0);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /NS9102/);
+    assert.match(output, /download disabled/);
   } finally {
     rmSync(project, { recursive: true, force: true });
   }

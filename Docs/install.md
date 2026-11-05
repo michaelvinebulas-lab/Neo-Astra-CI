@@ -113,17 +113,27 @@ Set the policy in the build manifest (`build.json` / `build.toml`):
 
 `auto` selects a hosted compiler from `PATH`. A bare family pin (`clang`,
 `gcc`) uses the cache when present and may fall back to `PATH`. A versioned pin
-(`zig@0.13.0`, `clang@18`) never trusts `PATH` and never downloads in v1; the
-cache must already contain:
+(`zig@0.13.0`, `clang@18`) never trusts `PATH`.
+
+A versioned pin with no cache marker downloads the official archive for the
+current OS and architecture, verifies its byte size and SHA-256, unpacks it with
+the system `tar`, and installs it under the project:
 
 ```text
-.tools/toolchain/<id>/toolchain.json   # {"id": "...", "family": "...", "version": "..."}
-.tools/toolchain/<id>/bin/<family>[.exe]
+.tools/toolchain/<id>/toolchain.json   # {"id": "...", "family": "...", "version": "...", ...}
+.tools/toolchain/<id>/<family>[.exe]   # also accepted at bin/<family>[.exe]
 ```
 
-A missing cache entry, a mismatched id, or a missing binary fails with
-`NS9101`/`NS9102`/`NS9103` and names the missing rung. Pinned downloads are a
-later feature; see `Docs/todo.md`.
+Zig `0.13.0` is pinned for Linux, macOS, and Windows on x64 and arm64. The
+downloaded `zig` drives `zig cc` for compilation and `zig ar` for archives.
+
+`astra build ... --no-download` and `astra doctor ... --no-download` disable the
+fetch. An invalid existing marker, a failed download, a size or hash mismatch, a
+bad archive, or a missing binary all fail with `NS9102` and print the exact URL,
+SHA-256, target directory, and manual-install steps. Nothing elevates and
+nothing writes outside the project. To install manually, download the archive,
+verify it, extract the binary into the cache directory, and write
+`toolchain.json` with the matching `id`, `family`, and `version`.
 
 ## Upgrade
 

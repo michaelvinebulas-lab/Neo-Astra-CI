@@ -35,17 +35,17 @@ Completed work is summarized at the bottom; the full history is in
       (manifest pin, local cache, PATH), honor `ASTRA_CC`, and record the
       resolved toolchain in the lockfile with a single writer.
 - [x] `astra doctor`: print the resolution ladder result (rung, path, version),
-      refuse unknown pins, and refuse a resolution that would need a download
-      when running frozen. No download path exists yet, so an unresolved pin
-      fails `NS9102`.
+      refuse unknown pins, and support `--no-download` for frozen resolution.
 - [x] Build uses the resolved compiler instead of ad-hoc detection; existing
       native tests still pass on the PATH rung.
-- [ ] Pinned toolchain download: per-OS/arch artifact table with SHA-256,
+- [x] Pinned toolchain download: per-OS/arch artifact table with SHA-256,
       download through the package transport, verify, unpack into the local
-      cache, and lockfile record.
-- [ ] Download failure behavior: checksum mismatch, truncated archive, and
-      offline all fail clearly, name the rung, give manual instructions, and
-      never elevate.
+      cache, and lockfile record. Zig 0.13.0 is pinned; `zig cc` compiles and
+      `zig ar` archives.
+- [x] Download failure behavior: checksum mismatch, truncated archive, bad
+      archive, missing binary, offline/HTTP failure, invalid cache, and
+      `--no-download` all fail clearly with manual instructions and never
+      elevate.
 
 ### Runtime
 
@@ -62,9 +62,17 @@ Completed work is summarized at the bottom; the full history is in
       never allocates into another task's single-threaded heap.
 - [x] Cooperative cancellation at collection safepoints and during blocked
       channel operations; cancellation of a finished or dead task is a no-op.
-- [ ] (1.0 blocker, D28; needs principal decision) Specify the `TaskError` shape
-      and the result of joining a cancelled or failed task; record it in the
-      standard-library spec, then implement it.
+- [x] (1.0 blocker, D28) `TaskError`: `join() -> T`; a child panic or
+      cancellation before a value raises a structured `TaskError`; a child
+      returning `Result<T, E>` keeps that value; `canceled()` reports accepted
+      cancellation without joining; a late cancel is not recorded; value wins
+      over cancellation and panic wins over cancellation at join.
+- [x] JavaScript backend completeness: map index read/write (a missing key
+      panics), `break`/`continue`/`return` through value-position expression
+      blocks, and `abort` through the host termination primitive, with success
+      and failure tests.
+- [x] Remove the non-shipped LSP and direct Wasm/LLVM scaffolds so no stub
+      package ships; V1 machine code stays on the C toolchain.
 - [x] Re-pin the concurrency conformance case for the new blocking semantics
       and run the threaded matrix on Linux, macOS, and Windows.
 - [x] (1.0 blocker, D28) Channel messages: deep-copy managed values for the
@@ -85,15 +93,21 @@ Completed work is summarized at the bottom; the full history is in
 - [x] Version check in the gate: all package versions and the workspace version
       must agree.
 - [x] Release script: lockstep bump, changelog section move, dry-run mode.
-- [ ] Packaging: build every package and the native compiler; verify the
-      bootstrap install from a clean machine.
+- [x] Packaging: build every package and the native compiler; verify the
+      bootstrap install from a clean machine. Every package `main`/`types`/`bin`
+      entry exists, the release compiler answers an `initialize` request with
+      `coreVersion: 1.0.0`, and Tier-1 starts from a clean checkout with
+      `npm install` + `npm run ci`.
 - [x] Install and upgrade documentation.
 - [x] Error-code audit: every emitted diagnostic has a normative row, the
       overloaded `NS8001`/`NS9008` uses are split, `NS7007` FFI validation is
       wired into `astra check`, and `scripts/check-error-codes.mjs` guards the
       table in CI.
-- [ ] (D28) Pre-1.0 gap audit: every stub, TODO, approximation, and deferred
+- [x] (D28) Pre-1.0 gap audit: every stub, TODO, approximation, and deferred
       item in the shipped surface is closed or recorded as a principal decision.
+      The audit table is in `Docs/state.md`; the LSP and Wasm/LLVM scaffolds were
+      removed, the JavaScript backend gaps are closed, and JS/TS FFI is recorded
+      as a stable unsupported target path.
 - [ ] Cut 1.0.0 across all packages, with release notes from the changelog,
       only when the 1.0 queue is empty and the D28 audit is clean.
 

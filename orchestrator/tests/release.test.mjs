@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -56,76 +57,96 @@ function fixture() {
   ]) {
     copy(file);
   }
+  // The real changelog may have an empty [Unreleased] right after a release.
+  // Seed one entry so the fixture always exercises the section move.
+  const changelogPath = join(project, "CHANGELOG.md");
+  const changelog = readFileSync(changelogPath, "utf8").replace(
+    "## [Unreleased]",
+    "## [Unreleased]\n\n### Added\n- Fixture entry.",
+  );
+  writeFileSync(changelogPath, changelog, "utf8");
   return project;
 }
 
 test("release script bumps every version and moves the changelog", () => {
   const project = fixture();
   try {
+    const current = JSON.parse(
+      readFileSync(join(project, "package.json"), "utf8"),
+    ).version;
+    const [major, minor] = current.split(".").map(Number);
+    const next = `${major}.${minor + 1}.0`;
+    const later = `${major}.${minor + 2}.0`;
+    const nextPattern = next.replace(/\./g, "\\.");
+
     // A version that does not move forward is refused before any write.
     run(
-      ["scripts/release.mjs", "0.1.0", `--root=${project}`, "--skip-cargo-lock"],
+      ["scripts/release.mjs", current, `--root=${project}`, "--skip-cargo-lock"],
       1,
     );
     assert.equal(
       JSON.parse(readFileSync(join(project, "package.json"), "utf8")).version,
-      "0.1.0",
+      current,
     );
 
     // Dry run plans but writes nothing.
     run(
-      ["scripts/release.mjs", "1.0.0", `--root=${project}`, "--dry-run"],
+      ["scripts/release.mjs", next, `--root=${project}`, "--dry-run"],
       0,
     );
     assert.equal(
       JSON.parse(readFileSync(join(project, "package.json"), "utf8")).version,
-      "0.1.0",
+      current,
     );
 
     run(
-      ["scripts/release.mjs", "1.0.0", `--root=${project}`, "--skip-cargo-lock"],
+      ["scripts/release.mjs", next, `--root=${project}`, "--skip-cargo-lock"],
       0,
     );
     run(["scripts/check-versions.mjs", `--root=${project}`], 0);
 
     assert.equal(
       JSON.parse(readFileSync(join(project, "package.json"), "utf8")).version,
-      "1.0.0",
+      next,
     );
     const cargo = readFileSync(join(project, "Cargo.toml"), "utf8");
     assert.match(
       cargo,
-      /^\[workspace\.package\][\s\S]*?^version\s*=\s*"1\.0\.0"/m,
+      new RegExp(`^\\[workspace\\.package\\][\\s\\S]*?^version\\s*=\\s*"${nextPattern}"`, "m"),
     );
     const lockfile = JSON.parse(
       readFileSync(join(project, "package-lock.json"), "utf8"),
     );
-    assert.equal(lockfile.version, "1.0.0");
-    assert.equal(lockfile.packages[""].version, "1.0.0");
+    assert.equal(lockfile.version, next);
+    assert.equal(lockfile.packages[""].version, next);
     assert.equal(
       lockfile.packages["orchestrator/packages/cli"].version,
-      "1.0.0",
+      next,
     );
     assert.match(
       readFileSync(join(project, "orchestrator/packages/cli/src/index.ts"), "utf8"),
-      /const VERSION = "1\.0\.0";/,
+      new RegExp(`const VERSION = "${nextPattern}";`),
     );
     assert.match(
       readFileSync(join(project, "orchestrator/packages/nopm/src/cli.ts"), "utf8"),
-      /const VERSION = "1\.0\.0";/,
+      new RegExp(`const VERSION = "${nextPattern}";`),
     );
 
     const changelog = readFileSync(join(project, "CHANGELOG.md"), "utf8");
     assert.ok(
-      changelog.indexOf("## [Unreleased]") < changelog.indexOf("## [1.0.0]"),
+      changelog.indexOf("## [Unreleased]") <
+        changelog.indexOf(`## [${next}]`),
     );
-    assert.match(changelog, /## \[1\.0\.0\] - \d{4}-\d{2}-\d{2}/);
+    assert.match(
+      changelog,
+      new RegExp(`## \\[${nextPattern}\\] - \\d{4}-\\d{2}-\\d{2}`),
+    );
     assert.ok(changelog.includes("### Added"));
 
     // The moved entries leave a fresh empty [Unreleased], so a second bump
     // without new entries is refused.
     run(
-      ["scripts/release.mjs", "1.1.0", `--root=${project}`, "--skip-cargo-lock"],
+      ["scripts/release.mjs", later, `--root=${project}`, "--skip-cargo-lock"],
       1,
     );
   } finally {
