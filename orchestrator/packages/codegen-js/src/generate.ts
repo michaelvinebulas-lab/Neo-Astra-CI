@@ -2766,10 +2766,7 @@ class JavaScriptGenerator {
           statements: readonly Stmt[];
         }>(kind, "Scoped");
         const inner = this.emitStatements(data.statements, "statement");
-        const comment = `// @${data.annotation.kind.toLowerCase()}:${data.annotation.value}`;
-        return inner.length === 0
-          ? `{\n${indent(comment)}\n}`
-          : `{\n${indent(`${comment}\n${inner}`)}\n}`;
+        return inner.length === 0 ? "{}" : `{\n${indent(inner)}\n}`;
       }
       default:
         this.unsupported(statement.span, "Unknown statement kind.");
