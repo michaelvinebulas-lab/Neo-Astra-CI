@@ -510,6 +510,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
 
       - name: Install workspace dependencies
         run: npm ci
@@ -550,6 +551,8 @@ jobs:
         shell: bash
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_FETCH_TIMEOUT: "1800000"
+          NPM_CONFIG_FETCH_RETRIES: "5"
         run: |
           if [ -z "\${NODE_AUTH_TOKEN:-}" ]; then
             echo "NPM_TOKEN is not set; skipping npm platform publish."
@@ -575,6 +578,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
 
       - name: Build npm meta package
         run: node scripts/package-npm.mjs --meta
@@ -583,6 +587,8 @@ jobs:
         shell: bash
         env:
           NODE_AUTH_TOKEN: \${{ secrets.NPM_TOKEN }}
+          NPM_CONFIG_FETCH_TIMEOUT: "1800000"
+          NPM_CONFIG_FETCH_RETRIES: "5"
         run: |
           if [ -z "\${NODE_AUTH_TOKEN:-}" ]; then
             echo "NPM_TOKEN is not set; skipping npm meta publish."
