@@ -7,6 +7,20 @@ service to run. Project caches stay inside the project.
 
 ## Packaged distribution
 
+Install the published toolchain with npm:
+
+```sh
+npm install --global neo-astra
+astra --version
+nopm --version
+nova version
+```
+
+The npm package is an installer. The `astra`, `nopm`, and `nova` commands it
+puts on `PATH` are the same native binaries as the GitHub archive; Node.js, npm,
+Cargo, or a source checkout are not needed after installation. Do not install
+with `--ignore-scripts`.
+
 From a checkout, build the package for the current host:
 
 ```sh

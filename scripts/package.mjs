@@ -76,13 +76,9 @@ if (!skipBuild) {
 rmSync(outRoot, { recursive: true, force: true });
 mkdirSync(binDir, { recursive: true });
 
-const bun = join(
-  root,
-  "node_modules",
-  "bun",
-  "bin",
-  platform === "win32" ? "bun.exe" : "bun",
-);
+// Bun's npm installer names the native runtime `bin/bun.exe` on every host,
+// including Linux and macOS. Using `bin/bun` works only on Windows installs.
+const bun = join(root, "node_modules", "bun", "bin", "bun.exe");
 if (!existsSync(bun)) {
   fail("Bun is not installed. Run npm install before packaging.");
 }

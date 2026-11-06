@@ -95,29 +95,36 @@ function copyTree(source, destination, relativePath = "") {
 
 function cleanFile(path, text) {
   const normalized = path.replaceAll("\\", "/");
+  let cleaned;
   if (normalized.endsWith(".rs")) {
     const stripped = stripRust(removeRustTests(text));
-    if (normalized === "crates/astra-codegen-c/src/runtime.rs") {
-      return stripCCommentsInRawStrings(stripped);
-    }
-    return stripped;
+    cleaned =
+      normalized === "crates/astra-codegen-c/src/runtime.rs"
+        ? stripCCommentsInRawStrings(stripped)
+        : stripped;
+  } else if (normalized.endsWith(".ts") || normalized.endsWith(".mjs") || normalized.endsWith(".js")) {
+    cleaned = stripJs(text);
+  } else if (normalized.endsWith(".toml")) {
+    cleaned = stripHashComments(text);
+  } else if (normalized.endsWith(".json")) {
+    cleaned = stripJs(text);
+  } else if (normalized.endsWith(".yml") || normalized.endsWith(".yaml")) {
+    cleaned = stripHashComments(text);
+  } else if (normalized === ".gitignore") {
+    cleaned = stripHashComments(text);
+  } else {
+    cleaned = text;
   }
-  if (normalized.endsWith(".ts") || normalized.endsWith(".mjs") || normalized.endsWith(".js")) {
-    return stripJs(text);
-  }
-  if (normalized.endsWith(".toml")) {
-    return stripHashComments(text);
-  }
-  if (normalized.endsWith(".json")) {
-    return stripJs(text);
-  }
-  if (normalized.endsWith(".yml") || normalized.endsWith(".yaml")) {
-    return stripHashComments(text);
-  }
-  if (normalized === ".gitignore") {
-    return stripHashComments(text);
-  }
-  return text;
+  return tidyText(cleaned);
+}
+
+function tidyText(text) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^\n+/, "")
+    .replace(/\n+$/, "\n");
 }
 
 function removeRustTests(text) {
@@ -491,7 +498,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-14, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: \${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -520,7 +527,9 @@ jobs:
             gh release create "$tag" --title "Neo Astra $tag" --notes "Neo Astra $tag" || true
           shopt -s nullglob
           files=(dist/*.zip dist/*.tar.gz dist/*.sha256)
-          gh release upload "$tag" "\${files[@]}" --clobber
+          for file in "\${files[@]}"; do
+            gh release upload "$tag" "$file" --clobber
+          done
 
       - name: Build npm platform package
         run: node scripts/package-npm.mjs --platform
