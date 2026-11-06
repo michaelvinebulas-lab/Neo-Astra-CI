@@ -70,6 +70,7 @@ if (!skipBuild) {
     "astra-compiler",
   ]);
   run("cargo", ["build", "--release", "-p", "astra-nova", "--bin", "nova"]);
+  run("cargo", ["build", "--release", "-p", "astra-nopm", "--bin", "nopm"]);
 }
 
 rmSync(outRoot, { recursive: true, force: true });
@@ -102,20 +103,13 @@ run(bun, [
   join(binDir, `astra${executable}`),
 ]);
 
-const nopmLauncher = join(binDir, "nopm");
-writeFileSync(
+const nopmLauncher = join(binDir, `nopm${executable}`);
+copyFileSync(
+  join(root, "target", "release", `nopm${executable}`),
   nopmLauncher,
-  '#!/bin/sh\nexec "$(dirname "$0")/astra" nopm "$@"\n',
-  "utf8",
 );
 if (platform !== "win32") {
   chmodSync(nopmLauncher, 0o755);
-} else {
-  writeFileSync(
-    join(binDir, "nopm.cmd"),
-    '@echo off\r\n"%~dp0astra.exe" nopm %*\r\n',
-    "utf8",
-  );
 }
 
 copyFileSync(
@@ -163,7 +157,7 @@ writeFileSync(
     `Neo Astra ${version} (${platform} ${arch})`,
     "",
     `  bin/astra${executable}           the astra CLI and \`astra nopm\``,
-    "  bin/nopm[.cmd]           the NoPM package manager launcher",
+    `  bin/nopm${executable}           the NoPM package manager launcher`,
     `  bin/astra-compiler${executable}  the native compiler`,
     `  bin/nova${executable}            the Nova development runtime`,
     "  typescript/              the pinned native TypeScript compiler",
@@ -196,12 +190,9 @@ const nopmSmoke = spawnSync(astraBinary, ["nopm", "--version"], {
 if (nopmSmoke.status !== 0 || !nopmSmoke.stdout.includes(version)) {
   fail(`packaged nopm did not answer --version: ${nopmSmoke.stderr || nopmSmoke.stdout}`);
 }
-const launcherSmoke =
-  platform === "win32"
-    ? spawnSync("cmd.exe", ["/c", join(binDir, "nopm.cmd"), "--version"], {
-        encoding: "utf8",
-      })
-    : spawnSync(nopmLauncher, ["--version"], { encoding: "utf8" });
+const launcherSmoke = spawnSync(nopmLauncher, ["--version"], {
+  encoding: "utf8",
+});
 if (launcherSmoke.status !== 0 || !launcherSmoke.stdout.includes(version)) {
   fail(
     `packaged nopm launcher did not answer --version: ${launcherSmoke.stderr || launcherSmoke.stdout}`,

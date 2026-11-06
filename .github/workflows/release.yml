@@ -3,6 +3,7 @@ name: Release packages
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,7 +28,7 @@ jobs:
           node-version: 22
 
       - name: Install workspace dependencies
-        run: npm install
+        run: npm ci
 
       - name: Build standalone package
         run: npm run package
@@ -39,5 +40,61 @@ jobs:
         run: |
           tag="${GITHUB_REF_NAME}"
           gh release view "$tag" >/dev/null 2>&1 || \
-            gh release create "$tag" --title "Neo Astra $tag" --notes "Neo Astra $tag"
-          gh release upload "$tag" dist/*.zip dist/*.tar.gz dist/*.sha256 --clobber
+            gh release create "$tag" --title "Neo Astra $tag" --notes "Neo Astra $tag" || true
+          shopt -s nullglob
+          files=(dist/*.zip dist/*.tar.gz dist/*.sha256)
+          gh release upload "$tag" "${files[@]}" --clobber
+
+      - name: Build npm platform package
+        run: node scripts/package-npm.mjs --platform
+
+      - name: Publish npm platform package
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is not set; skipping npm platform publish."
+            exit 0
+          fi
+          package_dir=dist/npm/platform
+          name=$(node -p "require('./$package_dir/package.json').name")
+          version=$(node -p "require('./$package_dir/package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published."
+            exit 0
+          fi
+          npm publish "$package_dir" --access public --tag latest
+
+  meta:
+    name: npm meta package
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build npm meta package
+        run: node scripts/package-npm.mjs --meta
+
+      - name: Publish npm meta package
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "NPM_TOKEN is not set; skipping npm meta publish."
+            exit 0
+          fi
+          package_dir=dist/npm/meta
+          name=$(node -p "require('./$package_dir/package.json').name")
+          version=$(node -p "require('./$package_dir/package.json').version")
+          if npm view "$name@$version" version >/dev/null 2>&1; then
+            echo "$name@$version is already published."
+            exit 0
+          fi
+          npm publish "$package_dir" --access public --tag latest

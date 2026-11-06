@@ -27,6 +27,7 @@ import {
   writeLockfileFile,
 } from "../packages/nopm/dist/index.js";
 import { resolveNpmPackage } from "../packages/nopm/dist/npm-adapter.js";
+import { commandName, defaultCommandRunner } from "../packages/nopm/dist/command.js";
 import { resolveGitPackage } from "../packages/nopm/dist/git-adapter.js";
 import { resolveCargoPackage } from "../packages/nopm/dist/cargo-adapter.js";
 import { resolvePyPiPackage } from "../packages/nopm/dist/pypi-adapter.js";
@@ -500,8 +501,13 @@ test("reports missing lockfiles", () => {
 
 // ─── adapters and CLI ───────────────────────────────────────────────────────
 
-test("npm adapter resolves an exact version and metadata", () => {
-  const runner = {
+test("default command runner executes npm on every host", () => {
+  const result = defaultCommandRunner.run(commandName("npm"), ["--version"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);
+});
+
+test("npm adapter resolves an exact version and metadata", () => {  const runner = {
     run(_command, args) {
       if (args[0] === "view" && args[2] === "version") {
         return { status: 0, stdout: '"19.1.0"\n', stderr: "" };

@@ -437,19 +437,21 @@ here.)
 
 - `npm run ci` is green locally, including the GC-stress leg.
 - From the unpacked package with no npm invocation: `astra --version` ->
-  `astra 1.0.0`; `astra nopm --version` and `nopm.cmd --version` ->
+  `astra 1.0.0`; `astra nopm --version` and `nopm.exe --version` ->
   `nopm 1.0.0`; `astra check` on the demo; `astra fmt --check` on a TOML
   manifest; `astra build --target native` and the produced executable prints
   `10`; `astra build --target ts` on a `@script:ts` project; `astra nopm lock`.
-- Windows sizes: `astra.exe` 189,926,400 bytes; `astra-compiler.exe`
-  2,316,800; `nova.exe` 2,146,304; `tsc.exe` 24,520,544; archive
-  88,259,266 bytes; SHA-256
-  `1a527f08d7c8b996b9edc5ededc35f98273ed8b34ce687be117079b36d334c2a`.
+- Windows sizes: `astra.exe` 189,922,304 bytes; `astra-compiler.exe`
+  2,321,920; `nova.exe` 2,148,864; `tsc.exe` 24,520,544; archive
+  88,439,938 bytes; SHA-256
+  `f70460049b008375fe2c48fcac6ccf2489a263974e6cb07513112d4f862cc8e7`.
   The package script itself smoke-tests `astra --version`, `astra nopm
   --version`, the `nopm` launcher, and a `@script:ts` build before archiving.
-- The `Release packages` workflow builds and uploads Linux, macOS, and Windows
-  assets from the tag. The release tag is moved to the packaging commit before
-  publishing (the earlier tag did not include packaging).
+- The public `Release packages` workflow builds and uploads Linux, macOS, and
+  Windows assets from a tag in the sanitized `C:\Projects\Neo Astra-source`
+  tree. That tree contains production source only: no comments, tests, docs,
+  examples, or stale scaffolds. The tag and npm publish are the remaining
+  release actions.
 
 ### Remaining
 

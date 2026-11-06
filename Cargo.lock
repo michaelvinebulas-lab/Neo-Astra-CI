@@ -40,6 +40,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "astra-nopm"
+version = "1.0.0"
+
+[[package]]
 name = "astra-nova"
 version = "1.0.0"
 dependencies = [

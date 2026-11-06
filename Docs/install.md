@@ -17,8 +17,7 @@ The archive and checksum are written under `dist/`; unpack it anywhere. The
 package contains:
 
 - `bin/astra` (`.exe` on Windows) - the `astra` CLI and `astra nopm`.
-- `bin/nopm` on POSIX, `bin/nopm.cmd` on Windows - a launcher for
-  `astra nopm`.
+- `bin/nopm` (`.exe` on Windows) - a launcher for `astra nopm`.
 - `bin/astra-compiler` - the native compiler.
 - `bin/nova` - the Nova development runtime.
 - `typescript/tsc` - the pinned native TypeScript compiler used by

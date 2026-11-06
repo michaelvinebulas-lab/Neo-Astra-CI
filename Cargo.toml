@@ -6,6 +6,7 @@ members = [
   "crates/astra-compiler-api",
   "crates/astra-wasm",
   "crates/astra-codegen-c",
+  "crates/astra-nopm",
 ]
 resolver = "3"
 

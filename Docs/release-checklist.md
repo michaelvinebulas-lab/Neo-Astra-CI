@@ -47,12 +47,14 @@ Use this checklist for every release. No step may be skipped.
 
 ## 5. Tag and release
 
-- Create an annotated tag `vX.Y.Z` on the release commit. If packaging changes
-  land after an earlier tag, move the tag before publishing; never publish two
-  trees under one version.
-- Push the tag.
-- Write release notes from the changelog section and publish the GitHub
-  release from the tag. Attach the host packages and `.sha256` files; the
-  `Release packages` workflow builds Linux, macOS, and Windows assets from the
-  tag. V1 has no npm publish: every package is private and source installs
-  build from the tag.
+- Create an annotated tag `vX.Y.Z` on the release commit in the sanitized
+  public source tree (`C:\Projects\Neo Astra-source`). If packaging or release
+  changes land after an earlier tag, move the tag before publishing; never
+  publish two trees under one version.
+- Push the public source branch and tag to `origin`.
+- The public `Release packages` workflow builds Linux, macOS, and Windows
+  assets from the tag, creates the GitHub release, and uploads the archives
+  plus `.sha256` files.
+- When `NPM_TOKEN` is configured, the workflow publishes the platform npm
+  packages first and the `neo-astra` meta package last. Without the secret it
+  reports the skip and leaves the GitHub assets as the install channel.

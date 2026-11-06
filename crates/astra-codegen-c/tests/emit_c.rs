@@ -1260,7 +1260,11 @@ pub fn main() -> i32 {
 "#;
     let out = compile_and_emit(src);
     assert!(
-        out.contains("/* Compiler-emitted GC shapes (GC-001 Phase A). */"),
+        !out.contains("/*") && !out.contains("//"),
+        "generated C must not contain comments:\n{out}"
+    );
+    assert!(
+        out.contains("static const NS_Gc_Shape"),
         "expected a shape table:\n{out}"
     );
     // ARRAY: the outer buffer of `[[10, 20], [30]]` holds `NS_Array` values.
@@ -3893,6 +3897,14 @@ fn project_header_exports_qualified_prototypes() {
     assert!(
         lib_header.contains("ns_lib_add(int32_t v_a, int32_t v_b)"),
         "header prototype not qualified:\n{lib_header}"
+    );
+    assert!(
+        lib_header.contains("#define NS_ASTRA_EXPORTED_PROTOTYPES 1"),
+        "header is missing the export marker:\n{lib_header}"
+    );
+    assert!(
+        !lib_header.contains("/*") && !lib_header.contains("//"),
+        "header must not contain comments:\n{lib_header}"
     );
 }
 

@@ -1086,7 +1086,7 @@ impl<'a> Emitter<'a> {
             })
             .collect();
         if !exported_fns.is_empty() {
-            h.push_str("/* Exported function prototypes. */\n");
+            h.push_str("#define NS_ASTRA_EXPORTED_PROTOTYPES 1\n");
             for f in exported_fns {
                 if f.type_parameters.is_empty() {
                     let (ret_c, _) = self.fn_return_c(f);

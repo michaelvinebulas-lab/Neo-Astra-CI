@@ -1,6 +1,6 @@
 //! Synchronous command execution used by source adapters.
 
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncOptions, type SpawnSyncReturns } from "node:child_process";
 
 export interface CommandResult {
   readonly status: number | null;
@@ -19,13 +19,22 @@ export interface CommandRunner {
 export const defaultCommandRunner: CommandRunner = {
   run(command, args, options = {}) {
     const stdio = options.stdio ?? "pipe";
-    const result = spawnSync(command, [...args], {
+    const spawnOptions: SpawnSyncOptions = {
       cwd: options.cwd,
       encoding: stdio === "pipe" ? "utf8" : undefined,
       stdio: stdio === "inherit" ? "inherit" : ["pipe", "pipe", "pipe"],
       maxBuffer: 32 * 1024 * 1024,
       windowsHide: true,
-    });
+    };
+    const result = (
+      process.platform === "win32" && /\.(cmd|bat)$/i.test(command)
+        ? spawnSync(
+            process.env.ComSpec ?? "cmd.exe",
+            ["/d", "/s", "/c", command, ...args],
+            spawnOptions,
+          )
+        : spawnSync(command, [...args], spawnOptions)
+    ) as SpawnSyncReturns<string | Buffer>;
     return {
       status: result.status,
       stdout: typeof result.stdout === "string" ? result.stdout : (result.stdout?.toString("utf8") ?? ""),

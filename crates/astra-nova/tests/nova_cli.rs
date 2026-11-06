@@ -780,8 +780,9 @@ fn run_uses_json_manifest_entry() {
     let dir = TempDir::new();
     dir.write(
         "core.json",
-        r#"{"package":{"name":"demo","version":"0.1.0"},"nova":{"entry":"src/main.ns"}}"#,
+        r#"{"package":{"name":"demo","version":"0.1.0"}}"#,
     );
+    dir.write("build.json", r#"{"nova":{"entry":"src/main.ns"}}"#);
     dir.write("src/main.ns", "fn main() { println(\"from json\") }\n");
 
     let out = run_nova_in(dir.path(), &["run"]);
@@ -794,8 +795,9 @@ fn run_uses_toml_manifest_entry() {
     let dir = TempDir::new();
     dir.write(
         "core.toml",
-        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[nova]\nentry = \"src/main.ns\"\n",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
     );
+    dir.write("build.toml", "[nova]\nentry = \"src/main.ns\"\n");
     dir.write("src/main.ns", "fn main() { println(\"from toml\") }\n");
 
     let out = run_nova_in(dir.path(), &["run"]);
@@ -806,7 +808,8 @@ fn run_uses_toml_manifest_entry() {
 #[test]
 fn watch_once_uses_manifest_entry() {
     let dir = TempDir::new();
-    dir.write("core.json", r#"{"nova":{"entry":"src/main.ns"}}"#);
+    dir.write("core.json", r#"{"package":{"name":"demo"}}"#);
+    dir.write("build.json", r#"{"nova":{"entry":"src/main.ns"}}"#);
     dir.write("src/main.ns", "fn main() { println(\"watched entry\") }\n");
 
     let out = run_nova_in(dir.path(), &["watch", "--once"]);
@@ -823,10 +826,10 @@ fn missing_manifest_is_ns9001() {
 }
 
 #[test]
-fn both_manifests_are_rejected() {
+fn both_core_manifests_are_rejected() {
     let dir = TempDir::new();
-    dir.write("core.json", r#"{"nova":{"entry":"main.ns"}}"#);
-    dir.write("core.toml", "[nova]\nentry = \"main.ns\"\n");
+    dir.write("core.json", r#"{"package":{"name":"demo"}}"#);
+    dir.write("core.toml", "[package]\nname = \"demo\"\n");
     dir.write("main.ns", "fn main() {}\n");
 
     let out = run_nova_in(dir.path(), &["run"]);
@@ -835,23 +838,34 @@ fn both_manifests_are_rejected() {
 }
 
 #[test]
-fn missing_nova_entry_is_ns9002() {
+fn both_build_manifests_are_rejected() {
     let dir = TempDir::new();
     dir.write("core.json", r#"{"package":{"name":"demo"}}"#);
+    dir.write("build.json", r#"{"nova":{"entry":"main.ns"}}"#);
+    dir.write("build.toml", "[nova]\nentry = \"main.ns\"\n");
+    dir.write("main.ns", "fn main() {}\n");
+
     let out = run_nova_in(dir.path(), &["run"]);
     assert_eq!(out.status, 1);
-    assert!(out.stderr.contains("NS9002"), "stderr: {}", out.stderr);
-    assert!(
-        out.stderr.contains("[nova].entry"),
-        "stderr: {}",
-        out.stderr
-    );
+    assert!(out.stderr.contains("NS9001"), "stderr: {}", out.stderr);
+}
+
+#[test]
+fn manifest_entry_defaults_to_src_main_ns() {
+    let dir = TempDir::new();
+    dir.write("core.json", r#"{"package":{"name":"demo"}}"#);
+    dir.write("src/main.ns", "fn main() { println(\"default entry\") }\n");
+
+    let out = run_nova_in(dir.path(), &["run"]);
+    assert_eq!(out.status, 0, "stderr: {}", out.stderr);
+    assert_eq!(out.stdout.trim(), "default entry");
 }
 
 #[test]
 fn manifest_entry_must_be_ns() {
     let dir = TempDir::new();
-    dir.write("core.json", r#"{"nova":{"entry":"main.txt"}}"#);
+    dir.write("core.json", r#"{"package":{"name":"demo"}}"#);
+    dir.write("build.json", r#"{"nova":{"entry":"main.txt"}}"#);
     dir.write("main.txt", "not source");
     let out = run_nova_in(dir.path(), &["run"]);
     assert_eq!(out.status, 1);
@@ -862,7 +876,8 @@ fn manifest_entry_must_be_ns() {
 #[test]
 fn manifest_entry_runs_in_json_mode() {
     let dir = TempDir::new();
-    dir.write("core.json", r#"{"nova":{"entry":"main.ns"}}"#);
+    dir.write("core.json", r#"{"package":{"name":"demo"}}"#);
+    dir.write("build.json", r#"{"nova":{"entry":"main.ns"}}"#);
     dir.write("main.ns", "fn main() { println(\"json entry\") }\n");
 
     let out = run_nova_in(dir.path(), &["run", "--json"]);

@@ -112,7 +112,7 @@ test("TypeScript backend emits typed function declarations and exports", () => {
     ir: compiled.ir,
   });
 
-  assert.match(generated.code, /\/\/ Target: TypeScript ESM\./);
+  assert.doesNotMatch(generated.code, /\/\/ Target: TypeScript ESM\./);
   assert.match(generated.code, /function add\(a: number, b: number\): number \{/);
   assert.match(generated.code, /function main\(\): number \{/);
   assert.match(generated.code, /export \{ add \};/);
@@ -640,7 +640,7 @@ test("astra build --target ts writes linked TypeScript that tsc accepts and Node
     assert.ok(existsSync(join(outDir, "package.json")));
 
     const mainCode = readFileSync(mainPath, "utf8");
-    assert.match(mainCode, /\/\/ Target: TypeScript ESM\./);
+    assert.doesNotMatch(mainCode, /\/\/ Target: TypeScript ESM\./);
     // Cross-module specifiers stay `.js` so nodenext resolution finds the
     // sibling `.ts` sources now and the tsc-emitted `.js` files at runtime.
     assert.match(mainCode, /from "\.\/barrel\.js";/);

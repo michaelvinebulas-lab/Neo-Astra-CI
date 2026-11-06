@@ -1941,5 +1941,5 @@ ASTRA_WRAP(astra_mul_i64, int64_t, uint64_t, *)
 /// not declared in [`HOST_SHIM`] itself. Prepending the header keeps one
 /// definition of every `NS_*` type instead of duplicating (and drifting) them.
 pub fn host_shim() -> String {
-    format!("{RUNTIME_HEADER}\n{HOST_SHIM}")
+    crate::cstrip::strip_comments(&format!("{RUNTIME_HEADER}\n{HOST_SHIM}"))
 }

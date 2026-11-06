@@ -32,3 +32,20 @@ npm run bootstrap -- --skip-system
 
 `--skip-system` skips Git, CMake, and Clang installation and only prepares
 JavaScript and Rust dependencies.
+
+## Packaging
+
+`npm run package` builds the standalone host package from the current tree:
+
+```sh
+npm run package
+npm run package -- --skip-build   # reuse existing dist/ and target/release
+```
+
+It builds the Rust compiler and Nova in release mode, compiles the `astra` CLI
+with Bun (`--minify --bytecode`, no source maps), writes the `nopm` launcher,
+copies the pinned native `typescript/tsc`, smoke-tests both commands and a
+`@script:ts` build, and writes the archive plus `.sha256` under `dist/`. The
+result needs no Node.js, npm, Cargo, or source checkout at runtime. The
+`Release packages` workflow runs the same command on Linux, macOS, and Windows
+for a tag and uploads the archives to the GitHub release.

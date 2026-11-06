@@ -955,7 +955,7 @@ function compilerFlavor(
 }
 
 /** Marker the C backend writes immediately before the exported prototypes. */
-const EXPORTS_MARKER = "/* Exported function prototypes. */";
+const EXPORTS_MARKER = "#define NS_ASTRA_EXPORTED_PROTOTYPES 1";
 
 /**
  * Extracts the exported function names declared in one generated header.

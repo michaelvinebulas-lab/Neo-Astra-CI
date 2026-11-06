@@ -17,6 +17,7 @@
 //! incorrect C. See `C-001` in `Docs/archive/Agent/todo.md` for the supported scope and
 //! boundaries.
 
+mod cstrip;
 mod emit;
 pub mod runtime;
 mod ty;
@@ -111,7 +112,21 @@ pub struct GeneratedC {
 /// first slice does not support, so unsupported programs fail before code
 /// generation instead of producing incorrect C.
 pub fn generate(module: &CModule) -> Result<GeneratedC, BackendError> {
-    emit::emit(module)
+    emit::emit(module).map(strip_generated)
+}
+
+fn strip_generated(mut generated: GeneratedC) -> GeneratedC {
+    generated.source = cstrip::strip_comments(&generated.source);
+    generated.header = generated
+        .header
+        .map(|header| cstrip::strip_comments(&header));
+    generated.host_shim = cstrip::strip_comments(&generated.host_shim);
+    generated.script_sources = generated
+        .script_sources
+        .into_iter()
+        .map(|(name, source)| (name, cstrip::strip_comments(&source)))
+        .collect();
+    generated
 }
 
 /// One entry in a project compile graph.
@@ -150,6 +165,7 @@ pub enum EmitKind {
 /// linked together.
 pub fn generate_project(entries: &[ProjectEntry]) -> Result<Vec<GeneratedC>, BackendError> {
     emit::emit_project(entries, true)
+        .map(|generated| generated.into_iter().map(strip_generated).collect())
 }
 
 /// Emits a multi-module project for the requested artifact kind.
@@ -161,4 +177,5 @@ pub fn generate_project_with_kind(
     kind: EmitKind,
 ) -> Result<Vec<GeneratedC>, BackendError> {
     emit::emit_project(entries, kind == EmitKind::Executable)
+        .map(|generated| generated.into_iter().map(strip_generated).collect())
 }

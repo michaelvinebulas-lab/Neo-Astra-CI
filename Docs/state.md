@@ -4,10 +4,10 @@ Single source of truth for project status, the queue, and decisions.
 Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
-**Last updated:** 2026-11-05
-**Phase:** `1.0.0` release: release-tooling fix landed; Tier-1 on the new CI is pending.
-**Master:** `694ff63` release commit plus the release-tooling fix at `HEAD` (clean `npm ci` verified).
-**Blockers:** none code-side. The first clean install on `luminousvalentine-cell/Neo-Astra-CI` exposed stale internal `@neo-astra/*` dependency ranges after the version bump; `scripts/release.mjs` now rewrites them, `scripts/check-versions.mjs` rejects drift, and the release test covers it. Tier-1 rerun is pending; the tag and publish wait for a green run.
+**Last updated:** 2026-11-06
+**Phase:** `1.0.0` release: public source and npm packaging prepared; local gate green; Tier-1 rerun pending.
+**Master:** `cadb04f` packaging commit plus the comment-free release line at `HEAD` (clean `npm ci` verified).
+**Blockers:** macOS Tier-1 run `42093449495` was cancelled before it started (no runner); npm publishing needs `NPM_TOKEN` and the public source/tag has not been pushed yet. All code-side release gaps are closed.
 
 ---
 
@@ -60,14 +60,23 @@ or frozen history (`Docs/archive/`).
 Open tasks, grouped by version, live in [`todo.md`](todo.md). The `1.0.0`
 release is cut: the release commit is tagged `v1.0.0`, the D28 pre-1.0 audit is
 clean, and `npm run package` produces the standalone host package. Tier-1 run
-`42084631705` is green on Ubuntu, Windows, and macOS; the packaging commit's
-run is recorded in the log. The first clean install on the new CI caught stale
-internal dependency ranges, now fixed in the release tooling. The local gate and
-`npm ci` are green.
+`42093449495` is green on Ubuntu and Windows for the packaging commit; the
+macOS job was cancelled before it started (no runner). The earlier release tree
+was green in run `42084631705`. The local gate, clean `npm ci`, Rust workspace
+tests, clippy, formatting, standalone packaging, and a fresh-directory install
+are green.
 
-**Release:** the tree is at `1.0.0`; the tag and GitHub release follow a green
-Tier-1 run for the release commit. All package versions move in lockstep: new
-mode/backend/language = minor, fixes = patch, incompatible rework = major.
+The public release line is generated from the sanitized source tree: no
+comments, tests, docs, or examples; generated C has no comments; JavaScript and
+TypeScript backend output no longer carries generator comments. `nova run`
+without a file now reads `[nova].entry` from the optional build manifest and
+defaults to `src/main.ns`; the Windows NoPM npm adapter executes `npm.cmd`
+through `cmd.exe` instead of failing with `EINVAL`. npm platform and meta
+packages are built and locally verified.
+
+**Release:** the tree is at `1.0.0`; pushing the sanitized public source and tag
+triggers the public release workflow. All package versions move in lockstep:
+new mode/backend/language = minor, fixes = patch, incompatible rework = major.
 
 ## Decisions (index)
 
@@ -126,7 +135,8 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
-| 2026-11-06 | Standalone 1.0 package: one Bun-compiled `astra` executable with `--minify --bytecode`, `astra nopm` dispatch, and a tiny `nopm` launcher; stripped Rust compiler/Nova binaries; pinned native `tsc` for `@script:ts`; no Node.js/npm/Cargo at runtime; `astra` discovers its compiler beside the executable and the release workflow packages all three hosts. | packaging commit; local `npm run ci` green; Tier-1 run pending; prior Tier-1 42084631705 green on `e40aee4` |
+| 2026-11-06 | Comment-free release line: C/C++ generated units, host shims, headers, and inline scripts are post-processed to remove comments while preserving literals; JavaScript/TypeScript generator banners and runtime comments are removed; the C header export marker is now a code macro a comment stripper cannot erase. The sanitized public source drops tests, docs, examples, and comments while remaining buildable. `nova run` reads the build manifest and defaults to `src/main.ns`; Windows NoPM runs `npm.cmd` through `cmd.exe`. | local `npm test` 238 green; `cargo test --workspace` green; clippy/fmt green; sanitized `npm ci`, `npm run build`, `cargo check`, and `npm run package` green; packaged `nova run`, native build, and `nopm add npm:is-number` green |
+| 2026-11-06 | Standalone 1.0 package: one Bun-compiled `astra` executable with `--minify --bytecode`, `astra nopm` dispatch, and a tiny `nopm` launcher; stripped Rust compiler/Nova binaries; pinned native `tsc` for `@script:ts`; no Node.js/npm/Cargo at runtime; `astra` discovers its compiler beside the executable and the release workflow packages all three hosts. | `cadb04f`; local `npm run ci` green; Tier-1 run 42093449495 green on Ubuntu/Windows, macOS job cancelled before start; prior release tree `e40aee4`, run 42084631705 |
 | 2026-11-05 | `1.0.0` release commit: `TaskError` at join, `task.canceled()`, pinned Zig 0.13.0 download/verify/unpack with `zig cc`/`zig ar`, JavaScript map index/expression-block control flow/`abort`, removal of the LSP and Wasm/LLVM scaffolds, and the D28 audit. | `694ff63`; local `npm run ci` green; Tier-1 run 42081733665 could not start (GitHub Actions billing/spending limit) |
 | 2026-11-05 | Release tooling: the lockstep bump rewrites internal `@neo-astra/*` dependency ranges, the version gate rejects drift, and the release test covers the change. The clean-install failure on the new CI is fixed; CI moved to `luminousvalentine-cell/Neo-Astra-CI`. | release fix commit; local `npm run ci` and clean `npm ci` green |
 | 2026-11-05 | Task handles are rejected at every copy boundary: channel elements, spawn captures, and spawn results report `NS4019`, and the emitter no longer treats `Task` as shared. The error-code audit freezes one meaning per code, splits the overloaded `NS8001`/`NS9008` paths, documents every emitted code, adds `NS7007` FFI mapping validation to `astra check`, and adds the `scripts/check-error-codes.mjs` release gate. `astra check` now runs the frontend and reports source diagnostics, not just manifest validation. | `e52ee12`, run 41996931100 |
