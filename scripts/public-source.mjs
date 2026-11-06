@@ -517,6 +517,18 @@ jobs:
       - name: Build standalone package
         run: npm run package
 
+      - name: Remove stale diagnostics
+        shell: bash
+        env:
+          GH_TOKEN: \${{ github.token }}
+        run: |
+          tag="\${GITHUB_REF_NAME}"
+          for name in \
+            package-ubuntu-latest.log package-macos-latest.log package-windows-latest.log \
+            release-ubuntu-latest.log release-macos-latest.log release-windows-latest.log; do
+            gh release delete-asset "$tag" "$name" --yes >/dev/null 2>&1 || true
+          done
+
       - name: Upload release assets
         shell: bash
         env:

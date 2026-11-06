@@ -1685,10 +1685,7 @@ class JavaScriptGenerator {
       return "";
     }
 
-    const lines: string[] = [
-      `// Generated declarations for ${this.ir.path}.`,
-      "",
-    ];
+    const lines: string[] = [];
     for (const imported of this.hir.imports) {
       const specifier = this.moduleSpecifier(imported.module, imported.span);
       if (specifier === undefined) {
@@ -4681,10 +4678,7 @@ function scriptDeclarations(
   block: ScriptBlockDecl,
   policy: "wrapping" | "safe-checked" | "arbitrary",
 ): string {
-  const lines = [
-    `// Generated declarations for ${block.name} (${block.language} script block).`,
-    "",
-  ];
+  const lines: string[] = [];
   for (const exported of block.exports) {
     const parameters = exported.parameters
       .map(
