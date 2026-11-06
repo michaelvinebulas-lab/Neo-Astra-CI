@@ -96,7 +96,11 @@ function copyTree(source, destination, relativePath = "") {
 function cleanFile(path, text) {
   const normalized = path.replaceAll("\\", "/");
   if (normalized.endsWith(".rs")) {
-    return stripRust(removeRustTests(text));
+    const stripped = stripRust(removeRustTests(text));
+    if (normalized === "crates/astra-codegen-c/src/runtime.rs") {
+      return stripCCommentsInRawStrings(stripped);
+    }
+    return stripped;
   }
   if (normalized.endsWith(".ts") || normalized.endsWith(".mjs") || normalized.endsWith(".js")) {
     return stripJs(text);
@@ -350,6 +354,84 @@ function stripRust(text) {
       }
       out += c;
       i++;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+function stripCCommentsInRawStrings(text) {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const raw = /^(?:b|c)?r(#*)"/.exec(text.slice(i));
+    if (raw !== null) {
+      const prefixLength = raw[0].length;
+      const terminator = `"${raw[1]}`;
+      const close = text.indexOf(terminator, i + prefixLength);
+      const end = close < 0 ? text.length : close;
+      out += text.slice(i, i + prefixLength);
+      out += stripCComments(text.slice(i + prefixLength, end));
+      if (close < 0) {
+        i = text.length;
+      } else {
+        out += terminator;
+        i = close + terminator.length;
+      }
+      continue;
+    }
+    out += text[i];
+    i++;
+  }
+  return out;
+}
+
+function stripCComments(text) {
+  let out = "";
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' || c === "'") {
+      const quote = c;
+      out += c;
+      i++;
+      while (i < text.length) {
+        const current = text[i];
+        out += current;
+        i++;
+        if (current === "\\" && i < text.length) {
+          out += text[i];
+          i++;
+          continue;
+        }
+        if (current === quote) {
+          break;
+        }
+      }
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      i += 2;
+      while (i < text.length && text[i] !== "\n") {
+        i++;
+      }
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      i += 2;
+      out += " ";
+      while (i < text.length) {
+        if (text[i] === "*" && text[i + 1] === "/") {
+          i += 2;
+          break;
+        }
+        if (text[i] === "\n") {
+          out += "\n";
+        }
+        i++;
+      }
       continue;
     }
     out += c;
