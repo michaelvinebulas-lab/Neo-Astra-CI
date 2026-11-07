@@ -5,9 +5,9 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-07
-**Phase:** `1.0.0` released: public source/tag, GitHub release assets, and npm packages published and install-verified.
-**Master:** private `master` at the release line; public `9d832e0` (`Neo Astra 1.0.0`, 102 files); tag `v1.0.0` targets `9d832e0`.
-**Blockers:** none for the V1 release. Rotate the npm publish token that was shared during setup.
+**Phase:** `1.0.0` released; the public docs are reworked and the native CLI/NoPM port is open.
+**Master:** private `master` on the native CLI work line; public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`.
+**Blockers:** rotate the npm publish token that was shared during setup; apply the GitHub rulesets in `Docs/github-trust.md`; finish the native CLI/NoPM slices before swapping the package.
 
 ---
 
@@ -58,19 +58,26 @@ or frozen history (`Docs/archive/`).
 ## Current work
 
 Open tasks, grouped by version, live in [`todo.md`](todo.md). The `1.0.0`
-release is cut. Public master and tag `v1.0.0` target `9d832e0`, a single root
-commit carrying the 102-file sanitized source tree. Release run `42278798124`
-is green on Ubuntu, macOS, and Windows and published the three platform npm
-packages plus the `neo-astra` meta package. A clean npm install was verified on
-Windows: `astra`, `nopm`, `nova`, and `neo-astra` all report `1.0.0`. The
-release page carries only the three archives and their `.sha256` files.
+release is cut. Public master is `17ceaf6`: the reworked launch docs plus the
+phase-1 native `astra-cli` and `astra-lsp` crates. Tag `v1.0.0` remains
+`9d832e0`; its release run `42278798124` is green on Ubuntu, macOS, and Windows
+and published the three platform npm packages plus the `neo-astra` meta
+package. A clean npm install was verified on Windows: `astra`, `nopm`, `nova`,
+and `neo-astra` all report `1.0.0`.
 
-The public release line is generated from the sanitized source tree: no
-comments, tests, docs, or examples; generated C has no comments; JavaScript and
-TypeScript backend output no longer carries generator comments. `nova run`
-without a file now reads `[nova].entry` from the optional build manifest and
-defaults to `src/main.ns`; the Windows NoPM npm adapter executes `npm.cmd`
-through `cmd.exe` instead of failing with `EINVAL`.
+The native CLI order is split into four reviewed slices: core project commands,
+C/native build and doctor, native NoPM, and the JS/TS bridge plus CI/packaging.
+The JavaScript and TypeScript code generators stay in their current TypeScript
+implementation; the native bridge may use Node only for JS/TS builds and
+manifest-driven JS/TS package work. Baseline `nopm` must run without Node/npm.
+
+The public source is generated from the sanitized tree: no comments, tests,
+docs, or examples; generated C has no comments; JavaScript and TypeScript
+backend output no longer carries generator comments. The generator now runs
+`cargo fmt` on the mirror, so the public tree is fmt-clean as well as
+clippy-clean. `nova run` without a file reads `[nova].entry` from the optional
+build manifest and defaults to `src/main.ns`; the Windows NoPM npm adapter
+executes `npm.cmd` through `cmd.exe` instead of failing with `EINVAL`.
 
 **Release:** the `1.0.0` source, tag, GitHub assets, and npm packages are
 published. Future sanitized public source/tag pushes trigger the public release
@@ -103,7 +110,7 @@ addendum), and the proposal files in `Docs/archive/Design/`.
 | D28 audit | 2026-11-05 | Build every gap in the shipped surface before 1.0. Do not reclassify the JavaScript backend gaps or the private scaffolds as post-1.0. The non-shipped LSP and direct Wasm/LLVM scaffold packages are removed; V1 machine code stays on the C toolchain. |
 | FFI scope | 2026-11-05 | V1 FFI ships on the native C target. The JS/TS backend rejects a foreign module with `NS8001` and names the native target; this is the recorded stable unsupported path, not a silent fallback. The spec's v0.1 slice defines FFI for later target backends (§1, §3.6, §11). |
 | CI remote | 2026-11-05 | Tier-1 runs on `luminousvalentine-cell/Neo-Astra-CI` (remote `ci`). The previous `voidgod79-debug/Neo-Astra-CI` mirror cannot start jobs because of its Actions billing/spending limit. `origin` remains the source mirror at `1199998` and is never pushed. |
-| Distribution | 2026-11-06 | 1.0 ships one host-native `astra` executable compiled by Bun with `--minify --bytecode` (no source maps or comments), plus a tiny `nopm` launcher for `astra nopm`. The package also carries the symbol-stripped Rust compiler and Nova binaries and the pinned native `tsc` needed by `@script:ts`. No Node.js, npm, Cargo, or checkout is needed at runtime; NoPM downloads npm, Cargo, or system package managers only when a project requests a source that needs them. A fully native Rust CLI is 1.1 work; the principal chose the Bun binary for 1.0. |
+| Distribution | 2026-11-06, revised 2026-11-07 | 1.0.0 shipped the Bun-compiled `astra` executable plus the `nopm` launcher and the stripped Rust compiler/Nova binaries. The next package swaps both commands to the native Rust `astra` and `nopm` built by Cargo. The JavaScript and TypeScript code generators remain TypeScript; the isolated bridge may use Node on demand for JS/TS builds and for NoPM manifests that explicitly need JS/TS package work. Baseline CLI and NoPM flows must not require Node or npm. |
 
 **Open questions:** the final shared-task-handle design. The safety rule is
 conservative: `NS4019` rejects a task handle in a value that would cross a task
@@ -134,6 +141,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-07 | Public docs reworked and published at `17ceaf6` with the phase-1 native `astra-cli`/`astra-lsp` crates. The mirror generator strips comments and private tests, runs `cargo fmt`, and is clippy-clean. Release workflow now has provenance/attestation permissions. Native CLI/NoPM work is split into four reviewed slices; JS/TS codegen stays TypeScript with an on-demand Node bridge. | public `17ceaf6`; sanitized `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`; local `npm test` 241 green; `cargo test -p astra-cli -p astra-lsp` 13 green; parity gate intentionally red at 9 tests |
 | 2026-11-07 | `neo-astra@1.0.0` released: public source/tag pushed, all three host archives published, and all four npm packages published. The sanitized tree contains 102 files, one root commit, and no source comments or generated declaration comments. | public `9d832e0`, tag `v1.0.0`; release run `42278798124`; `npm view` reports `1.0.0` for `neo-astra` and all platform packages; clean Windows npm install runs `astra`, `nopm`, and `nova` at `1.0.0` |
 | 2026-11-06 | Comment-free release line: C/C++ generated units, host shims, headers, and inline scripts are post-processed to remove comments while preserving literals; JavaScript/TypeScript generator banners and runtime comments are removed; the C header export marker is now a code macro a comment stripper cannot erase. The sanitized public source drops tests, docs, examples, and comments while remaining buildable. `nova run` reads the build manifest and defaults to `src/main.ns`; Windows NoPM runs `npm.cmd` through `cmd.exe`. | local `npm test` 238 green; `cargo test --workspace` green; clippy/fmt green; sanitized `npm ci`, `npm run build`, `cargo check`, and `npm run package` green; packaged `nova run`, native build, and `nopm add npm:is-number` green |
 | 2026-11-06 | Standalone 1.0 package: one Bun-compiled `astra` executable with `--minify --bytecode`, `astra nopm` dispatch, and a tiny `nopm` launcher; stripped Rust compiler/Nova binaries; pinned native `tsc` for `@script:ts`; no Node.js/npm/Cargo at runtime; `astra` discovers its compiler beside the executable and the release workflow packages all three hosts. | `cadb04f`; local `npm run ci` green; Tier-1 run 42093449495 green on Ubuntu/Windows, macOS job cancelled before start; prior release tree `e40aee4`, run 42084631705 |
