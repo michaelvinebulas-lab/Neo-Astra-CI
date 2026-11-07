@@ -18,6 +18,9 @@ and `public/CONTRIBUTING.md`.
   attestation. The 1.0.0 GitHub assets also return 404 from the attestation
   API. The provenance workflow landed after the tag, so do not claim
   provenance for 1.0.0; verify it on 1.0.1 and later.
+- The principal added the GitHub Actions trusted relationship for all four
+  packages on 2026-11-07. It is not validated until the first successful OIDC
+  publish, and npm expires unvalidated configurations after two days.
 - `public/` carries `LICENSE`, `NOTICE`, `CONTRIBUTORS.md`, `SECURITY.md`,
   `CONTRIBUTING.md`, `CODEOWNERS`, issue templates, and the support matrix.
 - The generated mirror is formatted, compiles, and is clippy-clean with
@@ -36,8 +39,6 @@ These require the repository owner's GitHub or npm credentials.
 - The npm token exposed during the 1.0.0 release still needs to be revoked.
   The release workflow no longer reads `NPM_TOKEN`; publish authentication is
   OIDC trusted publishing.
-- npm trusted publishing still needs to be configured for the platform
-  packages and the `neo-astra` meta package.
 - No public CI workflow exists yet. Do not require status checks in a ruleset
   until the CI workflow and check names exist.
 
