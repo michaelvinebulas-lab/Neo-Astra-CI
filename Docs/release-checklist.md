@@ -48,10 +48,14 @@ Use this checklist for every release. No step may be skipped.
 ## 5. Tag and release
 
 - Create an annotated tag `vX.Y.Z` on the release commit in the sanitized
-  public source tree (`C:\Projects\Neo Astra-source`). If packaging or release
-  changes land after an earlier tag, move the tag before publishing; never
-  publish two trees under one version.
+  public source tree (`C:\Projects\Neo Astra-source`).
 - Push the public source branch and tag to `origin`.
+- Once a tag is pushed or published, it is immutable. Never force-move a
+  published tag and never rewrite public history. Any change after the tag
+  becomes the next patch or minor release; do not publish two trees under one
+  version.
+- Protect `master`: require pull requests, owner review, and green checks; block
+  force pushes and branch deletion.
 - The public `Release packages` workflow builds Linux, macOS, and Windows
   assets from the tag, creates the GitHub release, and uploads the archives
   plus `.sha256` files.
