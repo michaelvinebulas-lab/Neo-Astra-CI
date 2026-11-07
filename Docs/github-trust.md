@@ -31,14 +31,21 @@ and `public/CONTRIBUTING.md`.
 
 These require the repository owner's GitHub or npm credentials.
 
-- No repository rulesets exist yet:
-  `GET /repos/luminousvalentine-cell/Neo-Astra/rulesets` returns `[]`.
+- Repository rulesets are active:
+  - `immutable-release-tags` blocks deletion and updates of `refs/tags/v*`.
+  - `protect-master` blocks deletion, force pushes, and non-linear history on
+    the default branch.
+  - The `pull_request` rule is not active yet because the source mirror still
+    pushes `source -> master`.
 - The v1.0.0 GitHub release reports `immutable: false`. Treat the tag as
   immutable by policy; do not modify its assets. Immutability for future
   releases must be enabled in repository settings, if available.
 - The npm token exposed during the 1.0.0 release still needs to be revoked.
   The release workflow no longer reads `NPM_TOKEN`; publish authentication is
   OIDC trusted publishing.
+- `master` does not yet require a pull request. The source mirror still pushes
+  `source -> master`; changing that flow is required before adding the
+  `pull_request` rule.
 - No public CI workflow exists yet. Do not require status checks in a ruleset
   until the CI workflow and check names exist.
 
@@ -91,7 +98,9 @@ until the trusted publisher is verified so a rollback is possible.
 
 ## Rulesets
 
-Create these after authenticating `gh` as an owner with ruleset permission:
+The tag ruleset and the non-PR branch rules were applied on 2026-11-07. The
+`pull_request` rule in the branch JSON below is the target after the mirror
+flow is changed.
 
 ```sh
 gh auth login
