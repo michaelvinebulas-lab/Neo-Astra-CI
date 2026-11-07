@@ -1,0 +1,1259 @@
+//! Editor features backed by the checked project snapshot.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use astra_core::ast::{self, ItemKind, StmtKind};
+use astra_core::hir;
+use astra_core::span::Span;
+use astra_core::types::{FunctionType, Type as CoreType};
+use serde_json::{Value, json};
+
+use crate::project::{ProjectModule, ProjectSnapshot};
+use crate::text::{
+    Word, identifier_at, identifier_before_dot, name_span, offset_to_position, position_to_offset,
+};
+
+#[derive(Debug, Clone)]
+struct Binding {
+    name: String,
+    span: Span,
+    scope: Span,
+    kind: &'static str,
+    ty: Option<String>,
+    value_ty: Option<CoreType>,
+}
+
+#[derive(Debug, Clone)]
+struct Resolved {
+    module_key: String,
+    name: String,
+    span: Span,
+    item: Option<hir::Item>,
+    export: Option<hir::Export>,
+}
+
+/// Returns a hover payload for the identifier at an LSP position.
+#[must_use]
+pub fn hover(snapshot: &ProjectSnapshot, uri: &str, line: u32, character: u32) -> Option<Value> {
+    let module = snapshot.module_for_uri(uri)?;
+    let offset = position_to_offset(&module.text, line, character);
+    let word = identifier_at(&module.text, offset)?;
+    let detail = hover_detail(snapshot, module, &word, offset)?;
+    let range = span_range_json(&module.text, word.span());
+    Some(json!({
+        "contents": {
+            "kind": "markdown",
+            "value": format!("```astra\n{detail}\n```")
+        },
+        "range": range
+    }))
+}
+
+/// Returns a definition location for the identifier at an LSP position.
+#[must_use]
+pub fn definition(
+    snapshot: &ProjectSnapshot,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> Option<Value> {
+    let module = snapshot.module_for_uri(uri)?;
+    let offset = position_to_offset(&module.text, line, character);
+    let word = identifier_at(&module.text, offset)?;
+    let target = definition_target(snapshot, module, &word, offset)?;
+    location_json(snapshot, &target)
+}
+
+/// Returns completion items for the current cursor position.
+#[must_use]
+pub fn completion(snapshot: &ProjectSnapshot, uri: &str, line: u32, character: u32) -> Vec<Value> {
+    let Some(module) = snapshot.module_for_uri(uri) else {
+        return Vec::new();
+    };
+    let offset = position_to_offset(&module.text, line, character);
+    let start = prefix_start(&module.text, offset);
+    let prefix = &module.text[start..offset];
+
+    let mut items: BTreeMap<String, Value> = BTreeMap::new();
+    if let Some(base) = identifier_before_dot(&module.text, start)
+        && let Some(detail_items) = member_candidates(snapshot, module, &base)
+    {
+        for (label, kind, detail) in detail_items {
+            insert_completion(&mut items, prefix, label, kind, detail);
+        }
+        return items.into_values().collect();
+    }
+
+    for keyword in KEYWORDS {
+        insert_completion(&mut items, prefix, (*keyword).to_owned(), 14, None);
+    }
+    for builtin in BUILTIN_TYPES {
+        insert_completion(&mut items, prefix, (*builtin).to_owned(), 25, None);
+    }
+
+    if let Some(ir) = &module.ir {
+        for symbol in ir
+            .hir
+            .symbols
+            .values
+            .values()
+            .chain(ir.hir.symbols.types.values())
+            .chain(ir.hir.symbols.namespaces.values())
+        {
+            insert_completion(
+                &mut items,
+                prefix,
+                symbol.name.clone(),
+                completion_kind(symbol.kind),
+                Some(format!("from {}", symbol_origin_text(&symbol.origin))),
+            );
+        }
+    }
+
+    for binding in collect_bindings(module) {
+        if binding.scope.contains(offset) && binding.name.starts_with(prefix) {
+            insert_completion(
+                &mut items,
+                prefix,
+                binding.name,
+                6,
+                binding.ty.or_else(|| Some(binding.kind.to_owned())),
+            );
+        }
+    }
+
+    items.into_values().collect()
+}
+
+fn hover_detail(
+    snapshot: &ProjectSnapshot,
+    module: &ProjectModule,
+    word: &Word,
+    offset: usize,
+) -> Option<String> {
+    if let Some(base) = identifier_before_dot(&module.text, word.start)
+        && let Some(detail) = member_detail(snapshot, module, &base, word.text.as_str(), offset)
+    {
+        return Some(detail);
+    }
+
+    if let Some(binding) = visible_binding(module, offset, &word.text) {
+        return Some(binding_detail(&binding));
+    }
+
+    if let Some(symbol) = module
+        .ir
+        .as_ref()
+        .and_then(|ir| ir.hir.symbols.get(&word.text))
+        && let Some(resolved) =
+            resolve_name(snapshot, &module.key, &word.text, &mut BTreeSet::new())
+    {
+        let _ = symbol;
+        return Some(resolved_detail(&resolved));
+    }
+
+    if let Some(ty) = annotation_at(module, word.span()) {
+        return Some(format!("{}: {ty}", word.text));
+    }
+
+    if BUILTIN_TYPES.contains(&word.text.as_str()) {
+        return Some(format!("builtin type {}", word.text));
+    }
+
+    None
+}
+
+fn binding_detail(binding: &Binding) -> String {
+    let ty = binding.ty.as_deref().unwrap_or("_");
+    match binding.kind {
+        "parameter" => format!("parameter {}: {ty}", binding.name),
+        "for" => format!("for {}: {ty}", binding.name),
+        "pattern" => format!("pattern {}: {ty}", binding.name),
+        _ => format!("let {}: {ty}", binding.name),
+    }
+}
+
+fn definition_target(
+    snapshot: &ProjectSnapshot,
+    module: &ProjectModule,
+    word: &Word,
+    offset: usize,
+) -> Option<Resolved> {
+    if let Some(base) = identifier_before_dot(&module.text, word.start)
+        && let Some(target) = member_target(snapshot, module, &base, word.text.as_str(), offset)
+    {
+        return Some(target);
+    }
+
+    if let Some(binding) = visible_binding(module, offset, &word.text) {
+        return Some(Resolved {
+            module_key: module.key.clone(),
+            name: binding.name.clone(),
+            span: binding.span,
+            item: None,
+            export: None,
+        });
+    }
+
+    if let Some(target) = resolve_name(snapshot, &module.key, &word.text, &mut BTreeSet::new()) {
+        return Some(target);
+    }
+
+    None
+}
+
+fn member_detail(
+    snapshot: &ProjectSnapshot,
+    module: &ProjectModule,
+    base: &Word,
+    member: &str,
+    offset: usize,
+) -> Option<String> {
+    if let Some(target_module) = namespace_target(module, base)
+        && let Some(resolved) = resolve_name(snapshot, target_module, member, &mut BTreeSet::new())
+    {
+        return Some(resolved_detail(&resolved));
+    }
+
+    if let Some((target_module, field)) = struct_field(snapshot, module, base, member, offset) {
+        let _ = target_module;
+        return Some(format!(
+            "field {}: {}",
+            field.name,
+            format_ast_type(&field.ty)
+        ));
+    }
+
+    annotation_at(
+        module,
+        Span::new(offset.saturating_sub(1), offset.saturating_add(1)),
+    )
+    .map(|ty| format!("{member}: {ty}"))
+}
+
+fn member_target(
+    snapshot: &ProjectSnapshot,
+    module: &ProjectModule,
+    base: &Word,
+    member: &str,
+    offset: usize,
+) -> Option<Resolved> {
+    if let Some(target_module) = namespace_target(module, base)
+        && let Some(resolved) = resolve_name(snapshot, target_module, member, &mut BTreeSet::new())
+    {
+        return Some(resolved);
+    }
+
+    if let Some((target_module, field)) = struct_field(snapshot, module, base, member, offset) {
+        return Some(Resolved {
+            module_key: target_module,
+            name: field.name.clone(),
+            span: field.span,
+            item: None,
+            export: None,
+        });
+    }
+    None
+}
+
+fn namespace_target<'a>(module: &'a ProjectModule, base: &Word) -> Option<&'a str> {
+    let symbol = module.ir.as_ref()?.hir.symbols.get(&base.text)?;
+    match &symbol.origin {
+        hir::SymbolOrigin::Imported { module, name } if name == "*" => Some(module),
+        _ => None,
+    }
+}
+
+fn struct_field(
+    snapshot: &ProjectSnapshot,
+    module: &ProjectModule,
+    base: &Word,
+    member: &str,
+    offset: usize,
+) -> Option<(String, ast::FieldDecl)> {
+    let ty = base_type(module, base, offset)?;
+    let CoreType::Named(name, _) = ty else {
+        return None;
+    };
+    let resolved = resolve_name(snapshot, &module.key, &name, &mut BTreeSet::new())?;
+    let item = resolved.item?;
+    let hir::Declaration::Struct(declaration) = item.declaration else {
+        return None;
+    };
+    let ast::StructFields::Named(fields) = declaration.fields else {
+        return None;
+    };
+    fields
+        .into_iter()
+        .find(|field| field.name == member)
+        .map(|field| (resolved.module_key, field))
+}
+
+fn base_type(module: &ProjectModule, base: &Word, offset: usize) -> Option<CoreType> {
+    if let Some(binding) = visible_binding(module, offset, &base.text) {
+        if let Some(ty) = &binding.value_ty {
+            return Some(ty.clone());
+        }
+        if let Some(ty) = annotation_at(module, base.span()) {
+            return Some(ty);
+        }
+    }
+    if let Some(item) = module
+        .ir
+        .as_ref()
+        .and_then(|ir| ir.hir.items.iter().find(|item| item.name == base.text))
+        && let Some(ty) = &item.ty
+    {
+        return Some(ty.clone());
+    }
+    annotation_at(module, base.span())
+}
+
+fn resolved_detail(resolved: &Resolved) -> String {
+    if let Some(item) = &resolved.item {
+        return item_detail(item);
+    }
+    if let Some(export) = &resolved.export {
+        return format!("export {}", export.name);
+    }
+    resolved.name.clone()
+}
+
+fn item_detail(item: &hir::Item) -> String {
+    match &item.declaration {
+        hir::Declaration::Function(function) => format_function(function),
+        hir::Declaration::Struct(declaration) => format_struct(declaration),
+        hir::Declaration::Enum(declaration) => format_enum(declaration),
+        hir::Declaration::Constant(declaration) => {
+            format!(
+                "const {}: {}",
+                declaration.name,
+                format_ast_type(&declaration.ty)
+            )
+        }
+        hir::Declaration::TypeAlias(declaration) => {
+            let parameters = format_type_parameters(&declaration.type_parameters);
+            format!(
+                "type {}{parameters} = {}",
+                declaration.name,
+                format_ast_type(&declaration.ty)
+            )
+        }
+        hir::Declaration::ForeignModule(declaration) => {
+            format!("foreign module {}", declaration.name)
+        }
+        hir::Declaration::ScriptBlock(declaration) => {
+            format!("script {}: {}", declaration.name, declaration.language)
+        }
+    }
+}
+
+fn format_function(function: &ast::FunctionDecl) -> String {
+    let parameters = function
+        .parameters
+        .iter()
+        .map(|parameter| format!("{}: {}", parameter.name, format_ast_type(&parameter.ty)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let parameters = format_type_parameters(&function.type_parameters) + "(" + &parameters + ")";
+    let return_type = function
+        .return_type
+        .as_ref()
+        .map_or_else(|| "()".to_owned(), format_ast_type);
+    let mut signature = format!("fn {}{parameters} -> {return_type}", function.name);
+    if !function.error_set.is_empty() {
+        signature.push_str(" ! ");
+        signature.push_str(
+            &function
+                .error_set
+                .iter()
+                .map(format_type_path)
+                .collect::<Vec<_>>()
+                .join(" | "),
+        );
+    }
+    signature
+}
+
+fn format_struct(declaration: &ast::StructDecl) -> String {
+    let parameters = format_type_parameters(&declaration.type_parameters);
+    let fields = match &declaration.fields {
+        ast::StructFields::Named(fields) => fields
+            .iter()
+            .map(|field| format!("{}: {}", field.name, format_ast_type(&field.ty)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        ast::StructFields::Tuple(fields) => fields
+            .iter()
+            .map(format_ast_type)
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    format!("struct {}{parameters} {{ {fields} }}", declaration.name)
+}
+
+fn format_enum(declaration: &ast::EnumDecl) -> String {
+    let variants = declaration
+        .variants
+        .iter()
+        .map(|variant| {
+            let fields = variant
+                .fields
+                .as_ref()
+                .map(|fields| {
+                    let values = fields
+                        .iter()
+                        .map(|field| {
+                            let name = field
+                                .name
+                                .as_ref()
+                                .map_or_else(String::new, |name| format!("{name}: "));
+                            format!("{name}{}", format_ast_type(&field.ty))
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    format!("({values})")
+                })
+                .unwrap_or_default();
+            format!("{}{fields}", variant.name)
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "enum {}{} {{ {variants} }}",
+        declaration.name,
+        format_type_parameters(&declaration.type_parameters)
+    )
+}
+
+fn format_type_parameters(parameters: &[String]) -> String {
+    if parameters.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", parameters.join(", "))
+    }
+}
+
+fn format_ast_type(ty: &ast::Type) -> String {
+    match &ty.kind {
+        ast::TypeKind::Path(path) => format_type_path(path),
+        ast::TypeKind::Array(element) => format!("[{}]", format_ast_type(element)),
+        ast::TypeKind::FixedArray(element, length) => {
+            format!("[{}; {length}]", format_ast_type(element))
+        }
+        ast::TypeKind::Map(key, value) => {
+            format!("{{{}: {}}}", format_ast_type(key), format_ast_type(value))
+        }
+        ast::TypeKind::Tuple(elements) => {
+            let values = elements
+                .iter()
+                .map(format_ast_type)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("({values})")
+        }
+        ast::TypeKind::Function {
+            parameters,
+            return_type,
+            error_set,
+        } => {
+            let parameters = parameters
+                .iter()
+                .map(format_ast_type)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let mut rendered = format!("fn({parameters})");
+            if let Some(return_type) = return_type {
+                rendered.push_str(" -> ");
+                rendered.push_str(&format_ast_type(return_type));
+            }
+            if !error_set.is_empty() {
+                rendered.push_str(" ! ");
+                rendered.push_str(
+                    &error_set
+                        .iter()
+                        .map(format_type_path)
+                        .collect::<Vec<_>>()
+                        .join(" | "),
+                );
+            }
+            rendered
+        }
+        ast::TypeKind::Unit => "()".to_owned(),
+    }
+}
+
+fn format_type_path(path: &ast::TypePath) -> String {
+    let mut rendered = path.segments.join(".");
+    if !path.arguments.is_empty() {
+        rendered.push('<');
+        rendered.push_str(
+            &path
+                .arguments
+                .iter()
+                .map(format_ast_type)
+                .collect::<Vec<_>>()
+                .join(", "),
+        );
+        rendered.push('>');
+    }
+    rendered
+}
+
+fn resolve_name(
+    snapshot: &ProjectSnapshot,
+    module_key: &str,
+    name: &str,
+    visited: &mut BTreeSet<(String, String)>,
+) -> Option<Resolved> {
+    if !visited.insert((module_key.to_owned(), name.to_owned())) {
+        return None;
+    }
+    let module = snapshot.module(module_key)?;
+    let ir = module.ir.as_ref();
+
+    if let Some(ir) = ir {
+        if let Some(symbol) = ir.hir.symbols.get(name) {
+            match &symbol.origin {
+                hir::SymbolOrigin::Local => {
+                    let item = ir.hir.items.iter().find(|item| item.name == name).cloned();
+                    return Some(Resolved {
+                        module_key: module_key.to_owned(),
+                        name: name.to_owned(),
+                        span: symbol.span,
+                        item,
+                        export: None,
+                    });
+                }
+                hir::SymbolOrigin::Imported {
+                    module,
+                    name: imported,
+                } => {
+                    if imported == "*" {
+                        return module_resolved(snapshot, module);
+                    }
+                    return resolve_name(snapshot, module, imported, visited);
+                }
+            }
+        }
+
+        if name == "default"
+            && let Some(export) = &ir.hir.exports.default
+        {
+            return resolve_export(snapshot, module_key, export, visited);
+        }
+        if let Some(export) = ir.hir.exports.get_named(name) {
+            return resolve_export(snapshot, module_key, export, visited);
+        }
+    }
+
+    if let Some(item) = ir
+        .and_then(|ir| ir.hir.items.iter().find(|item| item.name == name))
+        .cloned()
+    {
+        return Some(Resolved {
+            module_key: module_key.to_owned(),
+            name: name.to_owned(),
+            span: item.span,
+            item: Some(item),
+            export: None,
+        });
+    }
+
+    if let Some(ir) = ir {
+        for star in &ir.hir.exports.stars {
+            if let Some(resolved) = resolve_name(snapshot, &star.module, name, visited) {
+                return Some(resolved);
+            }
+        }
+    }
+    None
+}
+
+fn resolve_export(
+    snapshot: &ProjectSnapshot,
+    module_key: &str,
+    export: &hir::Export,
+    visited: &mut BTreeSet<(String, String)>,
+) -> Option<Resolved> {
+    match &export.target {
+        hir::ExportTarget::Local(local) => {
+            resolve_name(snapshot, module_key, local, visited).map(|mut resolved| {
+                resolved.export = Some(export.clone());
+                resolved
+            })
+        }
+        hir::ExportTarget::Reexport { module, name } => {
+            resolve_name(snapshot, module, name, visited)
+        }
+        hir::ExportTarget::Namespace { module } => module_resolved(snapshot, module),
+        hir::ExportTarget::Expression => Some(Resolved {
+            module_key: module_key.to_owned(),
+            name: export.name.clone(),
+            span: export.span,
+            item: None,
+            export: Some(export.clone()),
+        }),
+    }
+}
+
+fn module_resolved(snapshot: &ProjectSnapshot, module_key: &str) -> Option<Resolved> {
+    let module = snapshot.module(module_key)?;
+    Some(Resolved {
+        module_key: module_key.to_owned(),
+        name: module
+            .path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(module_key)
+            .to_owned(),
+        span: Span::empty(0),
+        item: None,
+        export: None,
+    })
+}
+
+fn symbol_origin_text(origin: &hir::SymbolOrigin) -> String {
+    match origin {
+        hir::SymbolOrigin::Local => "this module".to_owned(),
+        hir::SymbolOrigin::Imported { module, name } => format!("{module}#{name}"),
+    }
+}
+
+fn location_json(snapshot: &ProjectSnapshot, target: &Resolved) -> Option<Value> {
+    let module = snapshot.module(&target.module_key)?;
+    let span = name_span(&module.text, target.span, &target.name);
+    Some(json!({
+        "uri": module.uri,
+        "range": span_range_json(&module.text, span)
+    }))
+}
+
+fn span_range_json(text: &str, span: Span) -> Value {
+    let (start_line, start_character) = offset_to_position(text, span.start);
+    let (end_line, end_character) = offset_to_position(text, span.end);
+    json!({
+        "start": { "line": start_line, "character": start_character },
+        "end": { "line": end_line, "character": end_character }
+    })
+}
+
+fn insert_completion(
+    items: &mut BTreeMap<String, Value>,
+    prefix: &str,
+    label: String,
+    kind: u32,
+    detail: Option<String>,
+) {
+    if !label.starts_with(prefix) || items.contains_key(&label) {
+        return;
+    }
+    let mut item = json!({
+        "label": label,
+        "kind": kind,
+        "insertText": label
+    });
+    if let Some(detail) = detail
+        && let Some(object) = item.as_object_mut()
+    {
+        object.insert("detail".to_owned(), Value::String(detail));
+    }
+    items.insert(label, item);
+}
+
+fn completion_kind(kind: hir::SymbolKind) -> u32 {
+    match kind {
+        hir::SymbolKind::Function => 3,
+        hir::SymbolKind::Struct | hir::SymbolKind::Enum => 22,
+        hir::SymbolKind::Constant => 21,
+        hir::SymbolKind::TypeAlias | hir::SymbolKind::ImportedType => 25,
+        hir::SymbolKind::ForeignModule
+        | hir::SymbolKind::ScriptBlock
+        | hir::SymbolKind::ImportedNamespace => 9,
+        hir::SymbolKind::ImportedValue => 6,
+    }
+}
+
+fn prefix_start(text: &str, offset: usize) -> usize {
+    let offset = offset.min(text.len());
+    let mut start = offset;
+    while start > 0 {
+        let previous = text[..start].chars().next_back().expect("in-bounds char");
+        if !previous.is_alphanumeric() && previous != '_' {
+            break;
+        }
+        start -= previous.len_utf8();
+    }
+    start
+}
+
+fn visible_binding(module: &ProjectModule, offset: usize, name: &str) -> Option<Binding> {
+    collect_bindings(module)
+        .into_iter()
+        .filter(|binding| binding.name == name)
+        .filter(|binding| {
+            binding.span.contains(offset)
+                || (binding.scope.contains(offset) && binding.span.start <= offset)
+        })
+        .max_by_key(|binding| (binding.scope.start, binding.span.start))
+}
+
+fn annotation_at(module: &ProjectModule, span: Span) -> Option<CoreType> {
+    let ir = module.ir.as_ref()?;
+    if let Some(annotation) = ir
+        .annotations
+        .iter()
+        .find(|annotation| annotation.span == span)
+    {
+        return Some(annotation.ty.clone());
+    }
+    ir.annotations
+        .iter()
+        .filter(|annotation| {
+            annotation.span.contains(span.start)
+                || annotation.span.contains(span.end.saturating_sub(1))
+        })
+        .min_by_key(|annotation| annotation.span.len())
+        .map(|annotation| annotation.ty.clone())
+}
+
+fn collect_bindings(module: &ProjectModule) -> Vec<Binding> {
+    let Some(ir) = &module.ir else {
+        return Vec::new();
+    };
+    let mut bindings = Vec::new();
+    for item in &ir.ast.items {
+        collect_item_bindings(module, item, &mut bindings);
+    }
+    bindings
+}
+
+fn collect_item_bindings(module: &ProjectModule, item: &ast::Item, bindings: &mut Vec<Binding>) {
+    match &item.kind {
+        ItemKind::Function(function) => {
+            for parameter in &function.parameters {
+                push_binding(
+                    module,
+                    bindings,
+                    &parameter.name,
+                    parameter.span,
+                    function.body.span,
+                    "parameter",
+                    Some(&parameter.ty),
+                    None,
+                );
+            }
+            collect_block_bindings(module, &function.body, bindings);
+        }
+        ItemKind::Export(export) => {
+            if let ast::ExportForm::DefaultFunction(function) = &export.form {
+                for parameter in &function.parameters {
+                    push_binding(
+                        module,
+                        bindings,
+                        &parameter.name,
+                        parameter.span,
+                        function.body.span,
+                        "parameter",
+                        Some(&parameter.ty),
+                        None,
+                    );
+                }
+                collect_block_bindings(module, &function.body, bindings);
+            }
+        }
+        ItemKind::ScopedItems(scoped) => {
+            for item in &scoped.items {
+                collect_item_bindings(module, item, bindings);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_block_bindings(module: &ProjectModule, block: &ast::Block, bindings: &mut Vec<Binding>) {
+    for statement in &block.statements {
+        collect_statement_bindings(module, statement, block.span, bindings);
+    }
+}
+
+fn collect_statement_bindings(
+    module: &ProjectModule,
+    statement: &ast::Stmt,
+    scope: Span,
+    bindings: &mut Vec<Binding>,
+) {
+    match &statement.kind {
+        StmtKind::Let {
+            name, ty, value, ..
+        } => {
+            push_binding(
+                module,
+                bindings,
+                name,
+                statement.span,
+                scope,
+                "let",
+                ty.as_ref(),
+                annotation_at(module, value.span),
+            );
+            collect_expr_bindings(module, value, bindings);
+        }
+        StmtKind::For {
+            binding,
+            iterable,
+            body,
+        } => {
+            let element = annotation_at(module, iterable.span).and_then(|ty| match ty {
+                CoreType::Array(inner) | CoreType::Slice(inner) => Some(*inner),
+                CoreType::FixedArray(inner, _) => Some(*inner),
+                _ => None,
+            });
+            push_binding(
+                module,
+                bindings,
+                binding,
+                statement.span,
+                body.span,
+                "for",
+                None,
+                element,
+            );
+            collect_expr_bindings(module, iterable, bindings);
+            collect_block_bindings(module, body, bindings);
+        }
+        StmtKind::While { condition, body } => {
+            collect_expr_bindings(module, condition, bindings);
+            collect_block_bindings(module, body, bindings);
+        }
+        StmtKind::Return { value: Some(value) } | StmtKind::Expr(value) => {
+            collect_expr_bindings(module, value, bindings);
+        }
+        StmtKind::Defer(statement) => {
+            collect_statement_bindings(module, statement, scope, bindings);
+        }
+        StmtKind::Scoped(scoped) => {
+            for statement in &scoped.statements {
+                collect_statement_bindings(module, statement, scoped.span, bindings);
+            }
+        }
+        StmtKind::Return { value: None } | StmtKind::Break | StmtKind::Continue => {}
+    }
+}
+
+fn collect_expr_bindings(module: &ProjectModule, expr: &ast::Expr, bindings: &mut Vec<Binding>) {
+    match &expr.kind {
+        ast::ExprKind::Block(block) => collect_block_bindings(module, block, bindings),
+        ast::ExprKind::If {
+            condition,
+            then_branch,
+            else_branch,
+        } => {
+            collect_expr_bindings(module, condition, bindings);
+            collect_block_bindings(module, then_branch, bindings);
+            if let Some(branch) = else_branch {
+                match branch {
+                    ast::ElseBranch::Block(block) => {
+                        collect_block_bindings(module, block, bindings)
+                    }
+                    ast::ElseBranch::If(expr) => collect_expr_bindings(module, expr, bindings),
+                }
+            }
+        }
+        ast::ExprKind::Match { value, arms } => {
+            collect_expr_bindings(module, value, bindings);
+            for arm in arms {
+                let body_span = match &arm.body {
+                    ast::MatchArmBody::Expr(expr) => expr.span,
+                    ast::MatchArmBody::Block(block) => block.span,
+                };
+                collect_pattern_bindings(module, &arm.pattern, body_span, bindings);
+                match &arm.body {
+                    ast::MatchArmBody::Expr(expr) => collect_expr_bindings(module, expr, bindings),
+                    ast::MatchArmBody::Block(block) => {
+                        collect_block_bindings(module, block, bindings);
+                    }
+                }
+            }
+        }
+        ast::ExprKind::Spawn { body } => collect_block_bindings(module, body, bindings),
+        ast::ExprKind::Unary { operand, .. }
+        | ast::ExprKind::Propagate(operand)
+        | ast::ExprKind::Member {
+            target: operand, ..
+        }
+        | ast::ExprKind::TypeArguments {
+            target: operand, ..
+        } => {
+            collect_expr_bindings(module, operand, bindings);
+        }
+        ast::ExprKind::Binary { left, right, .. }
+        | ast::ExprKind::Assign {
+            target: left,
+            value: right,
+        } => {
+            collect_expr_bindings(module, left, bindings);
+            collect_expr_bindings(module, right, bindings);
+        }
+        ast::ExprKind::Call { callee, arguments } => {
+            collect_expr_bindings(module, callee, bindings);
+            for argument in arguments {
+                collect_expr_bindings(module, argument, bindings);
+            }
+        }
+        ast::ExprKind::Index { target, index } => {
+            collect_expr_bindings(module, target, bindings);
+            collect_expr_bindings(module, index, bindings);
+        }
+        ast::ExprKind::Array(values) | ast::ExprKind::Tuple(values) => {
+            for value in values {
+                collect_expr_bindings(module, value, bindings);
+            }
+        }
+        ast::ExprKind::Map(entries) => {
+            for entry in entries {
+                collect_expr_bindings(module, &entry.key, bindings);
+                collect_expr_bindings(module, &entry.value, bindings);
+            }
+        }
+        ast::ExprKind::StructInit { fields, .. } => {
+            for field in fields {
+                collect_expr_bindings(module, &field.value, bindings);
+            }
+        }
+        ast::ExprKind::Fail { arguments, .. } => match arguments {
+            ast::FailArguments::Tuple(values) => {
+                for value in values {
+                    collect_expr_bindings(module, value, bindings);
+                }
+            }
+            ast::FailArguments::Struct(fields) => {
+                for field in fields {
+                    collect_expr_bindings(module, &field.value, bindings);
+                }
+            }
+        },
+        ast::ExprKind::Panic { message } | ast::ExprKind::Abort { message } => {
+            collect_expr_bindings(module, message, bindings);
+        }
+        ast::ExprKind::Literal(_) | ast::ExprKind::Identifier(_) => {}
+    }
+}
+
+fn collect_pattern_bindings(
+    module: &ProjectModule,
+    pattern: &ast::Pattern,
+    scope: Span,
+    bindings: &mut Vec<Binding>,
+) {
+    match &pattern.kind {
+        ast::PatternKind::Identifier(name) => {
+            push_binding(
+                module,
+                bindings,
+                name,
+                pattern.span,
+                scope,
+                "pattern",
+                None,
+                None,
+            );
+        }
+        ast::PatternKind::Tuple(patterns)
+        | ast::PatternKind::Constructor {
+            arguments: patterns,
+            ..
+        } => {
+            for pattern in patterns {
+                collect_pattern_bindings(module, pattern, scope, bindings);
+            }
+        }
+        ast::PatternKind::Variant { arguments, .. } => {
+            if let Some(patterns) = arguments {
+                for pattern in patterns {
+                    collect_pattern_bindings(module, pattern, scope, bindings);
+                }
+            }
+        }
+        ast::PatternKind::Wildcard | ast::PatternKind::Literal(_) => {}
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_binding(
+    module: &ProjectModule,
+    bindings: &mut Vec<Binding>,
+    name: &str,
+    declaration_span: Span,
+    scope: Span,
+    kind: &'static str,
+    explicit_type: Option<&ast::Type>,
+    inferred_type: Option<CoreType>,
+) {
+    let span = name_span(&module.text, declaration_span, name);
+    let value_ty = explicit_type
+        .and_then(ast_type_to_core)
+        .or_else(|| inferred_type.clone());
+    let ty = explicit_type
+        .map(format_ast_type)
+        .or_else(|| inferred_type.map(|ty| ty.to_string()));
+    bindings.push(Binding {
+        name: name.to_owned(),
+        span,
+        scope,
+        kind,
+        ty,
+        value_ty,
+    });
+}
+
+fn ast_type_to_core(ty: &ast::Type) -> Option<CoreType> {
+    match &ty.kind {
+        ast::TypeKind::Path(path) if path.arguments.is_empty() => match path.segments.as_slice() {
+            [name] => Some(match name.as_str() {
+                "i8" => CoreType::I8,
+                "i16" => CoreType::I16,
+                "i32" => CoreType::I32,
+                "i64" => CoreType::I64,
+                "u8" => CoreType::U8,
+                "u16" => CoreType::U16,
+                "u32" => CoreType::U32,
+                "u64" => CoreType::U64,
+                "usize" => CoreType::Usize,
+                "isize" => CoreType::Isize,
+                "f32" => CoreType::F32,
+                "f64" => CoreType::F64,
+                "bool" => CoreType::Bool,
+                "str" => CoreType::Str,
+                "bytes" => CoreType::Bytes,
+                "Never" => CoreType::Never,
+                other => CoreType::Named(other.to_owned(), Vec::new()),
+            }),
+            _ => Some(CoreType::Named(path.segments.join("."), Vec::new())),
+        },
+        ast::TypeKind::Array(element) => {
+            Some(CoreType::Array(Box::new(ast_type_to_core(element)?)))
+        }
+        ast::TypeKind::FixedArray(element, length) => Some(CoreType::FixedArray(
+            Box::new(ast_type_to_core(element)?),
+            length.parse().ok()?,
+        )),
+        ast::TypeKind::Map(key, value) => Some(CoreType::Map(
+            Box::new(ast_type_to_core(key)?),
+            Box::new(ast_type_to_core(value)?),
+        )),
+        ast::TypeKind::Tuple(elements) => Some(CoreType::Tuple(
+            elements.iter().filter_map(ast_type_to_core).collect(),
+        )),
+        ast::TypeKind::Function {
+            parameters,
+            return_type,
+            error_set,
+        } => Some(CoreType::Function(FunctionType {
+            type_parameters: Vec::new(),
+            parameters: parameters.iter().filter_map(ast_type_to_core).collect(),
+            return_type: Box::new(
+                return_type
+                    .as_deref()
+                    .and_then(ast_type_to_core)
+                    .unwrap_or(CoreType::Unit),
+            ),
+            errors: error_set
+                .iter()
+                .map(|path| CoreType::Named(path.segments.join("."), Vec::new()))
+                .collect(),
+        })),
+        ast::TypeKind::Unit => Some(CoreType::Unit),
+        ast::TypeKind::Path(_) => None,
+    }
+}
+
+fn member_candidates(
+    snapshot: &ProjectSnapshot,
+    module: &ProjectModule,
+    base: &Word,
+) -> Option<Vec<(String, u32, Option<String>)>> {
+    let mut items = Vec::new();
+    if let Some(target_module) = namespace_target(module, base) {
+        let target = snapshot.module(target_module)?;
+        if let Some(ir) = &target.ir {
+            for symbol in ir
+                .hir
+                .symbols
+                .values
+                .values()
+                .chain(ir.hir.symbols.types.values())
+                .chain(ir.hir.symbols.namespaces.values())
+            {
+                items.push((
+                    symbol.name.clone(),
+                    completion_kind(symbol.kind),
+                    Some(symbol_origin_text(&symbol.origin)),
+                ));
+            }
+        }
+        return Some(items);
+    }
+
+    if let Some(ty) = base_type(module, base, base.start) {
+        let CoreType::Named(name, _) = ty else {
+            return Some(items);
+        };
+        let resolved = resolve_name(snapshot, &module.key, &name, &mut BTreeSet::new())?;
+        let Some(item) = resolved.item else {
+            return Some(items);
+        };
+        let hir::Declaration::Struct(declaration) = item.declaration else {
+            return Some(items);
+        };
+        if let ast::StructFields::Named(fields) = declaration.fields {
+            for field in fields {
+                items.push((field.name, 5, Some(format_ast_type(&field.ty))));
+            }
+        }
+        return Some(items);
+    }
+    None
+}
+
+const KEYWORDS: &[&str] = &[
+    "break", "const", "continue", "defer", "else", "enum", "export", "false", "fn", "for", "if",
+    "import", "let", "match", "module", "mut", "panic", "pub", "return", "spawn", "struct", "true",
+    "type", "while",
+];
+
+const BUILTIN_TYPES: &[&str] = &[
+    "Never", "Option", "Result", "bool", "bytes", "f32", "f64", "i8", "i16", "i32", "i64", "isize",
+    "str", "u8", "u16", "u32", "u64", "usize",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::project::ProjectSnapshot;
+    use std::collections::HashMap;
+
+    fn project() -> ProjectSnapshot {
+        let root = std::env::temp_dir().join(format!(
+            "astra-lsp-features-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos())
+        ));
+        std::fs::create_dir_all(root.join("src")).expect("create project");
+        std::fs::write(
+            root.join("src/util.ns"),
+            "pub struct User { name: str, age: i32 }\npub fn value() -> i32 { return 1 }\npub fn name(user: User) -> str { return user.name }\n",
+        )
+        .expect("write util");
+        std::fs::write(
+            root.join("src/main.ns"),
+            "import { value, User } from \"./util.ns\"\nimport * as util from \"./util.ns\"\npub fn main() -> i32 { let count = value(); let other = util.value(); return count }\n",
+        )
+        .expect("write main");
+        ProjectSnapshot::load(&root, &HashMap::new())
+    }
+
+    fn position(text: &str, needle: &str, within: usize) -> (u32, u32) {
+        let offset = text.find(needle).expect("needle") + within;
+        offset_to_position(text, offset)
+    }
+
+    #[test]
+    fn hover_reports_a_function_signature() {
+        let snapshot = project();
+        let module = snapshot.module("src/util.ns").expect("module");
+        let (line, character) = position(&module.text, "fn value", "fn ".len() + 2);
+        let hover = hover(&snapshot, &module.uri, line, character).expect("hover");
+        let value = hover["contents"]["value"].as_str().expect("markdown");
+        assert!(value.contains("fn value()"), "{value}");
+    }
+
+    #[test]
+    fn definition_finds_a_local_binding() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "return count", "return ".len() + 1);
+        let definition = definition(&snapshot, &module.uri, line, character).expect("definition");
+        assert!(definition["uri"].as_str().is_some());
+    }
+
+    #[test]
+    fn definition_follows_named_imports() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "value()", 1);
+        let definition = definition(&snapshot, &module.uri, line, character).expect("definition");
+        let target = definition["uri"].as_str().expect("uri");
+        assert!(target.ends_with("util.ns"), "{target}");
+    }
+
+    #[test]
+    fn completion_lists_imports_and_keywords() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "return count", "return ".len());
+        let items = completion(&snapshot, &module.uri, line, character);
+        let labels: Vec<_> = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect();
+        assert!(labels.contains(&"value"));
+        assert!(labels.contains(&"fn"));
+    }
+
+    #[test]
+    fn hover_reports_a_local_type() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "return count", "return ".len() + 1);
+        let hover = hover(&snapshot, &module.uri, line, character).expect("hover");
+        let value = hover["contents"]["value"].as_str().expect("markdown");
+        assert!(value.contains("let count: i32"), "{value}");
+    }
+
+    #[test]
+    fn definition_follows_namespace_members() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "util.value", "util.".len() + 1);
+        let definition = definition(&snapshot, &module.uri, line, character).expect("definition");
+        let target = definition["uri"].as_str().expect("uri");
+        assert!(target.ends_with("util.ns"), "{target}");
+    }
+
+    #[test]
+    fn completion_lists_namespace_members() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "util.value", "util.".len());
+        let items = completion(&snapshot, &module.uri, line, character);
+        let labels: Vec<_> = items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect();
+        assert!(labels.contains(&"value"), "{labels:?}");
+        assert!(labels.contains(&"User"), "{labels:?}");
+    }
+
+    #[test]
+    fn hover_reports_a_struct_field() {
+        let snapshot = project();
+        let module = snapshot.module("src/util.ns").expect("module");
+        let (line, character) = position(&module.text, "user.name", "user.".len() + 1);
+        let hover = hover(&snapshot, &module.uri, line, character).expect("hover");
+        let value = hover["contents"]["value"].as_str().expect("markdown");
+        assert!(value.contains("field name: str"), "{value}");
+    }
+
+    #[test]
+    fn definition_finds_a_struct_field() {
+        let snapshot = project();
+        let module = snapshot.module("src/util.ns").expect("module");
+        let (line, character) = position(&module.text, "user.name", "user.".len() + 1);
+        let definition = definition(&snapshot, &module.uri, line, character).expect("definition");
+        assert!(definition["uri"].as_str().is_some());
+        assert_eq!(definition["range"]["start"]["line"], 0);
+    }
+}
