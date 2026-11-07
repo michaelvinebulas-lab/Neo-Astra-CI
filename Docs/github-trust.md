@@ -33,12 +33,47 @@ These require the repository owner's GitHub or npm credentials.
 - The v1.0.0 GitHub release reports `immutable: false`. Treat the tag as
   immutable by policy; do not modify its assets. Immutability for future
   releases must be enabled in repository settings, if available.
-- The npm token exposed during the 1.0.0 release still needs to be revoked and
-  replaced in the `NPM_TOKEN` secret.
+- The npm token exposed during the 1.0.0 release still needs to be revoked.
+  The release workflow no longer reads `NPM_TOKEN`; publish authentication is
+  OIDC trusted publishing.
 - npm trusted publishing still needs to be configured for the platform
   packages and the `neo-astra` meta package.
 - No public CI workflow exists yet. Do not require status checks in a ruleset
   until the CI workflow and check names exist.
+
+## npm trusted publishing
+
+The release workflow now:
+
+- requests `id-token: write`;
+- installs npm 11 (trusted publishing requires npm 11.5.1 or later);
+- sets `registry-url` and disables package-manager caching;
+- publishes with `--provenance` and no `NODE_AUTH_TOKEN`.
+
+After authenticating as an account that can administer all four packages, add
+one trusted relationship per package:
+
+```sh
+npm login
+for package in \
+  neo-astra \
+  neo-astra-windows-x64 \
+  neo-astra-linux-x64 \
+  neo-astra-darwin-arm64; do
+  npm trust github "$package" \
+    --file release.yml \
+    --repository luminousvalentine-cell/Neo-Astra \
+    --yes
+done
+npm trust list neo-astra
+```
+
+The workflow filename must stay exactly `release.yml`, and the repository must
+stay exactly `luminousvalentine-cell/Neo-Astra`. Do not set an environment
+unless the release jobs add a matching GitHub environment.
+
+After the first successful OIDC publish, delete the `NPM_TOKEN` secret. Keep it
+until the trusted publisher is verified so a rollback is possible.
 
 ## Rulesets
 

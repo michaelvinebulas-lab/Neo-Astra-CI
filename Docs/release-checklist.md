@@ -72,7 +72,10 @@ Use this checklist for every release. No step may be skipped.
   `actions/attest-build-provenance@v2` and publishes npm packages with
   `--provenance`. Verify both after publishing; see
   `Docs/github-trust.md`.
-- When `NPM_TOKEN` is configured, the workflow publishes the platform npm
-  packages first and the `neo-astra` meta package last. Without the secret it
-  reports the skip and leaves the GitHub assets as the install channel.
-  Prefer npm trusted publishing over the long-lived token once it is configured.
+- The workflow publishes the platform npm packages first and the `neo-astra`
+  meta package last through npm trusted publishing (OIDC). It must not read
+  `NPM_TOKEN`; the trusted relationships are configured once per package with
+  `npm trust github`, using `release.yml` and
+  `luminousvalentine-cell/Neo-Astra`.
+- Keep the old `NPM_TOKEN` secret until the first successful OIDC release, then
+  delete it. Revoke the 1.0.0 token immediately; see `Docs/github-trust.md`.
