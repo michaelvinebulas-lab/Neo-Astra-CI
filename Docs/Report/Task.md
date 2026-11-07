@@ -20,7 +20,7 @@ do not invent decisions - mark the question instead.
   the output tail reported. A partial fix is not a handback.
 - Append only; do not edit the lead's task text.
 
-## Status: OPEN - KILO - slice 2
+## Status: OPEN - KILO - slice 2a
 
 Read the complete native CLI order at the end of this file. The principal has
 approved sequential implementation slices inside one complete goal; the CLI is
@@ -900,3 +900,64 @@ Remaining review items for later slices: build, doctor, NoPM, `astra nopm`
 dispatch, and any semantic gaps in import/link handling that the five
 slice-1 cases do not exercise. Do not tag or publish; `1.0.1` still waits for
 the full native parity gate.
+
+## Lead re-scope - slice 2 (2026-11-07)
+
+Kilo reports slice 2 as a multi-week effort and recommends smaller orders. The
+lead agrees. The original slice 2 is replaced by three sequential orders.
+Status is `OPEN - KILO - slice 2a`.
+
+There is no slice-2 diff in the worktree; it is clean at `7ca69be`. Do not add
+unwired command stubs. A handback is one complete sub-slice.
+
+### 2a - toolchain resolution and `doctor`
+
+Implement in Rust:
+
+- `astra doctor [dir] [--json] [--no-download]`.
+- Toolchain policy parsing from the build manifest, `ASTRA_CC`, path auto
+  detection, family/version pins, and cache markers.
+- Host-compiler probing and the exact TypeScript doctor ladder/JSON shape.
+- Pinned-download requests may fail with `NS9102` and instructions; actual
+  download/verify/extract is 2c, not 2a.
+- No build command yet.
+
+Acceptance:
+
+- The existing doctor parity case is green.
+- `cargo fmt --all --check`, workspace clippy, workspace tests, and `npm test`
+  stay green.
+- Native unit tests cover policy parsing, probe selection, cache markers, and
+  failure codes.
+- Parity target: 6/10. The remaining four red cases are JS build (slice 4),
+  NoPM lifecycle, `astra nopm` dispatch, and no-Node NoPM.
+
+### 2b - native/C executable build
+
+Implement `astra build` for `--target native` and `--target c` through the Rust
+compiler/C emitter, including single- and multi-module projects, output files,
+and the JSON report. Use the 2a host-toolchain resolver. No pinned download and
+no static/shared libraries yet.
+
+The current `native JS build matches generated module tree` parity case is a
+`--target web` build and is out of scope until slice 4. Before 2b handback the
+lead will add a native/C build parity case; 2b must not be accepted by
+weakening or relabeling the JS case.
+
+Acceptance:
+
+- Lead-added native/C build parity case is green.
+- Existing doctor case remains green.
+- All Rust/npm gates remain green.
+- Parity target after the new case is added: 7/11, with JS build and the three
+  NoPM cases still red.
+
+### 2c - pinned Zig and libraries
+
+Implement pinned toolchain download/verify/extract/cache, `--no-download`, and
+executable/staticlib/cdylib emission and linking. Add tests before handback for
+cache hits, corrupt artifacts, download refusal, staticlib, and cdylib.
+
+Slices 3 and 4 remain as written: native NoPM first, then the JS/TS bridge and
+CI/packaging. The full gate and any `1.0.1` action still wait for 2a-2c, 3, and
+4.
