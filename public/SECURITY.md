@@ -2,34 +2,29 @@
 
 ## Supported versions
 
-Security fixes are provided for the current `1.0.x` release line. Older
-releases may be asked to upgrade before a fix is backported.
+We ship security fixes for the current `1.0.x` release line. If you're on an older release, we may ask you to upgrade before we consider backporting a fix.
 
 ## Reporting a vulnerability
 
-Do **not** open a public issue for an unfixed vulnerability.
+Please don't open a public issue for a vulnerability that hasn't been fixed yet.
 
-Use the repository's private security advisory flow:
+Instead, use the repository's private security advisory flow:
 
 1. Open the **Security** tab on the public repository.
 2. Choose **Report a vulnerability**.
-3. Include the affected version, host, a minimal reproduction, and the impact.
+3. Tell us the affected version and host, give us a minimal reproduction and describe the impact.
 
-If the advisory flow is unavailable, contact the repository owner through the
-GitHub profile linked from the repository before disclosing anything publicly.
+If the advisory flow isn't available for some reason, reach out to the repository owner through the GitHub profile linked from the repository. Please do that before disclosing anything publicly.
 
 ## What to expect
 
-- Acknowledgement of the report.
-- Confirmation or rejection with a reason.
-- A coordinated fix and release for accepted reports.
-- Credit in the release notes unless you ask to remain anonymous.
+- We'll acknowledge your report.
+- We'll confirm it, or tell you why we're rejecting it.
+- If we accept it, we'll work with you on a coordinated fix and release.
+- We'll credit you in the release notes, unless you'd rather stay anonymous.
 
 ## Scope notes
 
-- The compiler runs on untrusted source. A panic, hang, or parser crash on
-  malformed input is a bug worth reporting.
-- Release archives carry SHA-256 sidecars. A checksum mismatch means the
-  download is corrupt; it does not by itself prove malicious replacement.
-- Reports about a missing feature are not security issues unless the feature
-  is advertised as present and silently falls back to an unsafe behavior.
+- The compiler runs on untrusted source code, so a panic, hang, or parser crash on malformed input is a bug and we'd like to hear about it.
+- Release archives come with SHA-256 sidecar files. If a checksum doesn't match, the download is most likely corrupt. On its own, a mismatch doesn't prove someone swapped the file with something malicious.
+- A missing feature isn't a security issue. The exception is a feature that's advertised as working but quietly falls back to unsafe behavior.

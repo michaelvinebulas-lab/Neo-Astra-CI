@@ -1,65 +1,51 @@
 # Contributing to Neo Astra
 
-Neo Astra is owner-reviewed. Pull requests are required; direct pushes to
-`master` are blocked. Published tags and release assets are immutable.
+Thanks for thinking about contributing! Neo Astra is owner-reviewed, so every change goes through a pull request and direct pushes to `master` are blocked. Published tags and release assets can't be changed once they're out.
 
 ## Before you start
 
-- Read the status matrix in [`README.md`](README.md). Do not describe `app` as
-  complete, or `web` / `system` as stable, while they are partial or preview.
-- Keep changes focused. One behavior change per pull request is easier to
-  review and revert.
-- Do not add generated output, build products, secrets, or private test files.
+- Take a look at the status table in [`README.md`](README.md). While `app` is partial and `web` and `system` are previews, please don't describe `app` as complete or the other two as stable.
+- Keep your changes focused. A pull request that changes one behavior is much easier to review, and to revert if it comes to that.
+- Please don't add generated output, build products, secrets or private test files.
 
 ## License and sign-off
 
-Neo Astra is licensed under Apache-2.0. By submitting a pull request you agree
-that your contribution is licensed under Apache-2.0 and that you have the right
-to submit it.
+Neo Astra is licensed under Apache-2.0. When you submit a pull request, you're agreeing that your contribution is licensed under Apache-2.0 and that you have the right to submit it.
 
-Sign off every commit:
+Sign off on every commit:
 
 ```sh
 git commit -s -m "describe the change"
 ```
 
-The sign-off certifies the Developer Certificate of Origin. No separate CLA is
-required.
+The sign-off certifies the Developer Certificate of Origin. You don't need to sign a separate CLA.
 
-## Public mirror rules
+## How the public mirror works
 
-The public repository is a mirror of the production source. The mirror:
+This repository mirrors the production source. A few things follow from that. The mirror:
 
 - strips comments from source files, including `.ns` examples;
-- excludes the private test suite, conformance corpus, and internal planning
-  docs;
+- leaves out the private test suite, the conformance corpus, and internal planning docs;
 - is append-only after a published tag.
 
-Write behavior in the documentation or in tests, not in source comments. A
-comment is not part of the public contract.
+Because of this, explain behavior in the documentation or in tests, not in source comments. A comment isn't part of the public contract.
 
 ## Pull request checklist
 
 - [ ] The change is scoped to one problem.
-- [ ] Tests cover the success path and each failure mode the change can hit.
+- [ ] Tests cover the success path and every failure mode the change could hit.
 - [ ] `cargo fmt --all --check` passes.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [ ] The relevant test suite passes.
-- [ ] Public claims match the real support matrix.
+- [ ] Any public claims match the real support matrix.
 - [ ] No published tag or release archive was rewritten.
 
-Maintainers run the private gate before landing. A pull request without tests
-may be accepted for documentation, but not for compiler behavior.
+Before landing a change, maintainers run the private gate. We may accept a pull request without tests if it's documentation-only, but not if it touches compiler behavior.
 
-## Commercial users
+## For commercial users
 
-Apache-2.0 lets companies use, modify, and distribute Neo Astra without a
-contribution obligation. We still ask commercial users to contribute fixes,
-tests, documentation, and maintenance time. If your company needs a support or
-maintenance agreement, open a discussion with the repository owner rather than
-assuming the license provides one.
+Apache-2.0 lets companies use, modify, and distribute Neo Astra with no obligation to give anything back. We'd still love it if you did. Fixes, tests, documentation and maintenance time all help. If your company needs a support or maintenance agreement, open a discussion with the repository owner. The license doesn't include one, so please don't assume it does.
 
 ## Code of conduct
 
-Be direct about the code and respectful to the people. Harassment, personal
-attacks, and disclosure of private reports are not accepted.
+Be direct about the code and kind to the people. We don't accept harassment, personal attacks, or the disclosure of private reports.
