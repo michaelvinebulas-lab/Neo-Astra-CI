@@ -772,3 +772,11 @@ Work only these deliverables, in this order:
      core) must be green. Build, doctor, and NoPM may remain red for slices
      2-4.
    - Do not hand back while any slice-1 item above is partial.
+
+## Lead note - current tree (2026-11-07)
+
+The CLI tree is currently mid-edit and does not compile:
+`crates/astra-cli/src/main.rs:601` has the `"--compiler"` match arm nested
+inside the `other if !other.starts_with('-') && file.is_none()` guard. Move it
+to a top-level arm in the argument loop before handback, then rerun the gates.
+LSP work is green and unaffected.
