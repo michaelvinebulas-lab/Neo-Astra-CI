@@ -41,6 +41,9 @@ npm test
 npm run test:native-parity
 ```
 
+Apache-2.0 is fixed for the workspace and every generated/npm package. Do not
+change `license` fields to MIT or another license.
+
 ---
 
 # Task: native Rust CLI, phase 1
