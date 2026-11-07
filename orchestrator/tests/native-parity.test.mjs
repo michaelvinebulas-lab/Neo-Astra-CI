@@ -87,6 +87,7 @@ function normalize(value, directory) {
     return value;
   }
   return value
+    .split(directory.replaceAll("\\", "\\\\")).join("<project>")
     .split(directory).join("<project>")
     .split(directory.replaceAll("\\", "/")).join("<project>");
 }
@@ -423,9 +424,8 @@ function withoutNodeEnv() {
   };
 }
 
-test("native core and path nopm run without Node or npm on PATH", { skip }, async () => {
+test("native core runs without Node or npm on PATH", { skip }, async () => {
   const directory = await makeProject(VALID);
-  const nopmDirectory = await makeNopmProject();
   try {
     for (const args of [
       ["check", directory, "--json"],
@@ -445,7 +445,14 @@ test("native core and path nopm run without Node or npm on PATH", { skip }, asyn
         `native ${args[0]} unexpectedly needed Node/npm:\n${result.stdout}\n${result.stderr}`,
       );
     }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
+test("native path nopm runs without Node or npm on PATH", { skip }, async () => {
+  const nopmDirectory = await makeNopmProject();
+  try {
     for (const args of [
       ["add", "path:local-utils", "--json"],
       ["lock", "--json"],
@@ -466,7 +473,6 @@ test("native core and path nopm run without Node or npm on PATH", { skip }, asyn
       );
     }
   } finally {
-    await rm(directory, { recursive: true, force: true });
     await rm(nopmDirectory, { recursive: true, force: true });
   }
 });

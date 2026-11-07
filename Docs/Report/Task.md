@@ -20,7 +20,7 @@ do not invent decisions - mark the question instead.
   the output tail reported. A partial fix is not a handback.
 - Append only; do not edit the lead's task text.
 
-## Status: OPEN - KILO - slice 1
+## Status: OPEN - KILO - slice 2
 
 Read the complete native CLI order at the end of this file. The principal has
 approved sequential implementation slices inside one complete goal; the CLI is
@@ -856,3 +856,47 @@ are fixed, the manifest schema/format/TOML tests are added, the five slice-1
 parity cases are green, and the Kilo log records the actual gates and changed
 files. The parity harness normalization can be fixed separately by the lead,
 but it must not mask the relative-path and field-order mismatches above.
+
+## Lead completion - slice 1 (2026-11-07)
+
+The principal asked the lead to finish the remaining slice-1 blockers directly.
+The review above is superseded by this work. Slice 1 is now green; the next
+slice is build/doctor/NoPM.
+
+Evidence:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test -p astra-manifest -p astra-cli`: 12 passed.
+- `cargo test --workspace`: green after the manifest test correction.
+- `npm test`: 241 passed.
+- `npm run test:native-parity`: 5 passed, 5 failed. The passing tests are
+  help/version, `check`, `fmt`, `ast`/`explain`, and no-Node core. Build,
+  doctor, NoPM lifecycle, `astra nopm`, and no-Node NoPM remain the expected
+  slice-2/3 failures.
+
+What changed:
+
+- `check` now discovers exactly one core manifest, treats build as optional,
+  reports manifest errors with the oracle JSON shape, applies `nova.entry` and
+  build defaults, uses the oracle source target/integer policy, emits
+  project-relative diagnostic paths and oracle field order, and validates FFI
+  mappings including `NS7007`.
+- The manifest crate accepts the oracle `$schema`, package metadata,
+  object-valued dependencies, target `module`/`triple`/`wasi`/`env`, and
+  `nova.watch`; JSON formatting preserves unknown fields and TOML formatting
+  canonicalizes or preserves-comment content, with tests.
+- `ast`/`explain` directory inspection now requires a project and uses the
+  entry/defaults instead of falling back to every `.ns` file.
+- The parity harness normalizes Windows JSON-escaped paths and splits the
+  no-Node core case from the NoPM case.
+- The out-of-slice `astra-core` formatter change was reverted.
+
+Changed files: `Cargo.toml`, `Cargo.lock`, `crates/astra-cli/Cargo.toml`,
+`crates/astra-cli/src/main.rs`, `crates/astra-manifest/**`,
+`orchestrator/tests/native-parity.test.mjs`, and this task file.
+
+Remaining review items for later slices: build, doctor, NoPM, `astra nopm`
+dispatch, and any semantic gaps in import/link handling that the five
+slice-1 cases do not exercise. Do not tag or publish; `1.0.1` still waits for
+the full native parity gate.
