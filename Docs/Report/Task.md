@@ -8,8 +8,10 @@ do not invent decisions - mark the question instead.
 
 - The Status line names the tree owner for the current order.
 - Kilo never commits, never pushes, never edits `Docs/**`, `conformance/**`,
-  `scripts/**`, `.github/**`, or `orchestrator/tests/**`. The deliverable is
-  code, a `## Kilo log` entry, and a Status update. The lead reviews and lands.
+  or `orchestrator/tests/**`. `scripts/**` and `.github/**` are normally
+  lead-owned, except when the active slice explicitly grants them (the
+  CI/packaging slice does). The deliverable is code, a `## Kilo log` entry, and
+  a Status update. The lead reviews and lands.
 - Questions that need the principal: write them under `## Kilo log` and set
   Status to `BLOCKED - principal`.
 - The lead writes tests for shared integration surfaces. Kilo writes unit
@@ -18,15 +20,26 @@ do not invent decisions - mark the question instead.
   the output tail reported. A partial fix is not a handback.
 - Append only; do not edit the lead's task text.
 
-## Status: BLOCKED - principal
+## Status: OPEN - KILO - slice 1
 
-Read the complete native CLI order at the end of this file. It supersedes the
-phase-1 CLI scope. Do not hand back a partial CLI. When all gates and the
-parity checks are green, write the `## Kilo log` entry and set Status to
-`DONE - lead`. When all four gates are green - `cargo fmt --all --check`, `cargo clippy -p astra-cli
---all-targets -- -D warnings`, `cargo clippy -p astra-lsp --all-targets -- -D
-warnings`, and `cargo test -p astra-cli -p astra-lsp` - write the report in the
-same block and set Status to `DONE - lead`.
+Read the complete native CLI order at the end of this file. The principal has
+approved sequential implementation slices inside one complete goal; the CLI is
+not done until every slice is green. Start with slice 1. Do not edit
+`Docs/**`, `conformance/**`, `orchestrator/tests/**`, or public docs. Paths
+explicitly granted to the CI/packaging slice may be edited only when that slice
+is active. After each slice, append a `## Kilo log` entry and set Status to
+`OPEN - KILO - slice <next>`. Only when slices 1-4 and the full gates are green,
+set Status to `DONE - lead`.
+
+Final gates:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+npm test
+npm run test:native-parity
+```
 
 ---
 
@@ -230,17 +243,11 @@ publication, and formatting. Also run a manual stdio smoke test with an
 
 Same rules as the CLI task. Do not commit or push.
 
-## Later orders
+## Later orders (superseded)
 
-After both tasks land, the lead will open separate orders for:
-
-1. project manifest discovery and project `check`
-2. native `build` and `run`
-3. `doctor` and toolchain resolution
-4. NoPM dispatch and JS/TS codegen fallback
-5. LSP project graph, hover, definitions, and completion
-
-Do not start those here.
+The execution slices in the complete native CLI order supersede the phase-1
+follow-up list. LSP phase 2 (project graph, hover, definitions, completion)
+remains a separate pending order and is not part of the native CLI slices.
 
 ---
 
@@ -280,16 +287,28 @@ Do not start those here.
 
 This order replaces the phase-1 CLI scope. The phase-1 crates are a starting
 point, not an acceptable handback. The principal wants the **entire** `astra`
-CLI and `nopm` surface in Rust, with no Bun, Node, TypeScript, or Python
-runtime in any production code path.
+CLI and `nopm` surface in Rust. The JavaScript and TypeScript code generators
+stay in their current TypeScript implementation for this round; they are not
+being ported to Rust.
+
+Initial native CLI and `nopm` must not require Node, npm, or Bun for `check`,
+`fmt`, `ast`, `explain`, `doctor`, C/native builds, or baseline NoPM flows. A
+`build` targeting `js` or `ts`, and a NoPM operation whose manifest requires
+JavaScript/TypeScript work, may call or provision Node as an explicit
+compatibility bridge; that bridge must be isolated, documented in the
+help/report, and must not be needed for the native/core paths.
 
 ## Definition of done
 
 A single `astra` binary built by Cargo must implement every command, option,
 JSON shape, diagnostic, and exit code currently implemented by the TypeScript
-`astra` CLI. A single `nopm` binary built by Cargo must implement every command
-currently implemented by the TypeScript `nopm` CLI. `astra nopm ...` must use
-the same native implementation as `nopm ...`.
+`astra` CLI, except that `build --target js|ts` may delegate to the existing
+TypeScript codegen bridge. A single `nopm` binary built by Cargo must implement
+every command currently implemented by the TypeScript `nopm` CLI in Rust.
+`nopm` may provision or invoke Node only when a package manifest actually needs
+JavaScript/TypeScript work; it must not need Node or npm for the baseline
+lockfile/store/path/cargo/pypi/nuget/oci/registry flows. `astra nopm ...` must
+use the same native implementation as `nopm ...`.
 
 The TypeScript implementation is the behaviour oracle:
 
@@ -315,8 +334,13 @@ You own:
 - new workspace crates for the pure-Rust pieces, proposed as:
   - `crates/astra-manifest/**`
   - `crates/astra-toolchain/**`
-  - `crates/astra-codegen-web/**` (JavaScript + TypeScript backends)
   - `crates/astra-registry/**` (NoPM registry/HTTP client)
+
+The JavaScript and TypeScript code generators stay in
+`orchestrator/packages/codegen-js` and `orchestrator/packages/codegen-ts`.
+Do not port them to Rust in this round and do not edit the TypeScript
+implementation. Add only a native bridge that invokes the existing codegen when
+a manifest requests a JS/TS build; the bridge may use Node on demand.
 - workspace `members` and dependency entries in `Cargo.toml`
 - `Cargo.lock` changes caused by the new crates
 
@@ -328,8 +352,9 @@ Do not edit:
 - `crates/astra-compiler-api/**`
 - `crates/astra-codegen-c/**`
 - `crates/astra-nova/**`
-- `scripts/**`, `Docs/**`, `conformance/**`, `.github/**`
-- `orchestrator/tests/**`
+- `Docs/**`, `conformance/**`, `orchestrator/tests/**`
+- `scripts/**`, `.github/**`, and `package.json` except during the explicitly
+  granted CI/packaging slice
 
 If an existing Rust API is missing, add the smallest additive public API and
 record it in the log. Do not fork parser, checker, formatter, mode inference,
@@ -431,12 +456,16 @@ Implement the complete build pipeline in Rust:
   - honor `ASTRA_CC`, `--no-download`, cflags from the target manifest, and
     the same `NS9102` / `NS9015` / `NS8002` / `NS9014` failure codes
 - JS/TS:
-  - implement the JavaScript and TypeScript backends in Rust by porting the
-    typed-module emission from `codegen-js` and the TS wrapper from `codegen-ts`
+  - delegate to the existing TypeScript codegen implementation; do not port it
+  - keep the bridge behind one adapter so the native core never imports or
+    depends on it
+  - find Node on `PATH`, through an explicit `ASTRA_NODE` override, or by
+    provisioning a pinned Node runtime on demand; report a clear diagnostic if
+    it is unavailable
   - emit the same readable ESM, module specifiers, source maps, declarations,
-    inline-script artifacts, and `package.json` behaviour
-  - `@script:ts` may invoke the pinned native `tsc` binary (`ASTRA_TSC_BIN` or
-    the packaged TypeScript directory); it must not require Node or Bun
+    inline-script artifacts, and `package.json` behaviour as the current CLI
+  - `@script:ts` keeps using the pinned native `tsc` binary (`ASTRA_TSC_BIN` or
+    the packaged TypeScript directory)
   - output directory and entry selection must match the oracle
 - The build must print the same `built <target> -> <path>` line or JSON report
   and exit 1 on any diagnostic error.
@@ -489,15 +518,19 @@ Required behaviour:
 - registry search/audit HTTP client with the same URL/path/schema behaviour
 - native `nopm` binary and `astra nopm` dispatch from one implementation
 - external package managers/git may be invoked as subprocesses; the CLI itself
-  must not require Node/Bun
+  must not require Node/Bun/npm for non-JS/TS work
+- provision Node on demand only when a manifest requires JavaScript/TypeScript
+  package work; cache it and fail with a clear diagnostic if unavailable
 - all HTTP and archive work in Rust; no `fetch`, `curl`, or JS helper process
 
 ## Engineering constraints
 
-- Pure Rust for all Neo Astra logic. No Node, Bun, TypeScript, Python, or
-  embedded JavaScript engine in the shipped path.
-- The pinned native `tsc` for `@script:ts` is the only external TypeScript
-  tool that may be executed; do not use it for the CLI/codegen itself.
+- Pure Rust for the CLI, manifest, project graph, toolchain, C/native build,
+  registry, and NoPM logic. No embedded JavaScript engine.
+- Node may be used only by the isolated JS/TS codegen bridge and by NoPM when a
+  package manifest actually requires JavaScript/TypeScript work. The native
+  core commands and no-JS/no-TS NoPM flows must run without Node or npm.
+- The pinned native `tsc` for `@script:ts` remains the TypeScript compiler.
 - Keep the public CLI contract stable. Do not rename diagnostic codes or JSON
   fields.
 - Use `std::process::Command` for compilers, archivers, git, and package
@@ -509,8 +542,10 @@ Required behaviour:
   command lines.
 - Normal Rust comments are allowed in private source. No generated comments
   should be added to output.
-- Do not modify the TypeScript implementation, public docs, scripts, tests, or
-  packaging. The lead will swap packaging after the parity suite is green.
+- Do not modify the TypeScript implementation, public docs, tests, or packaging.
+  The lead swaps packaging after the parity suite is green. The CI/packaging
+  slice is the only exception: it explicitly grants `scripts/**`, `.github/**`,
+  and the relevant `package.json` scripts to Kilo for lead review.
 
 ## Verification
 
@@ -534,19 +569,42 @@ TypeScript oracle across:
 - `doctor` with env/cache/path and `--no-download`
 - `nopm` path add/remove/lock/tree/install and registry search/audit
 - `astra nopm` and the standalone `nopm` binary producing identical results
-- no `node`, `bun`, `astra-compiler`, or `nopm` child process in core command
-  traces
+- no `node`, `bun`, `astra-compiler`, or nested `nopm` child process in the
+  core/native/nopm traces; the JS/TS build bridge and JS/TS-only NoPM paths may
+  use Node on demand
 
 Smoke the release binaries on the public examples and report exit codes,
 stdout, and stderr.
 
+## Execution slices
+
+The complete goal is one product outcome, implemented as four reviewed slices.
+A slice is not a release and is not a claim that the native CLI is complete.
+
+1. **Native core:** manifest/project discovery, `check`, `fmt`, `ast`,
+   `explain`, and the JSON/diagnostic contract. No build, doctor, nopm, or
+   JS/TS bridge yet.
+2. **Native build and doctor:** C/native build, static/shared libraries,
+   toolchain policy, pinned Zig download/verify/extract, `doctor`.
+3. **Native NoPM:** `nopm` commands, lockfile/store, path/git/npm/cargo/pypi/
+   nuget/oci/registry adapters, `sys:`, and `astra nopm` dispatch. Node may be
+   provisioned only for manifests that explicitly need JS/TS package work.
+4. **JS/TS bridge and CI/packaging:** isolated bridge to the existing
+   TypeScript codegen, native `astra`/`nopm` packaging, CI wiring for the
+   parity gate, and release-asset/npm packaging updates. This slice grants
+   `scripts/**`, `.github/**`, and the relevant `package.json` scripts to Kilo;
+   the lead reviews and lands.
+
+After each slice, append a `## Kilo log` entry with gates and set Status to
+`OPEN - KILO - slice <next>`. Do not set `DONE - lead` and do not call the CLI
+complete until slice 4 is green and the full parity gate passes.
+
 ## Handback
 
 - Complete implementation in the owned tree.
-- One `## Kilo log` entry with changed files, commands run, output tails, and
-  any intentional deviations.
+- One `## Kilo log` entry per reviewed slice with changed files, commands run,
+  output tails, and any intentional deviations.
 - Status `DONE - lead` only when the entire surface is implemented and green.
-  Do not hand back a phase-1 or partial CLI.
 - Do not commit or push.
 
 - Phase-1 `crates/astra-cli` and `crates/astra-lsp` are implemented and green (gates above).
