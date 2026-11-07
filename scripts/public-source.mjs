@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -40,6 +41,7 @@ const skippedFiles = new Set([
   "scripts/public-source.mjs",
   "scripts/README.md",
   "scripts/npm/README.md",
+  "scripts/native-parity.mjs",
   "scripts/check-error-codes.mjs",
   "scripts/check-versions.mjs",
   "scripts/ci.mjs",
@@ -658,5 +660,14 @@ writeFileSync(
 );
 mkdirSync(join(out, ".github", "workflows"), { recursive: true });
 writeFileSync(join(out, ".github", "workflows", "release.yml"), releaseWorkflow(), "utf8");
+
+const fmt = spawnSync("cargo", ["fmt", "--all"], { cwd: out, stdio: "inherit" });
+if (fmt.error) {
+  process.stderr.write(`[public-source] cargo fmt failed: ${fmt.error.message}\n`);
+  process.exit(1);
+}
+if (fmt.status !== 0) {
+  process.exit(fmt.status ?? 1);
+}
 
 process.stdout.write(`[public-source] wrote ${out}\n`);

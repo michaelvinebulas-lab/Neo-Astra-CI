@@ -11,8 +11,6 @@ use serde_json::{Value, json};
 #[derive(Deserialize)]
 struct RpcMessage {
     #[serde(default)]
-    jsonrpc: String,
-    #[serde(default)]
     id: Option<Value>,
     #[serde(default)]
     method: String,
@@ -81,10 +79,6 @@ fn main() {
                 continue;
             }
         };
-
-        if msg.jsonrpc != "2.0" && !msg.jsonrpc.is_empty() {
-            // still process? We'll ignore strict check for empty.
-        }
 
         let is_notification = msg.id.is_none();
 
