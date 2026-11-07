@@ -637,3 +637,19 @@ Revalidate before reporting:
 
 The only current slice-1 work is `crates/astra-manifest` plus the directory
 check in `crates/astra-cli`; it is incomplete and remains uncommitted.
+
+## Lead note - LSP phase 2 (2026-11-07)
+
+LSP phase 2 is implemented in `crates/astra-lsp` and committed separately from
+the Kilo slice-1 working tree:
+
+- project discovery and module-graph checking with open-buffer overlays
+- project-wide diagnostics, with standalone fallback when one module fails
+- hover for symbols, locals, parameters, namespace members, and struct fields
+- definition for locals, imported symbols, namespace members, and struct fields
+- keyword, builtin-type, local-symbol, imported-name, and member completion
+
+Gates: `cargo test -p astra-lsp` (28 green),
+`cargo clippy -p astra-lsp --all-targets -- -D warnings` (clean), and a manual
+stdio smoke covering initialize, didOpen, hover, definition, completion,
+shutdown, and exit. This does not change the Kilo slice-1 status.
