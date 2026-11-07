@@ -21,7 +21,7 @@
     "clean": "tsc -b --clean",
     "typecheck": "tsc -b",
     "pretest": "cargo build -p astra-compiler-api --bin astra-compiler",
-    "test": "node --test orchestrator/tests/manifest.test.mjs orchestrator/tests/nopm.test.mjs orchestrator/tests/registry.test.mjs orchestrator/tests/codegen-js.test.mjs orchestrator/tests/codegen-ts.test.mjs orchestrator/tests/inspect-cli.test.mjs orchestrator/tests/check-cli.test.mjs orchestrator/tests/stress_compiler_api.test.mjs orchestrator/tests/stress_nopm.test.mjs orchestrator/tests/toolchain.test.mjs orchestrator/tests/release.test.mjs orchestrator/tests/package-npm.test.mjs",
+    "test": "node --test orchestrator/tests/manifest.test.mjs orchestrator/tests/nopm.test.mjs orchestrator/tests/registry.test.mjs orchestrator/tests/codegen-js.test.mjs orchestrator/tests/codegen-ts.test.mjs orchestrator/tests/inspect-cli.test.mjs orchestrator/tests/check-cli.test.mjs orchestrator/tests/stress_compiler_api.test.mjs orchestrator/tests/stress_nopm.test.mjs orchestrator/tests/toolchain.test.mjs orchestrator/tests/release.test.mjs orchestrator/tests/package-npm.test.mjs orchestrator/tests/native-tools.test.mjs",
     "test:boundary": "node scripts/test-boundary.mjs",
     "ci": "node scripts/ci.mjs",
     "verify": "node scripts/check-versions.mjs && node scripts/check-error-codes.mjs && npm run build && npm test && npm run test:boundary && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings",

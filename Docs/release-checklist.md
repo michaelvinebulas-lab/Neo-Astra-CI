@@ -40,10 +40,16 @@ Use this checklist for every release. No step may be skipped.
 
 ## 4. Documentation
 
-- Add the release to `CHANGELOG.md`.
+- Add the release to `CHANGELOG.md` and `public/CHANGELOG.md`.
 - Update `Docs/state.md` (queue state and a log row).
-- Confirm `README.md`, `scripts/README.md`, and `orchestrator/README.md` match
-  the shipped commands. Do not add status prose to `Docs/spec-v0.1.md`.
+- Confirm `README.md`, `INSTALL.md`, `SECURITY.md`, `CONTRIBUTING.md`, and
+  `examples/` match the shipped commands and the real support matrix: core
+  stable, app partial, web/system preview, high planned.
+- Confirm `LICENSE`, `NOTICE`, and `CONTRIBUTORS.md` are present and that
+  `package.json`, `Cargo.toml`, and generated npm package metadata all report
+  `Apache-2.0`.
+- Confirm the public source mirror strips comments from every source file,
+  including `.ns` examples. Documentation carries the explanation.
 
 ## 5. Tag and release
 
