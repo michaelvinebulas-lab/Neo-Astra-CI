@@ -61,10 +61,18 @@ Use this checklist for every release. No step may be skipped.
   becomes the next patch or minor release; do not publish two trees under one
   version.
 - Protect `master`: require pull requests, owner review, and green checks; block
-  force pushes and branch deletion.
+  force pushes and branch deletion. The GitHub rulesets and the source-mirror
+  bypass decision are tracked in `Docs/github-trust.md`.
+- Protect release tags: block tag deletion and updates. Once a tag is public it
+  is immutable; fixes go into the next patch or minor release.
 - The public `Release packages` workflow builds Linux, macOS, and Windows
   assets from the tag, creates the GitHub release, and uploads the archives
   plus `.sha256` files.
+- The workflow attests the archives with
+  `actions/attest-build-provenance@v2` and publishes npm packages with
+  `--provenance`. Verify both after publishing; see
+  `Docs/github-trust.md`.
 - When `NPM_TOKEN` is configured, the workflow publishes the platform npm
   packages first and the `neo-astra` meta package last. Without the secret it
   reports the skip and leaves the GitHub assets as the install channel.
+  Prefer npm trusted publishing over the long-lived token once it is configured.

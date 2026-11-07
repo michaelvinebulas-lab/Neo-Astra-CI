@@ -412,3 +412,61 @@ test("native astra nopm dispatch matches standalone nopm", { skip }, async () =>
     await rm(directory, { recursive: true, force: true });
   }
 });
+
+function withoutNodeEnv() {
+  return {
+    ...process.env,
+    PATH: "",
+    Path: "",
+    ASTRA_NODE: "",
+    ASTRA_TSC_BIN: "",
+  };
+}
+
+test("native core and path nopm run without Node or npm on PATH", { skip }, async () => {
+  const directory = await makeProject(VALID);
+  const nopmDirectory = await makeNopmProject();
+  try {
+    for (const args of [
+      ["check", directory, "--json"],
+      ["fmt", directory, "--check", "--json"],
+      ["ast", directory, "--json"],
+      ["explain", directory, "--json"],
+    ]) {
+      const result = spawnSync(nativeCli(), args, {
+        cwd: directory,
+        env: withoutNodeEnv(),
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      assert.equal(
+        result.status,
+        0,
+        `native ${args[0]} unexpectedly needed Node/npm:\n${result.stdout}\n${result.stderr}`,
+      );
+    }
+
+    for (const args of [
+      ["add", "path:local-utils", "--json"],
+      ["lock", "--json"],
+      ["tree", "--json"],
+      ["install", "--json"],
+      ["remove", "local-utils", "--json"],
+    ]) {
+      const result = spawnSync(nativeNopm(), [...args, nopmDirectory], {
+        cwd: nopmDirectory,
+        env: withoutNodeEnv(),
+        encoding: "utf8",
+        windowsHide: true,
+      });
+      assert.equal(
+        result.status,
+        0,
+        `native nopm ${args[0]} unexpectedly needed Node/npm:\n${result.stdout}\n${result.stderr}`,
+      );
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+    await rm(nopmDirectory, { recursive: true, force: true });
+  }
+});
