@@ -195,11 +195,26 @@ Owner: lead.
 
 ## Decisions needed
 
-1. **License:** recommend Apache-2.0 plus `NOTICE` and `CONTRIBUTORS.md`.
-   It permits use, modification, distribution, and commercial use, and
-   preserves copyright/attribution notices. If "must credit" needs to be
-   stronger than notice preservation, a custom license is required; that is
-   not recommended.
+1. **License and company obligation:** no standard open-source license can
+   require companies to contribute or maintain the upstream project. The
+   practical choices are:
+   - **AGPL-3.0 + NOTICE + CONTRIBUTORS + a commercial license option.** This
+     is OSI open source. Companies may use it, but network use or distribution
+     of modifications carries source-sharing obligations. A paid commercial
+     license can remove those obligations, and a support/maintenance contract
+     can fund the project. It still does not legally require companies to
+     maintain upstream.
+   - **Apache-2.0 + NOTICE + CONTRIBUTORS.** Maximum adoption; companies are
+     asked to contribute but are not required to.
+   - **Custom source-available license.** Can make contribution, attribution,
+     or maintenance a condition, but it is not open source and needs legal
+     review.
+
+   Recommendation: decide whether "must contribute and maintain" is a legal
+   condition or a community expectation. If legal, use AGPL plus a commercial
+   contract. If a community expectation, use Apache-2.0 and a strong
+   `CONTRIBUTING.md`/`GOVERNANCE.md` policy. Do not describe a standard
+   permissive license as requiring maintenance.
 2. **Public source comments:** recommend keeping human-written Rust/TypeScript
    comments in the public source for contributors; continue stripping
    generated C/JS/TS output. The current comment-free source makes review and
