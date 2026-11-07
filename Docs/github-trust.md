@@ -50,6 +50,18 @@ The release workflow now:
 - sets `registry-url` and disables package-manager caching;
 - publishes with `--provenance` and no `NODE_AUTH_TOKEN`.
 
+If the account uses a passkey/security key rather than an authenticator app,
+configure this from the npm website instead of the CLI: package page ->
+**Settings** -> **Trusted publishing** -> **Add trusted publisher** -> **GitHub
+Actions**. Use repository `luminousvalentine-cell/Neo-Astra` and workflow
+filename `release.yml`, and leave the environment blank.
+
+Make sure the configuration allows **npm publish**, not only stage publishing;
+the release workflow runs `npm publish`. New configurations must complete their
+first successful publish within two days or they expire and must be recreated.
+For that reason, configure immediately before the release that will validate
+them.
+
 After authenticating as an account that can administer all four packages, add
 one trusted relationship per package:
 
