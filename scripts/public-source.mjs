@@ -491,6 +491,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
   package:
@@ -517,6 +519,13 @@ jobs:
 
       - name: Build standalone package
         run: npm run package
+
+      - name: Attest release archives
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.tar.gz
 
       - name: Remove stale diagnostics
         shell: bash
@@ -565,7 +574,7 @@ jobs:
             echo "$name@$version is already published."
             exit 0
           fi
-          npm publish "$package_dir" --access public --tag latest
+          npm publish "$package_dir" --access public --tag latest --provenance
 
   meta:
     name: npm meta package
@@ -601,7 +610,7 @@ jobs:
             echo "$name@$version is already published."
             exit 0
           fi
-          npm publish "$package_dir" --access public --tag latest
+          npm publish "$package_dir" --access public --tag latest --provenance
 `;
 }
 
