@@ -50,8 +50,9 @@ The release workflow now:
 - sets `registry-url` and disables package-manager caching;
 - publishes with `--provenance` and no `NODE_AUTH_TOKEN`.
 
-If the account uses a passkey/security key rather than an authenticator app,
-configure this from the npm website instead of the CLI: package page ->
+npm's current 2FA is a security key/passkey (WebAuthn), not an
+authenticator-app TOTP. Do not pass a Chrome passkey to `--otp`; it is not a
+six-digit code. Use the npm website instead of the CLI: package page ->
 **Settings** -> **Trusted publishing** -> **Add trusted publisher** -> **GitHub
 Actions**. Use repository `luminousvalentine-cell/Neo-Astra` and workflow
 filename `release.yml`, and leave the environment blank.
