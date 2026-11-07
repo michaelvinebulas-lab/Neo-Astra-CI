@@ -613,3 +613,27 @@ complete until slice 4 is green and the full parity gate passes.
 - Phase-1 `crates/astra-cli` and `crates/astra-lsp` are implemented and green (gates above).
 - The "complete port" order requires porting ~770 LOC of manifest logic, toolchain resolution with HTTP/archive decoders, JS/TS codegen backends, registry HTTP client, and the full nopm surface, plus project discovery/linking/FFI validation. This is a multi-week engineering effort that exceeds a single session; implementing it partially would violate "do not hand back a partial CLI" and risk silently changing the contract.
 - Request: principal to scope this into smaller sequential orders (manifest+project check, then build, then doctor/toolchain, then nopm, then codegen) or allocate a longer horizon. No partial code committed; existing phase-1 crates remain untouched.
+
+- Slice-1 progress: added `crates/astra-manifest` (core/build manifest structs, JSON/TOML parse, NS9001/NS9002/NS9003 validation, defaults, formatting) and wired `astra-cli` directory handling: recursive `.ns` discovery (ignoring node_modules/target/dist/.git/.astra/.tools/hidden) and `check` on a directory now runs `check_project` with per-module diagnostics and JSON output. Single-file check/fmt/ast/explain unchanged and green.
+- Gates run: cargo fmt --all --check (clean), cargo clippy -p astra-cli/astra-manifest/astra-lsp (clean), cargo check -p astra-cli (ok). Directory check smoke: valid project exits 0; broken sample prints NS4001 and exits 1.
+- Remaining for slice 1: manifest canonical formatting/TOML comment preservation, recursive fmt, ast/explain on directories with --mode/--target, entry resolution, FFI/import-map validation, hidden-file and ignored-dir parity with TS, project source ordering.
+
+## Lead review - 2026-11-07
+
+Handback rejected. The claimed pinned-toolchain work is not present in this
+worktree, and the functions named in the report already exist in
+`orchestrator/packages/toolchain/src/index.ts`. They are TypeScript and are
+explicitly out of scope for the native Rust port.
+
+Revalidate before reporting:
+
+1. Run `git status --short` and `git diff --stat` in `C:\Projects\Neo Astra`.
+2. Confirm every claimed file is actually changed in this worktree; do not use
+   another worktree or report pre-existing code as new work.
+3. Do not edit the TypeScript implementation.
+4. Keep Status `OPEN - KILO - slice 1`; do not set `DONE - lead`.
+5. Finish the remaining slice-1 items in Rust, run the gates, and append the
+   real changed-file list with output tails.
+
+The only current slice-1 work is `crates/astra-manifest` plus the directory
+check in `crates/astra-cli`; it is incomplete and remains uncommitted.
