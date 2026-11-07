@@ -18,11 +18,12 @@ do not invent decisions - mark the question instead.
   the output tail reported. A partial fix is not a handback.
 - Append only; do not edit the lead's task text.
 
-## Status: DONE - lead
+## Status: BLOCKED - principal
 
-Read both tasks below, write your `## Kilo log` entry, then code. Finish the
-CLI task first, then the LSP task. Do not leave either one partial. When all
-four gates are green - `cargo fmt --all --check`, `cargo clippy -p astra-cli
+Read the complete native CLI order at the end of this file. It supersedes the
+phase-1 CLI scope. Do not hand back a partial CLI. When all gates and the
+parity checks are green, write the `## Kilo log` entry and set Status to
+`DONE - lead`. When all four gates are green - `cargo fmt --all --check`, `cargo clippy -p astra-cli
 --all-targets -- -D warnings`, `cargo clippy -p astra-lsp --all-targets -- -D
 warnings`, and `cargo test -p astra-cli -p astra-lsp` - write the report in the
 same block and set Status to `DONE - lead`.
@@ -272,3 +273,282 @@ Do not start those here.
   - cargo clippy -p astra-lsp --all-targets -- -D warnings (clean)
   - cargo test -p astra-cli -p astra-lsp (5 + 4 passed)
 - Manual stdio smoke: initialize returned capabilities + serverInfo; didOpen published empty diagnostics; shutdown returned null.
+
+---
+
+## Task: native Rust CLI, complete port
+
+This order replaces the phase-1 CLI scope. The phase-1 crates are a starting
+point, not an acceptable handback. The principal wants the **entire** `astra`
+CLI and `nopm` surface in Rust, with no Bun, Node, TypeScript, or Python
+runtime in any production code path.
+
+## Definition of done
+
+A single `astra` binary built by Cargo must implement every command, option,
+JSON shape, diagnostic, and exit code currently implemented by the TypeScript
+`astra` CLI. A single `nopm` binary built by Cargo must implement every command
+currently implemented by the TypeScript `nopm` CLI. `astra nopm ...` must use
+the same native implementation as `nopm ...`.
+
+The TypeScript implementation is the behaviour oracle:
+
+- `orchestrator/packages/cli/src/index.ts`
+- `orchestrator/packages/manifest/src/index.ts`
+- `orchestrator/packages/toolchain/src/index.ts`
+- `orchestrator/packages/codegen-js/src/*`
+- `orchestrator/packages/codegen-ts/src/*`
+- `orchestrator/packages/nopm/src/*`
+- `orchestrator/packages/registry/src/index.ts`
+- `orchestrator/tests/**` (read-only reference tests)
+
+Match observable behaviour, not internal file layout. If a deliberate
+difference is unavoidable, write it under `## Kilo log` and set Status to
+`BLOCKED - principal`; do not silently change the CLI contract.
+
+## Ownership
+
+You own:
+
+- `crates/astra-cli/**`
+- `crates/astra-nopm/**`
+- new workspace crates for the pure-Rust pieces, proposed as:
+  - `crates/astra-manifest/**`
+  - `crates/astra-toolchain/**`
+  - `crates/astra-codegen-web/**` (JavaScript + TypeScript backends)
+  - `crates/astra-registry/**` (NoPM registry/HTTP client)
+- workspace `members` and dependency entries in `Cargo.toml`
+- `Cargo.lock` changes caused by the new crates
+
+Do not edit:
+
+- `orchestrator/**` (read it; do not port by editing it)
+- `crates/astra-core/**`
+- `crates/astra-capabilities/**`
+- `crates/astra-compiler-api/**`
+- `crates/astra-codegen-c/**`
+- `crates/astra-nova/**`
+- `scripts/**`, `Docs/**`, `conformance/**`, `.github/**`
+- `orchestrator/tests/**`
+
+If an existing Rust API is missing, add the smallest additive public API and
+record it in the log. Do not fork parser, checker, formatter, mode inference,
+or C-backend logic into a CLI crate.
+
+## Required `astra` surface
+
+Match the current TypeScript help text and command set exactly:
+
+```text
+astra check [dir] [--json]
+astra doctor [dir] [--json] [--no-download]
+astra build [dir] [--target <name>] [--emit <kind>] [--compiler <path>] [--json] [--no-download]
+astra fmt [path] [--check] [--json] [--compiler <path>]
+astra ast [path] [--json] [--compiler <path>] [--mode <mode>] [--target <name>]
+astra explain [path] [--json] [--compiler <path>] [--mode <mode>] [--target <name>]
+astra nopm <nopm args...>
+astra --help | -h | help
+astra --version | -v | version
+```
+
+There is no `run` command in the current `astra` CLI; do not invent one. Nova
+stays a separate binary.
+
+`--compiler` is retained for compatibility. The native CLI has the compiler
+in-process, so it must not spawn `astra-compiler`; accept the option and use
+the in-process compiler. A missing value, unknown option, extra positional
+argument, unknown mode, unknown target, or malformed manifest must fail with
+the same code and exit status as the oracle.
+
+### Manifest and project layer
+
+Port `@neo-astra/manifest` completely:
+
+- `core.json` / `core.toml` and `build.json` / `build.toml`
+- strict key validation and the exact `NS9001` / `NS9002` / `NS9003` errors
+- canonical key order and formatting
+- TOML comment preservation
+- project/build defaults (`native`, `core`, `auto`, integer policy, targets)
+- entry-point validation (`nova.entry`, inside project, `.ns`)
+- core/build discovery and conflict detection
+- dependency add/remove operations used by NoPM
+
+Port the project discovery and linking rules from the TS CLI:
+
+- recursive `.ns` discovery with the same ignored directories and hidden-file
+  rules
+- entry module and module keys
+- import specifier scanning and resolution
+- path-package linking, installed package roots, and import maps
+- FFI declaration / mapping validation, ownership metadata, and inline-script
+  consistency checks
+- source order for `check_project` / `compile_project`
+
+### `check`
+
+- Accept a file or directory; default to the current directory.
+- Validate manifests, discover the project, run the existing project boundary,
+  and report diagnostics in the current human and JSON shapes.
+- Include FFI mapping errors and project entry errors.
+- Exit 1 for any error diagnostic. JSON goes to stdout only; diagnostics go to
+  stderr for human output.
+
+### `fmt`
+
+- Format `.ns` files recursively and core/build manifests.
+- `--check` writes nothing and exits 1 when any file would change.
+- Preserve manifest comments exactly as the TS formatter does.
+- Support `--json` with the same per-file statuses and diagnostics.
+- Run formatting in memory through the existing Rust formatter; do not invoke
+  TypeScript.
+
+### `ast` and `explain`
+
+- Accept a file or a project directory; resolve the project entry when given a
+  directory.
+- Honor `--mode` and `--target`; unlike phase 1 they must actually affect the
+  request and the reported result.
+- Match the current JSON response shape for the compiler response, including
+  diagnostics, AST, and mode inference reasons.
+- Human output must remain stable enough for the existing tests.
+
+### `build`
+
+Implement the complete build pipeline in Rust:
+
+- Resolve `--target`, `ASTRA_TARGET`, `build.defaultTarget`; target config from
+  `targets.<name>`; backend `js`, `ts`, `c`, `native`.
+- Support `--emit executable|staticlib|cdylib|library` with the same rejection
+  rules.
+- Reject non-ESM JS/TS module formats and unsupported backends with the same
+  diagnostic codes.
+- C/native:
+  - use `astra-compiler-api::compile_project` / `compile`
+  - write translation units, headers, host shim, and inline script units
+  - compile and link with the resolved C toolchain; support Zig `cc`,
+    clang/gcc/cc, MSVC-compatible flags, `-fPIC` for shared ELF objects,
+    archiver fallback, static archives, shared libraries, and import libraries
+  - honor `ASTRA_CC`, `--no-download`, cflags from the target manifest, and
+    the same `NS9102` / `NS9015` / `NS8002` / `NS9014` failure codes
+- JS/TS:
+  - implement the JavaScript and TypeScript backends in Rust by porting the
+    typed-module emission from `codegen-js` and the TS wrapper from `codegen-ts`
+  - emit the same readable ESM, module specifiers, source maps, declarations,
+    inline-script artifacts, and `package.json` behaviour
+  - `@script:ts` may invoke the pinned native `tsc` binary (`ASTRA_TSC_BIN` or
+    the packaged TypeScript directory); it must not require Node or Bun
+  - output directory and entry selection must match the oracle
+- The build must print the same `built <target> -> <path>` line or JSON report
+  and exit 1 on any diagnostic error.
+- No `astra-compiler` subprocess for codegen. The CLI links the Rust compiler
+  directly.
+
+### `doctor` and toolchain
+
+Port `@neo-astra/toolchain` completely:
+
+- `toolchain.c` policy: `auto`, explicit compiler path/command, pinned
+  `zig@0.13.0` families, env/cache/path ladder
+- `ASTRA_CC` handling and probe output
+- pinned artifact table, exact URLs, sizes, SHA-256 verification, `tar.xz`
+  and `zip` extraction, cache layout, atomic install
+- `resolveToolchain`, `doctor`, `doctorAsync`, `--no-download`
+- same JSON shape, attempts, winner, and `NS9101` / `NS9102` / `NS9103`
+  diagnostics
+
+Use a pure-Rust HTTP/TLS stack and Rust archive decoders. No curl, Node, or
+Python.
+
+### `nopm`
+
+Port `@neo-astra/nopm`, `@neo-astra/registry`, and the manifest/toolchain
+pieces used by them. Required commands and options:
+
+```text
+nopm add <id>[@version] [dir] [--json] [--dry-run]
+nopm remove <name> [dir] [--json] [--dry-run]
+nopm lock [dir] [--json]
+nopm update [dir] [--json]
+nopm tree [dir] [--json]
+nopm install [dir] [--locked|--frozen] [--json]
+nopm search <query> [--registry <url>] [--json]
+nopm audit <id> [--registry <url>] [--json]
+nopm why <name> [--json]
+nopm version
+nopm help
+```
+
+Required behaviour:
+
+- same argument validation, help text, version output, exit codes, and JSON
+  diagnostics as the TS CLI
+- path, git, npm, cargo, pypi, nuget, oci, and registry adapters
+- `sys:` detection/install planning and the existing system tool allowlist
+- project read, lockfile format/hash/current checks, store layout, install
+  verification, and `--locked` / `--frozen` semantics
+- registry search/audit HTTP client with the same URL/path/schema behaviour
+- native `nopm` binary and `astra nopm` dispatch from one implementation
+- external package managers/git may be invoked as subprocesses; the CLI itself
+  must not require Node/Bun
+- all HTTP and archive work in Rust; no `fetch`, `curl`, or JS helper process
+
+## Engineering constraints
+
+- Pure Rust for all Neo Astra logic. No Node, Bun, TypeScript, Python, or
+  embedded JavaScript engine in the shipped path.
+- The pinned native `tsc` for `@script:ts` is the only external TypeScript
+  tool that may be executed; do not use it for the CLI/codegen itself.
+- Keep the public CLI contract stable. Do not rename diagnostic codes or JSON
+  fields.
+- Use `std::process::Command` for compilers, archivers, git, and package
+  managers. Use `windows-sys` only if a platform API is genuinely needed.
+- Keep new dependencies justified. Prefer blocking I/O (`ureq`/Rustls or an
+  equivalent pure-Rust stack), `tar`, `flate2`, `xz2`, and `zip` over large
+  frameworks.
+- No panics on malformed manifests, paths, JSON, HTTP bodies, archives, or
+  command lines.
+- Normal Rust comments are allowed in private source. No generated comments
+  should be added to output.
+- Do not modify the TypeScript implementation, public docs, scripts, tests, or
+  packaging. The lead will swap packaging after the parity suite is green.
+
+## Verification
+
+Run and report tails for:
+
+```sh
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+npm test
+```
+
+The lead's parity suite is `npm run test:native-parity`. It is intentionally
+red until the port is complete. It will compare the native binaries to the
+TypeScript oracle across:
+
+- manifest discovery/formatting and JSON diagnostics
+- project `check` with valid, broken, foreign-module, and inline-script cases
+- `fmt --check`, `ast`, and `explain` on files and projects
+- `build` for `native`, `c`, `js`, and `ts`; executable, staticlib, cdylib
+- `doctor` with env/cache/path and `--no-download`
+- `nopm` path add/remove/lock/tree/install and registry search/audit
+- `astra nopm` and the standalone `nopm` binary producing identical results
+- no `node`, `bun`, `astra-compiler`, or `nopm` child process in core command
+  traces
+
+Smoke the release binaries on the public examples and report exit codes,
+stdout, and stderr.
+
+## Handback
+
+- Complete implementation in the owned tree.
+- One `## Kilo log` entry with changed files, commands run, output tails, and
+  any intentional deviations.
+- Status `DONE - lead` only when the entire surface is implemented and green.
+  Do not hand back a phase-1 or partial CLI.
+- Do not commit or push.
+
+- Phase-1 `crates/astra-cli` and `crates/astra-lsp` are implemented and green (gates above).
+- The "complete port" order requires porting ~770 LOC of manifest logic, toolchain resolution with HTTP/archive decoders, JS/TS codegen backends, registry HTTP client, and the full nopm surface, plus project discovery/linking/FFI validation. This is a multi-week engineering effort that exceeds a single session; implementing it partially would violate "do not hand back a partial CLI" and risk silently changing the contract.
+- Request: principal to scope this into smaller sequential orders (manifest+project check, then build, then doctor/toolchain, then nopm, then codegen) or allocate a longer horizon. No partial code committed; existing phase-1 crates remain untouched.
