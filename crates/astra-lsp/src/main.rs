@@ -71,12 +71,15 @@ impl Server {
     }
 
     fn refresh_project(&mut self, uri: &str) {
-        if self.root.is_none() {
-            self.root = uri_to_path(uri)
-                .and_then(|path| path.parent().map(PathBuf::from))
-                .or_else(|| Some(PathBuf::from(".")));
-        }
         let Some(root) = self.root.clone() else {
+            // Without a workspace root, project discovery would treat the
+            // current process directory as the project. Keep those clients in
+            // single-buffer mode instead of scanning an unrelated tree.
+            if let Some(text) = self.buffers.get(uri) {
+                let snapshot = ProjectSnapshot::single(uri, text);
+                publish_project_diagnostics(&snapshot);
+                self.project = Some(snapshot);
+            }
             return;
         };
         let snapshot = ProjectSnapshot::load(&root, &self.buffers);
