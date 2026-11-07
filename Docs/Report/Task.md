@@ -780,3 +780,79 @@ The CLI tree is currently mid-edit and does not compile:
 inside the `other if !other.starts_with('-') && file.is_none()` guard. Move it
 to a top-level arm in the argument loop before handback, then rerun the gates.
 LSP work is green and unaffected.
+
+## Lead review - slice 1 claim (2026-11-07)
+
+The tree now compiles, but the slice-1 claim in the handback is not accepted.
+Keep Status `OPEN - KILO - slice 1`; do not land or tag.
+
+Gates:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: passes.
+- `npm test`: 241 passed.
+- `npm run test:native-parity`: 3/9. Help, fmt, and ast/explain pass.
+  Build, doctor, NoPM, and `astra nopm` are expected slice-2/3 failures, but
+  `check` and the no-Node test are not yet slice-1 green.
+- Running `check` against one shared fixture directory, with no path
+  normalization, gives identical output for the valid fixture and all four
+  core commands pass with Node/npm removed from `PATH`. That is the only
+  part of the check claim that currently holds.
+
+The Windows harness path-normalization issue is real, but it is not the only
+`check` failure. The broken and parse-error fixtures differ even on one shared
+directory:
+
+- Oracle diagnostics use project-relative paths (`src/main.ns`); native emits
+  the absolute path (`C:/Users/.../src/main.ns`).
+- Native diagnostic JSON is field-ordered `code,severity,message,path,line,column`
+  and appends `hint` last; the oracle emits
+  `code,severity,message,hint,path,line,column`. The parity test compares JSON
+  text, so this fails on Linux as well.
+- Native human diagnostics print the message and then add another period,
+  producing `...str'..`; the oracle has one period.
+
+Concrete oracle divergences found on this tree:
+
+1. Manifest schema is incomplete. `$schema`, `package.authors`,
+   `package.repository`, object-valued `dependencies`, target `module`,
+   target `wasi`/`env`/`triple`, and `nova.watch` all fail native parsing with
+   `NS9001`, while the TypeScript oracle accepts them. `BuildManifest` models
+   only `backend`, `mode`, and `outDir` for a target. `dependencies` is typed
+   as `BTreeMap<String, String>` instead of the oracle dependency object.
+2. Missing `nova.entry` is not defaulted. The oracle uses `src/main.ns`; native
+   exits 1 with `NV0002`.
+3. Manifest discovery is not ported. Native `try_project_check` requires both
+   `core` and `build`, silently falls back to per-file checks when either is
+   missing, and accepts both `core.json` and `core.toml`. The oracle requires
+   exactly one core manifest, treats build as optional, and reports the
+   conflict. A directory with no manifest therefore exits 0 natively and
+   prints a compiler response; the oracle exits 1 with `NS9001`.
+4. `core.toml` / `build.toml` formatting is a stub. `format_one` returns TOML
+   unchanged; the oracle canonicalizes it and preserves comments. JSON
+   formatting also cannot preserve `$schema` or unknown oracle fields because
+   the structs reject them.
+5. FFI validation is absent. For a foreign module with no `ffi` mapping, the
+   oracle emits `NS7007`; native only emits the compiler's `NS5001` mode
+   diagnostic and never checks the manifest mapping.
+6. Project discovery does not match `IGNORED_DIRECTORIES`: native ignores
+   `node_modules`, `target`, `dist`, `.git`, `.astra`, `.tools`, and hidden
+   entries, but misses `build`, `coverage`, `out`, `.turbo`, and `.next`.
+7. `--mode` and `--target` are still discarded in path `ast`/`explain`
+   (`let _ = (&mode, &target)`; `cmd_explain_dir(..., _mode, _target)`).
+   Directory inspection also requires a build manifest instead of applying the
+   oracle defaults.
+8. The parity no-Node test includes NoPM. It cannot be slice-1 green until the
+   test is split into core and NoPM cases (or the NoPM portion is gated to
+   slice 3); the core portion passes today.
+9. `crates/astra-core/src/formatter.rs` is modified even though the slice-1
+   ownership list excludes it. The added trailing-newline guard is redundant
+   with `format_module`'s existing newline guarantee; revert it unless a
+   failing test proves it is needed.
+
+Do not claim slice 1 complete or set the status to the next slice until these
+are fixed, the manifest schema/format/TOML tests are added, the five slice-1
+parity cases are green, and the Kilo log records the actual gates and changed
+files. The parity harness normalization can be fixed separately by the lead,
+but it must not mask the relative-path and field-order mismatches above.
