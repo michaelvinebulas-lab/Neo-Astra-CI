@@ -121,6 +121,10 @@ fn main() {
                         "documentFormattingProvider": true,
                         "hoverProvider": true,
                         "definitionProvider": true,
+                        "documentSymbolProvider": true,
+                        "signatureHelpProvider": {
+                            "triggerCharacters": ["(", ","]
+                        },
                         "completionProvider": {
                             "triggerCharacters": [".", ":"]
                         }
@@ -286,6 +290,41 @@ fn main() {
                         features::completion(snapshot, &uri, line, character)
                     })
                     .unwrap_or_default();
+                    write_message(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    }));
+                }
+            }
+            "textDocument/documentSymbol" => {
+                if let Some(id) = msg.id.clone() {
+                    let uri = msg
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("textDocument"))
+                        .and_then(|document| document.get("uri"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    let result = with_snapshot(&server, &uri, |snapshot| {
+                        features::document_symbols(snapshot, &uri)
+                    })
+                    .unwrap_or_default();
+                    write_message(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    }));
+                }
+            }
+            "textDocument/signatureHelp" => {
+                if let Some(id) = msg.id.clone() {
+                    let (uri, line, character) = request_position(msg.params.as_ref());
+                    let result = with_snapshot(&server, &uri, |snapshot| {
+                        features::signature_help(snapshot, &uri, line, character)
+                    })
+                    .flatten();
                     write_message(&json!({
                         "jsonrpc": "2.0",
                         "id": id,
