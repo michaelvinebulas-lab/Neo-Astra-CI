@@ -125,6 +125,7 @@ fn main() {
                         "documentHighlightProvider": true,
                         "documentSymbolProvider": true,
                         "workspaceSymbolProvider": true,
+                        "renameProvider": true,
                         "signatureHelpProvider": {
                             "triggerCharacters": ["(", ","]
                         },
@@ -314,6 +315,27 @@ fn main() {
                         features::document_highlight(snapshot, &uri, line, character)
                     })
                     .unwrap_or_default();
+                    write_message(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    }));
+                }
+            }
+            "textDocument/rename" => {
+                if let Some(id) = msg.id.clone() {
+                    let (uri, line, character) = request_position(msg.params.as_ref());
+                    let new_name = msg
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("newName"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    let result = with_snapshot(&server, &uri, |snapshot| {
+                        features::rename(snapshot, &uri, line, character, &new_name)
+                    })
+                    .flatten();
                     write_message(&json!({
                         "jsonrpc": "2.0",
                         "id": id,

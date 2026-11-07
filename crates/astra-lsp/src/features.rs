@@ -61,7 +61,7 @@ pub fn definition(
     let module = snapshot.module_for_uri(uri)?;
     let offset = position_to_offset(&module.text, line, character);
     let word = identifier_at(&module.text, offset)?;
-    let target = definition_target(snapshot, module, &word, offset)?;
+    let target = reference_target(snapshot, module, &word, offset)?;
     location_json(snapshot, &target)
 }
 
@@ -556,7 +556,94 @@ fn find_call_in_expr(expression: &ast::Expr, offset: usize) -> Option<&ast::Expr
     }
 }
 
-/// Returns all references to the symbol at an LSP position.
+/// Returns a safe rename edit for the symbol at an LSP position.
+#[must_use]
+pub fn rename(
+    snapshot: &ProjectSnapshot,
+    uri: &str,
+    line: u32,
+    character: u32,
+    new_name: &str,
+) -> Option<Value> {
+    if !valid_identifier(new_name) || KEYWORDS.contains(&new_name) {
+        return None;
+    }
+    let module = snapshot.module_for_uri(uri)?;
+    let offset = position_to_offset(&module.text, line, character);
+    let word = identifier_at(&module.text, offset)?;
+    if word.text == new_name {
+        return None;
+    }
+    let target = reference_target(snapshot, module, &word, offset)?;
+    resolved_id(snapshot, &target)?;
+    if target.item.is_none() && target.export.is_none() && !is_local_binding(snapshot, &target) {
+        // Struct fields need constructor and pattern rewriting that the
+        // reference model does not yet cover.
+        return None;
+    }
+    if target_name_exists(snapshot, &target, new_name) {
+        return None;
+    }
+
+    let references = references(snapshot, uri, line, character, true);
+    if references.is_empty() {
+        return None;
+    }
+    let mut changes: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+    for reference in references {
+        let Some(uri) = reference["uri"].as_str() else {
+            continue;
+        };
+        let Some(range) = reference["range"].as_object() else {
+            continue;
+        };
+        changes.entry(uri.to_owned()).or_default().push(json!({
+            "range": range,
+            "newText": new_name
+        }));
+    }
+    if changes.is_empty() {
+        return None;
+    }
+    Some(json!({ "changes": changes }))
+}
+
+fn is_local_binding(snapshot: &ProjectSnapshot, target: &Resolved) -> bool {
+    let Some(module) = snapshot.module(&target.module_key) else {
+        return false;
+    };
+    let Some(target_id) = resolved_id(snapshot, target) else {
+        return false;
+    };
+    collect_bindings(module).iter().any(|binding| {
+        let span = name_span(&module.text, binding.span, &binding.name);
+        span.start == target_id.start && span.end == target_id.end
+    })
+}
+
+fn target_name_exists(snapshot: &ProjectSnapshot, target: &Resolved, name: &str) -> bool {
+    let Some(module) = snapshot.module(&target.module_key) else {
+        return false;
+    };
+    let Some(ir) = &module.ir else {
+        return false;
+    };
+    ir.hir.items.iter().any(|item| item.name == name)
+        || ir.hir.symbols.get(name).is_some()
+        || ir.hir.symbols.types.contains_key(name)
+        || ir.hir.symbols.namespaces.contains_key(name)
+}
+
+fn valid_identifier(value: &str) -> bool {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_alphabetic()) {
+        return false;
+    }
+    characters.all(|character| character == '_' || character.is_alphanumeric())
+}
 #[must_use]
 pub fn references(
     snapshot: &ProjectSnapshot,
@@ -664,8 +751,36 @@ fn reference_target(
     word: &Word,
     offset: usize,
 ) -> Option<Resolved> {
-    field_declaration_target(module, word)
+    import_specifier_target(snapshot, module, word)
+        .or_else(|| field_declaration_target(module, word))
         .or_else(|| definition_target(snapshot, module, word, offset))
+}
+
+fn import_specifier_target(
+    snapshot: &ProjectSnapshot,
+    module: &ProjectModule,
+    word: &Word,
+) -> Option<Resolved> {
+    let ir = module.ir.as_ref()?;
+    for import in &ir.hir.imports {
+        let bindings = match &import.kind {
+            hir::ImportKind::Named { bindings }
+            | hir::ImportKind::DefaultNamed { bindings, .. } => bindings,
+            _ => continue,
+        };
+        for binding in bindings {
+            let imported_span = name_span(&module.text, binding.span, &binding.imported);
+            if imported_span == word.span() {
+                return resolve_name(
+                    snapshot,
+                    &import.module,
+                    &binding.imported,
+                    &mut BTreeSet::new(),
+                );
+            }
+        }
+    }
+    None
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -1946,6 +2061,11 @@ mod tests {
             "import { value, User, add } from \"./util.ns\"\nimport * as util from \"./util.ns\"\npub fn main() -> i32 { let count = value(); let other = util.value(); let total = add(1, 2); return count }\n",
         )
         .expect("write main");
+        std::fs::write(
+            root.join("src/alias.ns"),
+            "import { value as read } from \"./util.ns\"\npub fn run() -> i32 { return read() }\n",
+        )
+        .expect("write alias");
         ProjectSnapshot::load(&root, &HashMap::new())
     }
 
@@ -2174,5 +2294,70 @@ mod tests {
                 .iter()
                 .any(|symbol| symbol["name"] == "name" && symbol["kind"] == 12)
         );
+    }
+
+    #[test]
+    fn rename_updates_local_bindings() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "let count", "let ".len() + 1);
+        let edit = rename(&snapshot, &module.uri, line, character, "total").expect("rename");
+        let edits = edit["changes"][module.uri.as_str()]
+            .as_array()
+            .expect("edits");
+        assert_eq!(edits.len(), 2, "{edits:#?}");
+        assert!(edits.iter().all(|edit| edit["newText"] == "total"));
+    }
+
+    #[test]
+    fn rename_updates_cross_module_imports_and_calls() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "value()", 1);
+        let edit = rename(&snapshot, &module.uri, line, character, "fetch").expect("rename");
+        let changes = edit["changes"].as_object().expect("changes");
+        let main_edits = changes
+            .iter()
+            .find(|(uri, _)| uri.ends_with("main.ns"))
+            .map(|(_, edits)| edits.as_array().expect("main edits"))
+            .expect("main edits");
+        let util_edits = changes
+            .iter()
+            .find(|(uri, _)| uri.ends_with("util.ns"))
+            .map(|(_, edits)| edits.as_array().expect("util edits"))
+            .expect("util edits");
+        assert_eq!(main_edits.len(), 3, "{main_edits:#?}");
+        assert_eq!(util_edits.len(), 1, "{util_edits:#?}");
+        assert!(
+            main_edits
+                .iter()
+                .chain(util_edits)
+                .all(|edit| edit["newText"] == "fetch")
+        );
+    }
+
+    #[test]
+    fn rename_leaves_import_aliases_and_their_uses_alone() {
+        let snapshot = project();
+        let module = snapshot.module("src/util.ns").expect("module");
+        let (line, character) = position(&module.text, "fn value", "fn ".len() + 1);
+        let edit = rename(&snapshot, &module.uri, line, character, "fetch").expect("rename");
+        let alias = snapshot.module("src/alias.ns").expect("alias module");
+        let edits = edit["changes"][alias.uri.as_str()]
+            .as_array()
+            .expect("alias edits");
+        assert_eq!(edits.len(), 1, "{edits:#?}");
+        assert_eq!(edits[0]["newText"], "fetch");
+        assert_eq!(edits[0]["range"]["start"]["line"], 0);
+        assert_eq!(edits[0]["range"]["start"]["character"], 9);
+    }
+
+    #[test]
+    fn rename_rejects_invalid_names_and_fields() {
+        let snapshot = project();
+        let module = snapshot.module("src/util.ns").expect("module");
+        let (line, character) = position(&module.text, "name: str", 1);
+        assert!(rename(&snapshot, &module.uri, line, character, "title").is_none());
+        assert!(rename(&snapshot, &module.uri, line, character, "let").is_none());
     }
 }
