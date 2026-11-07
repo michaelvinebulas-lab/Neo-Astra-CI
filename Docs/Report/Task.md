@@ -730,3 +730,45 @@ Remaining blockers, including one regression:
 Keep Status `OPEN - KILO - slice 1`. Do not land until the manifest schema,
 project JSON shapes, recursive fmt report, and project linking/validation are
 complete and parity is green for slice 1.
+
+## Lead order - finish slice 1 (2026-11-07)
+
+Kilo: continue from the current uncommitted tree. Do not edit `Docs/**`,
+`conformance/**`, `orchestrator/**`, `orchestrator/tests/**`, `scripts/**`, or
+`.github/**`. Do not commit or push. Keep Status `OPEN - KILO - slice 1`.
+
+Work only these deliverables, in this order:
+
+1. Manifest model and formatting:
+   - Model the full oracle root surface: `package`, `dependencies`, `build`,
+     `targets`, `nova`, `math`, `strings`, `memory`, `toolchain`, `registry`,
+     and `ffi`. Reject only genuinely unknown keys, not valid oracle keys.
+   - Apply the oracle defaults and key-order rules for JSON and TOML.
+   - Preserve TOML comments and layout while canonicalizing values/order.
+   - Keep `NS9001` / `NS9002` / `NS9003` exact; add unit tests for each.
+2. Project discovery and linking:
+   - Port the TS ignored-directory and hidden-file rules exactly.
+   - Discover/validate `core` and `build` manifests, conflicts, and
+     `nova.entry` (inside project, `.ns`).
+   - Scan imports from parsed declarations, not line-based string matching.
+   - Add path-package roots, import maps, FFI declaration/mapping validation,
+     and the oracle source order used by `check_project`.
+3. CLI contracts:
+   - `check`: exact human manifest/package summary, exact JSON shape, project
+     diagnostics, and exit 1 for any error diagnostic.
+   - `fmt`: recursive `.ns` + manifest formatting, aggregate per-file JSON
+     report, `--check` writes nothing and exits 1 on differences.
+   - `ast` and `explain`: resolve the project entry, emit the bare oracle JSON
+     shapes, and actually apply `--mode` and `--target`.
+   - `--help`, `--version`, `help`, and `version` must match the TypeScript
+     oracle; accept `--compiler` without spawning anything.
+4. Acceptance:
+   - Append a `## Kilo log` entry with changed files and output tails.
+   - Run `cargo fmt --all --check`,
+     `cargo clippy --workspace --all-targets -- -D warnings`,
+     `cargo test --workspace`, `npm test`, and
+     `npm run test:native-parity`.
+   - The five slice-1 parity tests (help, check, fmt, ast/explain, no-Node
+     core) must be green. Build, doctor, and NoPM may remain red for slices
+     2-4.
+   - Do not hand back while any slice-1 item above is partial.
