@@ -209,7 +209,7 @@ try {
           name: "package-smoke",
           version: "0.0.0",
           edition: "2026",
-          license: "MIT",
+          license: "Apache-2.0",
         },
       },
       null,

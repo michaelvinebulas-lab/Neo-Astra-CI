@@ -66,8 +66,9 @@ Public tree adds:
 - pull-request and issue templates
 - `examples/`
 
-Keep tests private unless the principal reverses that decision. Examples may
-carry teaching comments; generated output remains comment-free.
+Keep tests private unless the principal reverses that decision. Public source
+comments are stripped, including `.ns` example comments; generated output
+remains comment-free.
 
 Acceptance: a new user can land on the repo, understand what is stable,
 install it, run an example, and know how to contribute. License metadata
@@ -121,10 +122,10 @@ Owner: Kilo + lead review.
 Owner: Kilo (phase 1), lead wires CLI/tests.
 
 - Phase 1: stdio language server; initialize, `didOpen`, `didChange`,
-  `publishDiagnostics`, shutdown/exit.
+  `publishDiagnostics`, formatting, shutdown/exit.
 - Use the existing compiler boundary for diagnostics; do not duplicate the
   type checker.
-- Phase 2: completion, hover, go-to-definition, formatting.
+- Phase 2: completion, hover, go-to-definition, and project graph.
 - Acceptance: a test client receives diagnostics for a broken file and clean
   results for a valid one.
 
@@ -189,36 +190,23 @@ Owner: lead.
 
 - **Lead:** P0 trust/public repo, release provenance, docs/examples, platform
   packaging, review and landing.
-- **Kilo:** one isolated code slice at a time. Start with LSP phase 1 once the
-  lead creates the task order in `Docs/Report/Task.md`; do not edit `Docs/**`,
-  `scripts/**`, `.github/**`, `orchestrator/tests/**`, or `conformance/**`.
+- **Kilo:** one isolated code slice at a time. Current order: native Rust CLI
+  phase 1, then native LSP phase 1. Do not edit `Docs/**`, `scripts/**`,
+  `.github/**`, `orchestrator/tests/**`, or `conformance/**`.
 
-## Decisions needed
+## Decisions
 
-1. **License and company obligation:** no standard open-source license can
-   require companies to contribute or maintain the upstream project. The
-   practical choices are:
-   - **AGPL-3.0 + NOTICE + CONTRIBUTORS + a commercial license option.** This
-     is OSI open source. Companies may use it, but network use or distribution
-     of modifications carries source-sharing obligations. A paid commercial
-     license can remove those obligations, and a support/maintenance contract
-     can fund the project. It still does not legally require companies to
-     maintain upstream.
-   - **Apache-2.0 + NOTICE + CONTRIBUTORS.** Maximum adoption; companies are
-     asked to contribute but are not required to.
-   - **Custom source-available license.** Can make contribution, attribution,
-     or maintenance a condition, but it is not open source and needs legal
-     review.
-
-   Recommendation: decide whether "must contribute and maintain" is a legal
-   condition or a community expectation. If legal, use AGPL plus a commercial
-   contract. If a community expectation, use Apache-2.0 and a strong
-   `CONTRIBUTING.md`/`GOVERNANCE.md` policy. Do not describe a standard
-   permissive license as requiring maintenance.
-2. **Public source comments:** recommend keeping human-written Rust/TypeScript
-   comments in the public source for contributors; continue stripping
-   generated C/JS/TS output. The current comment-free source makes review and
-   contribution harder.
-3. **LSP architecture:** recommend a TypeScript LSP bundled into the current
-   `astra` binary for phase 1, then move it into the native Rust CLI with the
-   P1-1 rework.
+1. **License:** Apache-2.0 with `NOTICE` and `CONTRIBUTORS.md`. This is a
+   permissive license: companies may use, modify, and distribute Neo Astra
+   without a contribution obligation. Commercial contribution and maintenance
+   are a community expectation stated in `CONTRIBUTING.md`, not a license
+   condition. Do not describe Apache-2.0 as requiring companies to contribute.
+2. **Public source comments:** strip all source comments, including `.ns`
+   example comments. Documentation carries the explanation. Generated C/JS/TS
+   output remains comment-free.
+3. **LSP architecture:** native Rust server in `crates/astra-lsp`, using the
+   existing compiler boundary. Phase 1 is stdio diagnostics plus formatting;
+   project graph, hover, definitions, and completion follow.
+4. **Parallel ownership:** Kilo owns both the native Rust CLI and the native
+   LSP phase 1, in separate crates. The lead owns public docs, license,
+   packaging, review, and tests.

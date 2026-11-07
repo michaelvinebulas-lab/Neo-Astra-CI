@@ -26,6 +26,7 @@ const skippedDirectories = new Set([
   "conformance",
   "dist",
   "node_modules",
+  "public",
   "target",
 ]);
 const skippedFiles = new Set([
@@ -103,6 +104,8 @@ function cleanFile(path, text) {
         ? stripCCommentsInRawStrings(stripped)
         : stripped;
   } else if (normalized.endsWith(".ts") || normalized.endsWith(".mjs") || normalized.endsWith(".js")) {
+    cleaned = stripJs(text);
+  } else if (normalized.endsWith(".ns")) {
     cleaned = stripJs(text);
   } else if (normalized.endsWith(".toml")) {
     cleaned = stripHashComments(text);
@@ -469,6 +472,7 @@ function publicPackageJson() {
       name: manifest.name,
       version: manifest.version,
       private: true,
+      license: manifest.license,
       description: manifest.description,
       type: manifest.type,
       engines: manifest.engines,
@@ -626,6 +630,24 @@ function prepareOutput() {
 
 prepareOutput();
 copyTree(root, out);
+copyOverlay(join(root, "public"), out);
+
+function copyOverlay(source, destination, relativePath = "") {
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    const childRelative = relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
+    const childSource = join(source, entry.name);
+    const childDestination = join(destination, entry.name);
+    if (entry.isDirectory()) {
+      mkdirSync(childDestination, { recursive: true });
+      copyOverlay(childSource, childDestination, childRelative);
+    } else if (entry.isFile()) {
+      const text = readFileSync(childSource, "utf8");
+      const cleaned = cleanFile(childRelative, text);
+      mkdirSync(dirname(childDestination), { recursive: true });
+      writeFileSync(childDestination, cleaned, "utf8");
+    }
+  }
+}
 
 const publicPackage = publicPackageJson();
 writeFileSync(join(out, "package.json"), publicPackage, "utf8");
