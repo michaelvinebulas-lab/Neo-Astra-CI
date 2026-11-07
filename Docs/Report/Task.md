@@ -653,3 +653,42 @@ Gates: `cargo test -p astra-lsp` (28 green),
 `cargo clippy -p astra-lsp --all-targets -- -D warnings` (clean), and a manual
 stdio smoke covering initialize, didOpen, hover, definition, completion,
 shutdown, and exit. This does not change the Kilo slice-1 status.
+
+## Lead review - slice 1 revalidation (2026-11-07)
+
+The current working tree contains only `Cargo.toml`, `Cargo.lock`,
+`crates/astra-cli/**`, and the new `crates/astra-manifest/**` from Kilo. No
+`Docs/**`, `conformance/**`, `orchestrator/tests/**`, or TypeScript files were
+changed. Keep Status `OPEN - KILO - slice 1`; this is not a handback.
+
+Gates:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: **fails** with four
+  lints in `crates/astra-cli/src/main.rs` (`collapsible_if` at lines 84, 95,
+  and 96; `comparison_to_empty` at line 129).
+- `cargo test --workspace`: passes, but `astra-manifest` has zero unit tests;
+  the CLI still has only its five phase-1 tests.
+- `npm test`: 241 passed.
+- `npm run test:native-parity`: 0/9. For slice 1, help, project `check`, `fmt`,
+  and project `ast`/`explain` still differ from the TypeScript oracle; build,
+  doctor, NoPM, and `astra nopm` failures belong to slices 2-4.
+
+Concrete slice-1 defects found:
+
+- An invalid `core.json` (`{"package":{}}`) exits 0 because
+  `try_project_check` uses `?` and silently falls back to per-file checks. It
+  must report `NS9003` (or `NS9001`) instead of hiding the manifest error.
+- `check` does not emit the manifest/package summary or the oracle JSON shape.
+- `fmt` still emits a single-file `FormatResponse`, does not format
+  `core.json`/`core.toml`, and has no per-file JSON report.
+- `ast` and `explain` on a directory iterate every `.ns` file, print Rust debug
+  data, and `explain` discards `--mode`/`--target` (`let _ = (mode, target)`).
+  They must resolve the project entry and use the oracle response shapes.
+- `scan_import_specifiers` is a line-based string scan; it does not cover the
+  parser-level import/path patterns, comments, or multiline declarations, and
+  there is no FFI/import-map validation, package-root linking, or source-order
+  parity yet.
+
+Fix these together with the remaining slice-1 items, rerun all gates, and append
+a real changed-file list and output tails. Do not land the partial crate.
