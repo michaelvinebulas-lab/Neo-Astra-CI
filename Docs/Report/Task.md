@@ -692,3 +692,41 @@ Concrete slice-1 defects found:
 
 Fix these together with the remaining slice-1 items, rerun all gates, and append
 a real changed-file list and output tails. Do not land the partial crate.
+
+## Lead review - slice 1 progress (2026-11-07, second pass)
+
+The lint gates are now green:
+
+- `cargo fmt --all --check`: clean.
+- `cargo clippy --workspace --all-targets -- -D warnings`: clean.
+- `cargo test --workspace`: passes; `astra-cli` 5, `astra-manifest` 5, `astra-lsp` 28.
+- `node --test orchestrator/tests/native-tools.test.mjs`: 2 passed.
+- `npm test`: 241 passed.
+- `npm run test:native-parity`: still 0/9.
+
+Good fixes:
+
+- Invalid `core.json` now exits 1 with `NS9001` instead of silently falling
+  back to per-file checks.
+- Directory `ast`/`explain` now attempt `resolve_project_entry` first.
+
+Remaining blockers, including one regression:
+
+- `BuildManifest` uses `deny_unknown_fields` but models only `build`,
+  `targets`, and `nova`. The oracle accepts `math`, `strings`, `memory`,
+  `toolchain`, `registry`, and `ffi`; a valid parity project now fails
+  `check` with `NS9001: invalid build manifest: unknown field 'math'`. The
+  no-Node parity test reports this as a native failure.
+- Directory `ast` still emits the `AstResponse` wrapper instead of the bare
+  AST object, and its argument parser does not accept/apply `--mode` or
+  `--target`.
+- Directory `explain` resolves the entry but ignores `--mode` and `--target`;
+  `explain <dir> --mode web --target js` still prints `core (inferred)`.
+- `fmt` still emits one `FormatResponse` per source file, does not format
+  `core.json`/`core.toml`, and has no aggregate per-file JSON report.
+- `scan_import_specifiers` remains a line-based string scan; FFI/import-map
+  validation, package-root linking, and oracle source order are not present.
+
+Keep Status `OPEN - KILO - slice 1`. Do not land until the manifest schema,
+project JSON shapes, recursive fmt report, and project linking/validation are
+complete and parity is green for slice 1.
