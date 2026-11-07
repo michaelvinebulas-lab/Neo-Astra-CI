@@ -503,6 +503,263 @@ fn find_call_in_expr(expression: &ast::Expr, offset: usize) -> Option<&ast::Expr
     }
 }
 
+/// Returns all references to the symbol at an LSP position.
+#[must_use]
+pub fn references(
+    snapshot: &ProjectSnapshot,
+    uri: &str,
+    line: u32,
+    character: u32,
+    include_declaration: bool,
+) -> Vec<Value> {
+    let Some(module) = snapshot.module_for_uri(uri) else {
+        return Vec::new();
+    };
+    let offset = position_to_offset(&module.text, line, character);
+    let Some(word) = identifier_at(&module.text, offset) else {
+        return Vec::new();
+    };
+    let Some(target) = reference_target(snapshot, module, &word, offset) else {
+        return Vec::new();
+    };
+    let Some(target_id) = resolved_id(snapshot, &target) else {
+        return Vec::new();
+    };
+
+    let mut locations: BTreeMap<(String, u64, u64, u64, u64), Value> = BTreeMap::new();
+    for module in snapshot.modules.values() {
+        for word in identifiers(&module.text) {
+            if word.text != target.name {
+                continue;
+            }
+            let Some(candidate) = reference_target(snapshot, module, &word, word.start) else {
+                continue;
+            };
+            let Some(candidate_id) = resolved_id(snapshot, &candidate) else {
+                continue;
+            };
+            if candidate_id != target_id {
+                continue;
+            }
+            if !include_declaration && word.start == candidate_id.start {
+                continue;
+            }
+            let location = json!({
+                "uri": module.uri,
+                "range": span_range_json(&module.text, word.span())
+            });
+            locations.insert(location_key(&location), location);
+        }
+    }
+
+    if include_declaration && let Some(location) = location_json(snapshot, &target) {
+        locations.insert(location_key(&location), location);
+    }
+
+    locations.into_values().collect()
+}
+
+/// Returns same-symbol highlights within the current document.
+#[must_use]
+pub fn document_highlight(
+    snapshot: &ProjectSnapshot,
+    uri: &str,
+    line: u32,
+    character: u32,
+) -> Vec<Value> {
+    let Some(module) = snapshot.module_for_uri(uri) else {
+        return Vec::new();
+    };
+    let offset = position_to_offset(&module.text, line, character);
+    let Some(word) = identifier_at(&module.text, offset) else {
+        return Vec::new();
+    };
+    let Some(target) = reference_target(snapshot, module, &word, offset) else {
+        return Vec::new();
+    };
+    let Some(target_id) = resolved_id(snapshot, &target) else {
+        return Vec::new();
+    };
+    let mut highlights = BTreeMap::new();
+    for word in identifiers(&module.text) {
+        if word.text != target.name {
+            continue;
+        }
+        let Some(candidate) = reference_target(snapshot, module, &word, word.start) else {
+            continue;
+        };
+        let Some(candidate_id) = resolved_id(snapshot, &candidate) else {
+            continue;
+        };
+        if candidate_id != target_id {
+            continue;
+        }
+        highlights.insert(
+            (word.start, word.end),
+            json!({
+                "range": span_range_json(&module.text, word.span()),
+                "kind": 1
+            }),
+        );
+    }
+    highlights.into_values().collect()
+}
+
+fn reference_target(
+    snapshot: &ProjectSnapshot,
+    module: &ProjectModule,
+    word: &Word,
+    offset: usize,
+) -> Option<Resolved> {
+    field_declaration_target(module, word)
+        .or_else(|| definition_target(snapshot, module, word, offset))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SymbolId {
+    module_key: String,
+    start: usize,
+    end: usize,
+}
+
+fn resolved_id(snapshot: &ProjectSnapshot, target: &Resolved) -> Option<SymbolId> {
+    let module = snapshot.module(&target.module_key)?;
+    let span = name_span(&module.text, target.span, &target.name);
+    if span.start == span.end {
+        return None;
+    }
+    Some(SymbolId {
+        module_key: target.module_key.clone(),
+        start: span.start,
+        end: span.end,
+    })
+}
+
+fn field_declaration_target(module: &ProjectModule, word: &Word) -> Option<Resolved> {
+    let ir = module.ir.as_ref()?;
+    ir.ast
+        .items
+        .iter()
+        .find_map(|item| field_declaration_in_item(module, word, item))
+}
+
+fn field_declaration_in_item(
+    module: &ProjectModule,
+    word: &Word,
+    item: &ast::Item,
+) -> Option<Resolved> {
+    match &item.kind {
+        ItemKind::Struct(declaration) => {
+            let ast::StructFields::Named(fields) = &declaration.fields else {
+                return None;
+            };
+            for field in fields {
+                let span = name_span(&module.text, field.span, &field.name);
+                if span == word.span() {
+                    return Some(Resolved {
+                        module_key: module.key.clone(),
+                        name: field.name.clone(),
+                        span: field.span,
+                        item: None,
+                        export: None,
+                    });
+                }
+            }
+            None
+        }
+        ItemKind::ScopedItems(scoped) => scoped
+            .items
+            .iter()
+            .find_map(|item| field_declaration_in_item(module, word, item)),
+        _ => None,
+    }
+}
+
+fn identifiers(text: &str) -> Vec<Word> {
+    let mut identifiers = Vec::new();
+    let mut index = 0usize;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut in_string = false;
+    let mut escaped = false;
+    while index < text.len() {
+        let character = text[index..].chars().next().expect("in-bounds char");
+        let next = text[index + character.len_utf8()..]
+            .chars()
+            .next()
+            .unwrap_or('\0');
+        if in_line_comment {
+            if character == '\n' {
+                in_line_comment = false;
+            }
+            index += character.len_utf8();
+            continue;
+        }
+        if in_block_comment {
+            if character == '*' && next == '/' {
+                in_block_comment = false;
+                index += 2;
+            } else {
+                index += character.len_utf8();
+            }
+            continue;
+        }
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            index += character.len_utf8();
+            continue;
+        }
+        if character == '/' && next == '/' {
+            in_line_comment = true;
+            index += 2;
+            continue;
+        }
+        if character == '/' && next == '*' {
+            in_block_comment = true;
+            index += 2;
+            continue;
+        }
+        if character == '"' {
+            in_string = true;
+            index += character.len_utf8();
+            continue;
+        }
+        if is_identifier_start(character) {
+            let start = index;
+            index += character.len_utf8();
+            while index < text.len() {
+                let next = text[index..].chars().next().expect("in-bounds char");
+                if !is_identifier_continue(next) {
+                    break;
+                }
+                index += next.len_utf8();
+            }
+            identifiers.push(Word {
+                text: text[start..index].to_owned(),
+                start,
+                end: index,
+            });
+            continue;
+        }
+        index += character.len_utf8();
+    }
+    identifiers
+}
+
+fn is_identifier_start(character: char) -> bool {
+    character == '_' || character.is_alphabetic()
+}
+
+fn is_identifier_continue(character: char) -> bool {
+    character == '_' || character.is_alphanumeric()
+}
+
 fn span_contains(span: Span, offset: usize) -> bool {
     span.start <= offset && offset <= span.end
 }
@@ -1009,6 +1266,24 @@ fn location_json(snapshot: &ProjectSnapshot, target: &Resolved) -> Option<Value>
         "uri": module.uri,
         "range": span_range_json(&module.text, span)
     }))
+}
+
+fn location_key(location: &Value) -> (String, u64, u64, u64, u64) {
+    (
+        location["uri"].as_str().unwrap_or_default().to_owned(),
+        location["range"]["start"]["line"]
+            .as_u64()
+            .unwrap_or_default(),
+        location["range"]["start"]["character"]
+            .as_u64()
+            .unwrap_or_default(),
+        location["range"]["end"]["line"]
+            .as_u64()
+            .unwrap_or_default(),
+        location["range"]["end"]["character"]
+            .as_u64()
+            .unwrap_or_default(),
+    )
 }
 
 fn span_range_json(text: &str, span: Span) -> Value {
@@ -1772,5 +2047,58 @@ mod tests {
             .find(|item| item["label"] == "./util.ns")
             .expect("import specifier");
         assert_eq!(item["textEdit"]["newText"], "./util.ns");
+    }
+
+    #[test]
+    fn references_find_declarations_imports_and_calls() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "value()", 1);
+        let references = references(&snapshot, &module.uri, line, character, true);
+        assert!(references.len() >= 4, "{references:#?}");
+        let uris: Vec<_> = references
+            .iter()
+            .filter_map(|reference| reference["uri"].as_str())
+            .collect();
+        assert!(uris.iter().any(|uri| uri.ends_with("main.ns")));
+        assert!(uris.iter().any(|uri| uri.ends_with("util.ns")));
+    }
+
+    #[test]
+    fn references_can_omit_the_declaration() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "value()", 1);
+        let with_declaration = references(&snapshot, &module.uri, line, character, true);
+        let without_declaration = references(&snapshot, &module.uri, line, character, false);
+        let has_util_declaration = |references: &[Value]| {
+            references.iter().any(|reference| {
+                reference["uri"]
+                    .as_str()
+                    .is_some_and(|uri| uri.ends_with("util.ns"))
+                    && reference["range"]["start"]["line"].as_u64() == Some(1)
+            })
+        };
+        assert!(has_util_declaration(&with_declaration));
+        assert!(!has_util_declaration(&without_declaration));
+        assert!(without_declaration.len() < with_declaration.len());
+    }
+
+    #[test]
+    fn document_highlight_finds_local_binding_uses() {
+        let snapshot = project();
+        let module = snapshot.module("src/main.ns").expect("module");
+        let (line, character) = position(&module.text, "let count", "let ".len() + 1);
+        let highlights = document_highlight(&snapshot, &module.uri, line, character);
+        assert_eq!(highlights.len(), 2, "{highlights:#?}");
+    }
+
+    #[test]
+    fn references_find_struct_field_declaration_and_use() {
+        let snapshot = project();
+        let module = snapshot.module("src/util.ns").expect("module");
+        let (line, character) = position(&module.text, "name: str", 1);
+        let references = references(&snapshot, &module.uri, line, character, true);
+        assert_eq!(references.len(), 2, "{references:#?}");
     }
 }

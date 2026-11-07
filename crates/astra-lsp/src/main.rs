@@ -121,6 +121,8 @@ fn main() {
                         "documentFormattingProvider": true,
                         "hoverProvider": true,
                         "definitionProvider": true,
+                        "referencesProvider": true,
+                        "documentHighlightProvider": true,
                         "documentSymbolProvider": true,
                         "signatureHelpProvider": {
                             "triggerCharacters": ["(", ","]
@@ -276,6 +278,41 @@ fn main() {
                         features::definition(snapshot, &uri, line, character)
                     })
                     .flatten();
+                    write_message(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    }));
+                }
+            }
+            "textDocument/references" => {
+                if let Some(id) = msg.id.clone() {
+                    let (uri, line, character) = request_position(msg.params.as_ref());
+                    let include_declaration = msg
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("context"))
+                        .and_then(|context| context.get("includeDeclaration"))
+                        .and_then(Value::as_bool)
+                        .unwrap_or(true);
+                    let result = with_snapshot(&server, &uri, |snapshot| {
+                        features::references(snapshot, &uri, line, character, include_declaration)
+                    })
+                    .unwrap_or_default();
+                    write_message(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    }));
+                }
+            }
+            "textDocument/documentHighlight" => {
+                if let Some(id) = msg.id.clone() {
+                    let (uri, line, character) = request_position(msg.params.as_ref());
+                    let result = with_snapshot(&server, &uri, |snapshot| {
+                        features::document_highlight(snapshot, &uri, line, character)
+                    })
+                    .unwrap_or_default();
                     write_message(&json!({
                         "jsonrpc": "2.0",
                         "id": id,
