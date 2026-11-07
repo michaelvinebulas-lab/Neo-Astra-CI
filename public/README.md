@@ -86,10 +86,10 @@ Create `build.json`:
 Create `src/main.ns`:
 
 ```ns
-module app.main
+module app.main //optional 
 
 pub fn main() -> i32 {
-    println("hello, neo astra")
+    println("Hello World")
     return 0
 }
 ```

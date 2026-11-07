@@ -17,8 +17,8 @@ Last updated: 2026-11-07.
   backends; Nova is the development runtime.
 - **Distribution:** public source, three release archives, four npm packages.
   Windows x64, Linux x64, and macOS arm64 only.
-- **Public source:** sanitized production tree; no tests, docs, or examples
-  today. This is being changed by P0-3.
+- **Public source:** sanitized production tree with onboarding files and
+  examples; tests and private docs stay out. Release tags remain immutable.
 
 Do not describe V1 as "all modes complete". Core is complete; app is partial;
 web and system are preview; high is future work.
