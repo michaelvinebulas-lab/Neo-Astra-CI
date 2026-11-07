@@ -35,17 +35,20 @@ These require the repository owner's GitHub or npm credentials.
   - `immutable-release-tags` blocks deletion and updates of `refs/tags/v*`.
   - `protect-master` blocks deletion, force pushes, and non-linear history on
     the default branch.
-  - The `pull_request` rule is not active yet because the source mirror still
-    pushes `source -> master`.
+  - `protect-master` requires a pull request with resolved review threads. The
+    repository currently has one maintainer, so the required approval count is
+    zero and code-owner approval is not enforced; owner self-merge is allowed.
+- The public `source` branch is the staging branch for mirror updates. It is
+  rewritten for each snapshot and is not protected.
+- The source mirror pre-push guard allows `source -> source` for PR staging and
+  rejects private paths. Direct `source -> master` pushes are blocked by both
+  the guard flow and the GitHub ruleset.
 - The v1.0.0 GitHub release reports `immutable: false`. Treat the tag as
   immutable by policy; do not modify its assets. Immutability for future
   releases must be enabled in repository settings, if available.
 - The npm token exposed during the 1.0.0 release still needs to be revoked.
   The release workflow no longer reads `NPM_TOKEN`; publish authentication is
   OIDC trusted publishing.
-- `master` does not yet require a pull request. The source mirror still pushes
-  `source -> master`; changing that flow is required before adding the
-  `pull_request` rule.
 - No public CI workflow exists yet. Do not require status checks in a ruleset
   until the CI workflow and check names exist.
 
@@ -98,9 +101,8 @@ until the trusted publisher is verified so a rollback is possible.
 
 ## Rulesets
 
-The tag ruleset and the non-PR branch rules were applied on 2026-11-07. The
-`pull_request` rule in the branch JSON below is the target after the mirror
-flow is changed.
+The tag and branch rulesets were applied on 2026-11-07, including the
+`pull_request` rule. The JSON below records the active shape.
 
 ```sh
 gh auth login
@@ -166,25 +168,28 @@ names are known.
 
 ## Source mirror flow
 
-The local pre-push hook currently allows only:
+The local pre-push hook allows:
 
 ```text
-refs/heads/source -> refs/heads/master
+refs/heads/source -> refs/heads/source
 ```
 
-That is compatible with an unprotected `master`, not with a ruleset that
-requires pull requests. Before enabling the branch ruleset, choose one of:
+It rewrites the public staging branch and rejects tests, conformance, docs,
+private paths, and build outputs. It no longer permits `source -> master`;
+`master` only changes through a pull request.
 
-1. Add a ruleset bypass for a dedicated release identity, and keep the
-   owner-reviewed path for human changes.
-2. Change the mirror flow to push `source` to a short-lived branch, open a pull
-   request, and merge it with checks.
-3. Keep the owner as the only bypass actor and record that exception in
-   `public/CONTRIBUTING.md` (not recommended; the public text says direct
-   pushes are blocked).
+Mirror release flow:
 
-Do not enable the branch ruleset until the mirror flow is changed or a bypass
-is deliberate.
+```sh
+cd "C:\Projects\Neo Astra-source"
+git push origin source:source
+gh pr create --base master --head source --title "Publish sanitized source"
+gh pr merge --squash --delete-branch
+```
+
+The repository has one maintainer, so the ruleset allows owner self-merge with
+zero required approvals. Add required approvals and status checks when a second
+maintainer and public CI exist.
 
 ## Release verification
 

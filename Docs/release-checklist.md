@@ -55,14 +55,18 @@ Use this checklist for every release. No step may be skipped.
 
 - Create an annotated tag `vX.Y.Z` on the release commit in the sanitized
   public source tree (`C:\Projects\Neo Astra-source`).
-- Push the public source branch and tag to `origin`.
+- Push the sanitized `source` branch to `origin/source`, open a pull request,
+  merge it to `master`, then push the release tag to `origin`. Never push
+  directly to `master`; the branch ruleset requires a pull request.
 - Once a tag is pushed or published, it is immutable. Never force-move a
   published tag and never rewrite public history. Any change after the tag
   becomes the next patch or minor release; do not publish two trees under one
   version.
-- Protect `master`: require pull requests, owner review, and green checks; block
-  force pushes and branch deletion. The GitHub rulesets and the source-mirror
-  bypass decision are tracked in `Docs/github-trust.md`.
+- Protect `master`: require pull requests; block force pushes, deletion, and
+  non-linear history. The current single-maintainer ruleset permits owner
+  self-merge with zero approvals; add approvals and green status checks when a
+  second maintainer and public CI exist. Details are in
+  `Docs/github-trust.md`.
 - Protect release tags: block tag deletion and updates. Once a tag is public it
   is immutable; fixes go into the next patch or minor release.
 - The public `Release packages` workflow builds Linux, macOS, and Windows
