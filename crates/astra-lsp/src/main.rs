@@ -124,6 +124,7 @@ fn main() {
                         "referencesProvider": true,
                         "documentHighlightProvider": true,
                         "documentSymbolProvider": true,
+                        "workspaceSymbolProvider": true,
                         "signatureHelpProvider": {
                             "triggerCharacters": ["(", ","]
                         },
@@ -348,6 +349,25 @@ fn main() {
                         features::document_symbols(snapshot, &uri)
                     })
                     .unwrap_or_default();
+                    write_message(&json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": result
+                    }));
+                }
+            }
+            "workspace/symbol" => {
+                if let Some(id) = msg.id.clone() {
+                    let query = msg
+                        .params
+                        .as_ref()
+                        .and_then(|params| params.get("query"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_owned();
+                    let result = server.project.as_ref().map_or_else(Vec::new, |snapshot| {
+                        features::workspace_symbols(snapshot, &query)
+                    });
                     write_message(&json!({
                         "jsonrpc": "2.0",
                         "id": id,

@@ -263,6 +263,59 @@ fn symbol_json(text: &str, name: String, kind: u32, span: Span, children: Vec<Va
     })
 }
 
+/// Returns project-wide symbols matching a query.
+#[must_use]
+pub fn workspace_symbols(snapshot: &ProjectSnapshot, query: &str) -> Vec<Value> {
+    let query = query.to_lowercase();
+    let mut symbols = Vec::new();
+    for module in snapshot.modules.values() {
+        for symbol in document_symbols(snapshot, &module.uri) {
+            collect_workspace_symbol(
+                &module.uri,
+                &module.key,
+                None,
+                &query,
+                &symbol,
+                &mut symbols,
+            );
+        }
+    }
+    symbols.sort_by(|left, right| {
+        left["name"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["name"].as_str().unwrap_or_default())
+    });
+    symbols
+}
+
+fn collect_workspace_symbol(
+    uri: &str,
+    module_key: &str,
+    container: Option<&str>,
+    query: &str,
+    symbol: &Value,
+    symbols: &mut Vec<Value>,
+) {
+    let name = symbol["name"].as_str().unwrap_or_default();
+    if query.is_empty() || name.to_lowercase().contains(query) {
+        symbols.push(json!({
+            "name": name,
+            "kind": symbol["kind"],
+            "containerName": container.unwrap_or(module_key),
+            "location": {
+                "uri": uri,
+                "range": symbol["range"]
+            }
+        }));
+    }
+    if let Some(children) = symbol["children"].as_array() {
+        for child in children {
+            collect_workspace_symbol(uri, module_key, Some(name), query, child, symbols);
+        }
+    }
+}
+
 /// Returns signature help for the innermost call surrounding a position.
 #[must_use]
 pub fn signature_help(
@@ -2100,5 +2153,26 @@ mod tests {
         let (line, character) = position(&module.text, "name: str", 1);
         let references = references(&snapshot, &module.uri, line, character, true);
         assert_eq!(references.len(), 2, "{references:#?}");
+    }
+
+    #[test]
+    fn workspace_symbols_filter_declarations_and_fields() {
+        let snapshot = project();
+        let user = workspace_symbols(&snapshot, "User");
+        assert_eq!(user.len(), 1, "{user:#?}");
+        assert_eq!(user[0]["kind"], 23);
+        assert!(user[0]["location"]["uri"].as_str().is_some());
+
+        let fields = workspace_symbols(&snapshot, "name");
+        assert!(
+            fields
+                .iter()
+                .any(|symbol| symbol["name"] == "name" && symbol["kind"] == 8)
+        );
+        assert!(
+            fields
+                .iter()
+                .any(|symbol| symbol["name"] == "name" && symbol["kind"] == 12)
+        );
     }
 }
