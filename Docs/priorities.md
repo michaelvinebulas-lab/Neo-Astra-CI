@@ -191,9 +191,12 @@ Owner: reviewer (error-model/generic-call RFCs), lead (integration), principal
 - Add `if let`/`while let`, ranges, bitwise operators, `char`, and lambdas only
   after the grammar is frozen.
 - Acceptance: a frozen v0.2 spec, a parser-generator run with zero conflicts,
-  parser diagnostics and formatter rewrites for removed syntax, a conformance
-  case per changed construct, and 10-20 realistic programs parsed before
-  freeze.
+  parser diagnostics and formatter rewrites for deprecated or edition-rejected
+  syntax, a conformance case per changed construct, and 10-20 realistic
+  programs parsed before freeze.
+
+The concrete phases, estimates, AST-freeze boundary, and gates are in
+[`Report/Syntax-v0.2.md` §5](Report/Syntax-v0.2.md#5-implementation-plan).
 
 The native CLI slices continue against v0.1 until this item freezes the
 language; do not move parser, checker, codegen, and CLI at the same time.

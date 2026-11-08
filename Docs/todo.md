@@ -123,7 +123,9 @@ Completed work is summarized at the bottom; the full history is in
 
 Plan, decisions, and reviewer RFCs: [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md),
 [`RFC-A-error-model.md`](Report/RFC-A-error-model.md), and
-[`RFC-B-generics.md`](Report/RFC-B-generics.md).
+[`RFC-B-generics.md`](Report/RFC-B-generics.md). The concrete phased plan,
+estimates, and acceptance gates are in
+[`Syntax-v0.2.md` §5](Report/Syntax-v0.2.md#5-implementation-plan).
 Do not implement these in the native CLI slices; they target v0.1 until the
 language is frozen.
 
@@ -153,7 +155,8 @@ language is frozen.
 - [ ] Omit aliases from canonical docs and examples.
 - [ ] Keep formatter canonicalization to `fn`, `let`, `const`, `type`,
       `struct`, `mut`, and `pub`.
-- [ ] Add the deny-by-default `canonical-syntax` lint and `fmt --canonical`.
+- [ ] Add the deny-by-default `canonical-syntax` lint and check-only
+      `fmt --canonical`; `astra migrate` performs rewrites.
 - [ ] Run the canonical lint in stdlib CI.
 - [ ] Optional later: make the aliases contextual so the words can be
       identifiers.
@@ -170,7 +173,10 @@ language is frozen.
 
 ### Migration and freeze
 
-- [ ] Parser diagnostics for every removed spelling with the replacement.
+- [ ] Implement `edition` plumbing first and keep the default at `"0.1"`; no
+      syntax behavior changes in that step.
+- [ ] Parser diagnostics for every deprecated or edition-rejected spelling with
+      the canonical replacement.
 - [ ] Formatter/codemod rewrites for aliases, `!` forms, scope blocks, and
       turbofish.
 - [ ] One conformance case per changed construct, including negative parses.
@@ -183,7 +189,9 @@ language is frozen.
 - [ ] Freeze `spec-v0.2.md`, then update parser, checker, formatter, codegen,
       conformance, examples, and CLI together.
 - [ ] Implement `edition = "0.2"` gating so the compiler accepts v0.1 and v0.2
-      syntax, and `ns fix` migrates source.
+      syntax, and `astra migrate` migrates source.
+- [ ] Treat the feature-gap list above as a separate train; do not make it a
+      blocker for the v0.2 cleanup freeze.
 
 ## 1.1.0 - browser playground
 
