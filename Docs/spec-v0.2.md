@@ -367,8 +367,9 @@ pattern_list   = pattern { "," pattern } [ "," ] ;
 - `Err(e)` binds the declared error side;
 - `Err(_)` discards it;
 - member-specific patterns are allowed in the existing constructor form, e.g.
-  `Err(InvalidAge(...))` and `Err(ParseIntError(code))`. The head must name a
-  declared error member (`NS4017`);
+  `Err(InvalidAge(...))` and `Err(ParseIntError(code))`. The pattern's head type
+  must name a declared error member (`NS4017`); a variant pattern may select one
+  of that member's variants;
 - struct-field patterns such as `Err(InvalidAge { message })` are deferred;
   they need a pattern AST extension and are a feature gap, not cleanup;
 - a match must cover both `Ok` and `Err`;

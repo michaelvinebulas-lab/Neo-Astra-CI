@@ -157,8 +157,9 @@ remains rejected as redundant. The grammar in A.2 has been updated.
 - `Err(_)` discards the whole error side.
 - Member-specific patterns are allowed in the existing constructor/variant
   pattern forms, e.g. `Err(InvalidAge(...))` and
-  `Err(ParseIntError(code))`. The pattern head must name a member of the
-  scrutinee's declared error set; otherwise the checker reports `NS4017`.
+  `Err(ParseIntError(code))`. The pattern's head type must name a member of the
+  scrutinee's declared error set; otherwise the checker reports `NS4017`. A
+  variant pattern may select one of that member's variants.
 - Struct-field patterns such as `Err(InvalidAge { message })` are deferred.
   They need a pattern AST addition, so they are a feature gap, not part of the
   AST-free cleanup.
