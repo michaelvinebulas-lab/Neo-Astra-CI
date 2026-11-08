@@ -15,6 +15,10 @@ use astra_manifest::{
     BuildManifest, CoreManifest, format_build_json, format_build_toml, format_core_json,
     format_core_toml, parse_build_json, parse_build_toml, parse_core_json, parse_core_toml,
 };
+use astra_toolchain::doctor::doctor as run_doctor;
+use astra_toolchain::policy::parse_toolchain_policy;
+
+mod build;
 
 #[derive(serde::Serialize)]
 struct ManifestInfo {
@@ -186,6 +190,8 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "check" => cmd_check(&args[1..]),
+        "doctor" => cmd_doctor(&args[1..]),
+        "build" => build::cmd_build(&args[1..]),
         "fmt" => cmd_fmt(&args[1..]),
         "ast" => cmd_ast(&args[1..]),
         "explain" => cmd_explain(&args[1..]),
@@ -458,46 +464,7 @@ fn load_project(dir: &str) -> Result<ProjectManifests, ManifestError> {
         })?
     };
 
-    let build_names: Vec<&str> = ["build.json", "build.toml"]
-        .into_iter()
-        .filter(|name| std::path::Path::new(&manifest_path(dir, name)).exists())
-        .collect();
-    if build_names.len() > 1 {
-        return Err(ManifestError {
-            code: "NS9001",
-            message: "Both build.json and build.toml exist. At most one is allowed.".to_owned(),
-            path: dir.to_owned(),
-        });
-    }
-    let build = if let Some(build_name) = build_names.first() {
-        let build_path = manifest_path(dir, build_name);
-        let build_text = fs::read_to_string(&build_path).map_err(|error| ManifestError {
-            code: "NS9002",
-            message: format!("Unable to read manifest: {error}"),
-            path: build_path.clone(),
-        })?;
-        if build_name.ends_with(".toml") {
-            parse_build_toml(&build_text).map_err(|diagnostics| ManifestError {
-                code: "NS9002",
-                message: diagnostics
-                    .first()
-                    .map(|diagnostic| diagnostic.message.clone())
-                    .unwrap_or_else(|| "Invalid build manifest.".to_owned()),
-                path: build_path.clone(),
-            })?
-        } else {
-            parse_build_json(&build_text).map_err(|diagnostics| ManifestError {
-                code: "NS9002",
-                message: diagnostics
-                    .first()
-                    .map(|diagnostic| diagnostic.message.clone())
-                    .unwrap_or_else(|| "Invalid build manifest.".to_owned()),
-                path: build_path.clone(),
-            })?
-        }
-    } else {
-        BuildManifest::default()
-    };
+    let (build, build_present) = load_build_manifest(dir)?;
 
     Ok(ProjectManifests {
         root: std::path::PathBuf::from(dir),
@@ -510,8 +477,51 @@ fn load_project(dir: &str) -> Result<ProjectManifests, ManifestError> {
         },
         core,
         build,
-        build_present: !build_names.is_empty(),
+        build_present,
     })
+}
+
+fn load_build_manifest(dir: &str) -> Result<(BuildManifest, bool), ManifestError> {
+    let build_names: Vec<&str> = ["build.json", "build.toml"]
+        .into_iter()
+        .filter(|name| std::path::Path::new(&manifest_path(dir, name)).exists())
+        .collect();
+    if build_names.len() > 1 {
+        return Err(ManifestError {
+            code: "NS9001",
+            message: "Both build.json and build.toml exist. At most one is allowed.".to_owned(),
+            path: dir.to_owned(),
+        });
+    }
+    let Some(build_name) = build_names.first() else {
+        return Ok((BuildManifest::default(), false));
+    };
+    let build_path = manifest_path(dir, build_name);
+    let build_text = fs::read_to_string(&build_path).map_err(|error| ManifestError {
+        code: "NS9002",
+        message: format!("Unable to read manifest: {error}"),
+        path: build_path.clone(),
+    })?;
+    let build = if build_name.ends_with(".toml") {
+        parse_build_toml(&build_text).map_err(|diagnostics| ManifestError {
+            code: "NS9002",
+            message: diagnostics
+                .first()
+                .map(|diagnostic| diagnostic.message.clone())
+                .unwrap_or_else(|| "Invalid build manifest.".to_owned()),
+            path: build_path.clone(),
+        })?
+    } else {
+        parse_build_json(&build_text).map_err(|diagnostics| ManifestError {
+            code: "NS9002",
+            message: diagnostics
+                .first()
+                .map(|diagnostic| diagnostic.message.clone())
+                .unwrap_or_else(|| "Invalid build manifest.".to_owned()),
+            path: build_path.clone(),
+        })?
+    };
+    Ok((build, true))
 }
 
 fn emit_manifest_error(error: &ManifestError, json: bool) -> ExitCode {
@@ -949,6 +959,128 @@ fn project_check(project: &ProjectManifests, json: bool, mode: Option<Mode>) -> 
         ExitCode::SUCCESS
     }
 }
+fn cmd_doctor(args: &[String]) -> ExitCode {
+    let mut dir: Option<String> = None;
+    let mut json = false;
+    let mut no_download = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--json" => {
+                json = true;
+                i += 1;
+            }
+            "--no-download" => {
+                no_download = true;
+                i += 1;
+            }
+            "--compiler" => {
+                if i + 1 >= args.len() {
+                    eprintln!("astra-native: --compiler requires a value");
+                    return ExitCode::FAILURE;
+                }
+                i += 2;
+            }
+            other if !other.starts_with('-') && dir.is_none() => {
+                dir = Some(other.to_owned());
+                i += 1;
+            }
+            other => return fail_unknown(other),
+        }
+    }
+    let directory = std::path::absolute(dir.unwrap_or_else(|| ".".to_owned()))
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| ".".to_owned());
+    let (build, build_present) = match load_build_manifest(&directory) {
+        Ok(value) => value,
+        Err(error) => {
+            if json {
+                #[derive(serde::Serialize)]
+                struct DoctorFailure {
+                    ok: bool,
+                    error: ReportedDiagnostic,
+                }
+                let failure = DoctorFailure {
+                    ok: false,
+                    error: reported_json(
+                        error.code,
+                        "error",
+                        &error.message,
+                        None,
+                        Some(&error.path),
+                        None,
+                        None,
+                    ),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&failure).unwrap_or_default()
+                );
+            } else {
+                eprintln!("{}: {}", error.code, error.message);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let build_data = build_present.then(|| serde_json::to_value(&build).unwrap_or_default());
+    let policy = match parse_toolchain_policy(build_data.as_ref()) {
+        Ok(policy) => policy,
+        Err((code, message)) => {
+            if json {
+                #[derive(serde::Serialize)]
+                struct DoctorFailure {
+                    ok: bool,
+                    error: ReportedDiagnostic,
+                }
+                let failure = DoctorFailure {
+                    ok: false,
+                    error: reported_json(&code, "error", &message, None, None, None, None),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&failure).unwrap_or_default()
+                );
+            } else {
+                eprintln!("{}: {}", code, message);
+            }
+            return ExitCode::FAILURE;
+        }
+    };
+    let _ = no_download;
+    let astra_cc = std::env::var("ASTRA_CC").ok();
+    let result = run_doctor(
+        std::path::Path::new(&directory),
+        &policy,
+        astra_cc.as_deref(),
+        &astra_toolchain::doctor::SystemProbe,
+    );
+    let ok = result.winner.is_some();
+    if json {
+        #[derive(serde::Serialize)]
+        struct DoctorReport {
+            ok: bool,
+            doctor: astra_toolchain::doctor::DoctorResult,
+        }
+        let out = DoctorReport { ok, doctor: result };
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+    } else {
+        println!("policy: {}", policy.request);
+        for a in &result.attempts {
+            println!("  {}: {}", a.rung, a.detail);
+        }
+        if let Some(w) = &result.winner {
+            println!("resolved: {} ({}) at {}", w.id, w.family, w.path);
+        } else if let Some(e) = &result.error {
+            eprintln!("unresolved: {}", e);
+        }
+    }
+    if ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
 fn cmd_check(args: &[String]) -> ExitCode {
     let mut file: Option<String> = None;
     let mut json = false;

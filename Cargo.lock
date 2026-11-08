@@ -18,6 +18,7 @@ dependencies = [
  "astra-compiler-api",
  "astra-core",
  "astra-manifest",
+ "astra-toolchain",
  "serde",
  "serde_json",
 ]
@@ -85,6 +86,14 @@ dependencies = [
  "astra-core",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "astra-toolchain"
+version = "1.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

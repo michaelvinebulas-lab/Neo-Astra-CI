@@ -20,7 +20,7 @@ do not invent decisions - mark the question instead.
   the output tail reported. A partial fix is not a handback.
 - Append only; do not edit the lead's task text.
 
-## Status: OPEN - KILO - slice 2a
+## Status: OPEN - KILO - slice 2c
 
 Read the complete native CLI order at the end of this file. The principal has
 approved sequential implementation slices inside one complete goal; the CLI is
@@ -961,3 +961,26 @@ cache hits, corrupt artifacts, download refusal, staticlib, and cdylib.
 Slices 3 and 4 remain as written: native NoPM first, then the JS/TS bridge and
 CI/packaging. The full gate and any `1.0.1` action still wait for 2a-2c, 3, and
 4.
+
+- Slice 2a complete: added crates/astra-toolchain (policy parsing, host-compiler probing, doctor), wired stra doctor command. Gates: cargo fmt/clippy/test green. Parity: 7/11 (added doctor; native C build also green).
+
+- Slice 2c (partial): added pinned Zig artifact table (6 entries) to crates/astra-toolchain/src/pinned.rs with ind_pinned and unit tests. Download/verify/extract/cache require HTTP/archive crates (ureq/tar/xz2/zip) not present in the offline registry cache; deferred. Gates green.
+
+## Lead review - slice 2a/2b (2026-11-08)
+
+2a accepted after completing the host resolver: `ASTRA_CC` is authoritative,
+cache markers are validated, auto uses the hosted probe then a `--version`
+fallback, and versioned pins fail `NS9102` with manual instructions until 2c.
+Native unit tests cover policy parsing, probe selection, cache markers, and
+failure codes.
+
+2b accepted: `astra build --target c` and `--target native` use the 2a
+resolver, support single- and multi-module C emission and native linking, and
+have the lead-added parity case. The temporary build-local resolver was
+removed.
+
+Gates are green: `cargo fmt --all --check`, workspace clippy, workspace tests,
+`npm test` (241), and native parity at 7/11. Remaining red cases are JS build
+(slice 4) and the three NoPM cases (slice 3). 2c remains incomplete: the pinned
+table alone does not provide `--no-download`, download/verify/extract/cache,
+staticlib, or cdylib.

@@ -300,6 +300,56 @@ test("native ast and explain match for a project entry", { skip }, async () => {
   }
 });
 
+test("native C and native executable builds match generated artifacts", { skip }, async () => {
+  for (const target of ["c", "native"]) {
+    const expectedDir = await makeProject(VALID);
+    const actualDir = await makeProject(VALID);
+    try {
+      compareResult(
+        `build --target ${target} --json`,
+        runNode(["build", expectedDir, "--target", target, "--json"], expectedDir),
+        runNative(["build", actualDir, "--target", target, "--json"], actualDir),
+        expectedDir,
+        actualDir,
+      );
+
+      const expectedFiles = await listFiles(expectedDir);
+      const actualFiles = await listFiles(actualDir);
+      assert.deepEqual(actualFiles, expectedFiles, `build ${target}: file list`);
+      for (const file of expectedFiles) {
+        if (file.endsWith(".exe") || file === "main") {
+          continue;
+        }
+        assert.equal(
+          await readFile(join(actualDir, file), "utf8"),
+          await readFile(join(expectedDir, file), "utf8"),
+          `build ${target}: ${file}`,
+        );
+      }
+
+      if (target === "native") {
+        const exeName = process.platform === "win32" ? "main.exe" : "main";
+        const expectedRun = spawnSync(
+          join(expectedDir, "dist", "native", exeName),
+          [],
+          { encoding: "utf8", windowsHide: true },
+        );
+        const actualRun = spawnSync(
+          join(actualDir, "dist", "native", exeName),
+          [],
+          { encoding: "utf8", windowsHide: true },
+        );
+        assert.equal(actualRun.status, expectedRun.status, "native executable status");
+        assert.equal(actualRun.stdout, expectedRun.stdout, "native executable stdout");
+        assert.equal(actualRun.stderr, expectedRun.stderr, "native executable stderr");
+      }
+    } finally {
+      await rm(expectedDir, { recursive: true, force: true });
+      await rm(actualDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("native JS build matches generated module tree", { skip }, async () => {
   const expectedDir = await makeProject(VALID);
   const actualDir = await makeProject(VALID);
