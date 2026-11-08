@@ -20,7 +20,7 @@ do not invent decisions - mark the question instead.
   the output tail reported. A partial fix is not a handback.
 - Append only; do not edit the lead's task text.
 
-## Status: OPEN - KILO - slice 2c
+## Status: OPEN - KILO - slice 3
 
 Read the complete native CLI order at the end of this file. The principal has
 approved sequential implementation slices inside one complete goal; the CLI is
@@ -964,7 +964,19 @@ CI/packaging. The full gate and any `1.0.1` action still wait for 2a-2c, 3, and
 
 - Slice 2a complete: added crates/astra-toolchain (policy parsing, host-compiler probing, doctor), wired stra doctor command. Gates: cargo fmt/clippy/test green. Parity: 7/11 (added doctor; native C build also green).
 
-- Slice 2c (partial): added pinned Zig artifact table (6 entries) to crates/astra-toolchain/src/pinned.rs with ind_pinned and unit tests. Download/verify/extract/cache require HTTP/archive crates (ureq/tar/xz2/zip) not present in the offline registry cache; deferred. Gates green.
+- Slice 2c (partial, superseded by the lead review below): added the pinned
+  Zig artifact table (6 entries) to `crates/astra-toolchain/src/pinned.rs` with
+  `find_pinned` and unit tests. The lead completed the missing download,
+  verification, extraction, cache, and library emission work.
+
+- Slice 2c complete: pinned downloads use the host `curl` plus system `tar`
+  (no new registry crates), a pure-Rust SHA-256, verified sizes and hashes, an
+  atomic project cache, `--no-download`, and staticlib/cdylib emission and
+  linking. Tests cover cache hits, corrupt downloads, authoritative corrupt
+  markers, download refusal, and both library kinds. Gates: fmt, workspace
+  clippy, workspace tests, `npm test` 241, and native parity 8/12 (the added
+  library case is green; JS and the three NoPM cases remain red for slices 4
+  and 3).
 
 ## Lead review - slice 2a/2b (2026-11-08)
 
@@ -984,3 +996,23 @@ Gates are green: `cargo fmt --all --check`, workspace clippy, workspace tests,
 (slice 4) and the three NoPM cases (slice 3). 2c remains incomplete: the pinned
 table alone does not provide `--no-download`, download/verify/extract/cache,
 staticlib, or cdylib.
+## Lead review - slice 2c (2026-11-08)
+
+2c accepted. The pinned path now downloads the official archive with the host
+`curl`, verifies the byte size and SHA-256 with a pure-Rust implementation,
+extracts with the system `tar`, and installs into `.tools/toolchain/<id>` only
+after a complete verified staging directory is ready. A cache marker is
+authoritative even when corrupt; a concurrent valid install wins the race.
+`astra build` and `astra doctor` attempt the download unless `--no-download` is
+set, and all failures print the exact URL, SHA-256, target directory, and manual
+install steps. Library builds compile module objects, archive them for
+`staticlib`, or link the host shim and module objects into a shared library for
+`cdylib`, including GNU export/import-library handling on Windows.
+
+Rust tests cover SHA-256 vectors, cache hits without a fetch, a successful
+install, corrupt archive size/hash, authoritative corrupt markers, and
+`--no-download` refusal without fetching. The lead-added native parity case
+compares staticlib and cdylib generated files. Gates: `cargo fmt --all
+--check`, workspace clippy, `cargo test --workspace`, `npm test` (241), and
+native parity at 8/12. The remaining red cases are the JS build (slice 4) and
+the three NoPM cases (slice 3).

@@ -162,8 +162,8 @@ Set the policy in the build manifest (`build.json` / `build.toml`):
 (`zig@0.13.0`, `clang@18`) never trusts `PATH`.
 
 A versioned pin with no cache marker downloads the official archive for the
-current OS and architecture, verifies its byte size and SHA-256, unpacks it with
-the system `tar`, and installs it under the project:
+current OS and architecture with the host `curl`, verifies its byte size and
+SHA-256, unpacks it with the system `tar`, and installs it under the project:
 
 ```text
 .tools/toolchain/<id>/toolchain.json   # {"id": "...", "family": "...", "version": "...", ...}
