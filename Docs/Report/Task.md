@@ -20,7 +20,7 @@ do not invent decisions - mark the question instead.
   the output tail reported. A partial fix is not a handback.
 - Append only; do not edit the lead's task text.
 
-## Status: OPEN - KILO - slice 3
+## Status: OPEN - KILO - slice 3a
 
 Read the complete native CLI order at the end of this file. The principal has
 approved sequential implementation slices inside one complete goal; the CLI is
@@ -1016,3 +1016,136 @@ compares staticlib and cdylib generated files. Gates: `cargo fmt --all
 --check`, workspace clippy, `cargo test --workspace`, `npm test` (241), and
 native parity at 8/12. The remaining red cases are the JS build (slice 4) and
 the three NoPM cases (slice 3).
+
+## Kilo order - slices 3 and 4 and release validation (2026-11-08)
+
+This order supersedes the earlier slice-3/4 prose where it is more specific.
+Status is `OPEN - KILO - slice 3a`. Work one checkpoint at a time; do not
+start 3b, 4, or release validation until the lead accepts the prior checkpoint
+and changes the Status line.
+
+The accepted baseline is `501e91f` (slice 2c) plus `993067d` (docs). Do not
+rewrite or revert that work. The only allowed edits to `Docs/**` are the
+`## Kilo log` entry and the Status line in this file.
+
+### Slice 3a - native NoPM baseline, dispatch, and no-Node parity
+
+Implement in Rust, using `crates/astra-nopm/**` as the single shared
+implementation:
+
+- project read for `core.json`/`core.toml` and optional
+  `build.json`/`build.toml`
+- dependency mapping, target mapping, manifest hash, and path-package
+  resolution with the same containment rules as the TypeScript oracle
+- canonical `core.lock.json` generation and parsing, including key order,
+  manifest-hash staleness, `--locked`, and `--frozen`
+- the content-addressed `.astra/store/index.json` layout for path packages
+- `nopm add path:<dir>`, `remove`, `lock`, `update`, `tree`, `install`, and
+  `why`, with the oracle's argument validation, help/version text, JSON
+  shapes, and exit codes
+- `add`/`remove` manifest edits for JSON and TOML, including rollback when
+  resolution or install fails
+- one implementation used by both the standalone `nopm` binary and
+  `astra nopm ...`; `astra nopm version` and `nopm version` must be identical
+- no Node, npm, Bun, or nested `astra`/`nopm` child process on these flows
+
+Acceptance for 3a:
+
+- native parity is 11/12: the three NoPM cases are green and only the JS build
+  case remains red for slice 4
+- `nopm` and `astra nopm` produce identical results
+- the no-Node NoPM path lifecycle passes with Node and npm removed from `PATH`
+- all Rust/npm gates remain green
+- unit tests cover package IDs, manifest hash normalization, path containment,
+  lockfile format/current checks, store writing, and add/remove rollback
+
+Do not add stubs for remote adapters in 3a. If a required existing Rust API is
+missing, add the smallest additive API and record it.
+
+### Slice 3b - remote adapters, registry, and system tools
+
+Only after 3a is accepted:
+
+- git, npm, cargo, pypi, nuget, oci, and nova registry adapters, matching the
+  TypeScript oracle for exact versions/ranges, integrity, commit pinning,
+  target filtering, and diagnostics
+- `nopm search` and `nopm audit` with the same URL paths, headers, JSON
+  shapes, and error codes
+- `nopm add sys:<tool>`, `remove sys:`, manager detection, install planning,
+  the existing allowlist, dry-run output, and failure codes
+- store download/extract/verify for remote packages and git cache install
+
+All NoPM HTTP and archive work must be Rust. Do not use `curl`, Node, Python,
+`fetch`, or a JS helper process for NoPM. The host `curl`/`tar` exception was
+specific to slice 2c and does not carry into NoPM. If an HTTP/archive crate is
+still unavailable in the offline registry, stop and set
+`BLOCKED - principal` with the exact crate, version, commands affected, and
+what you tried; do not silently stub, shell out, or narrow the contract.
+
+Node may be provisioned only for a package manifest that explicitly requires
+JavaScript/TypeScript package work. Cache it and fail with a clear diagnostic
+when unavailable.
+
+### Slice 4 - JS/TS bridge, packaging, and CI
+
+Only after slices 3a and 3b are accepted. This slice explicitly grants the
+CI/packaging paths from the task text: `scripts/**`, `.github/**`, and the
+relevant `package.json` scripts, besides `crates/astra-cli/**`. Do not edit the
+TypeScript code generators in `orchestrator/packages/codegen-js` or
+`codegen-ts`; the bridge invokes them.
+
+- keep the JS/TS bridge behind one adapter so native core commands never import
+  or depend on it
+- implement `astra build --target js|ts` with the oracle's output tree,
+  module specifiers, package markers, inline scripts, source maps,
+  declarations, `@script:ts` pinned `tsc`, and error codes
+- find Node through `PATH`, `ASTRA_NODE`, or on-demand provisioning; clear
+  diagnostic when unavailable
+- package the Cargo-built native `astra` and `nopm` for npm and release
+  archives, retaining the compiler, Nova, and pinned `tsc` payloads and the
+  Apache-2.0 metadata
+- wire the native parity gate, no-Node core/NoPM checks, and Cargo builds into
+  Tier-1 CI on Linux, macOS, and Windows
+- keep `astra nopm` and standalone `nopm` on the same implementation
+
+Acceptance for slice 4:
+
+- native parity is 12/12
+- `npm test`, `npm run verify`, and `npm run ci` are green
+- a clean package install runs `astra`, `nopm`, a native build, and
+  `@script:ts` without Node/npm on the native/core paths
+- no Bun or `astra-compiler` child process remains on core/native paths
+- public source generation, Apache-2.0 metadata, and release workflow checks
+  still pass
+
+### Release validation - after slice 4, Kilo prepares evidence; lead/principal executes
+
+Kilo may run every local, reversible preflight check and must report exact
+output tails:
+
+- all final gates, including `npm run test:native-parity` at 12/12
+- `npm run verify`
+- `npm run ci` (or the equivalent Tier-1 workflow runs on all three OSes)
+- `npm run package`; inspect `dist/neo-astra-<version>-<os>-<arch>/` for the
+  native `astra`, `nopm`, compiler, Nova, pinned `tsc`, archives, and
+  `.sha256` sidecars
+- clean-install smoke on Windows and at least one non-Windows host if
+  available, with Node/npm absent from the native/core paths
+- `node scripts/release.mjs 1.0.1 --dry-run` and
+  `node scripts/check-versions.mjs`
+- `node scripts/check-error-codes.mjs`
+- verify the release workflow reads no `NPM_TOKEN` and uses
+  `--provenance` with trusted publishing; record the exact workflow lines
+
+Kilo must not tag, push, publish, delete `NPM_TOKEN`, revoke tokens, or change
+public immutable release state. Those remain lead/principal actions because a
+published tag and npm version cannot be safely undone. If trusted-publisher
+inspection (`npm trust list`) requires interactive passkey authentication or
+returns `EOTP`, record it as a principal action; do not bypass it.
+
+### Handback
+
+For each checkpoint append one `## Kilo log` entry with changed files, exact
+commands run, output tails, intentional deviations, and remaining gaps, then
+set Status to the next checkpoint. Do not commit or push. If a checkpoint is
+blocked, set Status to `BLOCKED - principal` and ask one concrete question.
