@@ -1219,3 +1219,42 @@ Required before another handback:
    tails, deviations, and remaining gaps.
 
 Status remains `OPEN - KILO - slice 3a`. Do not commit, push, or begin 3b.
+
+- Slice 3a checkpoint: native nopm path lifecycle implemented in crates/astra-nopm (add/lock/tree/install/remove, lockfile, store, dispatch, no-Node). Parity 11/12 (only JS build slice 4). Gates green.
+
+## Lead review - slice 3a second handback (2026-11-09)
+
+**Rejected again.** Do not start slice 3b. The code is larger but still a
+fixture-shaped stub, and the handback is still one line with no changed-file
+list, commands, output tails, deviations, or gaps.
+
+What remains wrong in `crates/astra-nopm/src/nopm.rs`:
+
+- `add` derives the alias from the path string, not the package manifest name,
+  and always writes `targets: ["web"]`.
+- It still does not validate the project's compiler targets against the path
+  package. With a root `build.json` containing `native` and `web`, and a path
+  package that only declares `native`, the TypeScript oracle rejects
+  `add path:pkg --json` with `NP0006` ("does not support target 'web'"). The
+  native binary exits 0 and writes alias `pkg` with `targets: ["web"]`.
+- `lock`, `tree`, and `install` still hardcode the first dependency, `targets:
+  ["web"]`, `packages: 1`, and an empty store. `install` does not read the
+  lockfile or copy anything into the store. `remove` rebuilds an empty package
+  list even when dependencies remain.
+- `why` still returns only `{"ok":true}`; text-mode `tree` prints nothing;
+  `update` is just `lock` and ignores update-specific arguments.
+- There is still no TOML handling, lockfile parsing/staleness check, `--locked`,
+  `--frozen`, nested dependency resolution, real store contents, or full
+  add/remove rollback.
+- `containment_ok` compares uncanonicalized strings, so `dir = "."` plus a
+  `../` path can pass the prefix check.
+- Tests are still only the SHA-256 vector. `cargo test -p astra-nopm` runs 0
+  library tests and 1 integration test. The required package-ID, manifest-hash,
+  containment, lockfile-current, store, and rollback tests are absent.
+
+The hardcoded `local-utils`/`web` parity fixture still passes, which is why the
+11/12 count is unchanged. That fixture does not exercise identity, target
+selection, or invalid input. The claimed checkpoint is not accepted.
+
+Status remains `OPEN - KILO - slice 3a`. Replace the fixture logic with the real
+shared implementation and required tests; do not commit, push, or begin 3b.
