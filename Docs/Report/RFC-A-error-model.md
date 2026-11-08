@@ -1,4 +1,4 @@
-﻿# RFC A - Error model (reviewer draft)
+# RFC A - Error model (reviewer draft)
 
 **Status:** Reviewer proposal, non-normative  
 **Date:** 2026-11-08  
@@ -103,8 +103,8 @@ The formatter/codemod can do both rewrites mechanically, because `!` was never b
 
 ## A.7 Unresolved questions
 
-1. **D1:** reject `return fail X()`, or allow it as redundant but harmless?
-2. **How are error types declared?** Any `struct`/`enum`, or a dedicated `error Name(...)` item?
+1. **D1 (closed):** reject `return fail X()` as redundant.
+2. **D2 (recommended):** no dedicated `error` item; use ordinary nominal\n   structs/enums and let the checker restrict failure constructibility.
 3. **Pattern shape for `Err(e)`:** is `e` the union type, and can patterns destructure (`Err(InvalidAge(msg))`)?
 4. **Error-set polymorphism:** can a generic function propagate whatever `f` throws?
 5. **Tasks:** how does a failure inside `spawn { ... }` surface?
