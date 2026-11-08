@@ -80,6 +80,17 @@ written.
 
 ## To be built
 
+### Language v0.2 - syntax cleanup (package version TBD)
+
+A breaking cleanup of the v0.1 surface: one error vocabulary, turbofish for
+expression type arguments, `@mode(...)` / `@memory(...)` scope blocks, settled
+separators and line continuation, tuple-index lexing, and removal of `/%`,
+`spawn ||`, and the special `///` meaning. Aliases stay as an adoption aid only
+if they become contextual and a strict canonical mode is added. Feature gaps
+(`if let`, ranges, bitwise operators, `char`, lambdas) are added only after the
+grammar is frozen. Plan and open decisions:
+[`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md).
+
 ### 1.1.0 - Browser playground
 
 - A static, browser-hosted playground: edit source and manifest, check, format,

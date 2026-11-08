@@ -119,6 +119,58 @@ Completed work is summarized at the bottom; the full history is in
       GitHub release are published from the green Tier-1 release commit; the
       release workflow attaches the Linux, macOS, and Windows packages.
 
+## Language v0.2 - syntax cleanup (package version TBD)
+
+Plan and open decisions: [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md).
+Do not implement these in the native CLI slices; they target v0.1 until the
+language is frozen.
+
+### Grammar and disambiguation
+
+- [ ] Freeze the error-model RFC: `-> T ! E`, `?`, `fail`, `Ok`/`Err`, and the
+      demotion of `Result<T, E>` to a library/FFI type.
+- [ ] Freeze the generic-call RFC: `::<...>` in expression position, method and
+      associated calls, constructors, precedence, and negative comparison cases.
+- [ ] Replace `{@mode:name; ...}` / `{@memory:name; ...}` with
+      `@mode(name) { ... }` / `@memory(name) { ... }`.
+- [ ] Choose one list-separator rule (commas vs newlines) and state line
+      continuation.
+- [ ] Fix tuple-index lexing so `t.0.1` is not `t` followed by float `0.1`.
+- [ ] Contextualize `default` and `from`; decide `module` and `type`.
+- [ ] Remove `/%`, `spawn ||`, and the special `///` meaning.
+- [ ] Prune `syntax-legend.md` lookalikes after duplicate syntax is gone.
+
+### Aliases (principal choice: keep for adoption)
+
+- [ ] Make aliases contextual, not reserved.
+- [ ] Fix or drop `var`.
+- [ ] Add a `--strict`/canonical mode that rejects aliases.
+- [ ] Keep formatter canonicalization to `fn`, `let`, `const`, `type`,
+      `struct`, `mut`, and `pub`.
+
+### Feature gaps
+
+- [ ] `if let` / `while let`.
+- [ ] Ranges with `for`, iterator, and slice semantics.
+- [ ] Bitwise `& | ^ << >>`, documenting expression `|` vs error-set `|`.
+- [ ] `char` plus literals, or an explicit decision to keep `str`-scalar APIs.
+- [ ] Lambda syntax (`fn(x) => expr`) or an explicit function-pointer-only
+      statement.
+- [ ] Complete integer/float suffix table.
+
+### Migration and freeze
+
+- [ ] Parser diagnostics for every removed spelling with the replacement.
+- [ ] Formatter/codemod rewrites for aliases, `!` forms, scope blocks, and
+      turbofish.
+- [ ] One conformance case per changed construct, including negative parses.
+- [ ] Error-code ledger entries for new syntax diagnostics.
+- [ ] 10-20 realistic programs written in the proposed syntax and parsed before
+      freeze.
+- [ ] Freeze `spec-v0.2.md`, then update parser, checker, formatter, codegen,
+      conformance, examples, and CLI together.
+- [ ] Decide the package version for the breaking change.
+
 ## 1.1.0 - browser playground
 
 ### Native CLI

@@ -18,6 +18,10 @@
 
 **Quick reference:** [`syntax-legend.md`](./syntax-legend.md)
 
+**v0.2 proposal:** A non-normative syntax cleanup is being planned in
+[`Report/Syntax-v0.2.md`](./Report/Syntax-v0.2.md). This v0.1 document remains
+the normative language contract until a v0.2 specification is frozen.
+
 ---
 
 ## Contents

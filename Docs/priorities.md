@@ -3,7 +3,7 @@
 Urgency order, not version order. Version detail stays in [`todo.md`](todo.md);
 this file answers "what do we do next and who owns it".
 
-Last updated: 2026-11-07.
+Last updated: 2026-11-08.
 
 ## Status truth
 
@@ -169,6 +169,28 @@ Owner: lead.
   toolchains exist.
 - Acceptance: at least two non-npm install paths work; supported hosts are
   documented.
+
+### P1-7. Language v0.2 syntax cleanup
+
+Owner: reviewer drafts the error-model and generic-call RFCs; lead integrates;
+principal decides the open questions.
+
+- Freeze the error model (`-> T ! E`, `?`, `fail`, `Ok`/`Err`) and demote
+  `Result<T, E>` to a library/FFI type.
+- Freeze expression-position generics as turbofish `::<...>`.
+- Replace scoped `{@mode:...;}` / `{@memory:...;}` with `@mode(...) { ... }` /
+  `@memory(...) { ... }`.
+- Settle separators, line continuation, tuple-index lexing, and the cheap
+  deletions.
+- Keep aliases only as contextual adoption aid with a strict canonical mode.
+- Add `if let`/`while let`, ranges, bitwise operators, `char`, and lambdas only
+  after the grammar is frozen.
+- Acceptance: a frozen v0.2 spec, parser diagnostics and formatter rewrites for
+  removed syntax, a conformance case per changed construct, and 10-20
+  realistic programs parsed before freeze.
+
+The native CLI slices continue against v0.1 until this item freezes the
+language; do not move parser, checker, codegen, and CLI at the same time.
 
 ## P2 - product expansion
 

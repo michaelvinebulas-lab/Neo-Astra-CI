@@ -1024,6 +1024,11 @@ Status is `OPEN - KILO - slice 3a`. Work one checkpoint at a time; do not
 start 3b, 4, or release validation until the lead accepts the prior checkpoint
 and changes the Status line.
 
+**Language freeze:** the current CLI order targets `spec-v0.1.md`. A separate
+v0.2 syntax cleanup is being planned in `Docs/Report/Syntax-v0.2.md`; do not
+implement v0.2 syntax in these CLI slices. If the language freezes before a
+slice lands, the lead will re-scope it explicitly.
+
 The accepted baseline is `501e91f` (slice 2c) plus `993067d` (docs). Do not
 rewrite or revert that work. The only allowed edits to `Docs/**` are the
 `## Kilo log` entry and the Status line in this file.
