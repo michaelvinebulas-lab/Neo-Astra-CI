@@ -36,6 +36,18 @@ Lexer notes:
 - `>>` and `>=` must be split by the parser when closing nested type arguments (`Option<Option<i32>>`, `Box<Vec<i32>>=...`). This matters in Phase 4 when `>>` becomes a bitwise shift.
 - Whitespace between `::` and `<` is not allowed.
 
+Comparisons are non-associative. The expression grammar uses an optional single
+comparison, not a repeating loop:
+
+```ebnf
+comparison_expr = additive_expr
+                [ ( "<" | "<=" | ">" | ">=" ) additive_expr ] ;
+```
+
+Thus `a < b < c` and `a < b > (c)` are syntax errors; write
+`(a < b) && (b < c)` when that is intended. `::<` is lexed before `<`, so
+`f::<T>(x)` never enters comparison parsing.
+
 ## B.3 Precedence
 
 The turbofish binds to the call suffix or struct initializer immediately after it, tighter than `()`:
@@ -80,29 +92,47 @@ Comparisons are made non-associative so that `a < b > c` can never be silently m
 - Under `edition = "0.1"` the parser keeps the heuristic. Under `edition = "0.2"` it emits the diagnostic above with a machine-applicable fix.
 - `ns fix` rewrites `path<T>(` to `path::<T>(` using the old heuristic and a parse of the file. Cases where the old heuristic was already ambiguous are reported for manual review, not rewritten.
 
-## B.8 Unresolved questions
+## B.8 Phase 0 decisions (closed 2026-11-08)
 
-1. Should `::` double as a general path separator later?
-2. Partial or wildcard arguments (`Map.new::<str, _>()`)?
-3. Type arguments on enum variants: `Option.None::<i32>` versus `None::<i32>`.
-4. Trailing comma inside `::<...>`: allowed or not?
-5. Should explicit type arguments be permitted on builtins through the same rule?
+1. **General `::` paths:** rejected. `::` is legal only immediately before
+   `<`; paths continue to use `.`. A standalone `::` or `:: <` is an error.
+2. **Wildcard type arguments:** rejected in `0.2.0`. `_` is not a type argument.
+   When arguments are only partly inferable, omit the whole `::<...>` list and
+   let inference handle it, or name every argument. `Map.new::<str, _>()` is
+   invalid; write `Map.new()` when the whole list is inferable.
+3. **Trailing comma:** allowed inside `::<...>` and every other comma-separated
+   list, including type, parameter, field, variant, argument, array, map, and
+   struct-initializer lists. The Phase 0 grammar uses a separate optional
+   trailing comma so the LR(1) decision points stay disjoint.
+4. **Enum variants:** the canonical spelling is the unqualified variant name
+   with the turbofish on the variant: `None::<i32>`. `Option.None::<i32>` is
+   rejected in edition 0.2 and migrated to `None::<i32>`; `Option::<i32>.None`
+   is not valid. The turbofish binds to the constructor or variant, never to
+   the enum path.
+5. **Builtins:** explicit type arguments on builtins use the same turbofish
+   rule. There is no builtin-only spelling.
+6. **Whitespace:** `:: <` is an error. The lexer must produce a single `::`
+   token and the parser must require `<` immediately after it.
+7. **Support for non-call turbofish:** a turbofish may appear on a unit enum
+   variant (`None::<i32>`) or before a call or struct initializer. It may not
+   stand alone on an ordinary value or function path (`identity::<i32>`), and
+   it may not follow an index expression (`xs[0]::<T>()`). The parser accepts the
+   unit-variant shape; the checker rejects the others with the turbofish
+   diagnostic.
 
-## Lead review notes (2026-11-08)
+The v0.1 heuristic remains in edition 0.1 only: `<` after a path is
+type-argument syntax when the lookahead proves a type list followed by a call.
+In edition 0.2, a bare `<` is always comparison, and the migration command
+rewrites confident `path<T>(` calls to `path::<T>(`. Ambiguous matches are
+reported for manual review, never guessed.
 
-- **Grammar conflict:** the draft has `[turbofish]` in both `call_suffix` and
-  `struct_expr`, but `path_expr` no longer has it. That is the right shape:
-  turbofish belongs to the call/constructor, not to a standalone path. Keep it
-  out of `path_expr` so a turbofish cannot appear twice or without a call.
-- **Missing `struct_expr`:** the original snippet's `primary_expr` omitted it;
-  add it explicitly.
-- **Comparison EBNF is still associative:** the draft says comparisons are
-  non-associative but the v0.1 `comparison_expr = additive { ... }` still
-  allows chains. Rewrite it as an optional single comparison, not a loop.
-- **`fail` named initializers:** if error types support named construction,
-  `fail TypeName { field: value }` must be added to RFC A's grammar.
-- **Turbofish on enum variants:** decide before freeze. Recommended:
-  `None::<i32>` is a constructor call, not a path; `Option.None::<i32>` should
-  be rejected or normalized to one spelling.
-- **Whitespace:** `:: <` is an error; keep that explicit in the lexer.
-- **Trailing comma:** allow it, matching the general list rule.
+## B.9 Lead review notes (2026-11-08)
+
+- The grammar conflict is resolved: turbofish belongs to the call/constructor
+  suffix, not to `path_expr`.
+- `struct_expr` is explicit in the primary-expression grammar.
+- Comparisons are non-associative in the EBNF, not only in prose.
+- `fail TypeName { field: value }` is accepted; see RFC A A.8.
+- The Phase 0 conflict check in `tools/grammar-v0.2` covers turbofish, struct
+  initializers versus blocks, `fail` versus calls, both scope spellings, and
+  trailing commas with zero LR(1) conflicts.

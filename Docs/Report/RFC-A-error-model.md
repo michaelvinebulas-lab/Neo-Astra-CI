@@ -31,12 +31,19 @@ postfix_expr  = primary_expr { call_suffix | index_suffix | field_suffix | try_s
 try_suffix    = "?" ;
 
 primary_expr  = ... | fail_expr ;
-fail_expr     = "fail" type_path "(" [ arg_list ] ")" ;
+fail_expr     = "fail" type_path
+                ( "(" [ arg_list ] ")" | "{" [ field_init_list ] "}" ) ;
 
 (* handling *)
 match_arm     = pattern "=>" ( expr | block ) ;
-pattern       = ... | "Ok" "(" pattern ")" | "Err" "(" pattern ")" ;
+pattern       = ... | "Ok" "(" pattern ")" | "Err" "(" error_pattern ")" ;
+error_pattern = "_" | identifier | pattern ;  (* see A.8, D3 *)
 ```
+
+`field_init_list` is the same comma-separated list used by struct
+initializers, with an optional trailing comma. Both `fail Type(args)` and
+`fail Type { field: value }` construct errors; the named form is accepted for
+nominal error types with fields.
 
 ## A.3 Precedence and typing
 
@@ -104,29 +111,91 @@ The formatter/codemod can do both rewrites mechanically, because `!` was never b
 ## A.7 Unresolved questions
 
 1. **D1 (closed):** reject `return fail X()` as redundant.
-2. **D2 (recommended):** no dedicated `error` item; use ordinary nominal\n   structs/enums and let the checker restrict failure constructibility.
-3. **Pattern shape for `Err(e)`:** is `e` the union type, and can patterns destructure (`Err(InvalidAge(msg))`)?
-4. **Error-set polymorphism:** can a generic function propagate whatever `f` throws?
-5. **Tasks:** how does a failure inside `spawn { ... }` surface?
-6. **`Result<T,E>` bridging:** names for conversions to and from the effect model.
-7. **Does `?` convert between error types?**
+2. **D2 (closed):** no dedicated `error` item; use ordinary nominal
+   structs/enums and let the checker restrict failure constructibility.
+3. **D3 (closed):** `Err(e)` binds the declared error side. Nested
+   member-specific patterns are allowed; exhaustiveness covers every declared
+   error member or a wildcard/binding. See A.8.
+4. **D4 (closed):** error-set polymorphism is out of v0.2. Generic functions
+   declare concrete error sets.
+5. **D5 (closed):** `Task.join()` is unchanged in this RFC; task failure
+   surfacing needs a separate decision.
+6. **D6 (closed):** no `Result<T, E>` bridge ships in `0.2.0`. Reserved later
+   spellings are `Result.from_effect(expr)` and `result.into_effect()?`.
+7. **D7 (closed):** no implicit error-type conversion; only declared-set
+   subset checking.
 
-## Lead review notes (2026-11-08)
+## A.8 Phase 0 decisions (2026-11-08)
 
-- **D1 is closed:** `return fail X(...)` is rejected. The principal already chose
-  this.
-- **D2 recommendation: no new `error` item.** Use ordinary nominal structs and
-  enums; the checker restricts which nominal types are constructible as failures
-  and rejects ambiguous multi-variant enum construction. This avoids adding a
-  second type-declaration form.
-- **D3 must be settled before freeze.** Define whether `Err(e)` binds the whole
-  error union or a destructured variant, and how exhaustiveness works.
-- **D4:** keep error-set polymorphism out of v0.2 and say so.
-- **D5:** do not change `Task.join()` to `T ! E` in this RFC; the existing
-  `TaskError` design is separate and needs its own decision.
-- **D6:** bridge names are open; recommend `Result.from_effect(...)` and
-  `result.into_effect()?`.
-- **D7:** no implicit error-type conversion; subset checking only.
-- The grammar must also allow the named-initializer form
-  `fail TypeName { field: value }` if existing nominal error types can be
-  constructed that way. Add it or explicitly reject it.
+These decisions close the blocking error-model questions for the v0.2 cleanup
+freeze. They are language decisions; implementation lands with the error-model
+phase, not in the `0.2.0` syntax-only cleanup.
+
+### `fail Type { ... }`
+
+The named-initializer form is **accepted**:
+
+```ns
+fail InvalidAge { message: "too young", minimum: 18 }
+```
+
+`fail Type(args)` remains the positional form. The AST already represents both
+through `ExprKind::Fail` and `FailArguments::{Tuple, Struct}`. `return fail ...`
+remains rejected as redundant. The grammar in A.2 has been updated.
+
+### D3 - `Err` pattern shape
+
+- A fallible expression's error side is the function's declared error set: a
+  disjoint union of nominal error types.
+- `Err(e)` binds one value. If the error set has one member, `e` has that
+  member's type. If it has several, `e` is an opaque union value; v0.2.0 does
+  not add union syntax to type annotations.
+- Nested member-specific patterns are allowed:
+  `Err(InvalidAge { message })`, `Err(ParseIntError(code))`, and
+  `Err(NotFound)`. The pattern head must name a member of the scrutinee's
+  declared error set; otherwise the checker reports `NS4017`.
+- A binding or `_` covers the whole error side: `Err(e)` and `Err(_)`.
+- Exhaustiveness:
+  - `Ok` and `Err` must both be covered; a missing side is `NS4010`.
+  - If any `Err` arm uses a member-specific pattern, every member of the error
+    set must be covered by a member-specific arm or by a final `_`/binding arm;
+    a missing member is `NS4010`.
+  - A single `Err(_)` or `Err(e)` covers all error members.
+  - Nested payload patterns must be exhaustive for the member type
+    (`NS4010`/`NS4017`).
+- The checker must preserve the declared error set when checking `Err`
+  patterns. The current `result_parts` fallback to `Type::Unknown` for
+  multi-error effects is an implementation gap, not the language rule.
+- No AST change is needed: `PatternKind::Constructor` already represents
+  `Err(InvalidAge { ... })` and nested patterns.
+
+### D6 - `Result<T, E>` bridge
+
+No bridge is part of the `0.2.0` cleanup release. `Result<T, E>` remains a
+library/FFI value type and is never an implicit source-level error path. If a
+bridge is added later, the reserved spellings are:
+
+- `Result.from_effect(expr)` to capture a fallible expression as a
+  `Result<T, E>`;
+- `result.into_effect()?` to enter the effect model from a `Result`.
+
+The later RFC must define effect capture, conversion of multi-member error sets,
+and the `Result` error type's relationship to declared error sets.
+
+### D4, D5, D7
+
+- **D4:** no error-set polymorphism in v0.2. A generic function declares a
+  concrete error set; a caller may propagate only its subset.
+- **D5:** `Task.join()` keeps its current `TaskError` design. Spawned-task
+  failure surfacing is not redesigned in this RFC.
+- **D7:** no implicit error-type conversion. `?` and `fail` use subset checking
+  against the enclosing function's declared set.
+
+### Grammar check
+
+The Phase 0 conflict check lives in `tools/grammar-v0.2`. It uses canonical
+LR(1) tables with Pager merging and covers `fail Type(...)` versus
+`fail Type { ... }`, turbofish, struct initializers versus blocks, both scope
+spellings, and optional trailing commas. Its four tests are green with zero
+conflicts. The focused grammar omits operator-precedence layers and
+control-flow expressions; those do not participate in the ambiguity set.
