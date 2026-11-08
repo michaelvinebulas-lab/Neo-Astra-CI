@@ -1,0 +1,21 @@
+// edition: 0.2
+// migration: --edition 0.2
+
+struct NotFound(str)
+
+fn parse() -> i32 ! NotFound {
+    fail NotFound("missing")
+}
+
+fn run() -> i32 ! NotFound {
+    let value = parse()?
+    return value
+}
+
+pub fn main() -> i32 {
+    let task = spawn { return 1 }
+    match run() {
+        Ok(value) => return value,
+        Err(_) => return 0,
+    }
+}

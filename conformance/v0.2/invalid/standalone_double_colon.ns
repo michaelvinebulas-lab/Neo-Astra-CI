@@ -1,0 +1,6 @@
+// edition: 0.2
+// purpose: :: is not a path separator
+
+pub fn main() -> i32 {
+    return path::name
+}

@@ -1,0 +1,23 @@
+// edition: 0.1
+// migration: --edition 0.2
+
+function greet(name: str) -> str {
+    return name
+}
+
+constant LIMIT: i32 = 3
+typedef UserId = u64
+record User {
+    name: str
+}
+
+public fn main() -> i32 {
+    var mutable count = 0
+    {@mode:core;
+        let user = User {
+            name: greet("Neo")
+        }
+        count = count + LIMIT
+        return count
+    }
+}

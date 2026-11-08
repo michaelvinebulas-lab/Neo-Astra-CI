@@ -54,10 +54,13 @@ The cleanup reuses the existing AST:
 | `value.method::<T>()` | `ExprKind::TypeArguments` |
 | `Box::<T> { ... }` | `StructInit.path.arguments` |
 | `@mode(core) { ... }` / `@memory(manual) { ... }` | `ScopeAnnotation` + `ScopedItems` / `ScopedStatements` |
+| `Err(InvalidAge(...))` | `PatternKind::Constructor` / `PatternKind::Variant` |
 | canonical aliases | canonical `Keyword` variants and `Visibility` |
 
 The cleanup must not add AST nodes. Feature work in 0.2 adds nodes later and
-must update every backend explicitly.
+must update every backend explicitly. Named-field error patterns such as
+`Err(InvalidAge { message })` are therefore deferred; constructor member
+patterns use the existing pattern nodes.
 
 ## 1. Editions
 
@@ -361,11 +364,15 @@ pattern_list   = pattern { "," pattern } [ "," ] ;
 `Err` payload follows RFC A A.8:
 
 - `Err(e)` binds the declared error side;
-- `Err(_)` covers all error members;
-- member-specific patterns such as `Err(InvalidAge { message })` are allowed;
+- `Err(_)` discards it;
+- member-specific patterns are allowed in the existing constructor form, e.g.
+  `Err(InvalidAge(...))` and `Err(ParseIntError(code))`. The head must name a
+  declared error member (`NS4017`);
+- struct-field patterns such as `Err(InvalidAge { message })` are deferred;
+  they need a pattern AST extension and are a feature gap, not cleanup;
 - a match must cover both `Ok` and `Err`;
-- if member-specific `Err` patterns are used, every declared error member must be
-  covered or a final `_`/binding arm must be present.
+- if member-specific `Err` patterns are used, every declared error member must
+  be covered or a final `_`/binding arm must be present.
 
 ### 3.9 Expressions
 
@@ -517,13 +524,13 @@ the canonical form under edition 0.2 and preserves the old form under edition
 
 | Form | edition 0.1 | edition 0.2 | Canonical action |
 |---|---|---|---|
-| `function`, `var`, `constant`, `typedef`, `record`, `mutable`, `public` | accepted, canonical formatter normalizes | accepted but deprecated | canonical spelling |
+| `function`, `var`, `constant`, `typedef`, `record`, `mutable`, `public` | accepted, canonical formatter normalizes | accepted but deprecated; `--canonical-syntax` rejects (`NS2009`) | canonical spelling |
 | `!Error(...)` expression | accepted | rejected (`NS2015`) | `fail Error(...)` |
 | postfix `expr!` | accepted | rejected (`NS2015`) | `expr?` |
-| `{ @mode:name; ... }` | accepted | accepted but deprecated | `@mode(name) { ... }` |
+| `{ @mode:name; ... }` | accepted | accepted but deprecated; `--canonical-syntax` rejects (`NS2015`) | `@mode(name) { ... }` |
 | `path<T>(...)` heuristic | accepted | bare `<` is comparison; `NS2010` | `path::<T>(...)` |
-| `spawn || { ... }` | accepted | accepted but deprecated | `spawn { ... }` |
-| `/%` | accepted | accepted but deprecated; semantics preserved | manual: `/` or explicit overflow API |
+| `spawn || { ... }` | accepted | accepted but deprecated; `--canonical-syntax` rejects (`NS2012`) | `spawn { ... }` |
+| `/%` | accepted | accepted but deprecated; `--canonical-syntax` rejects (`NS2013`); semantics preserved | manual: `/` or explicit overflow API |
 | `///` | comment | ordinary comment | `//` if docs are not intended |
 
 Do not rewrite `/%` to `/` in the formatter or migration. Do not rewrite
@@ -543,7 +550,7 @@ existing parse codes, and `NS4010`-`NS4019` remain the type/effect codes.
 | `NS2012` | Deprecated `spawn ||` | formatter emits `spawn` |
 | `NS2013` | Deprecated `/%` | no automatic rewrite; semantics differ from `/` |
 | `NS2014` | Invalid tuple index | float token after `.`; targeted hint |
-| `NS2015` | Removed v0.1 spelling under edition 0.2 | postfix `!`, old scope block |
+| `NS2015` | Deprecated or removed v0.1 spelling | old scope block: accepted but deprecated (`--canonical-syntax` rejects); prefix `!Error(...)` / postfix `!`: rejected under edition 0.2 |
 | `NS2016` | Canonical-syntax lint family | reserved aggregate; details may use `NS2009`-`NS2015` |
 | `NS2017`-`NS2019` | Reserved for v0.2 front-end follow-ups | do not assign outside this block |
 
@@ -614,7 +621,27 @@ expressions; they do not participate in the ambiguity set. It models one
 postfix suffix per expression; chained postfix forms are covered by the parser
 suite and the full EBNF in section 3.9.
 
-## 10. Freeze checklist
+## 10. Decision trace
+
+| Decision | Specification | RFC / plan | Fixture or check |
+|---|---|---|---|
+| Editions, default, strictness | 1.1-1.3 | Plan 5.11 | `conformance/v0.2` metadata comments |
+| Deprecated aliases and `/%` | 2.6, 5 | Deprecation policy | `deprecated/aliases_and_old_forms.ns` |
+| `fail Type(...)` and `fail Type { ... }` | 3.10 | RFC A A.8 | `valid/fail_named.ns` |
+| `Err` member patterns and `Ok`/`Err` exhaustiveness | 3.8 | RFC A A.8 | `valid/error_patterns.ns`, `invalid/error_member_not_declared.ns` |
+| Turbofish and type-position arguments | 3.9 | RFC B B.8 | `valid/turbofish.ns`, `invalid/bare_turbofish.ns` |
+| Enum-variant spelling | 3.9 | RFC B B.8 | `valid/turbofish.ns`, `invalid/qualified_variant_turbofish.ns` |
+| Struct initializers versus blocks | 3.9 | RFC B B.4 | `valid/struct_vs_block.ns`, `invalid/struct_head.ns` |
+| Trailing commas | 3.2-3.10 | RFC B B.8 | `valid/lists_trailing.ns` |
+| Canonical scopes | 4 | Plan 5.6 | `valid/scopes.ns` |
+| Migration | 8 | Plan 5.8 | `migrate/*.input.ns` and `.migrated.ns` |
+| Grammar and conflicts | 9 | RFC A/B | `tools/grammar-v0.2` |
+
+The v0.2 corpus is non-normative until the runner is wired in Phase 5. It is
+kept out of the v0.1 `conformance/cases` and `conformance/rejects` trees on
+purpose.
+
+## 11. Freeze checklist
 
 - [ ] Phase 0 decisions closed; grammar check green.
 - [ ] Edition plumbing accepts only `"0.1"`/`"0.2"` and defaults to `"0.1"`.

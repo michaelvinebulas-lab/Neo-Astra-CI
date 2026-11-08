@@ -37,7 +37,7 @@ fail_expr     = "fail" type_path
 (* handling *)
 match_arm     = pattern "=>" ( expr | block ) ;
 pattern       = ... | "Ok" "(" pattern ")" | "Err" "(" error_pattern ")" ;
-error_pattern = "_" | identifier | pattern ;  (* see A.8, D3 *)
+error_pattern = "_" | identifier | pattern ;  (* constructor forms only; struct-field patterns deferred *)
 ```
 
 `field_init_list` is the same comma-separated list used by struct
@@ -113,9 +113,13 @@ The formatter/codemod can do both rewrites mechanically, because `!` was never b
 1. **D1 (closed):** reject `return fail X()` as redundant.
 2. **D2 (closed):** no dedicated `error` item; use ordinary nominal
    structs/enums and let the checker restrict failure constructibility.
-3. **D3 (closed):** `Err(e)` binds the declared error side. Nested
-   member-specific patterns are allowed; exhaustiveness covers every declared
-   error member or a wildcard/binding. See A.8.
+3. **D3 (closed):** `Err(e)` binds the declared error side and `Err(_)`
+   discards it. Member-specific patterns are allowed in the existing
+   constructor form, e.g. `Err(InvalidAge(...))`. Struct-field patterns such as
+   `Err(InvalidAge { message })` are deferred because the v0.1 pattern grammar
+   has no struct patterns; adding them is a feature gap, not cleanup.
+   Exhaustiveness covers every declared error member or a wildcard/binding. See
+   A.8.
 4. **D4 (closed):** error-set polymorphism is out of v0.2. Generic functions
    declare concrete error sets.
 5. **D5 (closed):** `Task.join()` is unchanged in this RFC; task failure
@@ -147,27 +151,31 @@ remains rejected as redundant. The grammar in A.2 has been updated.
 
 - A fallible expression's error side is the function's declared error set: a
   disjoint union of nominal error types.
-- `Err(e)` binds one value. If the error set has one member, `e` has that
-  member's type. If it has several, `e` is an opaque union value; v0.2.0 does
-  not add union syntax to type annotations.
-- Nested member-specific patterns are allowed:
-  `Err(InvalidAge { message })`, `Err(ParseIntError(code))`, and
-  `Err(NotFound)`. The pattern head must name a member of the scrutinee's
-  declared error set; otherwise the checker reports `NS4017`.
-- A binding or `_` covers the whole error side: `Err(e)` and `Err(_)`.
+- `Err(e)` binds the whole error side. If the error set has one member, `e` has
+  that member's type. If it has several, `e` is an opaque union value; v0.2.0
+  does not add union syntax to type annotations.
+- `Err(_)` discards the whole error side.
+- Member-specific patterns are allowed in the existing constructor/variant
+  pattern forms, e.g. `Err(InvalidAge(...))` and
+  `Err(ParseIntError(code))`. The pattern head must name a member of the
+  scrutinee's declared error set; otherwise the checker reports `NS4017`.
+- Struct-field patterns such as `Err(InvalidAge { message })` are deferred.
+  They need a pattern AST addition, so they are a feature gap, not part of the
+  AST-free cleanup.
 - Exhaustiveness:
   - `Ok` and `Err` must both be covered; a missing side is `NS4010`.
-  - If any `Err` arm uses a member-specific pattern, every member of the error
-    set must be covered by a member-specific arm or by a final `_`/binding arm;
-    a missing member is `NS4010`.
+  - If any `Err` arm uses a member-specific constructor pattern, every member
+    of the error set must be covered by a member-specific arm or by a final
+    `_`/binding arm; a missing member is `NS4010`.
   - A single `Err(_)` or `Err(e)` covers all error members.
-  - Nested payload patterns must be exhaustive for the member type
+  - Nested constructor payloads must be exhaustive for the member type
     (`NS4010`/`NS4017`).
 - The checker must preserve the declared error set when checking `Err`
   patterns. The current `result_parts` fallback to `Type::Unknown` for
   multi-error effects is an implementation gap, not the language rule.
-- No AST change is needed: `PatternKind::Constructor` already represents
-  `Err(InvalidAge { ... })` and nested patterns.
+- No AST change is needed for constructor member patterns: the existing
+  `PatternKind::Constructor` and `PatternKind::Variant` nodes represent them.
+  Named-field patterns are the only deferred form.
 
 ### D6 - `Result<T, E>` bridge
 

@@ -149,3 +149,14 @@ rule (`NS6002`, at both the `Memory.alloc` and `region.alloc` sites).
 For a rejection case, write `rejects/<name>.ns` and list the required codes in
 `rejects/<name>.codes`, then run
 `cargo test -p astra-core --test conformance_rejects`.
+
+## v0.2 corpus (not loaded yet)
+
+The `conformance/v0.2/` tree holds the edition-0.2 cleanup corpus. It is
+intentionally separate from `cases/` and `rejects/` and is not read by
+`loadConformanceCases()` until the edition switch, parser, checker, formatter,
+and migration command are accepted. See `conformance/v0.2/README.md` for the
+layout and code-match rules.
+
+Do not move v0.2 fixtures into `cases/` or `rejects/` before Phase 5: the v0.1
+runners would try to compile them against the v0.1 surface.

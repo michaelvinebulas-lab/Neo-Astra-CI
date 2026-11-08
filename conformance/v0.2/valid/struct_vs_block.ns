@@ -1,0 +1,19 @@
+// edition: 0.2
+// purpose: struct initializers versus blocks and the if-head restriction
+
+struct User {
+    id: i32,
+}
+
+fn score(user: User) -> i32 {
+    if user.id == (User { id: 7, }).id {
+        return 1
+    }
+    return 0
+}
+
+pub fn main() -> i32 {
+    let user = User { id: 7, }
+    let nested = if user.id == (User { id: 7, }).id { 1 } else { 0 }
+    return score(user) + nested
+}

@@ -1,0 +1,7 @@
+// edition: 0.2
+// purpose: wildcard type arguments are not part of the v0.2 surface
+
+pub fn main() -> i32 {
+    let value = Map.new::<str, _>()
+    return 0
+}

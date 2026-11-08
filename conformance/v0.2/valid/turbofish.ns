@@ -1,0 +1,21 @@
+// edition: 0.2
+// purpose: type arguments in type position versus turbofish in expression position
+
+struct Wrapper<T> {
+    value: T,
+}
+
+fn identity<T>(value: T) -> T {
+    return value
+}
+
+pub fn main() -> i32 {
+    let number = identity::<i32>(7)
+    let wrapped: Wrapper<i32> = Wrapper::<i32> { value: number, }
+    let inferred = Wrapper { value: 9, }
+    let absent: Option<i32> = None::<i32>
+    match absent {
+        Some(value) => return wrapped.value + value,
+        None => return inferred.value,
+    }
+}

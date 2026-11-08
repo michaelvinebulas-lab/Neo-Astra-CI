@@ -1,0 +1,7 @@
+// edition: 0.2
+// purpose: turbofish binds to the variant, not to the enum path
+
+pub fn main() -> i32 {
+    let value: Option<i32> = Option.None::<i32>
+    return 0
+}

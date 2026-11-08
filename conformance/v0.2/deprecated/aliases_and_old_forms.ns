@@ -1,0 +1,21 @@
+// edition: 0.2
+// purpose: deprecated forms stay accepted by default and fail canonical-syntax
+
+function old_style() -> i32 {
+    return 1
+}
+
+constant LIMIT: i32 = 10
+typedef UserId = u64
+
+record Point {
+    x: i32,
+}
+
+public fn main() -> i32 {
+    var mutable value: i32 = 1
+    {@mode:core;
+        let task = spawn || { return 2 }
+        return value /% LIMIT
+    }
+}

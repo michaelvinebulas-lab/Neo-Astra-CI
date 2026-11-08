@@ -1,0 +1,10 @@
+// edition: 0.2
+// purpose: whitespace between :: and < is malformed
+
+fn identity<T>(value: T) -> T {
+    return value
+}
+
+pub fn main() -> i32 {
+    return identity:: <i32>(1)
+}
