@@ -350,6 +350,45 @@ test("native C and native executable builds match generated artifacts", { skip }
   }
 });
 
+test("native C libraries match generated artifacts", { skip }, async () => {
+  for (const emit of ["staticlib", "cdylib"]) {
+    const expectedDir = await makeProject(VALID);
+    const actualDir = await makeProject(VALID);
+    try {
+      compareResult(
+        `build --target c --emit ${emit} --json`,
+        runNode(
+          ["build", expectedDir, "--target", "c", "--emit", emit, "--json"],
+          expectedDir,
+        ),
+        runNative(
+          ["build", actualDir, "--target", "c", "--emit", emit, "--json"],
+          actualDir,
+        ),
+        expectedDir,
+        actualDir,
+      );
+
+      const expectedFiles = await listFiles(expectedDir);
+      const actualFiles = await listFiles(actualDir);
+      assert.deepEqual(actualFiles, expectedFiles, `library ${emit}: file list`);
+      for (const file of expectedFiles) {
+        if (/\.(?:a|o|so|dll|lib|exe)$/.test(file) || file.endsWith(".dll.a")) {
+          continue;
+        }
+        assert.equal(
+          await readFile(join(actualDir, file), "utf8"),
+          await readFile(join(expectedDir, file), "utf8"),
+          `library ${emit}: ${file}`,
+        );
+      }
+    } finally {
+      await rm(expectedDir, { recursive: true, force: true });
+      await rm(actualDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("native JS build matches generated module tree", { skip }, async () => {
   const expectedDir = await makeProject(VALID);
   const actualDir = await makeProject(VALID);

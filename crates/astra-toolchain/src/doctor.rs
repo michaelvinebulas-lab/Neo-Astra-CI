@@ -4,6 +4,10 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::install::{
+    Downloader, Extractor, SystemDownloader, SystemExtractor, install_pinned_toolchain_default,
+    install_pinned_toolchain_with, manual_instructions, pinned_for_host,
+};
 use crate::policy::ToolchainPolicy;
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,17 +198,17 @@ fn hosted_probe(probe: &dyn Probe, bin: &str) -> bool {
         .ok()
 }
 
-struct CacheResult {
-    resolution: Option<Winner>,
-    reason: String,
-    can_fall_back: bool,
+pub(crate) struct CacheResult {
+    pub(crate) resolution: Option<Winner>,
+    pub(crate) reason: String,
+    pub(crate) can_fall_back: bool,
 }
 
-fn cache_dir_for(project_root: &Path, id: &str) -> String {
+pub(crate) fn cache_dir_for(project_root: &Path, id: &str) -> String {
     format!("{}/.tools/toolchain/{id}", project_root.display())
 }
 
-fn lookup_cache(project_root: &Path, id: &str, probe: &dyn Probe) -> CacheResult {
+pub(crate) fn lookup_cache(project_root: &Path, id: &str, probe: &dyn Probe) -> CacheResult {
     let at = id.find('@');
     let family = at.map_or(id, |index| &id[..index]);
     let versioned = at.is_some();
@@ -310,13 +314,9 @@ fn lookup_cache(project_root: &Path, id: &str, probe: &dyn Probe) -> CacheResult
     }
 }
 
-fn manual_instructions(id: &str, cache_dir: &str) -> String {
-    let at = id.find('@');
-    let family = at.map_or(id, |index| &id[..index]);
-    let version = at.map_or("", |index| &id[index + 1..]);
-    format!(
-        "Manual install: extract the {id} toolchain into {cache_dir} and write {cache_dir}/toolchain.json with {{\"id\":\"{id}\",\"family\":\"{family}\",\"version\":\"{version}\"}}."
-    )
+struct DownloadContext<'a> {
+    downloader: &'a dyn Downloader,
+    extractor: &'a dyn Extractor,
 }
 
 fn resolve_inner(
@@ -325,6 +325,8 @@ fn resolve_inner(
     env_cc: Option<&str>,
     probe: &dyn Probe,
     attempts: &mut Vec<Attempt>,
+    download: Option<&DownloadContext<'_>>,
+    explicit_no_download: bool,
 ) -> Result<Winner, ToolchainError> {
     if let Some(astra_cc) = env_cc.map(str::trim).filter(|value| !value.is_empty()) {
         record(attempts, "env", format!("ASTRA_CC={astra_cc}"));
@@ -365,15 +367,53 @@ fn resolve_inner(
         }
         record(attempts, "cache", cache.reason.clone());
         if !cache.can_fall_back {
-            let message = if id.contains('@') {
-                format!(
-                    "pinned downloads are not available in this build of astra; {}",
-                    manual_instructions(id, &cache_dir)
-                )
-            } else {
-                cache.reason
-            };
-            return Err(ToolchainError::new("NS9102", message));
+            if id.contains('@') {
+                let artifact = pinned_for_host(id);
+                let marker = format!("{cache_dir}/toolchain.json");
+                if probe.exists(&marker) {
+                    let message = if explicit_no_download {
+                        format!(
+                            "{}; {}",
+                            cache.reason,
+                            manual_instructions(id, artifact, &cache_dir)
+                        )
+                    } else {
+                        cache.reason.clone()
+                    };
+                    return Err(ToolchainError::new("NS9102", message));
+                }
+                let Some(download) = download else {
+                    let message = if explicit_no_download {
+                        format!(
+                            "download disabled (--no-download); {}",
+                            manual_instructions(id, artifact, &cache_dir)
+                        )
+                    } else {
+                        cache.reason.clone()
+                    };
+                    return Err(ToolchainError::new("NS9102", message));
+                };
+                let Some(artifact) = artifact else {
+                    return Err(ToolchainError::new(
+                        "NS9102",
+                        format!(
+                            "no pinned artifact for {id} on this host; {}",
+                            manual_instructions(id, None, &cache_dir)
+                        ),
+                    ));
+                };
+                let resolution = install_pinned_toolchain_with(
+                    project_root,
+                    id,
+                    artifact,
+                    probe,
+                    download.downloader,
+                    download.extractor,
+                )?;
+                record(attempts, "cache", format!("downloaded {id}"));
+                return Ok(resolution);
+            }
+            return Err(ToolchainError::new("NS9102", cache.reason));
         }
         let family = id.as_str();
         if let Some(path) = find_on_path(family, probe) {
@@ -460,7 +500,58 @@ pub fn resolve(
     probe: &dyn Probe,
 ) -> Result<Winner, ToolchainError> {
     let mut attempts = Vec::new();
-    resolve_inner(project_root, policy, env_cc, probe, &mut attempts)
+    resolve_inner(
+        project_root,
+        policy,
+        env_cc,
+        probe,
+        &mut attempts,
+        None,
+        false,
+    )
+}
+
+pub fn resolve_with_installer(
+    project_root: &Path,
+    policy: &ToolchainPolicy,
+    env_cc: Option<&str>,
+    probe: &dyn Probe,
+    allow_download: bool,
+    downloader: &dyn Downloader,
+    extractor: &dyn Extractor,
+) -> Result<Winner, ToolchainError> {
+    let mut attempts = Vec::new();
+    let context = DownloadContext {
+        downloader,
+        extractor,
+    };
+    resolve_inner(
+        project_root,
+        policy,
+        env_cc,
+        probe,
+        &mut attempts,
+        allow_download.then_some(&context),
+        true,
+    )
+}
+
+pub fn resolve_with_download(
+    project_root: &Path,
+    policy: &ToolchainPolicy,
+    env_cc: Option<&str>,
+    probe: &dyn Probe,
+    allow_download: bool,
+) -> Result<Winner, ToolchainError> {
+    resolve_with_installer(
+        project_root,
+        policy,
+        env_cc,
+        probe,
+        allow_download,
+        &SystemDownloader,
+        &SystemExtractor,
+    )
 }
 
 pub fn resolve_with_attempts(
@@ -470,17 +561,19 @@ pub fn resolve_with_attempts(
     probe: &dyn Probe,
 ) -> (Result<Winner, ToolchainError>, Vec<Attempt>) {
     let mut attempts = Vec::new();
-    let result = resolve_inner(project_root, policy, env_cc, probe, &mut attempts);
+    let result = resolve_inner(
+        project_root,
+        policy,
+        env_cc,
+        probe,
+        &mut attempts,
+        None,
+        false,
+    );
     (result, attempts)
 }
 
-pub fn doctor(
-    project_root: &Path,
-    policy: &ToolchainPolicy,
-    env_cc: Option<&str>,
-    probe: &dyn Probe,
-) -> DoctorResult {
-    let (result, attempts) = resolve_with_attempts(project_root, policy, env_cc, probe);
+fn doctor_from(result: Result<Winner, ToolchainError>, attempts: Vec<Attempt>) -> DoctorResult {
     let error = result
         .as_ref()
         .err()
@@ -493,6 +586,95 @@ pub fn doctor(
     }
 }
 
+pub fn doctor(
+    project_root: &Path,
+    policy: &ToolchainPolicy,
+    env_cc: Option<&str>,
+    probe: &dyn Probe,
+) -> DoctorResult {
+    let (result, attempts) = resolve_with_attempts(project_root, policy, env_cc, probe);
+    doctor_from(result, attempts)
+}
+
+pub fn doctor_with_installer(
+    project_root: &Path,
+    policy: &ToolchainPolicy,
+    env_cc: Option<&str>,
+    probe: &dyn Probe,
+    allow_download: bool,
+    downloader: &dyn Downloader,
+    extractor: &dyn Extractor,
+) -> DoctorResult {
+    let mut base = doctor(project_root, policy, env_cc, probe);
+    let versioned = policy.request != "auto"
+        && policy.request.contains('@')
+        && env_cc
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none();
+    if base.winner.is_some() {
+        return base;
+    }
+    if !allow_download {
+        if versioned {
+            record(
+                &mut base.attempts,
+                "cache",
+                "download disabled (--no-download)",
+            );
+        }
+        return base;
+    }
+    if !versioned {
+        return base;
+    }
+    match install_pinned_toolchain_default(
+        project_root,
+        &policy.request,
+        probe,
+        downloader,
+        extractor,
+    ) {
+        Ok(winner) => {
+            record(
+                &mut base.attempts,
+                "cache",
+                format!("downloaded {}", policy.request),
+            );
+            base.winner = Some(winner);
+            base.error = None;
+            base
+        }
+        Err(error) => {
+            let message = format!("{}: {}", error.code, error.message);
+            record(
+                &mut base.attempts,
+                "cache",
+                format!("download failed: {message}"),
+            );
+            base.error = Some(message);
+            base
+        }
+    }
+}
+
+pub fn doctor_with_download(
+    project_root: &Path,
+    policy: &ToolchainPolicy,
+    env_cc: Option<&str>,
+    probe: &dyn Probe,
+    allow_download: bool,
+) -> DoctorResult {
+    doctor_with_installer(
+        project_root,
+        policy,
+        env_cc,
+        probe,
+        allow_download,
+        &SystemDownloader,
+        &SystemExtractor,
+    )
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -679,7 +861,6 @@ mod tests {
         assert!(result.winner.is_none());
         let error = result.error.unwrap_or_default();
         assert!(error.starts_with("NS9102:"));
-        assert!(error.contains("Manual install"));
         assert!(
             result
                 .attempts
@@ -697,12 +878,88 @@ mod tests {
         assert!(result.winner.is_none());
         let error = result.error.unwrap_or_default();
         assert!(error.starts_with("NS9102:"));
-        assert!(error.contains("Manual install"));
         assert!(
             result
                 .attempts
                 .iter()
                 .any(|attempt| attempt.detail.starts_with("invalid cache marker"))
         );
+    }
+    struct CountingDownloader {
+        calls: std::cell::Cell<usize>,
+    }
+
+    impl Downloader for CountingDownloader {
+        fn download(&self, _url: &str, _destination: &Path) -> Result<(), String> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(())
+        }
+    }
+
+    struct NoExtractor;
+
+    impl Extractor for NoExtractor {
+        fn extract(&self, _archive: &Path, _destination: &Path) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn explicit_no_download_reports_disabled_without_fetching() {
+        let root = Path::new("project");
+        let probe = MockProbe::default();
+        let downloader = CountingDownloader {
+            calls: std::cell::Cell::new(0),
+        };
+        let error = resolve_with_installer(
+            root,
+            &policy("zig@0.13.0"),
+            None,
+            &probe,
+            false,
+            &downloader,
+            &NoExtractor,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "NS9102");
+        assert!(error.message.contains("download disabled (--no-download)"));
+        assert!(error.message.contains("Manual install"));
+        assert_eq!(downloader.calls.get(), 0);
+    }
+
+    #[test]
+    fn doctor_no_download_keeps_the_base_error() {
+        let root = Path::new("project");
+        let probe = MockProbe::default();
+        let downloader = CountingDownloader {
+            calls: std::cell::Cell::new(0),
+        };
+        let result = doctor_with_installer(
+            root,
+            &policy("zig@0.13.0"),
+            None,
+            &probe,
+            false,
+            &downloader,
+            &NoExtractor,
+        );
+        assert!(result.winner.is_none());
+        assert_eq!(
+            result.error.as_deref(),
+            Some(
+                format!(
+                    "NS9102: no cache marker at {}/toolchain.json",
+                    cache_dir_for(root, "zig@0.13.0")
+                )
+                .as_str()
+            )
+        );
+        assert!(
+            result
+                .attempts
+                .iter()
+                .any(|attempt| attempt.detail == "download disabled (--no-download)")
+        );
+        assert_eq!(downloader.calls.get(), 0);
     }
 }

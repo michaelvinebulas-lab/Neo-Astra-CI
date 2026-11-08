@@ -58,6 +58,7 @@ struct GeneratedFile {
 struct HostCompiler {
     bin: String,
     args: Vec<String>,
+    family: String,
 }
 
 pub fn cmd_build(args: &[String]) -> ExitCode {
@@ -218,18 +219,20 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
         .or_else(|| target_extra_string(&target_config, "emit"))
         .unwrap_or_else(|| "executable".to_owned());
     let emit_kind = match emit_value.as_str() {
-        "library" | "lib" => "staticlib",
-        other => other,
+        "executable" => "executable",
+        "library" | "lib" | "staticlib" => "staticlib",
+        "cdylib" => "cdylib",
+        other => {
+            return Err(fatal(diag(
+                "NS9012",
+                &format!(
+                    "Unknown emit kind '{other}'. Use executable, staticlib, cdylib, or library."
+                ),
+                Some(&display_path(&project.core_path)),
+            )));
+        }
     };
-    if emit_kind != "executable" {
-        return Err(fatal(diag(
-            "NS9012",
-            &format!(
-                "Emit kind '{emit_value}' is not implemented in native slice 2b; staticlib and cdylib arrive in 2c."
-            ),
-            Some(&display_path(&project.core_path)),
-        )));
-    }
+    let library_mode = emit_kind != "executable";
 
     let entry_value = build_entry(&project).map_err(|diagnostic| fatal(*diagnostic))?;
     let entry_path = project.root.join(&entry_value);
@@ -300,7 +303,7 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
 
     let mut files = Vec::new();
     let mut diagnostics = Vec::new();
-    if ordered.len() <= 1 {
+    if ordered.len() <= 1 && !library_mode {
         let request = CompileRequest {
             api_version: API_VERSION.to_owned(),
             source: SourceUnit {
@@ -356,7 +359,7 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
             target: "c".to_owned(),
             mode,
             integer_policy,
-            library: false,
+            library: library_mode,
             import_map: Default::default(),
         };
         let response = astra_compiler_api::compile_project(&request);
@@ -424,6 +427,7 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
 
     let mut c_sources = Vec::new();
     let mut scripts = Vec::new();
+    let mut header_paths = Vec::new();
     let mut main_c_path: Option<PathBuf> = None;
     let mut host_c_path: Option<PathBuf> = None;
     for file in &files {
@@ -453,11 +457,25 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
             }
             GeneratedKind::Host => host_c_path = Some(path),
             GeneratedKind::Script => scripts.push(path),
-            GeneratedKind::Header => {}
+            GeneratedKind::Header => header_paths.push(path),
         }
     }
 
-    let output_path = if backend == "native" {
+    let output_path = if library_mode {
+        build_library(
+            &project,
+            &target_config,
+            &target_name,
+            emit_kind,
+            &out_dir,
+            &c_sources,
+            &scripts,
+            &header_paths,
+            host_c_path.as_deref(),
+            !options.no_download,
+        )
+        .map_err(fatal)?
+    } else if backend == "native" {
         let Some(main_c) = main_c_path.as_ref() else {
             return Err(fatal(diag(
                 "NS8002",
@@ -487,15 +505,13 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
         let astra_cc = env::var("ASTRA_CC").ok();
         let toolchain_root =
             std::path::absolute(&project.root).unwrap_or_else(|_| project.root.clone());
-        let compiler =
-            resolve_host_compiler(&toolchain_root, &toolchain_policy, astra_cc.as_deref())
-                .map_err(|error| {
-                    fatal(diag(
-                        &error.code,
-                        &error.message,
-                        Some(&display_path(&out_dir.to_string_lossy())),
-                    ))
-                })?;
+        let compiler = resolve_host_compiler(
+            &toolchain_root,
+            &toolchain_policy,
+            astra_cc.as_deref(),
+            !options.no_download,
+        )
+        .map_err(|error| fatal(diag(&error.code, &error.message, None)))?;
         let mut args = vec![
             "-std=c17".to_owned(),
             "-Wall".to_owned(),
@@ -535,6 +551,383 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
         entry: entry_key,
         output: Some(display_path(&output_path.to_string_lossy())),
         diagnostics,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::result_large_err)]
+fn build_library(
+    project: &ProjectManifests,
+    target_config: &TargetSection,
+    target_name: &str,
+    emit_kind: &str,
+    out_dir: &Path,
+    c_sources: &[PathBuf],
+    scripts: &[PathBuf],
+    header_paths: &[PathBuf],
+    host_c_path: Option<&Path>,
+    allow_download: bool,
+) -> Result<PathBuf, ReportedDiagnostic> {
+    let out_display = display_path(&out_dir.to_string_lossy());
+    let Some(host_c) = host_c_path else {
+        return Err(diag(
+            "NS8002",
+            "Compiler did not produce the expected host shim for library emission.",
+            Some(&out_display),
+        ));
+    };
+    if c_sources.is_empty() {
+        return Err(diag(
+            "NS8002",
+            "Compiler did not produce the expected C artifacts for library emission.",
+            Some(&out_display),
+        ));
+    }
+
+    let build_data = serde_json::to_value(&project.build).unwrap_or_default();
+    let policy = astra_toolchain::policy::parse_toolchain_policy(Some(&build_data)).map_err(
+        |(code, message)| diag(&code, &message, Some(&display_path(&project.core_path))),
+    )?;
+    let astra_cc = env::var("ASTRA_CC").ok();
+    let toolchain_root =
+        std::path::absolute(&project.root).unwrap_or_else(|_| project.root.clone());
+    let compiler = resolve_host_compiler(
+        &toolchain_root,
+        &policy,
+        astra_cc.as_deref(),
+        allow_download,
+    )
+    .map_err(|error| diag(&error.code, &error.message, None))?;
+
+    let cflags = cflags(target_config);
+    let obj_dir = out_dir.join("obj");
+    fs::create_dir_all(&obj_dir).map_err(|error| {
+        diag(
+            "NS9014",
+            &format!("Unable to create the object directory: {error}"),
+            Some(&display_path(&obj_dir.to_string_lossy())),
+        )
+    })?;
+
+    let is_cdylib = emit_kind == "cdylib";
+    let pic = is_cdylib && !cfg!(windows) && compiler_flavor(&compiler, false) != "msvc";
+    let mut objects = Vec::new();
+    for source in c_sources.iter().chain(scripts.iter()) {
+        let stem = source
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "source".to_owned());
+        let object = obj_dir.join(format!("{stem}.o"));
+        compile_library_object(
+            &compiler,
+            source,
+            &object,
+            &cflags,
+            pic,
+            &project.root,
+            out_dir,
+        )?;
+        objects.push(object);
+    }
+
+    let package_name = project
+        .package_name()
+        .unwrap_or_else(|| target_name.to_owned());
+    let sanitized: String = package_name
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '_' | '.' | '-') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let lib_stem = format!("lib{sanitized}");
+    let has_cpp = scripts.iter().any(|path| is_cpp(path));
+
+    if emit_kind == "staticlib" {
+        let archive = out_dir.join(format!("{lib_stem}.a"));
+        let mut failures = Vec::new();
+        let mut built = false;
+        for candidate in archiver_candidates(&compiler) {
+            let _ = fs::remove_file(&archive);
+            let mut args = candidate.prefix.clone();
+            args.push("rcs".to_owned());
+            args.push(archive.to_string_lossy().into_owned());
+            args.extend(
+                objects
+                    .iter()
+                    .map(|object| object.to_string_lossy().into_owned()),
+            );
+            match run_tool(&candidate.bin, &args, &project.root) {
+                Ok(()) => {
+                    built = true;
+                    break;
+                }
+                Err(error) => failures.push(format!("{}: {error}", candidate.bin)),
+            }
+        }
+        if !built {
+            let _ = fs::remove_file(&archive);
+            return Err(diag(
+                "NS9102",
+                &format!(
+                    "No archiver (zig ar, ar, llvm-ar, or gcc-ar) could build a static library:\n{}",
+                    failures.join("\n")
+                ),
+                Some(&out_display),
+            ));
+        }
+        return Ok(archive);
+    }
+
+    let host_object = obj_dir.join("astra_host.o");
+    compile_library_object(
+        &compiler,
+        host_c,
+        &host_object,
+        &cflags,
+        pic,
+        &project.root,
+        out_dir,
+    )?;
+    let shared_ext = if cfg!(windows) { ".dll" } else { ".so" };
+    let shared = out_dir.join(format!("{lib_stem}{shared_ext}"));
+    let mut link_args = vec![
+        "-shared".to_owned(),
+        "-o".to_owned(),
+        shared.to_string_lossy().into_owned(),
+    ];
+    link_args.extend(
+        objects
+            .iter()
+            .map(|object| object.to_string_lossy().into_owned()),
+    );
+    link_args.push(host_object.to_string_lossy().into_owned());
+
+    let flavor = compiler_flavor(&compiler, has_cpp);
+    if flavor == "msvc" {
+        let mut exports = Vec::new();
+        for header in header_paths {
+            for name in exported_symbols_from_header(header) {
+                if !exports.contains(&name) {
+                    exports.push(name);
+                }
+            }
+        }
+        if !exports.is_empty() {
+            let def_path = out_dir.join(format!("{lib_stem}.def"));
+            let mut def = String::from("EXPORTS\n");
+            for name in exports {
+                def.push_str(&name);
+                def.push('\n');
+            }
+            if let Err(error) = fs::write(&def_path, def) {
+                return Err(diag(
+                    "NS9014",
+                    &format!("Unable to write the module-definition file: {error}"),
+                    Some(&out_display),
+                ));
+            }
+            link_args.push(format!("-Wl,/DEF:{}", def_path.to_string_lossy()));
+        }
+        link_args.push(format!(
+            "-Wl,/IMPLIB:{}",
+            out_dir.join(format!("{lib_stem}.lib")).to_string_lossy()
+        ));
+    } else if cfg!(windows) {
+        link_args.push("-Wl,--export-all-symbols".to_owned());
+        link_args.push(format!(
+            "-Wl,--out-implib,{}",
+            out_dir.join(format!("{lib_stem}.dll.a")).to_string_lossy()
+        ));
+    }
+    if has_cpp && flavor == "gnu" {
+        link_args.push("-lstdc++".to_owned());
+    }
+
+    let mut args = invocation_args(&compiler, has_cpp);
+    args.extend(link_args);
+    run_tool(&compiler.bin, &args, &project.root).map_err(|error| {
+        let label = compiler_label(&compiler, has_cpp);
+        diag(
+            "NS9015",
+            &format!("Shared library link failed with {label}:\n{error}"),
+            Some(&out_display),
+        )
+    })?;
+    Ok(shared)
+}
+
+#[allow(clippy::result_large_err)]
+fn compile_library_object(
+    compiler: &HostCompiler,
+    source: &Path,
+    object: &Path,
+    cflags: &[String],
+    pic: bool,
+    cwd: &Path,
+    out_dir: &Path,
+) -> Result<(), ReportedDiagnostic> {
+    let cpp = is_cpp(source);
+    let mut args = invocation_args(compiler, cpp);
+    args.push(if cpp { "-std=c++17" } else { "-std=c17" }.to_owned());
+    args.push("-Wall".to_owned());
+    args.push("-Wno-unused-variable".to_owned());
+    if pic {
+        args.push("-fPIC".to_owned());
+    }
+    args.extend(cflags.iter().cloned());
+    args.push("-c".to_owned());
+    args.push("-o".to_owned());
+    args.push(object.to_string_lossy().into_owned());
+    args.push(source.to_string_lossy().into_owned());
+    run_tool(&compiler.bin, &args, cwd).map_err(|error| {
+        let name = source
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        diag(
+            "NS9015",
+            &format!(
+                "Library object compilation failed with {} for {name}:\n{error}",
+                compiler_label(compiler, cpp)
+            ),
+            Some(&display_path(&out_dir.to_string_lossy())),
+        )
+    })
+}
+
+fn is_cpp(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cpp"))
+}
+
+fn invocation_args(compiler: &HostCompiler, cpp: bool) -> Vec<String> {
+    let mut args = compiler.args.clone();
+    if compiler.family == "zig" && cpp {
+        for arg in &mut args {
+            if arg == "cc" {
+                *arg = "c++".to_owned();
+            }
+        }
+    }
+    args
+}
+
+fn compiler_label(compiler: &HostCompiler, cpp: bool) -> String {
+    if compiler.family == "zig" {
+        format!("{} {}", compiler.bin, if cpp { "c++" } else { "cc" })
+    } else {
+        compiler.bin.clone()
+    }
+}
+
+struct Archiver {
+    bin: String,
+    prefix: Vec<String>,
+}
+
+fn archiver_candidates(compiler: &HostCompiler) -> Vec<Archiver> {
+    let mut candidates = Vec::new();
+    if compiler.family == "zig" {
+        candidates.push(Archiver {
+            bin: compiler.bin.clone(),
+            prefix: vec!["ar".to_owned()],
+        });
+    } else if let Ok(output) = Command::new(&compiler.bin)
+        .args(&compiler.args)
+        .arg("-print-prog-name=ar")
+        .output()
+        && output.status.success()
+    {
+        let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !value.is_empty() {
+            candidates.push(Archiver {
+                bin: value,
+                prefix: Vec::new(),
+            });
+        }
+    }
+    for name in ["llvm-ar", "gcc-ar", "ar"] {
+        if !candidates.iter().any(|candidate| candidate.bin == name) {
+            candidates.push(Archiver {
+                bin: name.to_owned(),
+                prefix: Vec::new(),
+            });
+        }
+    }
+    candidates
+}
+
+fn compiler_flavor(compiler: &HostCompiler, cpp: bool) -> &'static str {
+    let mut command = Command::new(&compiler.bin);
+    command
+        .args(invocation_args(compiler, cpp))
+        .arg("-dumpmachine");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    match command.output() {
+        Ok(output)
+            if output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("windows-msvc") =>
+        {
+            "msvc"
+        }
+        _ => "gnu",
+    }
+}
+
+fn exported_symbols_from_header(header: &Path) -> Vec<String> {
+    const MARKER: &str = "#define NS_ASTRA_EXPORTED_PROTOTYPES 1";
+    let Ok(text) = fs::read_to_string(header) else {
+        return Vec::new();
+    };
+    let Some(index) = text.find(MARKER) else {
+        return Vec::new();
+    };
+    let mut names = Vec::new();
+    for line in text[index + MARKER.len()..].lines() {
+        let line = line.trim();
+        if !line.ends_with(';') {
+            continue;
+        }
+        let Some(paren) = line.find('(') else {
+            continue;
+        };
+        let before = line[..paren].trim_end();
+        let name = before
+            .split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+            .next_back()
+            .unwrap_or("");
+        if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    names
+}
+
+fn run_tool(bin: &str, args: &[String], cwd: &Path) -> Result<(), String> {
+    let mut command = Command::new(bin);
+    command.args(args).current_dir(cwd);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    let output = command.output().map_err(|error| error.to_string())?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    Err(if stderr.trim().is_empty() {
+        format!("exit {}", output.status)
+    } else {
+        stderr
     })
 }
 
@@ -716,15 +1109,21 @@ fn resolve_host_compiler(
     project_root: &Path,
     policy: &astra_toolchain::policy::ToolchainPolicy,
     env_cc: Option<&str>,
+    allow_download: bool,
 ) -> Result<HostCompiler, astra_toolchain::doctor::ToolchainError> {
-    let resolution = astra_toolchain::doctor::resolve(
+    let resolution = astra_toolchain::doctor::resolve_with_download(
         project_root,
         policy,
         env_cc,
         &astra_toolchain::doctor::SystemProbe,
+        allow_download,
     )?;
     let (bin, args) = astra_toolchain::doctor::compiler_invocation(&resolution);
-    Ok(HostCompiler { bin, args })
+    Ok(HostCompiler {
+        bin,
+        args,
+        family: resolution.family,
+    })
 }
 
 fn run_compiler(compiler: &HostCompiler, args: &[String], cwd: &Path) -> Result<(), String> {

@@ -15,7 +15,7 @@ use astra_manifest::{
     BuildManifest, CoreManifest, format_build_json, format_build_toml, format_core_json,
     format_core_toml, parse_build_json, parse_build_toml, parse_core_json, parse_core_toml,
 };
-use astra_toolchain::doctor::doctor as run_doctor;
+use astra_toolchain::doctor::doctor_with_download as run_doctor;
 use astra_toolchain::policy::parse_toolchain_policy;
 
 mod build;
@@ -1046,13 +1046,13 @@ fn cmd_doctor(args: &[String]) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let _ = no_download;
     let astra_cc = std::env::var("ASTRA_CC").ok();
     let result = run_doctor(
         std::path::Path::new(&directory),
         &policy,
         astra_cc.as_deref(),
         &astra_toolchain::doctor::SystemProbe,
+        !no_download,
     );
     let ok = result.winner.is_some();
     if json {
