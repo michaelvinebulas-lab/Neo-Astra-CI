@@ -341,11 +341,12 @@ while_stmt     = "while" expression block ;
 for_stmt       = "for" identifier "in" expression block ;
 
 match_expr     = "match" expression "{" { match_arm } "}" ;
-match_arm      = pattern "=>" ( expression | block ) ;
+match_arm      = pattern "=>" ( expression | block ) [ "," ] ;
 ```
 
 `if` and `while` conditions must be `bool`; there is no implicit truthiness.
-A block-bodied match arm may omit the trailing comma.
+A trailing comma after a match arm is optional. The canonical formatter emits a
+comma after an expression arm and omits it after a block-bodied arm.
 
 ### 3.8 Patterns
 
@@ -469,7 +470,7 @@ spawn_expr     = "spawn" block
 ```
 
 `fail E(...)` and `fail E { ... }` have type `Never`. The named form is valid
-for nominal error types with fields. `fail E(...)` requires `E` to be in the
+for nominal error types with fields. Both forms require `E` to be in the
 enclosing function's declared error set (`NS4012`). `return fail ...` is
 redundant (`NS4014`).
 
@@ -502,9 +503,10 @@ scoped_stmt_block = "@" scope_kind "(" identifier ")"
 scope_kind        = "mode" | "memory" ;
 ```
 
-The canonical forms are `@mode(core) { ... }` and `@memory(manual) { ... }`.
-They are valid at item and statement positions respectively. The new form has
-no mandatory semicolon.
+The canonical forms are `@mode(name) { ... }` and `@memory(name) { ... }`.
+Both scope kinds are allowed in item blocks and in statement blocks; the
+difference is whether the contents are items or statements. The new form has no
+mandatory semicolon.
 
 ### 4.2 Deprecated v0.1 scope blocks
 
@@ -524,14 +526,14 @@ the canonical form under edition 0.2 and preserves the old form under edition
 
 | Form | edition 0.1 | edition 0.2 | Canonical action |
 |---|---|---|---|
-| `function`, `var`, `constant`, `typedef`, `record`, `mutable`, `public` | accepted, canonical formatter normalizes | accepted but deprecated; `--canonical-syntax` rejects (`NS2009`) | canonical spelling |
+| `function`, `var`, `constant`, `typedef`, `record`, `mutable`, `public` | accepted; formatter preserves the v0.1 spelling | accepted but deprecated; `--canonical-syntax` rejects (`NS2009`) | canonical spelling via `astra migrate` |
 | `!Error(...)` expression | accepted | rejected (`NS2015`) | `fail Error(...)` |
 | postfix `expr!` | accepted | rejected (`NS2015`) | `expr?` |
 | `{ @mode:name; ... }` | accepted | accepted but deprecated; `--canonical-syntax` rejects (`NS2015`) | `@mode(name) { ... }` |
 | `path<T>(...)` heuristic | accepted | bare `<` is comparison; `NS2010` | `path::<T>(...)` |
 | `spawn || { ... }` | accepted | accepted but deprecated; `--canonical-syntax` rejects (`NS2012`) | `spawn { ... }` |
 | `/%` | accepted | accepted but deprecated; `--canonical-syntax` rejects (`NS2013`); semantics preserved | manual: `/` or explicit overflow API |
-| `///` | comment | ordinary comment | `//` if docs are not intended |
+| `///` | ordinary comment | ordinary comment | no rewrite; use `//` if docs are not intended |
 
 Do not rewrite `/%` to `/` in the formatter or migration. Do not rewrite
 deprecated aliases in a v0.1 project unless migration is explicitly requested.
@@ -571,8 +573,9 @@ does not rewrite the ledger.
 
 ## 7. Canonical formatter rules
 
-- v0.1 input stays v0.1-valid. Aliases may canonicalize only where the v0.1
-  grammar permits the canonical spelling.
+- v0.1 input preserves its v0.1 spellings. The formatter must not canonicalize
+  aliases or old scope blocks under edition 0.1; only `astra migrate` rewrites
+  them.
 - v0.2 input uses `fail`, `?`, `::<...>`, and `@mode(...)` / `@memory(...)`.
 - `/%` stays `/%` under both editions.
 - `spawn || { ... }` becomes `spawn { ... }`.
@@ -627,6 +630,7 @@ suite and the full EBNF in section 3.9.
 |---|---|---|---|
 | Editions, default, strictness | 1.1-1.3 | Plan 5.11 | `conformance/v0.2` metadata comments |
 | Deprecated aliases and `/%` | 2.6, 5 | Deprecation policy | `deprecated/aliases_and_old_forms.ns` |
+| Removed v0.1 error syntax | 5 | RFC A A.6 | `invalid/old_fail_expression.ns`, `invalid/old_propagation.ns` |
 | `fail Type(...)` and `fail Type { ... }` | 3.10 | RFC A A.8 | `valid/fail_named.ns` |
 | `Err` member patterns and `Ok`/`Err` exhaustiveness | 3.8 | RFC A A.8 | `valid/error_patterns.ns`, `invalid/error_member_not_declared.ns` |
 | Turbofish and type-position arguments | 3.9 | RFC B B.8 | `valid/turbofish.ns`, `invalid/bare_turbofish.ns` |
