@@ -1,4 +1,4 @@
-﻿# Todo
+# Todo
 
 Every open task, grouped by the version it lands in (same names as the
 roadmap). Check items off as they are done and prune them at each release.
@@ -119,9 +119,11 @@ Completed work is summarized at the bottom; the full history is in
       GitHub release are published from the green Tier-1 release commit; the
       release workflow attaches the Linux, macOS, and Windows packages.
 
-## Language v0.2 - syntax cleanup (package version TBD)
+## Language v0.2 - syntax cleanup (next minor, edition 0.2)
 
-Plan and open decisions: [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md).
+Plan, decisions, and reviewer RFCs: [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md),
+[`RFC-A-error-model.md`](Report/RFC-A-error-model.md), and
+[`RFC-B-generics.md`](Report/RFC-B-generics.md).
 Do not implement these in the native CLI slices; they target v0.1 until the
 language is frozen.
 
@@ -133,29 +135,34 @@ language is frozen.
       associated calls, constructors, precedence, and negative comparison cases.
 - [ ] Replace `{@mode:name; ...}` / `{@memory:name; ...}` with
       `@mode(name) { ... }` / `@memory(name) { ... }`.
-- [ ] Choose one list-separator rule (commas vs newlines) and state line
-      continuation.
-- [ ] Fix tuple-index lexing so `t.0.1` is not `t` followed by float `0.1`.
+- [ ] Use commas everywhere (trailing allowed); block-bodied match arms may
+      omit the comma.
+- [ ] State line continuation by delimiter kind: whitespace in `(...)`/`[...]`,
+      statement boundaries in blocks, list rules in struct/map literals.
+- [ ] Fix tuple-index lexing: after `.` in postfix position read an integer-only
+      token, never a float; keep `..` ranges and leading-dot chains distinct.
 - [ ] Contextualize `default` and `from`; decide `module` and `type`.
 - [ ] Remove `/%`, `spawn ||`, and the special `///` meaning.
 - [ ] Prune `syntax-legend.md` lookalikes after duplicate syntax is gone.
 
-### Aliases (principal choice: keep for adoption)
+### Aliases (keep six, drop `var`)
 
-- [ ] Make aliases contextual, not reserved.
-- [ ] Fix or drop `var`.
-- [ ] Add a `--strict`/canonical mode that rejects aliases.
+- [ ] Make `function`, `constant`, `typedef`, `record`, `mutable`, and `public`
+      contextual, not reserved; define each recognition position.
+- [ ] Drop `var`; use `let` or `let mut`.
+- [ ] Add the deny-by-default `canonical-syntax` lint and `fmt --canonical`.
 - [ ] Keep formatter canonicalization to `fn`, `let`, `const`, `type`,
       `struct`, `mut`, and `pub`.
+- [ ] Run the canonical lint in stdlib CI.
 
 ### Feature gaps
 
 - [ ] `if let` / `while let`.
 - [ ] Ranges with `for`, iterator, and slice semantics.
 - [ ] Bitwise `& | ^ << >>`, documenting expression `|` vs error-set `|`.
-- [ ] `char` plus literals, or an explicit decision to keep `str`-scalar APIs.
-- [ ] Lambda syntax (`fn(x) => expr`) or an explicit function-pointer-only
-      statement.
+- [ ] Add `char` plus scalar literals.
+- [ ] Add lambda syntax (`fn(x) => expr`) with parameter inference and capture
+      rules for `spawn` and lambdas.
 - [ ] Complete integer/float suffix table.
 
 ### Migration and freeze
@@ -165,11 +172,15 @@ language is frozen.
       turbofish.
 - [ ] One conformance case per changed construct, including negative parses.
 - [ ] Error-code ledger entries for new syntax diagnostics.
+- [ ] Encode the v0.2 EBNF in a parser generator and require zero grammar
+      conflicts, especially for turbofish, struct literals vs blocks, and
+      lambda `=>` vs match `=>`.
 - [ ] 10-20 realistic programs written in the proposed syntax and parsed before
       freeze.
 - [ ] Freeze `spec-v0.2.md`, then update parser, checker, formatter, codegen,
       conformance, examples, and CLI together.
-- [ ] Decide the package version for the breaking change.
+- [ ] Implement `edition = "0.2"` gating so the compiler accepts v0.1 and v0.2
+      syntax, and `ns fix` migrates source.
 
 ## 1.1.0 - browser playground
 

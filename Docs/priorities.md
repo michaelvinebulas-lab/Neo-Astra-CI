@@ -172,22 +172,26 @@ Owner: lead.
 
 ### P1-7. Language v0.2 syntax cleanup
 
-Owner: reviewer drafts the error-model and generic-call RFCs; lead integrates;
-principal decides the open questions.
+Owner: reviewer (error-model/generic-call RFCs), lead (integration), principal
+(decisions).
 
 - Freeze the error model (`-> T ! E`, `?`, `fail`, `Ok`/`Err`) and demote
   `Result<T, E>` to a library/FFI type.
 - Freeze expression-position generics as turbofish `::<...>`.
 - Replace scoped `{@mode:...;}` / `{@memory:...;}` with `@mode(...) { ... }` /
   `@memory(...) { ... }`.
-- Settle separators, line continuation, tuple-index lexing, and the cheap
-  deletions.
-- Keep aliases only as contextual adoption aid with a strict canonical mode.
+- Use commas for lists; state line continuation by delimiter kind; fix
+  tuple-index lexing; remove `/%`, `spawn ||`, and the special `///` meaning.
+- Keep six contextual aliases and drop `var`; add the deny-by-default
+  `canonical-syntax` lint and `fmt --canonical`.
+- Choose the next minor package version and gate syntax with
+  `edition = "0.2"`; keep both editions and add `ns fix` migration.
 - Add `if let`/`while let`, ranges, bitwise operators, `char`, and lambdas only
   after the grammar is frozen.
-- Acceptance: a frozen v0.2 spec, parser diagnostics and formatter rewrites for
-  removed syntax, a conformance case per changed construct, and 10-20
-  realistic programs parsed before freeze.
+- Acceptance: a frozen v0.2 spec, a parser-generator run with zero conflicts,
+  parser diagnostics and formatter rewrites for removed syntax, a conformance
+  case per changed construct, and 10-20 realistic programs parsed before
+  freeze.
 
 The native CLI slices continue against v0.1 until this item freezes the
 language; do not move parser, checker, codegen, and CLI at the same time.

@@ -80,15 +80,16 @@ written.
 
 ## To be built
 
-### Language v0.2 - syntax cleanup (package version TBD)
+### Language v0.2 - syntax cleanup (next minor, edition 0.2)
 
 A breaking cleanup of the v0.1 surface: one error vocabulary, turbofish for
 expression type arguments, `@mode(...)` / `@memory(...)` scope blocks, settled
 separators and line continuation, tuple-index lexing, and removal of `/%`,
-`spawn ||`, and the special `///` meaning. Aliases stay as an adoption aid only
-if they become contextual and a strict canonical mode is added. Feature gaps
+`spawn ||`, and the special `///` meaning. Aliases stay only as six contextual
+adoption aids; `var` is removed and the canonical lint rejects aliases. Feature gaps
 (`if let`, ranges, bitwise operators, `char`, lambdas) are added only after the
-grammar is frozen. Plan and open decisions:
+grammar is frozen. The package version is the next minor, not `2.0.0`;
+compatibility is selected with `edition = "0.2"`. Plan, decisions, and RFCs:
 [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md).
 
 ### 1.1.0 - Browser playground
