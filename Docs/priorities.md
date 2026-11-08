@@ -181,9 +181,11 @@ Owner: reviewer (error-model/generic-call RFCs), lead (integration), principal
 - Replace scoped `{@mode:...;}` / `{@memory:...;}` with `@mode(...) { ... }` /
   `@memory(...) { ... }`.
 - Use commas for lists; state line continuation by delimiter kind; fix
-  tuple-index lexing; remove `/%`, `spawn ||`, and the special `///` meaning.
-- Keep six contextual aliases and drop `var`; add the deny-by-default
-  `canonical-syntax` lint and `fmt --canonical`.
+  tuple-index lexing; deprecate `/%`, `spawn ||`, and the special `///`
+  meaning without removing parser support.
+- Deprecate the aliases rather than removing parser support; `var` is deprecated
+  in favour of `let`/`let mut`. Add the deny-by-default `canonical-syntax` lint
+  and `fmt --canonical`.
 - Choose the next minor package version and gate syntax with
   `edition = "0.2"`; keep both editions and add `ns fix` migration.
 - Add `if let`/`while let`, ranges, bitwise operators, `char`, and lambdas only

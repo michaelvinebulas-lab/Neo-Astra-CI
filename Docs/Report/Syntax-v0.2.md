@@ -1,4 +1,4 @@
-﻿# Neo Astra syntax v0.2 - cleanup and freeze plan
+# Neo Astra syntax v0.2 - cleanup and freeze plan
 
 **Status:** Proposal, not normative  
 **Date:** 2026-11-08  
@@ -19,7 +19,7 @@ Reduce the v0.1 surface before adding features. The v0.1 review found that the
 language spends too much complexity on duplicate spellings, overloaded symbols,
 and lexical shortcuts. The fix order is:
 
-1. remove or merge duplicate syntax;
+1. deprecate or merge duplicate syntax without paying for a full removal;
 2. make ambiguous grammar explicit;
 3. freeze the result;
 4. implement parser/checker/codegen and migration together;
@@ -65,17 +65,17 @@ generics, scope syntax, or separators are still ambiguous.
   - A leading binary operator is not allowed.
   - These rules must be written for each brace kind; `{}` is overloaded.
 - **Remove `/%` and `spawn ||`.** Use `spawn { ... }`.
-- **Keep six contextual aliases; drop `var`.** Keep `function`, `constant`,
-  `typedef`, `record`, `mutable`, and `public` as adoption aids. Drop `var`
-  because it misleads JavaScript, C#, and Kotlin users. Aliases are recognized
-  only in their specific positions (for example `record` only at item start
-  before an identifier, `mutable` only after `let`), are never reserved
-  identifiers, and are rejected by the `canonical-syntax` lint and
-  `fmt --canonical`. Alias work is last priority.
+- **Deprecate the aliases; do not spend a slice removing them.** All seven
+  aliases remain accepted by the parser for compatibility. Canonical docs omit
+  them, the formatter writes the canonical spelling, and the deny-by-default
+  `canonical-syntax` lint rejects them in strict mode. This is deprecation, not
+  removal: no parser/checker/codegen deletion work. Making the words
+  contextual so they can also be identifiers is a separate optional change;
+  it is not required for deprecation.
 - **Freeze before implementation.** Do not move parser, checker, codegen, and
   the CLI at the same time.
 
-## 3. Decisions taken and remaining question
+## 3. Decisions taken
 
 | # | Decision | Result |
 |---|---|---|
@@ -87,6 +87,7 @@ generics, scope syntax, or separators are still ambiguous.
 | 6 | Lambdas | Add `fn(x) => expr`. Define parameter-type inference and capture rules in the RFC. |
 | 7 | Strict mode | Deny-by-default `canonical-syntax` lint plus `fmt --canonical`; it errors, not warns. Stdlib CI runs it. |
 | 8 | `@mode` item visibility | Items inside are module-level declarations and remain exportable; the block scopes only capabilities/memory, not names. Duplicate names are normal module duplicates (`NS3011`). This matches the existing `scoped_items_are_resolved_at_module_scope` behavior. |
+| 9 | Aliases | Deprecated, not removed: parser accepts them, canonical docs/formatter omit them, and `canonical-syntax` rejects them in strict mode. Contextualization is optional. |
 
 There are no remaining decisions in this table. Future RFC questions are listed
 in the individual RFC files.
@@ -137,23 +138,25 @@ Ask for **proposals with decision points**, not final normative text.
 - decide `default`/`from`/`module`/`type` contextual-keyword policy; at minimum
   contextualize `default` and `from`
 
-### Phase 2 - cheap deletions
+### Phase 2 - deprecate, do not remove
 
-- remove `/%`
-- remove the `spawn ||` marker
-- remove the special `///` documentation meaning unless doc extraction is a
-  real feature
-- prune the lookalikes table after duplicate syntax is gone
+- mark `/%` deprecated; keep parsing it, omit it from canonical docs, and do not
+  rewrite it to `/` because the overflow semantics differ
+- mark `spawn ||` deprecated; accept it and have the formatter emit `spawn`
+- stop giving `///` any special meaning; keep it as a normal `//` comment
+- prune the lookalikes table to canonical forms only
 
 ### Phase 3 - aliases
 
-Keep six aliases, drop `var`:
+Deprecate all aliases; do not remove parser support:
 
-- make the six aliases contextual, not reserved
-- define each alias's exact recognition position
-- add the deny-by-default `canonical-syntax` lint and `fmt --canonical`
+- keep `function`, `var`, `constant`, `typedef`, `record`, `mutable`, and
+  `public` accepted for compatibility
+- omit them from canonical docs and examples
 - keep the formatter rewriting aliases to canonical spellings
+- add the deny-by-default `canonical-syntax` lint and `fmt --canonical`
 - run the canonical lint in stdlib CI
+- optionally make aliases contextual later so the words can also be identifiers
 
 ### Phase 4 - feature gaps
 
@@ -194,7 +197,7 @@ same time:
 | v0.1 | v0.2 |
 |---|---|
 | `function` | `fn` |
-| `var` | removed; use `let` or `let mut` |
+| `var` | canonical `let` or `let mut`; deprecated alias accepted |
 | `constant` | `const` |
 | `typedef` | `type` |
 | `record` | `struct` |
@@ -205,8 +208,8 @@ same time:
 | `{@mode:system; ...}` | `@mode(system) { ... }` |
 | `{@memory:manual; ...}` | `@memory(manual) { ... }` |
 | `Memory.alloc<u8>(n)` | `Memory.alloc::<u8>(n)` |
-| `spawn || { ... }` | `spawn { ... }` |
-| `a /% b` | remove; use `/` or an explicit API |
+| `spawn || { ... }` | formatter emits `spawn { ... }`; old form accepted |
+| `a /% b` | deprecated; keep existing semantics; use `/` or an explicit API |
 | `/// docs` | `//` unless doc tooling is added |
 
 ## 7. Version and release note

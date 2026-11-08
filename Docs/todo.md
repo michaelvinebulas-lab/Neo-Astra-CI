@@ -142,18 +142,21 @@ language is frozen.
 - [ ] Fix tuple-index lexing: after `.` in postfix position read an integer-only
       token, never a float; keep `..` ranges and leading-dot chains distinct.
 - [ ] Contextualize `default` and `from`; decide `module` and `type`.
-- [ ] Remove `/%`, `spawn ||`, and the special `///` meaning.
+- [ ] Deprecate `/%`, `spawn ||`, and the special `///` meaning; keep parsing
+      the old forms and omit them from canonical docs.
 - [ ] Prune `syntax-legend.md` lookalikes after duplicate syntax is gone.
 
-### Aliases (keep six, drop `var`)
+### Aliases (deprecate, keep parsing)
 
-- [ ] Make `function`, `constant`, `typedef`, `record`, `mutable`, and `public`
-      contextual, not reserved; define each recognition position.
-- [ ] Drop `var`; use `let` or `let mut`.
-- [ ] Add the deny-by-default `canonical-syntax` lint and `fmt --canonical`.
+- [ ] Keep all seven aliases accepted for compatibility; do not remove parser
+      support.
+- [ ] Omit aliases from canonical docs and examples.
 - [ ] Keep formatter canonicalization to `fn`, `let`, `const`, `type`,
       `struct`, `mut`, and `pub`.
+- [ ] Add the deny-by-default `canonical-syntax` lint and `fmt --canonical`.
 - [ ] Run the canonical lint in stdlib CI.
+- [ ] Optional later: make the aliases contextual so the words can be
+      identifiers.
 
 ### Feature gaps
 

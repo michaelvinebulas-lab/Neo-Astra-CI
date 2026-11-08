@@ -84,9 +84,10 @@ written.
 
 A breaking cleanup of the v0.1 surface: one error vocabulary, turbofish for
 expression type arguments, `@mode(...)` / `@memory(...)` scope blocks, settled
-separators and line continuation, tuple-index lexing, and removal of `/%`,
-`spawn ||`, and the special `///` meaning. Aliases stay only as six contextual
-adoption aids; `var` is removed and the canonical lint rejects aliases. Feature gaps
+separators and line continuation, tuple-index lexing, and deprecation of `/%`,
+`spawn ||`, and the special `///` meaning. Aliases are deprecated rather than
+removed: the parser keeps accepting them, canonical docs omit them, and the
+canonical lint rejects them in strict mode. Feature gaps
 (`if let`, ranges, bitwise operators, `char`, lambdas) are added only after the
 grammar is frozen. The package version is the next minor, not `2.0.0`;
 compatibility is selected with `edition = "0.2"`. Plan, decisions, and RFCs:
