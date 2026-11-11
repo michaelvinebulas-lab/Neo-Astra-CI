@@ -4,10 +4,10 @@ Single source of truth for project status, the queue, and decisions.
 Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
-**Last updated:** 2026-11-08
-**Phase:** `1.0.0` released; the public docs are reworked and the native CLI/NoPM port is open.
-**Master:** private `master` on the native CLI work line; public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`.
-**Blockers:** rotate the npm publish token that was shared during setup; apply the GitHub rulesets in `Docs/github-trust.md`; finish the native CLI/NoPM slices before swapping the package.
+**Last updated:** 2026-11-11
+**Phase:** `1.0.0` released; the native Rust CLI/NoPM port for `1.0.1` is in progress. Slice 3a is rejected and open; slices 3b, 4, and release validation are blocked behind it. Language v0.2 remains Phase 0 documentation and corpus only.
+**Master:** private `master` on the native CLI work line, with lead docs/review commits local and Kilo's slice-3a code uncommitted; public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`. Nothing from this tree has been pushed to `origin`.
+**Blockers:** finish and accept the native NoPM slices (3a, 3b, 4) before a `1.0.1` tag; native parity is 11/12 with only the JS build red; rotate the exposed npm token and validate OIDC publishing; `1.0.0` still lacks provenance and reports `immutable: false`.
 
 ---
 
@@ -17,6 +17,7 @@ or frozen history (`Docs/archive/`).
 |---|---|
 | `Docs/spec-v0.1.md` | Normative language contract. No status, no queue. |
 | `Docs/state.md` | This file: status, queue, decisions, short log. |
+| [`context.md`](../context.md) | Handoff snapshot for a new session: current tree, blockers, and next actions. |
 | `Docs/roadmap.md` | What is built, what comes next, and the versioning scheme. |
 | `Docs/todo.md` | Open tasks only, grouped by version. |
 | `Docs/Report/Task.md` | Active work order (lead to Kilo). Pruned each round. |
@@ -65,11 +66,26 @@ and published the three platform npm packages plus the `neo-astra` meta
 package. A clean npm install was verified on Windows: `astra`, `nopm`, `nova`,
 and `neo-astra` all report `1.0.0`.
 
-The native CLI order is split into four reviewed slices: core project commands,
-C/native build and doctor, native NoPM, and the JS/TS bridge plus CI/packaging.
+The native Rust port for `1.0.1` has landed slices 1, 2a, 2b, and 2c
+(`7ca69be`, `778bbc5`, `501e91f`). Slice 3a is the active checkpoint and has
+been rejected twice: Kilo's uncommitted `astra-nopm` code still hardcodes the
+`local-utils`/`web` fixture, does not validate target support, leaves
+`install`/`why`/`update` as stubs, and has no required unit tests. The second
+handback's custom path-package check diverged from the TypeScript oracle:
+TS returned `NP0006` while native returned success and wrote a hardcoded
+`web` target. Slice 3b, slice 4, and release validation remain blocked.
+Native parity is 11/12; only the JS build case is red for slice 4.
+
 The JavaScript and TypeScript code generators stay in their current TypeScript
 implementation; the native bridge may use Node only for JS/TS builds and
-manifest-driven JS/TS package work. Baseline `nopm` must run without Node/npm.
+manifest-driven JS/TS package work. Baseline `astra` and `nopm` flows must run
+without Node/npm.
+
+Language v0.2 is **not** injected into `1.0.1`. Phase 0 is complete on the
+documentation side: the accepted cleanup plan, closed RFC A/B decisions,
+non-normative `spec-v0.2.md` skeleton, focused canonical LR(1) grammar harness,
+and non-loaded `conformance/v0.2` corpus are committed. `spec-v0.1.md` remains
+normative and Phase 1 edition plumbing has not started.
 
 The public source is generated from the sanitized tree: no comments, tests,
 docs, or examples; generated C has no comments; JavaScript and TypeScript
@@ -142,6 +158,9 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-11 | Current-condition docs refresh and new `context.md` handoff. Recorded that native slice 3a is still open after two rejected handbacks, that the uncommitted NoPM code remains fixture-shaped, and that `1.0.1`, v0.2 implementation, and npm publishing remain blocked. | `context.md`; `Docs/state.md`, `priorities.md`, `roadmap.md`, `todo.md`, `release-checklist.md`, `github-trust.md`; no code or tag changes |
+| 2026-11-09 | Native slice 3a second handback rejected. The implementation still hardcodes `targets: ["web"]` and the first dependency, does not validate target support, and leaves `install`/`why`/`update` stubbed. A path package that declares only `native` is rejected by the TypeScript oracle with `NP0006` but accepted by native. The NoPM parity case passes only the fixed `local-utils`/`web` fixture; `cargo test -p astra-nopm` still has one SHA-256 test and no lifecycle tests. | `a433514`, preceding `ea0a2c2`; `cargo fmt --all --check`, targeted clippy, and native parity 11/12 green; behavior mismatch reproduced against `orchestrator/packages/nopm/dist/cli.js` |
+| 2026-11-08 | Language v0.2 Phase 0 completed on the documentation side: closed RFC A/B decisions, non-normative v0.2 spec skeleton, focused canonical LR(1)/Pager grammar harness, and a non-loaded v0.2 corpus with migration input/golden pairs. Alias deprecation, error-model, turbofish, scope, formatter, match-arm, and error-pattern rules are recorded. v0.1 remains normative; no parser/checker/codegen behavior changed. | `44a416d`, `ec1c3f4`, `21234aa`, `54ef1d0`; grammar crate 4/4 tests, `cargo fmt --all --check`, workspace clippy; corpus consistency check green |
 | 2026-11-08 | Language v0.2 implementation plan consolidated: seven phases from decision freeze through edition plumbing, lexer/parser, edition-aware formatter and canonical lint, migration, corpus/parser-generator validation, and spec freeze. The cleanup reuses the existing AST and is front-end-only, so slice 4 can target the frozen cleanup AST; feature gaps are a separate later train. Cleanup estimate is 31-41 engineer-days. v0.1 remains normative. | `Docs/Report/Syntax-v0.2.md` §5; todo/priorities/state updated |
 | 2026-11-08 | Language v0.2 syntax cleanup plan and reviewer RFCs: recorded the deprecation-first grammar cleanup, error-model and generic-call drafts, alias policy, edition/migration model, realistic-program validation, parser-generator conflict check, and the freeze-before-CLI rule. The v0.1 spec remains normative. | `Docs/Report/Syntax-v0.2.md`, `RFC-A-error-model.md`, `RFC-B-generics.md`; spec/legend carry non-normative pointers; todo/roadmap/priorities updated |
 | 2026-11-08 | Native CLI slice 2c: pinned Zig downloads use host `curl` plus system `tar`, verify byte size and a pure-Rust SHA-256, stage atomically into the project cache, and honor `--no-download`. `astra build` now emits and links `staticlib` and `cdylib` artifacts, including GNU Windows export/import libraries. Tests cover cache hits, corrupt downloads, authoritative markers, refusal, and both library kinds. | `501e91f`; `cargo fmt --all --check`, workspace clippy, `cargo test --workspace`, `npm test` 241 green; native parity 8/12 with the new library case green; JS and three NoPM cases remain for slices 4 and 3 |

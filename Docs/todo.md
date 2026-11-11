@@ -119,7 +119,48 @@ Completed work is summarized at the bottom; the full history is in
       GitHub release are published from the green Tier-1 release commit; the
       release workflow attaches the Linux, macOS, and Windows packages.
 
+## 1.0.1 - native CLI and NoPM
+
+Target: Cargo-built native Rust `astra` and `nopm`; baseline `check`, `fmt`,
+`ast`, `explain`, `doctor`, C/native builds, and NoPM path flows run without
+Node or npm. JS/TS codegen stays behind an isolated on-demand Node bridge.
+Language stays v0.1; do not inject v0.2 syntax into this patch.
+
+### Landed
+
+- [x] Slice 1 - project manifest discovery, defaulted build/entry handling,
+      project check JSON/diagnostics, FFI mapping validation, manifest
+      formatting, and project `ast`/`explain` (`7ca69be`).
+- [x] Slice 2a - toolchain resolution and `doctor`.
+- [x] Slice 2b - native/C executable build.
+- [x] Slice 2c - pinned Zig downloads and staticlib/cdylib artifacts
+      (`501e91f`; slices 2a/2b in `778bbc5`).
+
+### Open
+
+- [ ] Slice 3a - native NoPM baseline: project read for JSON/TOML manifests,
+      dependency/target mapping, manifest hash, path containment, lockfile
+      generation/parsing, store index, `add`/`remove`/`lock`/`update`/`tree`/
+      `install`/`why`, dispatch identity, no-Node lifecycle, and lifecycle unit
+      tests. **Rejected twice; status is `OPEN - KILO - slice 3a`.** The current
+      uncommitted code is a hardcoded `local-utils`/`web` fixture, not the
+      oracle behavior.
+- [ ] Slice 3b - git/npm/cargo/pypi/nuget/oci/nova adapters, `search`, `audit`,
+      `sys:` tools, and remote store download/extract/verify. All HTTP/archive
+      work in Rust; no Node/Python/curl helper.
+- [ ] Slice 4 - JS/TS build bridge, native packaging, Tier-1 CI, native parity
+      12/12, no-Node core/NoPM checks, and Apache-2.0 metadata.
+- [ ] Release validation - `npm run verify`, `npm run ci`, `npm run package`,
+      clean-install smoke, release dry run, error-code check, workflow audit,
+      then tag/publish `1.0.1` (lead/principal only).
+- [ ] Update `CHANGELOG.md`, `Docs/state.md`, and install/package docs when the
+      native package actually ships.
+
 ## Language v0.2 - syntax cleanup (next minor, edition 0.2)
+
+**Status:** Phase 0 complete on the documentation side; non-normative. The
+parser, checker, formatter, and codegen have not changed. `spec-v0.1.md` remains
+normative, and `conformance/v0.2` is not loaded by the v0.1 runner.
 
 Plan, decisions, and reviewer RFCs: [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md),
 [`RFC-A-error-model.md`](Report/RFC-A-error-model.md), and
@@ -129,12 +170,29 @@ estimates, and acceptance gates are in
 Do not implement these in the native CLI slices; they target v0.1 until the
 language is frozen.
 
+### Phase 0 evidence
+
+- [x] Record the accepted cleanup plan and defaults (`aba181a`, `5d65ab8`,
+      `d1797f0`).
+- [x] Close RFC A error-model decisions and RFC B generic-call decisions
+      (`dbb057f`, `fb5a207`, `44a416d`).
+- [x] Add the non-normative `spec-v0.2.md` skeleton and reserve
+      `NS2008`-`NS2019` (`44a416d`).
+- [x] Add `tools/grammar-v0.2` canonical LR(1)/Pager conflict check (4/4 tests)
+      (`44a416d`).
+- [x] Add the non-loaded `conformance/v0.2` corpus, including migration
+      input/golden pairs (`ec1c3f4`).
+- [x] Tighten formatter/match-arm and error-pattern head rules
+      (`21234aa`, `54ef1d0`).
+
 ### Grammar and disambiguation
 
-- [ ] Freeze the error-model RFC: `-> T ! E`, `?`, `fail`, `Ok`/`Err`, and the
-      demotion of `Result<T, E>` to a library/FFI type.
-- [ ] Freeze the generic-call RFC: `::<...>` in expression position, method and
+- [x] Freeze the error-model RFC: `-> T ! E`, `?`, `fail`, `Ok`/`Err`, and the
+      demotion of `Result<T, E>` to a library/FFI type. Decisions accepted;
+      implementation is gated after native `1.0.1`.
+- [x] Freeze the generic-call RFC: `::<...>` in expression position, method and
       associated calls, constructors, precedence, and negative comparison cases.
+      Decisions accepted; implementation is gated after native `1.0.1`.
 - [ ] Replace `{@mode:name; ...}` / `{@memory:name; ...}` with
       `@mode(name) { ... }` / `@memory(name) { ... }`.
 - [ ] Use commas everywhere (trailing allowed); block-bodied match arms may
@@ -195,13 +253,7 @@ language is frozen.
 
 ## 1.1.0 - browser playground
 
-### Native CLI
-
-- [ ] Replace the embedded Bun runtime in the distributed CLI with a small
-      native Rust CLI. Core commands (`check`, native `build`/`run`, `fmt`,
-      `ast`, `explain`, `doctor`) use `astra-core`/`astra-compiler` directly;
-      JS/TS codegen and NoPM may download a pinned runtime or package manager
-      on demand. The 1.0 package keeps the Bun binary by principal decision.
+The native CLI replacement moved to the `1.0.1` section above.
 
 ### Core bridge
 

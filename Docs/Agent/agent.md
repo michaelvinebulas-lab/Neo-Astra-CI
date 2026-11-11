@@ -1,7 +1,7 @@
 ﻿# Neo Astra Agent
 
-**Status:** Active operating manual  
-**Last updated:** 2026-10-24  
+**Status:** Active operating manual
+**Last updated:** 2026-11-11
 **Canonical entrypoint:** this file
 
 This folder defines how an AI agent works on Neo Astra. It is not product documentation. It is the agent's role, boundaries, workflow, schemas, definition of done, and persistent project memory.
@@ -12,16 +12,17 @@ This folder defines how an AI agent works on Neo Astra. It is not product docume
 
 At the start of every session, read these in order:
 
-1. `agent.md` — this file
-2. `project-context-glossary.md` — the project contract and terminology
-3. `system-prompt.md` — the full persona and behavioral rules
-4. `../state.md` — status, queue, decisions, and the recent log
-5. `runbook.md` — the phase workflow
-6. `definition-of-done.md` — the completion gate
-7. `edge-case-protocol.md` — what to do when work goes wrong
-8. `io-schemas.md` — the required input/output formats
-9. `../spec-v0.1.md` — the normative v0.1 language specification
-10. `../syntax-legend.md` — the plain-language syntax and operator reference
+1. `agent.md` - this file
+2. `project-context-glossary.md` - the project contract and terminology
+3. `system-prompt.md` - the full persona and behavioral rules
+4. `../state.md` - status, queue, decisions, and the recent log
+5. `../context.md` - current handoff snapshot, tree state, and next actions
+6. `runbook.md` - the phase workflow
+7. `definition-of-done.md` - the completion gate
+8. `edge-case-protocol.md` - what to do when work goes wrong
+9. `io-schemas.md` - the required input/output formats
+10. `../spec-v0.1.md` - the normative v0.1 language specification
+11. `../syntax-legend.md` - the plain-language syntax and operator reference
 
 If these files conflict, use this precedence:
 
@@ -66,18 +67,22 @@ The immediate goal is not “ship everything.” The immediate goal is to conver
 
 ## 4. Current phase
 
-**Phase 5 — Types, Nova, and NoPM.**
+**Post-1.0 native port; v0.2 Phase 0 only.**
 
-The decision record D1-D25 is confirmed (rationale archived). `Docs/spec-v0.1.md` defines the normative v0.1 language contract. The TypeScript orchestrator and Rust core scaffolds exist, with a JSON-RPC/Wasm compiler boundary and cross-platform CI. The lexer, parser, canonical formatter, comment preservation, `astra fmt` CLI wiring, manifest formatting, resolver, type checker, typed-HIR Nova interpreter, complete Nova CLI, and complete NoPM package/lockfile/store/adapter/registry stack are implemented.
+`1.0.0` is published. The current release work is the native Rust CLI/NoPM
+replacement for `1.0.1`. Slices 1, 2a, 2b, and 2c are landed. Slice 3a (native
+NoPM baseline) is open after two rejected handbacks; slices 3b and 4 are
+blocked. Native parity is 11/12, with only the JS build case red. The current
+`astra-nopm` code is uncommitted and fixture-shaped; do not accept or commit it.
 
-The next concrete action is Nova over typed HIR, without creating a second parser, type checker, or language:
+Language v0.2 is **not** being implemented in the native CLI slices. Phase 0 is
+complete on the documentation side (accepted plan/RFCs, non-normative
+`spec-v0.2.md` skeleton, focused grammar harness, non-loaded corpus).
+`spec-v0.1.md` remains normative. The next concrete action is Kilo's real slice
+3a implementation with the required lifecycle tests, followed by lead review.
 
-- Consume `CheckResult.module` and `CheckResult.annotations` from the shared checker.
-- Interpret functions, values, structs, enums, arrays, maps, and patterns.
-- Reuse structured diagnostics, mode rules, and error effects.
-- Keep Nova development-focused; compiled targets remain the production path.
-
-The open questions in `Docs/spec-v0.1.md` §17 are proposals for V1 freeze review. They do not block Nova, but they must not be silently treated as settled decisions.
+Detailed state and next actions: `../state.md`, `../context.md`, and
+`../Report/Task.md`.
 
 ---
 

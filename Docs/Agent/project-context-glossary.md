@@ -14,9 +14,9 @@ This document gives the agent the minimum project context needed to avoid halluc
 | CLI | `astra` |
 | Manifest | `core.json` or `core.toml` — exactly one |
 | Lockfile | `core.lock.json` |
-| Current status | D1–D25 confirmed; lexer, parser, formatter, resolver, type checker, typed-HIR Nova interpreter, complete Nova CLI, complete NoPM package/lockfile/store/adapter/registry stack, compiler client, `astra fmt`, and manifest formatting implemented; production backends and project type surfaces are next |
-| Current phase | Phase 5 — types, Nova, and NoPM |
-| Compiler architecture | TypeScript orchestrator + Rust core |
+| Current status | `1.0.0` released. Native Rust `astra`/`nopm` port for `1.0.1` in progress: slices 1-2c landed; slice 3a open after two rejected handbacks; 3b/4 blocked; native parity 11/12. Language v0.2 is Phase 0 documentation/corpus only and non-normative. |
+| Current phase | Post-1.0 native port; native NoPM slice 3a |
+| Compiler architecture | Rust core and native CLI; TypeScript codegen/package work isolated behind an on-demand Node bridge |
 | Primary targets | Native, Wasm, JavaScript/TypeScript |
 | Later targets | PHP and other backends |
 | Memory default | GC, configurable |
@@ -420,22 +420,41 @@ These are known design tensions, not unresolved decisions. Do not “fix” them
 
 ## 9. Current repository state
 
-As of 2026-10-25:
+As of 2026-11-11:
 
-- `Docs/state.md` is the decision index and current status; `Docs/archive/architecture.md` holds the historical record.
+- The repository is a git repository on branch `master`; it has remotes `ci`
+  and `origin`. Do not push `origin` from this private tree; only
+  `C:\Projects\Neo Astra-source` may push `origin`.
+- `Docs/state.md` is the decision index and current status; `context.md` is the
+  session handoff; `Docs/Report/Task.md` is the active lead/Kilo work order.
 - `Docs/Agent/` is the agent operating system.
-- `Docs/archive/Design/V1/` is the frozen V1 design baseline: language, compiler, runtime, targets, manifest/packages, tooling, delivery, and Nova/NoPM.
+- `Docs/archive/Design/V1/` is the frozen V1 design baseline.
 - `Docs/spec-v0.1.md` is the normative v0.1 language specification.
-- `orchestrator/` contains the TypeScript orchestrator scaffold and npm workspace.
-- `crates/` contains the Rust core, capabilities, JSON-RPC protocol, raw Wasm boundary, and backend scaffolds.
-- Rust 1.99.1 (GNU toolchain), Cargo, rustfmt, and clippy are installed. `C:\msys64\ucrt64\bin` is on the user `PATH` for GNU `dlltool` (2.46.1) and `gcc` (16.1.0); without `dlltool`, `getrandom`/`windows-sys` fail to build.
-- `scripts/bootstrap.mjs` installs missing JavaScript and Rust dependencies on Windows, macOS, and Linux.
-- `npm run ci` and `.github/workflows/ci.yml` verify both workspaces and the native/Wasm boundary.
-- The lexer, parser, AST, formatter, resolver, module export surfaces, symbol tables, type checker, and cross-module type surfaces (`TYPE-003`) are implemented in `astra-core`, including `//` comment trivia and expression type annotations.
-- `@neo-astra/compiler-client` speaks JSON-RPC to the native compiler; it exposes single-source `check()` and multi-source `checkProject()`, and `astra fmt` formats files and directories and supports `--check`.
-- Manifest formatting (`FMT-004`), the resolver (`TYPE-001`), the type checker (`TYPE-002`), cross-module type surfaces (`TYPE-003`), the multi-source compiler API (`TYPE-004`), the typed-HIR interpreter (`NOVA-001`), the Nova CLI (`NOVA-002`), and the complete NoPM stack (`NOPM-001`–`NOPM-004`) are implemented.
-- Nova and NoPM are designed in `Docs/archive/Design/V1/08-nova-and-nopm.md`; production backends and Nova module loading/linking (`NOVA-003`) are next.
-- The workspace is not a git repository.
+  `Docs/spec-v0.2.md` is a non-normative skeleton; v0.2 implementation has not
+  started.
+- `orchestrator/` contains the TypeScript CLI, codegen, and npm workspace.
+- `crates/` contains the Rust compiler, capabilities, CLI, LSP, Nova, and the
+  in-progress `astra-nopm` crate.
+- `1.0.0` is published; tag `v1.0.0` targets `9d832e0`; public master is
+  `17ceaf6`.
+- Native Rust port commits: slice 1 `7ca69be`, slices 2a/2b `778bbc5`, slice 2c
+  `501e91f`. Slice 3a is uncommitted Kilo work and has been rejected twice.
+- Current tree is dirty: Kilo's `Cargo.toml`, `Cargo.lock`, `astra-cli`, and
+  `astra-nopm` changes plus untracked `astra-nopm` sources/tests. Do not stage
+  them. Pre-existing untracked `432+5`, `700`, `Docs/error-code-ledger.md`,
+  `tmp.py`, and `tmp_err.txt` are also not yours.
+- Last verified gates during review: `cargo fmt --all --check`, targeted clippy,
+  `cargo test -p astra-nopm` (0 library + 1 SHA test), and native parity 11/12.
+  The workspace test suite was green on the first handback; the current NoPM
+  code is not accepted.
+- `conformance/v0.2/` is deliberately outside the v0.1 runner. Do not move its
+  fixtures into `conformance/cases` or `conformance/rejects` before the parser
+  phase gate.
+- npm trusted publishing is configured but unvalidated; `npm trust list` needs
+  passkey re-auth and returns `EOTP`. The old token still needs revocation.
+  `1.0.0` has no provenance and its GitHub release reports `immutable: false`.
+- The LSP `serverInfo` still reports `2.0.0`; fix it before the next package
+  that ships the server.
 
 ---
 

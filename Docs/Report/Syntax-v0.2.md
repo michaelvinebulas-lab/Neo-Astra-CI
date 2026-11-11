@@ -1,9 +1,9 @@
 # Neo Astra syntax v0.2 - cleanup and freeze plan
 
-**Status:** Proposal, not normative  
-**Date:** 2026-11-08  
+**Status:** Accepted plan; Phase 0 complete; not normative.
+**Date:** 2026-11-08
 **Owners:** principal (decisions), lead (integration), reviewer (error-model and
-generic-call RFCs)  
+generic-call RFCs)
 **Normative source today:** [`spec-v0.1.md`](../spec-v0.1.md)  
 **Related:** [`syntax-legend.md`](../syntax-legend.md), [`todo.md`](../todo.md),
 [`roadmap.md`](../roadmap.md)

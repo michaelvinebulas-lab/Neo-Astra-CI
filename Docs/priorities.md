@@ -3,7 +3,15 @@
 Urgency order, not version order. Version detail stays in [`todo.md`](todo.md);
 this file answers "what do we do next and who owns it".
 
-Last updated: 2026-11-08.
+Last updated: 2026-11-11.
+
+## Current gate
+
+`1.0.1` is blocked on the native Rust CLI/NoPM port. Slices 1, 2a, 2b, and 2c
+are landed; slice 3a is open after two rejected handbacks; slices 3b and 4 are
+not started. Native parity is 11/12, with only the JS build case red. Do not
+tag, publish, or describe `1.0.1` as shipped until parity is 12/12 and the
+release checklist is green.
 
 ## Status truth
 
@@ -29,12 +37,18 @@ web and system are preview; high is future work.
 
 Owner: principal + lead.
 
-- Revoke the token shared during setup.
-- Create a replacement read/write token for the repository secret.
-- Configure npm trusted publishing / OIDC for all four packages when possible.
-- Remove the long-lived `NPM_TOKEN` dependency after OIDC works.
-- Acceptance: old token revoked, secret updated, publish path works without a
-  long-lived token, no token in any tracked file or workflow log.
+- Revoke the token shared during setup. The 1.0.0 token is still exposed.
+- The release workflow now uses npm trusted publishing / OIDC for all four
+  packages; the trusted relationships were added on 2026-11-07 but are not
+  validated until the first successful OIDC publish.
+- `npm trust list` currently requires passkey re-authentication and returns
+  `EOTP`; record that as a principal action, do not bypass it.
+- Configure or refresh the trusted relationships immediately before the
+  `1.0.1` release, because unvalidated configurations expire after two days.
+- Keep `NPM_TOKEN` only as a rollback until the first successful OIDC publish,
+  then delete it. Never put a token in a tracked file or workflow log.
+- Acceptance: old token revoked, OIDC publish works without a long-lived token,
+  and `NPM_TOKEN` is deleted after the verified release.
 
 ### P0-2. Freeze the published release
 
@@ -42,29 +56,25 @@ Owner: lead + principal.
 
 - `v1.0.0` is published; never force-push the tag or rewrite its commit.
 - Any source change after 1.0.0 becomes `1.0.1`; never publish two trees under
-  one version.
-- Update `Docs/release-checklist.md` to remove the "move the tag" instruction.
-- Enable repository rules/branch protection: pull requests required, owner
-  review required, no force pushes, no deletion, no direct pushes to `master`.
-- Acceptance: rules active; checklist says tags are immutable.
+  one version. `1.0.1` is not tagged yet.
+- The release checklist now states that published tags are immutable.
+- The branch and tag rulesets are active: pull requests required, owner review
+  required, no force pushes, no deletion, no direct pushes to `master`, and no
+  tag updates or deletion. Raise the approval count when a second maintainer
+  exists.
+- The public `v1.0.0` GitHub release still reports `immutable: false`; do not
+  change its assets. Enable release immutability for future releases when the
+  repository setting is available.
+- Acceptance: rules active; checklist says tags are immutable; no public
+  history rewrite.
 
 ### P0-3. Make the public repo a real project
 
-Owner: lead.
+Owner: lead. Status: implemented; keep the public mirror current.
 
-Public tree adds:
-
-- `LICENSE`
-- `NOTICE`
-- `CONTRIBUTORS.md`
-- `README.md`
-- `INSTALL.md` (or `docs/install.md`)
-- `CHANGELOG.md`
-- `SECURITY.md`
-- `CONTRIBUTING.md`
-- `.github/CODEOWNERS`
-- pull-request and issue templates
-- `examples/`
+The public tree now carries `LICENSE`, `NOTICE`, `CONTRIBUTORS.md`,
+`README.md`, `INSTALL.md`, `CHANGELOG.md`, `SECURITY.md`, `CONTRIBUTING.md`,
+`.github/CODEOWNERS`, pull-request and issue templates, and `examples/`.
 
 Keep tests private unless the principal reverses that decision. Public source
 comments are stripped, including `.ns` example comments; generated output
@@ -76,19 +86,17 @@ matches `package.json` and the Cargo workspace.
 
 ### P0-4. Tell the truth about modes and platforms
 
-Owner: lead.
+Owner: lead. Status: implemented; keep the public support matrix current.
 
-- Add a support matrix to README and install docs:
+- Public README and install docs carry the support matrix:
   - core: stable
   - app: partial
   - web: preview
   - system: preview
   - high: planned
   - supported hosts: Windows x64, Linux x64, macOS arm64
-- Update roadmap language that currently reads as if all four modes are
-  equally complete.
-- Note that inline JS/TS/C/C++ works, other script targets are rejected, and
-  unsupported targets fail explicitly.
+- Roadmap language distinguishes built surfaces from planned ones.
+- Inline JS/TS/C/C++ works; other script targets are rejected explicitly.
 - Acceptance: no public claim says "web complete", "system complete", or
   "all modes complete" while those surfaces are partial.
 
@@ -100,6 +108,9 @@ Owner: lead.
 - GitHub artifact attestations or Sigstore for release archives.
 - Keep `.sha256` sidecars; explain that they detect corruption, not malicious
   replacement.
+- `1.0.0` has registry signatures but no npm provenance attestation, and its
+  GitHub assets return 404 from the attestation API. Do not claim provenance
+  for 1.0.0; verify it on `1.0.1` and later.
 - Acceptance: npm provenance is visible for published packages; archive
   attestations can be verified from the release page.
 
@@ -107,27 +118,41 @@ Owner: lead.
 
 ### P1-1. Native Rust CLI
 
-Owner: Kilo + lead review.
+Owner: Kilo + lead review. Status: in progress; `1.0.1` blocker.
 
 - Replace the Bun-compiled `astra` executable with a native Rust CLI.
 - Cut the ~190 MB executable and ~420 MB npm install substantially.
 - Keep command parity: `check`, `build`, `run`, `fmt`, `ast`, `explain`,
-  `doctor`, `nopm` dispatch.
-- JS/TS codegen and NoPM may fetch a pinned runtime on demand.
+  `doctor`, and `nopm` dispatch.
+- JS/TS codegen and NoPM may fetch a pinned runtime on demand; baseline CLI and
+  NoPM flows must not require Node, npm, or Bun.
+- Current checkpoints:
+  - `7ca69be` - slice 1, core project commands.
+  - `778bbc5` - slices 2a/2b, toolchain/doctor and native/C executable build.
+  - `501e91f` - slice 2c, pinned Zig and library artifacts.
+  - slice 3a - native NoPM baseline; open, two handbacks rejected.
+  - slice 3b - remote adapters/registry/system tools; blocked on 3a.
+  - slice 4 - JS/TS bridge, packaging, CI; blocked on 3a/3b.
+- Native parity is 11/12; only the JS build case remains red. The current NoPM
+  parity fixture is too narrow: it only covers the hardcoded
+  `local-utils`/`web` path project.
 - Acceptance: native install is much smaller, no Node/Bun runtime needed for
-  core commands, existing gate green.
+  core commands, native parity 12/12, and all Rust/npm gates green.
 
 ### P1-2. LSP and editor support
 
-Owner: Kilo (phase 1), lead wires CLI/tests.
+Owner: Kilo (phases 1-3), lead wires CLI/tests.
 
-- Phase 1: stdio language server; initialize, `didOpen`, `didChange`,
-  `publishDiagnostics`, formatting, shutdown/exit.
+- Phases 1-3 are implemented in `crates/astra-lsp`: stdio diagnostics and
+  formatting, project graph/hover/definitions/completion, document symbols,
+  signature help, references, highlights, workspace symbols, and symbol rename.
+  The server is not in the 1.0 package and still needs packaging/CI and editor
+  integration.
 - Use the existing compiler boundary for diagnostics; do not duplicate the
   type checker.
-- Phase 2: completion, hover, go-to-definition, and project graph.
+- Field rename remains refused until constructor/pattern edits are modeled.
 - Acceptance: a test client receives diagnostics for a broken file and clean
-  results for a valid one.
+  results for a valid one, and a packaged server is available.
 
 ### P1-3. Public examples and docs
 
@@ -173,11 +198,12 @@ Owner: lead.
 ### P1-7. Language v0.2 syntax cleanup
 
 Owner: reviewer (error-model/generic-call RFCs), lead (integration), principal
-(decisions).
+(decisions). Status: Phase 0 complete; implementation not started; non-normative.
 
 - Freeze the error model (`-> T ! E`, `?`, `fail`, `Ok`/`Err`) and demote
-  `Result<T, E>` to a library/FFI type.
-- Freeze expression-position generics as turbofish `::<...>`.
+  `Result<T, E>` to a library/FFI type. RFC A decisions are closed.
+- Freeze expression-position generics as turbofish `::<...>`. RFC B decisions
+  are closed.
 - Replace scoped `{@mode:...;}` / `{@memory:...;}` with `@mode(...) { ... }` /
   `@memory(...) { ... }`.
 - Use commas for lists; state line continuation by delimiter kind; fix
@@ -185,15 +211,21 @@ Owner: reviewer (error-model/generic-call RFCs), lead (integration), principal
   meaning without removing parser support.
 - Deprecate the aliases rather than removing parser support; `var` is deprecated
   in favour of `let`/`let mut`. Add the deny-by-default `canonical-syntax` lint
-  and `fmt --canonical`.
+  and `fmt --canonical`; `astra migrate` is the only rewrite path.
 - Choose the next minor package version and gate syntax with
-  `edition = "0.2"`; keep both editions and add `ns fix` migration.
+  `edition = "0.2"`; keep both editions and use `astra migrate` for source
+  migration.
 - Add `if let`/`while let`, ranges, bitwise operators, `char`, and lambdas only
   after the grammar is frozen.
+- Phase 0 evidence: accepted plan/RFCs, `Docs/spec-v0.2.md` skeleton,
+  `tools/grammar-v0.2` focused LR(1)/Pager harness (4/4 tests), and a
+  non-loaded `conformance/v0.2` corpus with migration pairs.
 - Acceptance: a frozen v0.2 spec, a parser-generator run with zero conflicts,
   parser diagnostics and formatter rewrites for deprecated or edition-rejected
   syntax, a conformance case per changed construct, and 10-20 realistic
   programs parsed before freeze.
+- The native CLI slices continue against v0.1 until this item freezes the
+  language; do not move parser, checker, codegen, and CLI at the same time.
 
 The concrete phases, estimates, AST-freeze boundary, and gates are in
 [`Report/Syntax-v0.2.md` §5](Report/Syntax-v0.2.md#5-implementation-plan).
@@ -220,10 +252,13 @@ language; do not move parser, checker, codegen, and CLI at the same time.
 ## Parallel lanes
 
 - **Lead:** P0 trust/public repo, release provenance, docs/examples, platform
-  packaging, review and landing.
-- **Kilo:** one isolated code slice at a time. Current order: native Rust CLI
-  phase 1, then native LSP phase 1. Do not edit `Docs/**`, `scripts/**`,
-  `.github/**`, `orchestrator/tests/**`, or `conformance/**`.
+  packaging, review and landing. Current lead action: hold the tree at slice
+  3a, review Kilo's next handback, and keep `context.md`/status docs current.
+- **Kilo:** one isolated code slice at a time. Current order: native CLI slice
+  3a (NoPM baseline), then 3b (remote adapters/registry/system tools), then 4
+  (JS/TS bridge, packaging, CI), then release validation. The LSP phases 1-3
+  are landed. Do not edit `Docs/**`, `scripts/**`, `.github/**`,
+  `orchestrator/tests/**`, or `conformance/**` unless the active slice grants it.
 
 ## Decisions
 

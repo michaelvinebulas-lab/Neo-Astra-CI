@@ -1,5 +1,11 @@
 # Step-by-Step Runbook
 
+> **Current note (2026-11-11):** This runbook is historical phase guidance. The
+> project is past `1.0.0`; current work is the native Rust CLI/NoPM port for
+> `1.0.1` (slice 3a is open after two rejected handbacks), followed by the v0.2
+> cleanup. Use `../state.md`, `../context.md`, and `../Report/Task.md` for
+> current status, not the phase table below.
+
 This runbook breaks Neo Astra into sequential phases. Work on one phase and one task at a time. Do not skip a phase because a later phase looks more interesting.
 
 ---
@@ -9,16 +15,16 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 | Phase | Name | Output | Status |
 |---|---|---|---|
 | 0 | Orientation | Verified project state | Ongoing at session start |
-| 1 | Architecture decisions | Confirmed D1–D25 | Done |
+| 1 | Architecture decisions | Confirmed D1-D25 | Done |
 | 2 | Specification v0.1 | `Docs/spec-v0.1.md` | Done |
 | 3 | Workspace scaffolding | TS orchestrator + Rust core skeleton | Done |
 | 4 | Lexer and parser | AST + diagnostics | Done |
-| 5 | Types, modes, and errors | Typed HIR + capability checks | Current |
-| 6 | Nova and NoPM | Executable `.ns` source and reproducible packages | In progress |
-| 7 | JS/TS backend and playground | Browser-runnable output | In progress |
-| 8 | C backend, native, Wasm | Native and Wasm binaries | Not started |
-| 9 | FFI and concurrency | Foreign modules, inline `@script`, and structured tasks | In progress: JS and TS script slices done; C slice and concurrency remain |
-| 10 | Hardening | Stable v0.1 | Not started |
+| 5 | Types, modes, and errors | Typed HIR + capability checks | Done |
+| 6 | Nova and NoPM | Executable `.ns` source and reproducible packages | Done; native NoPM port for `1.0.1` in progress |
+| 7 | JS/TS backend and playground | Browser-runnable output | JS/TS backend done; playground later |
+| 8 | C backend, native, Wasm | Native and Wasm binaries | C/native done; Wasm later |
+| 9 | FFI and concurrency | Foreign modules, inline `@script`, and structured tasks | Done for C/JS/TS |
+| 10 | Hardening | Stable v1.0 | `1.0.0` done; `1.0.1` native port current |
 
 ---
 
@@ -208,14 +214,14 @@ Do not reopen a decision unless the user explicitly asks. If a new requirement c
 
 ---
 
-## 7. Phase 5 — Types, modes, and errors (current)
+## 7. Phase 5 — Types, modes, and errors (complete)
 
 **Goal:** Enforce the semantic contract.
 
 **Status:** `TYPE-001`-`TYPE-004`, `MODE-001`, `ERR-001`, `NOVA-001`,
 `NOVA-002`, and `NOVA-003` are complete, including manifest `[nova].entry`
-discovery and project module linking. The dedicated `astra explain` command
-remains. Compiler metadata already exposes the stable mode explanation tree.
+discovery and project module linking. `astra explain` now ships in the CLI and
+exposes the stable mode explanation tree.
 
 ### Steps
 

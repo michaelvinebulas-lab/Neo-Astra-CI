@@ -15,7 +15,8 @@ The project follows semantic versioning, and every package moves together:
 - **Major** (`2.0.0`) - only for a change that makes older projects or older
   generated output incompatible.
 
-The current line is **1.0.0**. Future releases move in lockstep; every entry
+The published line is **1.0.0**. The `1.0.1` native CLI/NoPM replacement is in
+progress and is not released. Future releases move in lockstep; every entry
 below names the version it lands in, and nothing is scheduled beyond what is
 written.
 
@@ -80,7 +81,26 @@ written.
 
 ## To be built
 
+### 1.0.1 - native CLI and NoPM
+
+Replace the Bun-compiled `astra` package with Cargo-built native Rust `astra`
+and `nopm` binaries. Baseline `check`, `fmt`, `ast`, `explain`, `doctor`,
+C/native builds, and NoPM path flows must run without Node or npm; the JS/TS
+code generators stay isolated behind an on-demand Node bridge.
+
+Current checkpoints: slices 1, 2a, 2b, and 2c are landed; slice 3a (native NoPM
+baseline) is open after two rejected handbacks; slices 3b (remote
+adapters/registry/system tools) and 4 (JS/TS bridge, packaging, CI) are blocked.
+Native parity is 11/12 with only the JS build case red. No `1.0.1` tag or
+publish happens until parity is 12/12, all gates are green, and the release
+checklist is complete.
+
 ### Language v0.2 - syntax cleanup (next minor, edition 0.2)
+
+Phase 0 is complete on the documentation side: the accepted cleanup plan, RFC
+A/B decisions, non-normative `spec-v0.2.md` skeleton, focused grammar-conflict
+harness, and non-loaded corpus are recorded. No parser, checker, formatter, or
+codegen behavior has changed, and `spec-v0.1.md` remains normative.
 
 A breaking cleanup of the v0.1 surface: one error vocabulary, turbofish for
 expression type arguments, `@mode(...)` / `@memory(...)` scope blocks, settled

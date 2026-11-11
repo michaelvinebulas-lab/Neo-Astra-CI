@@ -9,6 +9,7 @@ targets. Source files use `.ns`; the CLI is `astra`.
 - [`Docs/syntax-legend.md`](Docs/syntax-legend.md) - plain-language syntax and operator reference
 - [`Docs/install.md`](Docs/install.md) - install, run, and upgrade instructions
 - [`Docs/state.md`](Docs/state.md) - status, queue, and decisions
+- [`context.md`](context.md) - current handoff snapshot for a new session
 - [`Docs/roadmap.md`](Docs/roadmap.md) - what is built, what is next, and the versioning scheme
 - [`Docs/todo.md`](Docs/todo.md) - open tasks, grouped by version
 - [`Docs/archive/`](Docs/archive/) - frozen history: design baseline, proposals, earlier status docs
@@ -39,6 +40,13 @@ installations, native builds, C-toolchain resolution, upgrades, and
 troubleshooting.
 
 ## Status
+
+> **Development note (2026-11-11):** `1.0.0` is the published release. The
+> native Rust `astra`/`nopm` replacement for `1.0.1` is in progress: slices
+> 1-2c are landed, slice 3a is under review after two rejected handbacks, and
+> slices 3b/4 are pending. Native parity is 11/12. Nothing in this checkout
+> should be described as a shipped `1.0.1` until the release checklist is
+> green. See [`context.md`](context.md) for the exact tree state.
 
 The `1.0.0` checkout provides:
 

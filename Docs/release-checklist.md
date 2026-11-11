@@ -9,6 +9,9 @@ Use this checklist for every release. No step may be skipped.
 - `1.0.0` is cut when the V1 queue completes. After that: a new mode, backend,
   or language surface bumps the minor; fixes bump the patch; incompatible
   rework bumps the major.
+- `1.0.1` is the native Rust `astra`/`nopm` replacement. Do not tag it until
+  slices 3a, 3b, and 4 are accepted and native parity is 12/12. The language
+  stays v0.1; do not inject the v0.2 cleanup into this patch.
 - Move the `[Unreleased]` entries in `CHANGELOG.md` under the new dated
   version section and leave a fresh `[Unreleased]`.
 
@@ -17,6 +20,13 @@ Use this checklist for every release. No step may be skipped.
 - `npm run bootstrap:verify` (install + build + test + fmt-check + clippy).
 - `node scripts/check-error-codes.mjs` green: every emitted code has a spec row
   and every spec row is implemented or explicitly reserved.
+- `npm run test:native-parity` is 12/12. For `1.0.1`, the NoPM path lifecycle,
+  `astra nopm`/`nopm` dispatch identity, and no-Node core/NoPM checks must all
+  be green; only a genuinely unrelated case may be allowed to remain red, and
+  that requires a principal decision.
+- `cargo test -p astra-nopm` includes the required lifecycle unit tests:
+  package IDs, manifest-hash normalization, path containment, lockfile
+  format/current checks, store writing, and add/remove rollback.
 - `npm run ci` green on Linux, macOS, and Windows (Tier-1 matrix).
 - Confirm the Tier-1 run recorded in `Docs/state.md` is for the release commit.
 
@@ -26,13 +36,15 @@ Use this checklist for every release. No step may be skipped.
   `main`/`bin` entry exists.
 - `cargo build --release -p astra-compiler-api --bin astra-compiler`; the
   release binary answers an `initialize` JSON-RPC request.
-- `npm run package` on each Tier-1 OS. The resulting
-  `dist/neo-astra-<version>-<os>-<arch>/` contains one minified, bytecode
-  `astra` executable (which also serves `astra nopm`), the `nopm` launcher, the
-  stripped `astra-compiler` and `nova` binaries, and the pinned native
-  `typescript/tsc`. Run `astra --version`, `astra nopm --version`, `astra
-  check`, and a native and `@script:ts` build directly from the package with
-  Node.js and npm absent from `PATH`.
+- `npm run package` on each Tier-1 OS. For `1.0.1` and later, the resulting
+  `dist/neo-astra-<version>-<os>-<arch>/` contains the Cargo-built native
+  `astra` and `nopm` binaries, the stripped `astra-compiler` and `nova`
+  binaries, and the pinned native `typescript/tsc`. For the historical `1.0.0`
+  package, the `astra` binary is the Bun-compiled executable and `nopm` is a
+  launcher; do not use that layout for `1.0.1`. Run `astra --version`,
+  `astra nopm --version`, `nopm --version`, `astra check`, a native build, and
+  a `@script:ts` build directly from the package with Node.js and npm absent
+  from the native/core paths.
 - Confirm the archive and `.sha256` sidecar exist; record the digest in the
   release notes.
 - Verify the bootstrap install on a clean Tier-1 runner
@@ -41,7 +53,8 @@ Use this checklist for every release. No step may be skipped.
 ## 4. Documentation
 
 - Add the release to `CHANGELOG.md` and `public/CHANGELOG.md`.
-- Update `Docs/state.md` (queue state and a log row).
+- Update `Docs/state.md` (queue state and a log row) and `context.md` (handoff
+  snapshot).
 - Confirm `README.md`, `INSTALL.md`, `SECURITY.md`, `CONTRIBUTING.md`, and
   `examples/` match the shipped commands and the real support matrix: core
   stable, app partial, web/system preview, high planned.
@@ -81,5 +94,13 @@ Use this checklist for every release. No step may be skipped.
   `NPM_TOKEN`; the trusted relationships are configured once per package with
   `npm trust github`, using `release.yml` and
   `luminousvalentine-cell/Neo-Astra`.
+- The trusted relationships were added on 2026-11-07 but are unvalidated until
+  the first successful OIDC publish. `npm trust list` currently requires
+  passkey re-authentication and returns `EOTP`; record that as a principal
+  action. Refresh the relationships immediately before the release because
+  unvalidated configurations expire after two days.
 - Keep the old `NPM_TOKEN` secret until the first successful OIDC release, then
-  delete it. Revoke the 1.0.0 token immediately; see `Docs/github-trust.md`.
+  delete it. Revoke the exposed 1.0.0 token immediately; see
+  `Docs/github-trust.md`.
+- Verify npm provenance and archive attestations for `1.0.1`; `1.0.0` has
+  neither.

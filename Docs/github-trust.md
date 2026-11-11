@@ -3,6 +3,9 @@
 This is an internal operations note. Public policy lives in `public/SECURITY.md`
 and `public/CONTRIBUTING.md`.
 
+**Last checked:** 2026-11-11. **Current release:** `1.0.1` is not tagged; the
+native CLI/NoPM port is blocked at slice 3a and native parity is 11/12.
+
 ## Verified
 
 - Public `master` is the sanitized mirror at
@@ -27,10 +30,14 @@ and `public/CONTRIBUTING.md`.
   `cargo fmt --all --check` and
   `cargo clippy --workspace --all-targets -- -D warnings`.
 
-## Still missing
+## Still missing / open
 
-These require the repository owner's GitHub or npm credentials.
+These require the repository owner's GitHub or npm credentials, a completed
+release, or a principal decision.
 
+- `1.0.1` is not tagged or published. The native CLI/NoPM port is blocked at
+  slice 3a; slices 3b and 4 are not started; native parity is 11/12. Do not
+  publish until the release checklist is green.
 - Repository rulesets are active:
   - `immutable-release-tags` blocks deletion and updates of `refs/tags/v*`.
   - `protect-master` blocks deletion, force pushes, and non-linear history on
@@ -49,6 +56,12 @@ These require the repository owner's GitHub or npm credentials.
 - The npm token exposed during the 1.0.0 release still needs to be revoked.
   The release workflow no longer reads `NPM_TOKEN`; publish authentication is
   OIDC trusted publishing.
+- The trusted relationships were added but are unvalidated until the first
+  successful OIDC publish. `npm trust list` currently requires passkey
+  re-authentication and returns `EOTP`; record that as a principal action, not
+  a bypass. Refresh the relationships immediately before the next release.
+- The public LSP `serverInfo` still reports `2.0.0`; correct it before the next
+  package that ships the server.
 - No public CI workflow exists yet. Do not require status checks in a ruleset
   until the CI workflow and check names exist.
 

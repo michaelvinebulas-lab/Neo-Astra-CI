@@ -1,5 +1,11 @@
 # Install and upgrade
 
+> **Current development note (2026-11-11):** These instructions describe the
+> published `1.0.0` package. The native Rust `astra`/`nopm` replacement is being
+> built for `1.0.1` and is not released; its slice 3a is still under review.
+> Do not present `1.0.1` package contents or size as final until the release
+> checklist is green.
+
 Neo Astra ships as a host-native package for v1. The source checkout remains the
 development and bootstrap path; the packaged binaries need no Node.js, npm,
 Cargo, or source checkout at runtime. There is no global installer and no
