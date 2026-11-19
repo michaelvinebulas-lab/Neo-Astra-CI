@@ -7272,9 +7272,7 @@ fn f() -> i32 {
     return outer.join()
 }
 "#;
-        // The inner spawn's body binds its own `outer` (i32), so it does not
-        // capture the outer Task handle. The outer handle is joined after both
-        // spawns and must remain legal.
+        // The inner spawn's body binds its own `outer` (i32), so it does not capture the outer Task handle. The outer handle is joined after both spawns and must remain legal.
         check(source).expect("a shadowed non-task capture must be accepted");
     }
 }

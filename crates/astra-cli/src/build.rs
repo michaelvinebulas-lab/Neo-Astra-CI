@@ -204,10 +204,13 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
         });
 
     if backend != "c" && backend != "native" {
+        if backend == "js" || backend == "ts" {
+            return run_js_ts_bridge(&project, &target_name, &backend, options);
+        }
         return Err(fatal(diag(
             "NS8001",
             &format!(
-                "Target '{target_name}' uses backend '{backend}'; native build currently supports 'c' and 'native' backends."
+                "Target '{target_name}' uses backend '{backend}'; native build currently supports 'c', 'native', 'js', and 'ts' backends."
             ),
             Some(&display_path(&project.core_path)),
         )));
@@ -1142,4 +1145,245 @@ fn run_compiler(compiler: &HostCompiler, args: &[String], cwd: &Path) -> Result<
     } else {
         stderr
     })
+}
+
+fn find_node_executable() -> Option<PathBuf> {
+    if let Ok(path) = env::var("ASTRA_NODE")
+        && !path.trim().is_empty()
+    {
+        let candidate = PathBuf::from(path.trim());
+        if candidate.is_file() || candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    if let Ok(path_var) = env::var("PATH") {
+        for dir in env::split_paths(&path_var) {
+            let candidate = dir.join(if cfg!(windows) { "node.exe" } else { "node" });
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+fn find_orchestrator_cli() -> Option<PathBuf> {
+    // Packaged location: <package>/lib/cli/dist/index.js
+    if let Ok(exe) = env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for rel in [
+            "lib/cli/dist/index.js",
+            "bridge/cli/dist/index.js",
+            "cli/dist/index.js",
+        ] {
+            let candidate = dir.join("..").join(rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            let candidate = dir.join(rel);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+    if let Ok(root) = env::var("ASTRA_REPO_ROOT") {
+        let candidate = PathBuf::from(root)
+            .join("orchestrator")
+            .join("packages")
+            .join("cli")
+            .join("dist")
+            .join("index.js");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    if let Ok(exe) = env::current_exe() {
+        let mut cur = exe.parent();
+        while let Some(dir) = cur {
+            let candidate = dir
+                .join("orchestrator")
+                .join("packages")
+                .join("cli")
+                .join("dist")
+                .join("index.js");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            cur = dir.parent();
+        }
+    }
+
+    if let Ok(cwd) = env::current_dir() {
+        let mut cur = Some(cwd.as_path());
+        while let Some(dir) = cur {
+            let candidate = dir
+                .join("orchestrator")
+                .join("packages")
+                .join("cli")
+                .join("dist")
+                .join("index.js");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+            cur = dir.parent();
+        }
+    }
+
+    None
+}
+
+fn run_js_ts_bridge(
+    project: &crate::ProjectManifests,
+    target_name: &str,
+    backend: &str,
+    options: &BuildOptions,
+) -> Result<BuildReport, BuildReport> {
+    let fatal = |diagnostic| fatal_report(options, diagnostic);
+
+    let node_bin = match find_node_executable() {
+        Some(bin) => bin,
+        None => {
+            return Err(fatal(diag(
+                "NS9015",
+                "Node.js runtime not found on PATH or ASTRA_NODE. Building for JS/TS targets requires Node.js.",
+                Some(&display_path(&project.core_path)),
+            )));
+        }
+    };
+
+    let cli_js = match find_orchestrator_cli() {
+        Some(script) => script,
+        None => {
+            return Err(fatal(diag(
+                "NS9015",
+                "Orchestrator CLI script (orchestrator/packages/cli/dist/index.js) not found for JS/TS build delegation.",
+                Some(&display_path(&project.core_path)),
+            )));
+        }
+    };
+
+    let mut cmd = Command::new(&node_bin);
+    cmd.arg(&cli_js).arg("build");
+
+    let proj_dir_str = options.project.as_deref().unwrap_or(".");
+    cmd.arg(proj_dir_str);
+
+    cmd.arg("--target").arg(target_name);
+
+    if let Some(emit) = &options.emit {
+        cmd.arg("--emit").arg(emit);
+    }
+    if options.no_download {
+        cmd.arg("--no-download");
+    }
+
+    cmd.arg("--json");
+
+    if let Ok(cwd) = env::current_dir() {
+        cmd.current_dir(&cwd);
+    }
+
+    // Point the bridge at the packaged compiler and pinned TypeScript compiler
+    // when they sit next to this executable, so a clean install does not
+    // depend on repo layout or environment overrides.
+    if env::var("ASTRA_COMPILER_BIN").is_err()
+        && let Ok(exe) = env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for rel in [
+            "../bin/astra-compiler",
+            "bin/astra-compiler",
+            "astra-compiler",
+        ] {
+            let candidate = dir.join(rel);
+            let candidate = if cfg!(windows) {
+                candidate.with_extension("exe")
+            } else {
+                candidate
+            };
+            if candidate.is_file() {
+                cmd.env("ASTRA_COMPILER_BIN", &candidate);
+                break;
+            }
+        }
+    }
+    if env::var("ASTRA_TSC_BIN").is_err()
+        && let Ok(exe) = env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        for rel in ["../typescript/tsc", "typescript/tsc", "tsc"] {
+            let candidate = dir.join(rel);
+            let candidate = if cfg!(windows) {
+                candidate.with_extension("exe")
+            } else {
+                candidate
+            };
+            if candidate.is_file() {
+                cmd.env("ASTRA_TSC_BIN", &candidate);
+                break;
+            }
+        }
+    }
+
+    let output = cmd.output().map_err(|err| {
+        fatal(diag(
+            "NS9015",
+            &format!("Failed to execute JS/TS build bridge: {err}"),
+            Some(&display_path(&project.core_path)),
+        ))
+    })?;
+
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    if let Ok(report) = serde_json::from_str::<serde_json::Value>(&stdout_str) {
+        let target = report
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or(target_name)
+            .to_owned();
+        let backend_val = report
+            .get("backend")
+            .and_then(|v| v.as_str())
+            .unwrap_or(backend)
+            .to_owned();
+        let entry = report
+            .get("entry")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let out = report
+            .get("output")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let mut diags = Vec::new();
+        if let Some(diag_array) = report.get("diagnostics").and_then(|v| v.as_array()) {
+            for d in diag_array {
+                if let Ok(rd) = serde_json::from_value::<ReportedDiagnostic>(d.clone()) {
+                    diags.push(rd);
+                }
+            }
+        }
+        let build_report = BuildReport {
+            target,
+            backend: backend_val,
+            entry,
+            output: out,
+            diagnostics: diags,
+        };
+        if output.status.success() {
+            Ok(build_report)
+        } else {
+            Err(build_report)
+        }
+    } else {
+        let stderr_str = String::from_utf8_lossy(&output.stderr);
+        Err(fatal(diag(
+            "NS9015",
+            format!("JS/TS build bridge failed: {}\n{}", stdout_str, stderr_str).trim(),
+            Some(&display_path(&project.core_path)),
+        )))
+    }
 }

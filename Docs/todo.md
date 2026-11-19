@@ -135,21 +135,21 @@ Language stays v0.1; do not inject v0.2 syntax into this patch.
 - [x] Slice 2b - native/C executable build.
 - [x] Slice 2c - pinned Zig downloads and staticlib/cdylib artifacts
       (`501e91f`; slices 2a/2b in `778bbc5`).
-
-### Open
-
-- [ ] Slice 3a - native NoPM baseline: project read for JSON/TOML manifests,
+- [x] Slice 3a - native NoPM baseline: project read for JSON/TOML manifests,
       dependency/target mapping, manifest hash, path containment, lockfile
       generation/parsing, store index, `add`/`remove`/`lock`/`update`/`tree`/
       `install`/`why`, dispatch identity, no-Node lifecycle, and lifecycle unit
-      tests. **Rejected twice; status is `OPEN - KILO - slice 3a`.** The current
-      uncommitted code is a hardcoded `local-utils`/`web` fixture, not the
-      oracle behavior.
-- [ ] Slice 3b - git/npm/cargo/pypi/nuget/oci/nova adapters, `search`, `audit`,
+      tests.
+- [x] Slice 3b - git/npm/cargo/pypi/nuget/oci/nova adapters, `search`, `audit`,
       `sys:` tools, and remote store download/extract/verify. All HTTP/archive
       work in Rust; no Node/Python/curl helper.
-- [ ] Slice 4 - JS/TS build bridge, native packaging, Tier-1 CI, native parity
-      12/12, no-Node core/NoPM checks, and Apache-2.0 metadata.
+- [x] Slice 4 - JS/TS build bridge, native packaging, Tier-1 CI, native parity
+      12/12, no-Node core/NoPM checks, and Apache-2.0 metadata. The npm
+      postinstall copies `lib` and TypeScript; the isolated package smoke covers
+      JS/TS, C/native, and `astra nopm` paths.
+
+### Open
+
 - [ ] Release validation - `npm run verify`, `npm run ci`, `npm run package`,
       clean-install smoke, release dry run, error-code check, workflow audit,
       then tag/publish `1.0.1` (lead/principal only).

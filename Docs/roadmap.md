@@ -88,12 +88,10 @@ and `nopm` binaries. Baseline `check`, `fmt`, `ast`, `explain`, `doctor`,
 C/native builds, and NoPM path flows must run without Node or npm; the JS/TS
 code generators stay isolated behind an on-demand Node bridge.
 
-Current checkpoints: slices 1, 2a, 2b, and 2c are landed; slice 3a (native NoPM
-baseline) is open after two rejected handbacks; slices 3b (remote
-adapters/registry/system tools) and 4 (JS/TS bridge, packaging, CI) are blocked.
-Native parity is 11/12 with only the JS build case red. No `1.0.1` tag or
-publish happens until parity is 12/12, all gates are green, and the release
-checklist is complete.
+Current checkpoints: slices 1, 2a, 2b, 2c, 3a, 3b, and 4 are accepted. The
+packaged CLI is native Cargo output, the JS/TS bridge is isolated under
+`lib/cli`, and native parity is 12/12. No `1.0.1` tag or publish happens until
+release validation is accepted and the release checklist is complete.
 
 ### Language v0.2 - syntax cleanup (next minor, edition 0.2)
 
@@ -136,6 +134,15 @@ One release per surface, in the order we take them up:
   linear memory).
 - A first-party machine-code backend, replacing the current path of generating C
   and calling the platform C compiler.
+
+### V2 - orchestrator rewrite (post-1.x)
+
+- Replace the TypeScript orchestrator with a C++20 implementation. The Rust
+  core stays Rust; C is limited to the ABI boundary and leaf libraries.
+  TypeScript remains the behavioral oracle and the isolated JS/TS bridge until
+  parity is proven. The release number is decided when the port starts; this
+  entry records the implementation direction, not a version commitment. See
+  [`Report/Orchestrator-v2.md`](Report/Orchestrator-v2.md).
 
 ### 2.0.0
 

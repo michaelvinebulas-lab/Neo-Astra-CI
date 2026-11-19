@@ -1,11 +1,11 @@
 # Neo Astra context handoff
 
-**Snapshot:** 2026-11-11  
-**Working copy:** `C:\Projects\Neo Astra`  
-**Branch:** `master`  
-**Published release:** `1.0.0` (tag `v1.0.0` -> `9d832e0`)  
-**Next release:** `1.0.1` native Rust CLI/NoPM - in progress, not tagged or published  
-**Current order:** `Docs/Report/Task.md` says `OPEN - KILO - slice 3a`
+**Snapshot:** 2026-11-19
+**Working copy:** `C:\Projects\Neo Astra`
+**Branch:** `master`
+**Published release:** `1.0.0` (tag `v1.0.0` -> `9d832e0`)
+**Next release:** `1.0.1` native Rust CLI/NoPM - slices 1-4 accepted, release validation next, not tagged or published
+**Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.
@@ -13,7 +13,7 @@ for detail. Update this file when the working state changes materially.
 ## Read first
 
 1. [`Docs/Report/Task.md`](Docs/Report/Task.md) - active lead/Kilo order, status,
-   and the two slice-3a rejection reviews.
+   and the slice-4 acceptance review.
 2. [`Docs/state.md`](Docs/state.md) - project status, decisions, and recent log.
 3. [`Docs/Report/Syntax-v0.2.md`](Docs/Report/Syntax-v0.2.md) - accepted v0.2
    cleanup plan and Phase 0 boundary.
@@ -52,34 +52,20 @@ for detail. Update this file when the working state changes materially.
 - `1.0.0` is published. Public source master is `17ceaf6`; tag `v1.0.0` points
   at `9d832e0`; release run `42278798124` published the platform packages and
   the `neo-astra` meta package.
-- The native Rust port has landed slices 1, 2a, 2b, and 2c:
-  - slice 1 `7ca69be` - core project commands.
-  - slices 2a/2b `778bbc5` - toolchain/doctor and native/C executable builds.
-  - slice 2c `501e91f` - pinned Zig and staticlib/cdylib artifacts.
-- Slice 3a (native NoPM baseline) is open. Kilo's implementation is
-  uncommitted and has been rejected twice:
-  - `ea0a2c2` - first rejection; hardcoded `local-utils`/`web` stub.
-  - `a433514` - second rejection; still hardcodes web targets/dependencies,
-    does not validate target support, leaves `install`/`why`/`update` as
-    stubs, and still has no required lifecycle tests.
-- Native parity is **11/12**. Only the JS build case is red for slice 4. The
-  NoPM parity case passes because it only exercises the fixed
-  `local-utils`/`web` fixture; it is not evidence that 3a is complete.
-- A custom path-package check against the TypeScript oracle found:
-  - root `build.json` declares `native` and `web`;
-  - path package declares only `native`;
-  - TS `add path:pkg --json` returns `NP0006` ("does not support target
-    'web'");
-  - native exits 0 and writes `targets: ["web"]`.
-- The current `astra-nopm` code is in flux. At one snapshot,
-  `cargo test --workspace` and `npm test` (241) completed green, but a
-  subsequent `cargo clippy -p astra-nopm -p astra-cli --all-targets -- -D
-  warnings` failed to compile with `E0560` (field `alias` missing from
-  `DependencyRequest`) plus `unused_mut` errors. Re-run the gates; do not trust
-  a cached "green" claim while Kilo is editing.
-- `cargo test -p astra-nopm` currently has **0 library tests** and one SHA-256
-  integration test. The required package-ID, manifest-hash, containment,
-  lockfile-current, store, and add/remove rollback tests do not exist.
+- The native Rust port has landed slices 1, 2a, 2b, 2c, 3a, 3b, and 4. Slice 4
+  is accepted.
+- Slice 4 packaging:
+  - `bin/astra` and `bin/nopm` are Cargo-built native binaries.
+  - The JS/TS bridge payload is under `lib/cli`; the npm platform package and
+    postinstall copy it plus the pinned TypeScript compiler.
+  - The isolated package smoke covers no-Node native/core commands, `astra
+    nopm` dispatch, C/native builds, and `@script:ts`/`@script:js` builds.
+  - The npm postinstall path has a lead-owned fake-platform test and a real
+    generated-package install simulation.
+- Native parity is **12/12**. `npm test` is 242/242, `npm run ci` is green,
+  and `npm run package` succeeds from an isolated package copy.
+- Release validation for `1.0.1` is the next step. Tagging and publishing
+  remain principal-gated.
 
 ## v0.2 status
 
@@ -108,8 +94,8 @@ Phase 0 is complete on the documentation side only:
 
 ## Release and npm state
 
-- `1.0.1` is not tagged. Do not tag until slice 3a, 3b, and 4 are accepted and
-  native parity is 12/12.
+- `1.0.1` is not tagged. Slices 1-4 are accepted and native parity is 12/12;
+  run and accept release validation before tagging.
 - `v1.0.0` is immutable by policy, but its GitHub release reports
   `immutable: false`. Do not modify its assets.
 - `1.0.0` has registry signatures but no npm provenance attestation; its GitHub
@@ -128,59 +114,55 @@ Phase 0 is complete on the documentation side only:
 
 ## Working tree snapshot
 
-Dirty because Kilo's slice-3a work is uncommitted:
+Dirty because the native port and packaging fixes are uncommitted:
 
-- Modified: `Cargo.toml`, `Cargo.lock`, `crates/astra-cli/Cargo.toml`,
-  `crates/astra-cli/src/main.rs`, `crates/astra-nopm/Cargo.toml`,
-  `crates/astra-nopm/src/main.rs`.
-- Untracked Kilo files: `crates/astra-nopm/src/lib.rs`,
-  `crates/astra-nopm/src/nopm.rs`, `crates/astra-nopm/src/sha256.rs`,
-  `crates/astra-nopm/tests/`.
-- Pre-existing user/untracked files: `432+5`, `700`,
-  `Docs/error-code-ledger.md`, `tmp.py`, `tmp_err.txt`.
-- Do not stage any of the above until Kilo hands back and the lead reviews.
+- Modified: the workspace manifests, `crates/astra-cli/**`,
+  `crates/astra-nopm/**`, CI/packaging scripts, `orchestrator/tests/package-npm.test.mjs`,
+  and the lead docs.
+- Untracked: the new `astra-nopm` modules/tests, `Docs/Report/Orchestrator-v2.md`,
+  and `Docs/error-code-ledger.md`.
+- Pre-existing user/untracked files: `432+5`, `700`, `tmp.py`, `tmp_err.txt`.
+- Do not stage any of the above without principal approval.
 - Lead commits are local. `origin` has not been pushed from this tree.
 
 ## Work order
 
-1. Kilo replaces the hardcoded `astra-nopm` implementation with the real shared
-   path lifecycle: JSON/TOML project read, path resolution/containment,
-   manifest hash, lockfile generation/parsing/staleness, `--locked`/`--frozen`,
-   store index, `add`/`remove`/`lock`/`update`/`tree`/`install`/`why`, and
-   add/remove rollback.
-2. Kilo adds the required unit tests and a complete handback with changed
-   files, commands, output tails, deviations, and gaps.
-3. Lead strengthens the native parity test with a different package
-   name/path/target set and an invalid-project `NP0006` case, then reviews 3a.
-4. After 3a acceptance: 3b (remote adapters, registry, `sys:` tools) and then
-   4 (JS/TS bridge, packaging, CI).
-5. Release validation, then lead/principal tag/publish `1.0.1`.
-6. Only after the native front-end handbacks: v0.2 Phase 1 edition plumbing and
-   the rest of the cleanup phases.
+1. Run the `1.0.1` release validation checklist against the accepted native
+   package and npm artifacts.
+2. If validation is green, the lead/principal tags and publishes `1.0.1`.
+3. Then start v0.2 Phase 1 edition plumbing and the rest of the cleanup phases.
+4. The V2 C++20 orchestrator rewrite is a later track; see
+   `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
+   isolated JS/TS bridge until C++ parity is proven.
 
-## Slice 3a acceptance checklist
+## Slice 4 acceptance checklist
 
-- Native parity is 11/12 with the three NoPM cases green and only the JS build
-  red.
-- `nopm` and `astra nopm` produce identical results.
-- No-Node NoPM path lifecycle passes with Node/npm removed from `PATH`.
-- All Rust/npm gates are green, including `cargo clippy ... -D warnings`.
-- Unit tests cover package IDs, manifest-hash normalization, path containment,
-  lockfile format/current checks, store writing, and add/remove rollback.
-- The implementation is not a fixed fixture: different package names, paths,
-  target sets, and invalid inputs must match the TypeScript oracle.
+- Native parity is 12/12, including JS build and no-Node native/core paths.
+- Packaged `astra`/`nopm` are Cargo binaries; the bridge payload is under
+  `lib/cli` with its package marker and runtime dependencies.
+- Isolated package smoke covers `--target js|ts`, C/native builds, `astra nopm`
+  dispatch, and `nopm --version` with Node/npm removed from `PATH` for native
+  paths.
+- npm postinstall copies `bin`, `typescript`, and `lib`; a fake-platform test
+  and a generated-package install simulation pass.
+- `npm test` is 242/242, `npm run ci` is green, and `npm run package` exits 0.
+- README text distinguishes native/core runtime requirements from the Node
+  bridge needed by JS/TS builds.
 
 ## Key files
 
-- `Docs/Report/Task.md` - current order and rejection reviews.
+- `Docs/Report/Task.md` - current order and slice-4 acceptance review.
+- `Docs/Report/Orchestrator-v2.md` - C++20 V2 scope and boundary decision.
 - `Docs/Report/Syntax-v0.2.md` - v0.2 plan and accepted defaults.
 - `Docs/spec-v0.2.md` - non-normative v0.2 skeleton and reserved diagnostics.
 - `conformance/v0.2/` - non-loaded v0.2 corpus.
 - `tools/grammar-v0.2/` - focused grammar conflict harness.
-- `crates/astra-nopm/src/nopm.rs` - Kilo's active slice-3a implementation.
-- `crates/astra-cli/src/main.rs` - native CLI dispatch.
-- `orchestrator/tests/native-parity.test.mjs` - 12-case parity gate; the NoPM
-  case is currently too narrow.
+- `crates/astra-nopm/` - native NoPM implementation and tests.
+- `crates/astra-cli/src/main.rs` - native CLI dispatch, including `astra nopm`.
+- `scripts/package.mjs` - archive packaging and isolated package smoke.
+- `scripts/package-npm.mjs` / `scripts/npm/postinstall.mjs` - npm channel and
+  bridge payload copy.
+- `orchestrator/tests/native-parity.test.mjs` - 12-case parity gate.
 - `orchestrator/packages/nopm/dist/cli.js` - TypeScript oracle for behavior
   comparisons.
 
@@ -197,18 +179,19 @@ npm run test:native-parity
 
 Last known results at this snapshot:
 
-- native parity: 11/12, JS build only failure.
-- `npm test`: 241/241 green (while native code was in flux).
-- `cargo test --workspace`: green at one snapshot, with `astra-nopm` warnings.
-- targeted clippy: failed after a concurrent edit (`E0560` and `unused_mut`);
-  re-run before accepting anything.
-- `cargo test -p astra-nopm`: 0 library tests + 1 SHA test.
+- native parity: 12/12 green.
+- `npm test`: 242/242 green.
+- `npm run ci`: green.
+- `npm run verify`: green.
+- `npm run package`: green; archive sha256
+  `5aafcd86272bd1a229aacf452d3bcb6bfd114eb97b74e2d0caf9282ac12e8400`.
+- npm generated-package postinstall simulation: green; `astra`/`nopm` report
+  `1.0.0` and the bridge/TypeScript payloads are present.
 
 ## Do not
 
-- Do not accept "status set to slice 3b" without a reviewed 3a handback.
-- Do not treat the green NoPM parity case as proof of the lifecycle; it only
-  covers the hardcoded fixture.
+- Do not treat the accepted slice 4 as release validation; run the checklist
+  before tagging.
 - Do not tag, push `origin`, publish, revoke tokens, or delete `NPM_TOKEN`.
 - Do not commit Kilo's uncommitted code, the pre-existing untracked files, or
   the active `Docs/Report/Task.md` log without review.

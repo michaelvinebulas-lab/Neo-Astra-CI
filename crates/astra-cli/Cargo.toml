@@ -14,6 +14,7 @@ astra-capabilities.workspace = true
 astra-compiler-api.workspace = true
 astra-core.workspace = true
 astra-manifest.workspace = true
+astra-nopm.workspace = true
 astra-toolchain.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -1,4 +1,4 @@
-//! The C17 emitter.
+﻿//! The C17 emitter.
 //!
 //! Lowers a checked module (AST + HIR + annotations) to a single self-contained
 //! C17 translation unit. The emitter is a typed source-to-source backend over
@@ -5285,6 +5285,5 @@ fn is_shared_capture(ty: &Type) -> bool {
         Type::Named(name, _)
             if name == "Channel" || name == "Region" || name == "Ptr"
     )
-    // Note: Task handles are now rejected at the frontend boundary (NS4019),
-    // so the emitter never treats a Task capture as shared state.
+    // Task handles are rejected at the frontend boundary (NS4019), so the emitter never treats a Task capture as shared state.
 }

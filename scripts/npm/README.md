@@ -10,10 +10,11 @@ nova version
 ```
 
 The npm package is an installer. The installed `astra`, `nopm`, and `nova`
-commands are the same native binaries as the GitHub archive; they do not need
-Node.js, npm, Cargo, or a source checkout at runtime. NoPM downloads npm, Cargo,
-or system package managers only when a project requests a source that needs
-them.
+commands are the same native binaries as the GitHub archive; native/core
+commands do not need Node.js, npm, Cargo, or a source checkout at runtime. JS/TS
+builds use the packaged Node bridge and need Node.js on PATH. NoPM downloads
+npm, Cargo, or system package managers only when a project requests a source
+that needs them.
 
 Supported npm hosts:
 

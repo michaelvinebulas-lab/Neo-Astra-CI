@@ -27,7 +27,7 @@ struct ManifestInfo {
     format: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ReportedDiagnostic {
     code: String,
     severity: String,
@@ -190,6 +190,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         "check" => cmd_check(&args[1..]),
+        "nopm" => {
+            // dispatch to astra-nopm run function
+            let code = astra_nopm::run(&args[1..]);
+            std::process::exit(code);
+        }
         "doctor" => cmd_doctor(&args[1..]),
         "build" => build::cmd_build(&args[1..]),
         "fmt" => cmd_fmt(&args[1..]),

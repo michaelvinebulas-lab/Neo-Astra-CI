@@ -45,3 +45,8 @@ jobs:
         # (including the C conformance runner that links and executes each
         # case against `astra_host.c` when a hosted compiler is present).
         run: npm run ci
+
+      - name: Run native parity gate
+        env:
+          ASTRA_NATIVE_PARITY: "1"
+        run: npm run test:native-parity

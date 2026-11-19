@@ -48,6 +48,7 @@ run("Native/Wasm boundary", npm, ["run", "test:boundary"]);
 run("Rust format", "cargo", ["fmt", "--all", "--check"]);
 run("Rust clippy", "cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]);
 run("Rust tests", "cargo", ["test", "--workspace"]);
+run("Native parity", npm, ["run", "test:native-parity"], { ASTRA_NATIVE_PARITY: "1" });
 // GC-001 §8.1: run the hosted C tests again with collection at every managed
 // allocation and at every safepoint, so a missing or stale root slot fails the
 // gate instead of hiding until collection is on by default.

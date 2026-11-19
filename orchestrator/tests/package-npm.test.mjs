@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -91,6 +92,7 @@ test(
         `bin/nopm${executable}`,
         `typescript/tsc${executable}`,
         "typescript/package.json",
+        "lib/cli/dist/index.js",
       ];
       for (const file of files) {
         const path = join(source, file);
@@ -119,8 +121,98 @@ test(
       assert.deepEqual(manifest.cpu, [process.arch]);
       assert.ok(manifest.files.includes("bin"));
       assert.ok(manifest.files.includes("typescript"));
+      assert.ok(manifest.files.includes("lib"));
       for (const file of files) {
         assert.ok(existsSync(join(platform, file)), `${file} is missing`);
+      }
+    } finally {
+      rmSync(out, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "npm postinstall copies the native toolchain and bridge payload",
+  { skip: !supported },
+  () => {
+    const out = mkdtempSync(join(tmpdir(), "astra-npm-postinstall-"));
+    try {
+      const meta = join(out, "meta");
+      mkdirSync(meta, { recursive: true });
+      writeFileSync(
+        join(meta, "package.json"),
+        `${JSON.stringify(
+          {
+            name: "neo-astra",
+            version,
+            optionalDependencies: { [target]: version },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+      copyFileSync(
+        join(root, "scripts", "npm", "postinstall.mjs"),
+        join(meta, "postinstall.mjs"),
+      );
+
+      const platformPackage = join(meta, "node_modules", target);
+      const bin = join(platformPackage, "bin");
+      const typescript = join(platformPackage, "typescript");
+      const bridge = join(platformPackage, "lib", "cli", "dist");
+      mkdirSync(bin, { recursive: true });
+      mkdirSync(typescript, { recursive: true });
+      mkdirSync(bridge, { recursive: true });
+      writeFileSync(
+        join(platformPackage, "package.json"),
+        `${JSON.stringify({ name: target, version }, null, 2)}\n`,
+        "utf8",
+      );
+
+      // Copy the running Node binary as the two binaries postinstall executes.
+      // `node --version` exits zero, so verify() exercises the copied paths
+      // without needing a native build in the test fixture.
+      copyFileSync(process.execPath, join(bin, `astra${executable}`));
+      copyFileSync(process.execPath, join(bin, `nopm${executable}`));
+      for (const file of [
+        `astra-compiler${executable}`,
+        `nova${executable}`,
+      ]) {
+        writeFileSync(join(bin, file), "fixture\n", "utf8");
+      }
+      writeFileSync(
+        join(typescript, `tsc${executable}`),
+        "fixture\n",
+        "utf8",
+      );
+      writeFileSync(join(typescript, "lib.d.ts"), "fixture\n", "utf8");
+      writeFileSync(join(bridge, "index.js"), "fixture\n", "utf8");
+
+      const result = spawnSync(
+        process.execPath,
+        [join(meta, "postinstall.mjs")],
+        {
+          cwd: meta,
+          encoding: "utf8",
+          windowsHide: true,
+        },
+      );
+      assert.equal(
+        result.status,
+        0,
+        `postinstall stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+      );
+      for (const file of [
+        "bin/astra.exe",
+        "bin/nopm.exe",
+        "bin/nova.exe",
+        `bin/astra-compiler${executable}`,
+        `typescript/tsc${executable}`,
+        "typescript/lib.d.ts",
+        "lib/cli/dist/index.js",
+      ]) {
+        assert.ok(existsSync(join(meta, file)), `${file} is missing`);
       }
     } finally {
       rmSync(out, { recursive: true, force: true });

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 // Copy the native Neo Astra toolchain from the host platform package into the
-// `neo-astra` meta package. npm is only the installer: the copied binaries are
-// the same standalone tools as the GitHub archive and do not need Node.js at
-// runtime.
+// `neo-astra` meta package. npm is only the installer: the copied native
+// binaries are the same standalone tools as the GitHub archive and do not need
+// Node.js at runtime. JS/TS builds still use the packaged Node bridge.
 
 import { spawnSync } from "node:child_process";
 import {
@@ -50,11 +50,20 @@ function copyRequired(source, targetPath) {
 
 function copyToolchain(source) {
   const bin = join(here, "bin");
+  const lib = join(here, "lib");
   const typescript = join(here, "typescript");
   rmSync(bin, { recursive: true, force: true });
+  rmSync(lib, { recursive: true, force: true });
   rmSync(typescript, { recursive: true, force: true });
   mkdirSync(bin, { recursive: true });
-  mkdirSync(typescript, { recursive: true });
+  const { cpSync } = require("node:fs");
+  if (existsSync(join(source, "lib"))) {
+    cpSync(join(source, "lib"), lib, { recursive: true });
+  }
+  if (!existsSync(join(source, "typescript"))) {
+    throw new Error(`platform package is missing ${join(source, "typescript")}`);
+  }
+  cpSync(join(source, "typescript"), typescript, { recursive: true });
 
   const sourceBin = join(source, "bin");
   const astra = join(bin, "astra.exe");
@@ -70,14 +79,6 @@ function copyToolchain(source) {
   copyRequired(
     join(sourceBin, `nopm${executable}`),
     join(bin, "nopm.exe"),
-  );
-  copyRequired(
-    join(source, "typescript", `tsc${executable}`),
-    join(typescript, `tsc${executable}`),
-  );
-  copyRequired(
-    join(source, "typescript", "package.json"),
-    join(typescript, "package.json"),
   );
 
   if (process.platform !== "win32") {
