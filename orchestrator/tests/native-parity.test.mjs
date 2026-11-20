@@ -373,7 +373,10 @@ test("native C libraries match generated artifacts", { skip }, async () => {
       const actualFiles = await listFiles(actualDir);
       assert.deepEqual(actualFiles, expectedFiles, `library ${emit}: file list`);
       for (const file of expectedFiles) {
-        if (/\.(?:a|o|so|dll|lib|exe)$/.test(file) || file.endsWith(".dll.a")) {
+        if (
+          /\.(?:a|o|so|dll|lib|exe|exp)$/.test(file) ||
+          file.endsWith(".dll.a")
+        ) {
           continue;
         }
         assert.equal(

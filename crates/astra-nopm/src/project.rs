@@ -492,7 +492,8 @@ mod tests {
 
     #[test]
     fn containment_rejects_escapes() {
-        let root = Path::new("C:/Projects/demo");
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
         assert!(package_directory(root, "pkg").is_ok());
         assert!(package_directory(root, "pkgs/util").is_ok());
         assert!(package_directory(root, "../outside").is_err());
