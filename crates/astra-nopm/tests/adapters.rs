@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use astra_nopm::adapters;
-use astra_nopm::command::{CommandOutput, CommandRunner};
+use astra_nopm::command::{CommandOutput, CommandRunner, command_name};
 use astra_nopm::http::{HttpClient, HttpResponse};
 use astra_nopm::package_id::{format_package_id, parse_package_id};
 
@@ -292,8 +292,14 @@ fn npm_uses_npm_view_and_records_dist_metadata() {
     );
     let calls = runner.calls.lock().unwrap();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0], "npm.cmd view react@19 version --json");
-    assert_eq!(calls[1], "npm.cmd view react@19.1.0 --json");
+    assert_eq!(
+        calls[0],
+        format!("{} view react@19 version --json", command_name("npm"))
+    );
+    assert_eq!(
+        calls[1],
+        format!("{} view react@19.1.0 --json", command_name("npm"))
+    );
 }
 
 #[test]
