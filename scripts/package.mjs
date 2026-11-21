@@ -34,6 +34,7 @@ const skipBuild = process.argv.includes("--skip-build");
 const version = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
 const platform = process.platform;
 const arch = process.arch;
+const npm = platform === "win32" ? "npm.cmd" : "npm";
 const executable = platform === "win32" ? ".exe" : "";
 const releaseName = `neo-astra-${version}-${platform}-${arch}`;
 const outRoot = join(root, "dist", releaseName);
@@ -162,6 +163,9 @@ function requireFile(path, label) {
 }
 
 if (!skipBuild) {
+  // The JS/TS bridge payload is copied from the TypeScript workspace outputs,
+  // so build them here rather than assuming a prior `npm run build`.
+  run(npm, ["run", "build"]);
   run("cargo", ["build", "--release", "-p", "astra-cli"]);
   run("cargo", [
     "build",
