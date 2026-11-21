@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import {
   basename,
   dirname,
@@ -13,7 +13,7 @@ import {
   sep,
 } from "node:path";
 import { TextDecoder } from "node:util";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { generateJavaScript } from "@neo-astra/codegen-js";
 import { generateTypeScript } from "@neo-astra/codegen-ts";
 import {
@@ -2965,11 +2965,22 @@ export async function runCli(args: readonly string[], cwd = process.cwd()): Prom
   }
 }
 
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+}
+
+// Node resolves symlinks for `import.meta.url`, but `process.argv[1]` keeps
+// the path as invoked. Compare canonical paths so an entry reached through a
+// symlinked directory (for example macOS `/var` -> `/private/var`) still runs.
 const entry = process.argv[1];
 const isDirectCliEntry =
   entry !== undefined &&
   /(?:^|[\\/])index\.js$/.test(entry) &&
-  import.meta.url === pathToFileURL(entry).href;
+  canonicalPath(entry) === canonicalPath(fileURLToPath(import.meta.url));
 if (isDirectCliEntry) {
   void runCli(process.argv.slice(2)).then(
     (code) => {
