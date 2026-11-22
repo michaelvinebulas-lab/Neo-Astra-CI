@@ -6,5 +6,10 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../compiler-client" }, { "path": "../manifest" }, { "path": "../codegen-js" }]
+  "references": [
+    { "path": "../compiler-client" },
+    { "path": "../manifest" },
+    { "path": "../codegen-js" },
+    { "path": "../codegen-ts" }
+  ]
 }

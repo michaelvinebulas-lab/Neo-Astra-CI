@@ -1,0 +1,14 @@
+fn factorial(n: i32) -> i32 {
+    let mut result = 1
+    let mut current = 2
+    while current <= n {
+        result = result * current
+        current = current + 1
+    }
+    return result
+}
+
+pub fn main() -> i32 {
+    println(factorial(5))
+    return 0
+}

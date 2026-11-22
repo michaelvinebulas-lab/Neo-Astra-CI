@@ -1,0 +1,10 @@
+pub fn f() {}
+
+pub fn g() {}
+
+export { f as value }
+export { g as value }
+
+pub fn main() -> i32 {
+    return 0
+}

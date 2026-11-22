@@ -676,10 +676,9 @@ impl<'a> Lexer<'a> {
         while self.offset < self.source.len() {
             let line_start = self.offset;
             let remaining = &self.source[line_start..];
-            let trimmed = remaining.trim_start_matches(|c| c == ' ' || c == '\t');
-            if trimmed.starts_with("@end") {
-                let after = &trimmed[4..];
-                let trimmed_after = after.trim_start_matches(|c| c == ' ' || c == '\t');
+            let trimmed = remaining.trim_start_matches([' ', '\t']);
+            if let Some(after) = trimmed.strip_prefix("@end") {
+                let trimmed_after = after.trim_start_matches([' ', '\t']);
                 if trimmed_after.starts_with("\r\n")
                     || trimmed_after.starts_with('\n')
                     || trimmed_after.starts_with('}')

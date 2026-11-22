@@ -268,11 +268,16 @@ impl<'a> Formatter<'a> {
         let inner_pad = "    ".repeat(indent + 1);
         let exports_pad = "    ".repeat(indent + 2);
 
-        self.output.push_str(&format!("{{@script:{} as {};\n", script.language, script.name));
-        self.output.push_str(&format!("{inner_pad}@mode({})\n", script.mode));
+        self.output.push_str(&format!(
+            "{{@script:{} as {};\n",
+            script.language, script.name
+        ));
+        self.output
+            .push_str(&format!("{inner_pad}@mode({})\n", script.mode));
         self.output.push_str(&format!("{inner_pad}@exports {{\n"));
         for export in &script.exports {
-            self.output.push_str(&format!("{exports_pad}fn {}(", export.name));
+            self.output
+                .push_str(&format!("{exports_pad}fn {}(", export.name));
             for (index, parameter) in export.parameters.iter().enumerate() {
                 if index > 0 {
                     self.output.push_str(", ");

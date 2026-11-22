@@ -1,10 +1,21 @@
 #!/usr/bin/env node
 
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { TextDecoder } from "node:util";
 import { pathToFileURL } from "node:url";
 import { generateJavaScript } from "@neo-astra/codegen-js";
+import { generateTypeScript } from "@neo-astra/codegen-ts";
 import {
   CompilerClient,
   CompilerClientError,
@@ -904,6 +915,117 @@ function codegenDiagnostic(
   };
 }
 
+interface ProjectModuleSource {
+  readonly key: string;
+  readonly absolutePath: string;
+  readonly text: string;
+}
+
+function scanImportSpecifiers(source: string): readonly string[] {
+  const specifiers = new Set<string>();
+  const fromPattern = /^[ \t]*(?:import|export)\b[^\n;]*?\bfrom\s*"([^"]+)"/gm;
+  const sideEffectPattern = /^[ \t]*import\s*"([^"]+)"/gm;
+  const pathPattern =
+    /^[ \t]*import\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)[ \t]*(?:;)?$/gm;
+  for (const pattern of [fromPattern, sideEffectPattern]) {
+    for (const match of source.matchAll(pattern)) {
+      if (match[1] !== undefined) {
+        specifiers.add(match[1]);
+      }
+    }
+  }
+  for (const match of source.matchAll(pathPattern)) {
+    if (match[1] !== undefined) {
+      specifiers.add(match[1]);
+    }
+  }
+  return [...specifiers];
+}
+
+function resolveProjectSpecifier(
+  importerKey: string,
+  specifier: string,
+  root: string,
+): string | undefined {
+  if (specifier.startsWith("./") || specifier.startsWith("../")) {
+    let target = resolve(dirname(join(root, importerKey)), specifier);
+    if (!target.toLowerCase().endsWith(SOURCE_EXTENSION)) {
+      target = `${target}${SOURCE_EXTENSION}`;
+    }
+    const relativeTarget = relative(root, target);
+    if (
+      relativeTarget.length === 0 ||
+      isAbsolute(relativeTarget) ||
+      relativeTarget === ".." ||
+      relativeTarget.startsWith(`..${sep}`)
+    ) {
+      return undefined;
+    }
+    return relativeTarget.split(sep).join("/");
+  }
+
+  if (
+    !specifier.includes("/") &&
+    specifier.includes(".") &&
+    !specifier.toLowerCase().endsWith(SOURCE_EXTENSION)
+  ) {
+    return `${specifier.replaceAll(".", "/")}${SOURCE_EXTENSION}`;
+  }
+
+  return undefined;
+}
+
+function discoverProjectModules(
+  root: string,
+  entryPath: string,
+  entryKey: string,
+  cwd: string,
+): readonly ProjectModuleSource[] {
+  const ordered: ProjectModuleSource[] = [];
+  const visited = new Set<string>();
+
+  const visit = (key: string, absolutePath: string): void => {
+    if (visited.has(key)) {
+      return;
+    }
+    visited.add(key);
+    const file: SourceFile = {
+      path: absolutePath,
+      displayPath: displayPath(absolutePath, cwd),
+      kind: "source",
+    };
+    const text = readSource(file);
+    for (const specifier of scanImportSpecifiers(text)) {
+      const targetKey = resolveProjectSpecifier(key, specifier, root);
+      if (targetKey === undefined || visited.has(targetKey)) {
+        continue;
+      }
+      const targetPath = resolve(root, targetKey);
+      if (!existsSync(targetPath)) {
+        continue;
+      }
+      visit(targetKey, targetPath);
+    }
+    ordered.push({ key, absolutePath, text });
+  };
+
+  visit(entryKey, entryPath);
+  return ordered;
+}
+
+function outputPathForModule(
+  outDir: string,
+  key: string,
+  extension: "js" | "ts" = "js",
+): string {
+  return resolve(outDir, key.replace(/\.ns$/i, `.${extension}`));
+}
+
+function relativeModuleSpecifier(fromOutput: string, targetOutput: string): string {
+  const value = relative(dirname(fromOutput), targetOutput).split(sep).join("/");
+  return value.startsWith(".") ? value : `./${value}`;
+}
+
 function runBuild(args: readonly string[], cwd: string): number {
   if (args.includes("-h") || args.includes("--help")) {
     printHelp();
@@ -957,8 +1079,13 @@ function runBuild(args: readonly string[], cwd: string): number {
       );
     }
 
-    const targetConfig = targets[targetName];
-    if (!isRecord(targetConfig)) {
+    const targetConfig = isRecord(targets[targetName]) ? targets[targetName] : {};
+    if (
+      !isRecord(targets[targetName]) &&
+      targetName !== "c" &&
+      targetName !== "native" &&
+      targetName !== "ts"
+    ) {
       throw new CliError(
         "NS8001",
         `Target '${targetName}' is not declared in the manifest.`,
@@ -966,22 +1093,33 @@ function runBuild(args: readonly string[], cwd: string): number {
       );
     }
 
-    const backend = targetConfig["backend"];
-    if (backend !== "js") {
+    const backend =
+      targetConfig["backend"] ??
+      (targetName === "c" || targetName === "native" || targetName === "ts"
+        ? targetName
+        : "js");
+    if (
+      backend !== "js" &&
+      backend !== "ts" &&
+      backend !== "c" &&
+      backend !== "native"
+    ) {
       throw new CliError(
         "NS8001",
-        `Target '${targetName}' uses backend '${String(backend)}'; astra build currently supports only the 'js' backend.`,
+        `Target '${targetName}' uses backend '${String(backend)}'; astra build currently supports 'js', 'ts', 'c', and 'native' backends.`,
         displayPath(manifest.file.path, cwd),
       );
     }
 
-    const moduleFormat = targetConfig["module"] ?? "esm";
-    if (moduleFormat !== "esm") {
-      throw new CliError(
-        "NS8001",
-        `Target '${targetName}' requests module format '${String(moduleFormat)}'; only 'esm' is supported.`,
-        displayPath(manifest.file.path, cwd),
-      );
+    if (backend === "js" || backend === "ts") {
+      const moduleFormat = targetConfig["module"] ?? "esm";
+      if (moduleFormat !== "esm") {
+        throw new CliError(
+          "NS8001",
+          `Target '${targetName}' requests module format '${String(moduleFormat)}'; only 'esm' is supported.`,
+          displayPath(manifest.file.path, cwd),
+        );
+      }
     }
 
     const nova = isRecord(manifest.data["nova"]) ? manifest.data["nova"] : {};
@@ -1022,7 +1160,10 @@ function runBuild(args: readonly string[], cwd: string): number {
       displayPath: displayPath(entryPath, cwd),
       kind: "source",
     };
-    const source = readSource(sourceFile);
+    const projectSources = discoverProjectModules(root, entryPath, entryKey, cwd);
+    const source =
+      projectSources.find((module) => module.key === entryKey)?.text ??
+      readSource(sourceFile);
 
     const modeValue = targetConfig["mode"] ?? build["defaultMode"];
     if (modeValue !== undefined && !isMode(modeValue)) {
@@ -1049,16 +1190,206 @@ function runBuild(args: readonly string[], cwd: string): number {
         ? {}
         : { binaryPath: options.compilerPath }),
     });
-    const result = client.compile({
-      source: { path: entryKey, text: source },
-      target: "js",
+    const compilerTarget =
+      backend === "c" || backend === "native" ? "c" : backend === "ts" ? "ts" : "js";
+    const sharedParams = {
       ...(modeValue === undefined ? {} : { mode: modeValue }),
       ...(policyValue === undefined ? {} : { integerPolicy: policyValue }),
+    };
+
+    if (compilerTarget === "c") {
+      const cResult = client.compile({
+        source: { path: entryKey, text: source },
+        target: "c",
+        ...sharedParams,
+      });
+
+      const diagnostics = cResult.diagnostics.map((diagnostic) =>
+        reportDiagnostic(sourceFile, source, diagnostic),
+      );
+      const errors = diagnostics.filter(
+        (diagnostic) => diagnostic.severity === "error",
+      );
+      if (errors.length > 0) {
+        report = {
+          ...report,
+          target: targetName,
+          backend: String(backend),
+          entry: entryKey,
+          diagnostics,
+        };
+        if (options.json) {
+          printBuildReport(report);
+        } else {
+          for (const diagnostic of diagnostics) {
+            printDiagnostic(diagnostic);
+          }
+        }
+        return 1;
+      }
+      const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
+      const outDir =
+        typeof configuredOutDir === "string"
+          ? resolve(root, configuredOutDir)
+          : resolve(root, "dist", targetName);
+
+      let mainCPath = "";
+      let hostCPath = "";
+      const scriptPaths: string[] = [];
+      try {
+        mkdirSync(outDir, { recursive: true });
+        for (const artifact of cResult.artifacts) {
+          if (isRecord(artifact)) {
+            const artType = artifact["type"];
+            const artName = artifact["name"] ?? artifact["filename"];
+            const artContent = artifact["content"];
+            if (typeof artName === "string" && typeof artContent === "string") {
+              const filePath = resolve(outDir, artName);
+              mkdirSync(dirname(filePath), { recursive: true });
+              writeFileSync(filePath, artContent, "utf8");
+              if (artType === "c-source") {
+                mainCPath = filePath;
+              } else if (artType === "c-host-shim") {
+                hostCPath = filePath;
+              } else if (artType === "c-script") {
+                scriptPaths.push(filePath);
+              }
+            }
+          }
+        }
+      } catch (error) {
+        throw new CliError(
+          "NS9008",
+          `Unable to write generated C artifacts: ${errorMessage(error)}`,
+          displayPath(outDir, cwd),
+        );
+      }
+
+      let outputPath: string;
+      outputPath = mainCPath || outDir;
+
+      if (backend === "native") {
+        if (!mainCPath || !hostCPath) {
+          throw new CliError(
+            "NS8001",
+            "Compiler did not produce the expected C artifacts for native compilation.",
+            displayPath(outDir, cwd),
+          );
+        }
+        const exeName = process.platform === "win32" ? "main.exe" : "main";
+        const exePath = resolve(outDir, exeName);
+        const clangCandidates = [
+          "C:\\Program Files\\LLVM\\bin\\clang.exe",
+          "clang",
+          "gcc",
+          "cc",
+        ];
+        let compilerBin: string | null = null;
+        for (const cand of clangCandidates) {
+          const test = spawnSync(cand, ["--version"], { windowsHide: true });
+          if (test.status === 0) {
+            compilerBin = cand;
+            break;
+          }
+        }
+        if (!compilerBin) {
+          throw new CliError(
+            "NS9008",
+            "No C compiler (clang, gcc, or cc) found on PATH to build native binary.",
+            displayPath(outDir, cwd),
+          );
+        }
+        const cflags: string[] = [];
+        if (Array.isArray(targetConfig["cflags"])) {
+          for (const f of targetConfig["cflags"]) {
+            if (typeof f === "string") cflags.push(f);
+          }
+        }
+        const optLevel = targetConfig["optLevel"] ?? targetConfig["optimization"];
+        if (typeof optLevel === "string" || typeof optLevel === "number") {
+          cflags.push(`-O${String(optLevel).replace(/^-?O?/, "")}`);
+        }
+        const triple = targetConfig["triple"] ?? targetConfig["targetTriple"];
+        if (typeof triple === "string") {
+          cflags.push(`--target=${triple}`);
+        }
+        const hasCpp = scriptPaths.some((p) => p.endsWith(".cpp"));
+        const compileArgs = [
+          "-std=c17",
+          "-Wall",
+          "-Wno-unused-variable",
+          ...cflags,
+          "-o",
+          exePath,
+          mainCPath,
+          hostCPath,
+          ...scriptPaths,
+        ];
+        if (hasCpp) {
+          compileArgs.push("-lstdc++");
+        }
+        const buildProc = spawnSync(
+          compilerBin,
+          compileArgs,
+          { windowsHide: true, encoding: "utf8" },
+        );
+        if (buildProc.status !== 0) {
+          throw new CliError(
+            "NS9008",
+            `Native compilation failed with ${compilerBin}:\n${buildProc.stderr}`,
+            displayPath(outDir, cwd),
+          );
+        }
+        outputPath = exePath;
+      }
+
+      report = {
+        target: targetName,
+        backend: String(backend),
+        entry: entryKey,
+        output: displayPath(outputPath, cwd),
+        diagnostics,
+      };
+      if (options.json) {
+        printBuildReport(report);
+      } else {
+        for (const diagnostic of diagnostics) {
+          printDiagnostic(diagnostic);
+        }
+        process.stdout.write(
+          `built ${targetName} -> ${displayPath(outputPath, cwd)}\n`,
+        );
+      }
+      return 0;
+    }
+
+    const result = client.checkProject({
+      sources: projectSources.map((module) => ({
+        key: module.key,
+        path: module.key,
+        text: module.text,
+      })),
+      target: compilerTarget,
+      ...sharedParams,
     });
 
-    const diagnostics = result.diagnostics.map((diagnostic) =>
-      reportDiagnostic(sourceFile, source, diagnostic),
+    const moduleSources = new Map(
+      projectSources.map((module) => [module.key, module] as const),
     );
+    const diagnostics = result.modules.flatMap((module) => {
+      const moduleSource = moduleSources.get(module.key);
+      const file: SourceFile = {
+        path: moduleSource?.absolutePath ?? entryPath,
+        displayPath:
+          moduleSource === undefined
+            ? displayPath(entryPath, cwd)
+            : displayPath(moduleSource.absolutePath, cwd),
+        kind: "source",
+      };
+      return module.diagnostics.map((diagnostic) =>
+        reportDiagnostic(file, moduleSource?.text ?? source, diagnostic),
+      );
+    });
     const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error");
     if (errors.length > 0) {
       report = { ...report, target: targetName, entry: entryKey, diagnostics };
@@ -1072,20 +1403,99 @@ function runBuild(args: readonly string[], cwd: string): number {
       return 1;
     }
 
-    if (result.ir === undefined) {
+    const missingModule = result.modules.find(
+      (module) => module.ok && module.ir === undefined,
+    );
+    if (missingModule !== undefined) {
       throw new CliError(
         "NS8001",
-        "The compiler returned no typed module for JavaScript generation.",
+        `The compiler returned no typed module for '${missingModule.key}'.`,
         displayPath(entryPath, cwd),
       );
     }
 
-    const generated = generateJavaScript({
-      moduleName: entryKey,
-      ir: result.ir,
-    });
-    const generatedDiagnostics = generated.diagnostics.map((diagnostic) =>
-      codegenDiagnostic(sourceFile, source, diagnostic),
+    const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
+    const outDir =
+      typeof configuredOutDir === "string"
+        ? resolve(root, configuredOutDir)
+        : resolve(root, "dist", targetName);
+    // TypeScript targets write `.ts` sources, but ESM import specifiers stay
+    // `.js` for both backends: under `moduleResolution: nodenext`, tsc maps a
+    // `./util.js` specifier onto `util.ts` at type-check time and onto the
+    // tsc-emitted `util.js` at runtime.
+    const outputExtension: "js" | "ts" = compilerTarget === "ts" ? "ts" : "js";
+    const outputs = new Map(
+      projectSources.map((module) => [
+        module.key,
+        outputPathForModule(outDir, module.key, outputExtension),
+      ]),
+    );
+    const specifierPaths = new Map(
+      projectSources.map((module) => [
+        module.key,
+        outputPathForModule(outDir, module.key, "js"),
+      ]),
+    );
+
+    const generatedModules = result.modules
+      .filter(
+        (module): module is typeof module & { readonly ir: NonNullable<typeof module.ir> } =>
+          module.ir !== undefined,
+      )
+      .map((module) => {
+        const outputPath = outputs.get(module.key);
+        const moduleSource = moduleSources.get(module.key);
+        if (outputPath === undefined || moduleSource === undefined) {
+          throw new CliError(
+            "NS8001",
+            `No output path was resolved for '${module.key}'.`,
+            displayPath(entryPath, cwd),
+          );
+        }
+        const moduleSpecifiers = Object.fromEntries(
+          projectSources.map((candidate) => [
+            candidate.key,
+            relativeModuleSpecifier(
+              specifierPaths.get(module.key) ?? outputPath,
+              specifierPaths.get(candidate.key) ??
+                outputPathForModule(outDir, candidate.key, "js"),
+            ),
+          ]),
+        );
+        const generated =
+          compilerTarget === "ts"
+            ? generateTypeScript({
+                moduleName: module.key,
+                ir: module.ir,
+                sourceText: moduleSource.text,
+                moduleSpecifiers,
+              })
+            : generateJavaScript({
+                moduleName: module.key,
+                ir: module.ir,
+                sourceText: moduleSource.text,
+                moduleSpecifiers,
+              });
+        return {
+          module,
+          moduleSource,
+          outputPath,
+          generated,
+        };
+      });
+
+    const generatedDiagnostics = generatedModules.flatMap((entry) =>
+      entry.generated.diagnostics.map((diagnostic) =>
+        codegenDiagnostic(
+          {
+            path: entry.moduleSource.absolutePath,
+            displayPath: displayPath(entry.moduleSource.absolutePath, cwd),
+            kind: "source",
+          },
+          entry.moduleSource.text,
+          diagnostic,
+        ),
+      ),
     );
     const allDiagnostics = [...diagnostics, ...generatedDiagnostics];
     if (generatedDiagnostics.length > 0) {
@@ -1105,17 +1515,95 @@ function runBuild(args: readonly string[], cwd: string): number {
       return 1;
     }
 
-    const configuredOutDir = targetConfig["outDir"] ?? build["outDir"];
-    const outDir =
-      typeof configuredOutDir === "string"
-        ? resolve(root, configuredOutDir)
-        : resolve(root, "dist", targetName);
-    const outputRelative = entryKey.replace(/\.ns$/i, ".js");
-    const outputPath = resolve(outDir, outputRelative);
+    const outputPath = outputs.get(entryKey);
+    if (outputPath === undefined) {
+      throw new CliError(
+        "NS8001",
+        "The entry module was not included in the project output.",
+        displayPath(entryPath, cwd),
+      );
+    }
 
     try {
-      mkdirSync(dirname(outputPath), { recursive: true });
-      writeFileSync(outputPath, generated.code, "utf8");
+      for (const entry of generatedModules) {
+        mkdirSync(dirname(entry.outputPath), { recursive: true });
+        const mapName = `${basename(entry.outputPath)}.map`;
+        const generatedCode =
+          entry.generated.sourceMap === undefined
+            ? entry.generated.code
+            : `${entry.generated.code}//# sourceMappingURL=${mapName}\n`;
+        writeFileSync(entry.outputPath, generatedCode, "utf8");
+        if (entry.generated.sourceMap !== undefined) {
+          const map = JSON.parse(entry.generated.sourceMap) as Record<string, unknown>;
+          map["file"] = basename(entry.outputPath);
+          map["sources"] = [
+            relative(
+              dirname(entry.outputPath),
+              entry.moduleSource.absolutePath,
+            )
+              .split(sep)
+              .join("/"),
+          ];
+          writeFileSync(
+            `${entry.outputPath}.map`,
+            `${JSON.stringify(map)}\n`,
+            "utf8",
+          );
+        }
+        if (entry.generated.declarations !== undefined) {
+          writeFileSync(
+            entry.outputPath.replace(/\.(js|ts)$/i, ".d.ts"),
+            entry.generated.declarations,
+            "utf8",
+          );
+        }
+        for (const artifact of entry.generated.artifacts ?? []) {
+          const artifactPath = resolve(outDir, artifact.path);
+          const artifactRelative = relative(outDir, artifactPath);
+          if (
+            artifactRelative === ".." ||
+            artifactRelative.startsWith(`..${sep}`) ||
+            isAbsolute(artifactRelative)
+          ) {
+            throw new CliError(
+              "NS8001",
+              `Script artifact '${artifact.path}' escapes the output directory.`,
+              displayPath(entry.moduleSource.absolutePath, cwd),
+            );
+          }
+          mkdirSync(dirname(artifactPath), { recursive: true });
+          const artifactMapName = `${basename(artifactPath)}.map`;
+          const artifactCode =
+            artifact.sourceMap === undefined
+              ? artifact.code
+              : `${artifact.code}//# sourceMappingURL=${artifactMapName}\n`;
+          writeFileSync(artifactPath, artifactCode, "utf8");
+          if (artifact.sourceMap !== undefined) {
+            const map = JSON.parse(artifact.sourceMap) as Record<string, unknown>;
+            map["file"] = basename(artifactPath);
+            map["sources"] = [
+              relative(
+                dirname(artifactPath),
+                entry.moduleSource.absolutePath,
+              )
+                .split(sep)
+                .join("/"),
+            ];
+            writeFileSync(
+              `${artifactPath}.map`,
+              `${JSON.stringify(map)}\n`,
+              "utf8",
+            );
+          }
+          if (artifact.declarations !== undefined) {
+            writeFileSync(
+              artifactPath.replace(/\.(js|ts)$/i, ".d.ts"),
+              artifact.declarations,
+              "utf8",
+            );
+          }
+        }
+      }
       const packagePath = join(outDir, "package.json");
       if (!existsSync(packagePath)) {
         writeFileSync(packagePath, '{ "type": "module" }\n', "utf8");
@@ -1130,7 +1618,7 @@ function runBuild(args: readonly string[], cwd: string): number {
 
     report = {
       target: targetName,
-      backend: "js",
+      backend: String(backend),
       entry: entryKey,
       output: displayPath(outputPath, cwd),
       diagnostics: allDiagnostics,

@@ -6,6 +6,8 @@
 
 use std::collections::BTreeMap;
 
+use astra_capabilities::{Mode, ModeInference, infer_module_mode_named, infer_project};
+#[allow(unused_imports)]
 use astra_codegen_c::{CModule, IntegerPolicy as CIntegerPolicy};
 use astra_core::checker::{CheckOptions, TypeAnnotation, check_resolved};
 use astra_core::diagnostic::Diagnostic;
@@ -13,7 +15,8 @@ use astra_core::formatter::format_source;
 use astra_core::ir::Program;
 use astra_core::parser::parse;
 use astra_core::resolver::resolve_module;
-use astra_core::type_surface::{ProjectModule, check_module_graph};
+use astra_core::resolver::{ModuleGraph, collect_module_specifiers};
+use astra_core::type_surface::{ProjectModule, check_module_graph_with_imports};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -124,6 +127,13 @@ impl CompileResponse {
         self
     }
 
+    /// Attaches a backend artifact to a successful response.
+    #[must_use]
+    pub fn with_artifact(mut self, artifact: Value) -> Self {
+        self.artifacts.push(artifact);
+        self
+    }
+
     /// Creates a failed response.
     #[must_use]
     pub fn failure(diagnostics: Vec<Diagnostic>) -> Self {
@@ -169,6 +179,13 @@ impl FormatResponse {
     }
 }
 
+/// Derives a stem name from a source path for output file naming
+/// (e.g. `"src/app/main.ns"` → `"main"`).
+fn module_stem(path: &str) -> &str {
+    let base = path.rsplit(&['/', '\\'][..]).next().unwrap_or(path);
+    base.strip_suffix(".ns").unwrap_or(base)
+}
+
 /// Boundary implemented by the Rust core.
 pub trait CompilerApi {
     /// Checks and lowers one request.
@@ -191,6 +208,9 @@ pub struct ProjectCheckRequest {
     /// Explicit project mode. When omitted, the project graph is inferred.
     #[serde(default)]
     pub mode: Option<Mode>,
+    /// Integer policy carried into each module's typed IR.
+    #[serde(default)]
+    pub integer_policy: IntegerPolicy,
 }
 
 /// One source unit in a project check.
@@ -213,6 +233,9 @@ pub struct ModuleCheckResult {
     pub path: String,
     pub diagnostics: Vec<Diagnostic>,
     pub ok: bool,
+    /// Typed module payload for successful project checks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ir: Option<ModuleIr>,
 }
 
 /// Response for the `check_project` command.
@@ -241,6 +264,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
 
     // Parse all source units up front so we can fail fast on lex/parse errors.
     let mut project_modules: Vec<ProjectModule> = Vec::new();
+    let mut ast_map: BTreeMap<String, astra_core::ast::Module> = BTreeMap::new();
     let mut path_map: BTreeMap<String, String> = BTreeMap::new();
     let mut early_failures: Vec<ModuleCheckResult> = Vec::new();
 
@@ -248,6 +272,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
         path_map.insert(unit.key.clone(), unit.path.clone());
         match parse(&unit.text) {
             Ok(module) => {
+                ast_map.insert(unit.key.clone(), module.clone());
                 project_modules.push(ProjectModule {
                     key: unit.key.clone(),
                     source: module,
@@ -259,6 +284,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
                     path: unit.path.clone(),
                     diagnostics,
                     ok: false,
+                    ir: None,
                 });
             }
         }
@@ -330,6 +356,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
                         .map(|inference| inference.diagnostics.clone())
                         .unwrap_or_default(),
                     ok: inference.is_none_or(ModeInference::is_ok),
+                    ir: None,
                 }
             })
             .collect();
@@ -351,13 +378,52 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
         };
     }
 
-    let graph = check_module_graph(&project_modules, CheckOptions::new(selected_mode));
+    // Build the canonical module graph. Keys are project-relative paths, so
+    // resolve relative specifiers against the importer before checking. A
+    // specifier that already matches a source key is treated as an identity
+    // import for compatibility with the original multi-source API.
+    let mut module_graph = ModuleGraph::default();
+    for module in &project_modules {
+        module_graph.insert_module(module.key.clone(), module.source.clone());
+    }
+    for module in &project_modules {
+        for specifier in collect_module_specifiers(&module.source) {
+            let target = resolve_project_target(&module.key, &specifier.specifier, &module_graph);
+            module_graph.insert_import(module.key.clone(), specifier.specifier, target);
+        }
+    }
+
+    let ordered_keys = dependency_order(&project_modules, &module_graph);
+    let ordered_modules: Vec<ProjectModule> = ordered_keys
+        .iter()
+        .filter_map(|key| {
+            project_modules
+                .iter()
+                .find(|module| module.key == *key)
+                .cloned()
+        })
+        .collect();
+    let graph = check_module_graph_with_imports(
+        &ordered_modules,
+        &module_graph,
+        CheckOptions::new(selected_mode),
+    );
 
     let ok = graph.is_ok();
 
-    // Collect per-module results in request order.
+    // Collect per-module results in request order and attach typed IR to every
+    // successful module.
     let mut module_results: BTreeMap<String, ModuleCheckResult> = BTreeMap::new();
-    for (key, _result) in &graph.modules {
+    for (key, result) in &graph.modules {
+        let ir = ast_map.get(key).map(|ast| ModuleIr {
+            key: key.clone(),
+            path: path_map.get(key).cloned().unwrap_or_else(|| key.clone()),
+            ast: ast.clone(),
+            hir: result.module.clone(),
+            annotations: result.annotations.clone(),
+            manual_memory_scopes: result.manual_memory_scopes.clone(),
+            integer_policy: request.integer_policy,
+        });
         module_results.insert(
             key.clone(),
             ModuleCheckResult {
@@ -365,6 +431,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
                 path: path_map.get(key).cloned().unwrap_or_else(|| key.clone()),
                 diagnostics: Vec::new(),
                 ok: true,
+                ir,
             },
         );
     }
@@ -376,6 +443,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
                 path: path_map.get(key).cloned().unwrap_or_else(|| key.clone()),
                 diagnostics: diagnostics.clone(),
                 ok: false,
+                ir: None,
             },
         );
     }
@@ -412,6 +480,249 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
             "modeReasons": project_inference.reasons,
             "modeExplanation": project_inference.explain(),
         }),
+    }
+}
+
+// ─── Project (multi-source) compile ─────────────────────────────────────────
+
+/// Parameters for the `compile_project` command (C multi-module linking).
+///
+/// `sources` must be in dependency order: each module before the modules that
+/// import it. The last entry is treated as the root (entry-point) module.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCompileRequest {
+    pub api_version: String,
+    /// Ordered module sources, keyed by their canonical import specifier.
+    pub sources: Vec<ProjectSourceUnit>,
+    pub target: String,
+    /// Explicit project mode. When omitted, the compiler infers.
+    #[serde(default)]
+    pub mode: Option<Mode>,
+    /// Integer arithmetic policy. Defaults to wrapping.
+    #[serde(default)]
+    pub integer_policy: IntegerPolicy,
+}
+
+/// Per-module artifact in a `ProjectCompileResponse`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModuleCompileArtifact {
+    pub key: String,
+    pub path: String,
+    /// Emitted C source filename.
+    pub c_filename: String,
+    /// Emitted C header filename.
+    pub h_filename: String,
+    pub c_source: String,
+    pub h_source: String,
+    /// Script translation units (`@script:c` / `@script:cpp`) from this module.
+    pub script_sources: Vec<(String, String)>,
+}
+
+/// Response for the `compile_project` command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCompileResponse {
+    pub api_version: String,
+    pub ok: bool,
+    pub modules: Vec<ModuleCompileArtifact>,
+    /// Single shared host shim (`astra_host.c`).
+    pub host_shim: String,
+    pub diagnostics: Vec<Diagnostic>,
+    pub metadata: Value,
+}
+
+/// Checks and compiles a multi-module project to C, returning one translation
+/// unit + one header per source module.
+///
+/// Internally runs `check_module_graph` then `astra_codegen_c::generate_project`.
+pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileResponse {
+    if request.api_version != API_VERSION {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: vec![Diagnostic::error(
+                "NS8001",
+                format!(
+                    "Unsupported apiVersion '{}'; expected '{}'.",
+                    request.api_version, API_VERSION
+                ),
+            )],
+            metadata: json!({ "error": "unsupported apiVersion" }),
+        };
+    }
+
+    if request.sources.is_empty() {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: vec![Diagnostic::error(
+                "NS8001",
+                "compile_project requires at least one source unit",
+            )],
+            metadata: json!({}),
+        };
+    }
+
+    // Parse all sources.
+    let mut project_modules: Vec<astra_core::type_surface::ProjectModule> = Vec::new();
+    let mut path_map: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
+    let mut parse_errors: Vec<Diagnostic> = Vec::new();
+
+    for unit in &request.sources {
+        path_map.insert(unit.key.clone(), unit.path.clone());
+        match astra_core::parser::parse(&unit.text) {
+            Ok(module) => {
+                project_modules.push(astra_core::type_surface::ProjectModule {
+                    key: unit.key.clone(),
+                    source: module,
+                });
+            }
+            Err(diagnostics) => {
+                parse_errors.extend(diagnostics);
+            }
+        }
+    }
+
+    if !parse_errors.is_empty() {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: parse_errors,
+            metadata: json!({}),
+        };
+    }
+
+    // Infer mode.
+    use astra_capabilities::{ModeInference, infer_module_mode_named, infer_project};
+    let inferences: Vec<ModeInference> = project_modules
+        .iter()
+        .map(|m| infer_module_mode_named(&m.source, &m.key))
+        .collect();
+    let project_inference = infer_project(&inferences);
+    let selected_mode = request
+        .mode
+        .unwrap_or_else(|| project_inference.resolved_mode());
+
+    if request.mode.is_none() && !project_inference.is_ok() {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: project_inference.diagnostics.clone(),
+            metadata: json!({}),
+        };
+    }
+
+    // Type-check the graph.
+    let graph = astra_core::type_surface::check_module_graph(
+        &project_modules,
+        astra_core::checker::CheckOptions::new(selected_mode),
+    );
+
+    if !graph.is_ok() {
+        return ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: graph.all_diagnostics(),
+            metadata: json!({}),
+        };
+    }
+
+    // Build the C project entries.
+    let c_ip = match request.integer_policy {
+        IntegerPolicy::Wrapping => CIntegerPolicy::Wrapping,
+        IntegerPolicy::SafeChecked => CIntegerPolicy::SafeChecked,
+        IntegerPolicy::Arbitrary => CIntegerPolicy::Arbitrary,
+    };
+
+    // For each source module in request order, build a ProjectEntry.
+    // dep_keys = the direct imports of this module (from HIR).
+    let entries: Vec<astra_codegen_c::ProjectEntry> = project_modules
+        .iter()
+        .filter_map(|pm| {
+            let checked = graph.get(&pm.key)?;
+            let dep_keys: Vec<String> = checked
+                .module
+                .imports
+                .iter()
+                .map(|imp| imp.module.clone())
+                .collect();
+            Some(astra_codegen_c::ProjectEntry {
+                module: CModule {
+                    name: checked.module.name.clone(),
+                    ast: pm.source.clone(),
+                    hir: checked.module.clone(),
+                    annotations: checked.annotations.clone(),
+                    manual_memory_scopes: checked.manual_memory_scopes.clone(),
+                    integer_policy: c_ip,
+                },
+                key: pm.key.clone(),
+                dep_keys,
+            })
+        })
+        .collect();
+
+    match astra_codegen_c::generate_project(&entries) {
+        Ok(generated) => {
+            let mut modules = Vec::new();
+            let mut host_shim = String::new();
+            for (entry, module_out) in entries.iter().zip(generated.iter()) {
+                let stem = entry.key.replace(['/', '.', '-'], "_");
+                let c_filename = format!("{stem}.c");
+                let h_filename = format!("{stem}.h");
+                modules.push(ModuleCompileArtifact {
+                    key: entry.key.clone(),
+                    path: path_map
+                        .get(&entry.key)
+                        .cloned()
+                        .unwrap_or_else(|| entry.key.clone()),
+                    c_filename,
+                    h_filename,
+                    c_source: module_out.source.clone(),
+                    h_source: module_out.header.clone().unwrap_or_default(),
+                    script_sources: module_out.script_sources.clone(),
+                });
+                if host_shim.is_empty() {
+                    host_shim = module_out.host_shim.clone();
+                }
+            }
+            ProjectCompileResponse {
+                api_version: API_VERSION.to_owned(),
+                ok: true,
+                modules,
+                host_shim,
+                diagnostics: Vec::new(),
+                metadata: json!({
+                    "moduleCount": entries.len(),
+                    "mode": selected_mode,
+                    "target": request.target,
+                    "integerPolicy": request.integer_policy,
+                }),
+            }
+        }
+        Err(backend_error) => ProjectCompileResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            modules: Vec::new(),
+            host_shim: String::new(),
+            diagnostics: vec![Diagnostic::error(
+                backend_error.code.clone(),
+                backend_error.message.clone(),
+            )],
+            metadata: json!({}),
+        },
     }
 }
 
@@ -480,15 +791,72 @@ impl FrontendCompiler {
                                 let mut response = CompileResponse::success(Program { name })
                                     .with_metadata(metadata);
                                 if typed {
-                                    response = response.with_ir(ModuleIr {
+                                    let ir = ModuleIr {
                                         key: request.source.path.clone(),
                                         path: request.source.path.clone(),
-                                        ast: module,
-                                        hir: checked.module,
-                                        annotations: checked.annotations,
-                                        manual_memory_scopes: checked.manual_memory_scopes,
+                                        ast: module.clone(),
+                                        hir: checked.module.clone(),
+                                        annotations: checked.annotations.clone(),
+                                        manual_memory_scopes: checked.manual_memory_scopes.clone(),
                                         integer_policy: request.integer_policy,
-                                    });
+                                    };
+                                    // C backend: run the emitter and attach the
+                                    // generated source as artifacts.
+                                    if request.target == "c" {
+                                        let c_module = CModule {
+                                            name: checked.module.name.clone(),
+                                            ast: module,
+                                            hir: checked.module,
+                                            annotations: checked.annotations,
+                                            manual_memory_scopes: checked.manual_memory_scopes,
+                                            integer_policy: match request.integer_policy {
+                                                IntegerPolicy::Wrapping => CIntegerPolicy::Wrapping,
+                                                IntegerPolicy::SafeChecked => {
+                                                    CIntegerPolicy::SafeChecked
+                                                }
+                                                IntegerPolicy::Arbitrary => {
+                                                    CIntegerPolicy::Arbitrary
+                                                }
+                                            },
+                                        };
+                                        match astra_codegen_c::generate(&c_module) {
+                                            Ok(generated) => {
+                                                response = response
+                                                    .with_ir(ir)
+                                                    .with_artifact(json!({
+                                                        "type": "c-source",
+                                                        "name": format!("{}.c", module_stem(&request.source.path)),
+                                                        "filename": format!("{}.c", module_stem(&request.source.path)),
+                                                        "content": generated.source,
+                                                    }))
+                                                    .with_artifact(json!({
+                                                        "type": "c-host-shim",
+                                                        "name": "astra_host.c",
+                                                        "filename": "astra_host.c",
+                                                        "content": generated.host_shim,
+                                                    }));
+                                                for (filename, content) in generated.script_sources
+                                                {
+                                                    response = response.with_artifact(json!({
+                                                        "type": "c-script",
+                                                        "name": filename,
+                                                        "filename": filename,
+                                                        "content": content,
+                                                    }));
+                                                }
+                                            }
+                                            Err(backend_error) => {
+                                                return CompileResponse::failure(vec![
+                                                    Diagnostic::error(
+                                                        backend_error.code.clone(),
+                                                        backend_error.message.clone(),
+                                                    ),
+                                                ]);
+                                            }
+                                        }
+                                    } else {
+                                        response = response.with_ir(ir);
+                                    }
                                 }
                                 response
                             }
@@ -586,8 +954,8 @@ pub fn process_json(input: &str) -> String {
             json!({
                 "apiVersion": API_VERSION,
                 "coreVersion": env!("CARGO_PKG_VERSION"),
-                "commands": ["initialize", "check", "check_project", "compile", "ast", "format", "explain", "shutdown"],
-                "features": ["resolver", "type-checker", "project-checker", "typed-ir"],
+                "commands": ["initialize", "check", "check_project", "compile", "compile_project", "ast", "format", "explain", "shutdown"],
+                "features": ["resolver", "type-checker", "project-checker", "typed-ir", "project-compile-c"],
                 "targets": ["js", "ts", "native", "wasm-web", "wasm-wasi"],
             }),
         ),
@@ -611,6 +979,13 @@ pub fn process_json(input: &str) -> String {
             Ok(project_request) => JsonRpcResponse::success(
                 request.id,
                 serde_json::to_value(check_project(&project_request)).unwrap_or(Value::Null),
+            ),
+            Err(message) => JsonRpcResponse::error(request.id, -32602, message),
+        },
+        "compile_project" => match parse_project_compile_request(request.params) {
+            Ok(project_request) => JsonRpcResponse::success(
+                request.id,
+                serde_json::to_value(compile_project(&project_request)).unwrap_or(Value::Null),
             ),
             Err(message) => JsonRpcResponse::error(request.id, -32602, message),
         },
@@ -671,6 +1046,102 @@ fn parse_project_check_request(params: Option<Value>) -> Result<ProjectCheckRequ
     }
 
     Ok(request)
+}
+
+fn parse_project_compile_request(params: Option<Value>) -> Result<ProjectCompileRequest, String> {
+    let params = params.ok_or_else(|| "Missing params.".to_owned())?;
+    let request: ProjectCompileRequest =
+        serde_json::from_value(params).map_err(|error| format!("Invalid params: {error}"))?;
+
+    if request.api_version != API_VERSION {
+        return Err(format!(
+            "Unsupported apiVersion '{}'; expected '{}'.",
+            request.api_version, API_VERSION
+        ));
+    }
+
+    if request.sources.is_empty() {
+        return Err("compile_project requires at least one source unit.".to_owned());
+    }
+
+    Ok(request)
+}
+
+/// Resolves one import specifier to a canonical project-relative module path.
+fn resolve_project_target(importer: &str, specifier: &str, graph: &ModuleGraph) -> String {
+    if graph.modules.contains_key(specifier) {
+        return specifier.to_owned();
+    }
+
+    if let Some(target) = resolve_relative_target(importer, specifier) {
+        return target;
+    }
+
+    // A dotted path such as `app.util` maps to `app/util.ns` when no source key
+    // matched it exactly.
+    if !specifier.contains('/') && specifier.contains('.') && !specifier.ends_with(".ns") {
+        return format!("{}.ns", specifier.replace('.', "/"));
+    }
+
+    specifier.to_owned()
+}
+
+fn resolve_relative_target(importer: &str, specifier: &str) -> Option<String> {
+    if !specifier.starts_with("./") && !specifier.starts_with("../") {
+        return None;
+    }
+
+    let mut parts: Vec<&str> = importer.split('/').collect();
+    parts.pop();
+    for component in specifier.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+
+    let mut target = parts.join("/");
+    if target.is_empty() {
+        return None;
+    }
+    if !target.ends_with(".ns") {
+        target.push_str(".ns");
+    }
+    Some(target)
+}
+
+/// Orders modules so every dependency appears before its importers.
+fn dependency_order(modules: &[ProjectModule], graph: &ModuleGraph) -> Vec<String> {
+    fn visit(
+        key: &str,
+        graph: &ModuleGraph,
+        order: &mut Vec<String>,
+        visiting: &mut std::collections::BTreeSet<String>,
+        visited: &mut std::collections::BTreeSet<String>,
+    ) {
+        if visited.contains(key) || !visiting.insert(key.to_owned()) {
+            return;
+        }
+        for ((importer, _specifier), target) in &graph.imports {
+            if importer == key {
+                visit(target, graph, order, visiting, visited);
+            }
+        }
+        visiting.remove(key);
+        visited.insert(key.to_owned());
+        order.push(key.to_owned());
+    }
+
+    let mut order = Vec::new();
+    let mut visiting = std::collections::BTreeSet::new();
+    let mut visited = std::collections::BTreeSet::new();
+    for module in modules {
+        visit(&module.key, graph, &mut order, &mut visiting, &mut visited);
+    }
+    order
 }
 
 fn serialize_response(response: JsonRpcResponse) -> String {
@@ -918,6 +1389,21 @@ mod tests {
         assert!(output.contains(r#""apiVersion":"1.0""#));
         assert!(output.contains(r#""key":"lib""#));
         assert!(output.contains(r#""key":"main""#));
+    }
+
+    #[test]
+    fn check_project_resolves_relative_imports_and_returns_ir() {
+        let output = process_json(
+            r#"{"jsonrpc":"2.0","id":2,"method":"check_project","params":{"apiVersion":"1.0","sources":[{"key":"src/main.ns","path":"src/main.ns","text":"import { add } from \"./lib\"\npub fn main() -> i32 { return add(1, 2) }\n"},{"key":"src/lib.ns","path":"src/lib.ns","text":"pub fn add(a: i32, b: i32) -> i32 { return a + b }\n"}],"target":"js","mode":"core","integerPolicy":"safe-checked"}}"#,
+        );
+        assert!(output.contains(r#""ok":true"#), "{output}");
+        assert!(output.contains(r#""key":"src/lib.ns""#), "{output}");
+        assert!(output.contains(r#""key":"src/main.ns""#), "{output}");
+        assert!(output.contains(r#""ir":{"#), "{output}");
+        assert!(
+            output.contains(r#""integerPolicy":"safe-checked""#),
+            "{output}"
+        );
     }
 
     #[test]

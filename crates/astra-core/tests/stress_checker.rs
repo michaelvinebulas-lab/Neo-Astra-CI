@@ -364,19 +364,13 @@ fn graph_checker_catches_error_in_leaf() {
 // ─── @script block — checker conformance ─────────────────────────────────────
 
 fn ok_target(source: &str, target: &str) {
-    check_source(
-        source,
-        CheckOptions::new(Mode::Core).with_target(target),
-    )
-    .unwrap_or_else(|e| panic!("check failed (target={target}): {e:?}\nsource:\n{source}"));
+    check_source(source, CheckOptions::new(Mode::Core).with_target(target))
+        .unwrap_or_else(|e| panic!("check failed (target={target}): {e:?}\nsource:\n{source}"));
 }
 
 fn err_target(source: &str, target: &str, code: &str) {
-    let e = check_source(
-        source,
-        CheckOptions::new(Mode::Core).with_target(target),
-    )
-    .expect_err(&format!("should have failed (target={target}):\n{source}"));
+    let e = check_source(source, CheckOptions::new(Mode::Core).with_target(target))
+        .expect_err(&format!("should have failed (target={target}):\n{source}"));
     assert!(
         e.iter().any(|d| d.code == code),
         "expected {code} in {e:?}\nsource:\n{source}"
@@ -437,20 +431,15 @@ fn c_script_passes_on_native_target() {
 
 #[test]
 fn c_script_rejected_on_js_target_ns7002() {
-    let e = check_source(
-        C_SCRIPT,
-        CheckOptions::new(Mode::System).with_target("js"),
-    )
-    .expect_err("should have failed with NS7002");
+    let e = check_source(C_SCRIPT, CheckOptions::new(Mode::System).with_target("js"))
+        .expect_err("should have failed with NS7002");
     assert!(e.iter().any(|d| d.code == "NS7002"), "got: {e:?}");
 }
 
 #[test]
 fn script_namespace_exposed_to_caller() {
     // A function calling math.add must check without error when types match.
-    let src = format!(
-        "{JS_SCRIPT}\nfn use_math() -> i32 {{ return math.add(1, 2) }}\n"
-    );
+    let src = format!("{JS_SCRIPT}\nfn use_math() -> i32 {{ return math.add(1, 2) }}\n");
     ok(&src);
 }
 
@@ -477,4 +466,3 @@ fn script_export_non_boundary_safe_type_is_ns7005() {
 }"#;
     err(src, "NS7005");
 }
-

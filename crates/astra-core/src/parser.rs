@@ -851,8 +851,14 @@ impl Parser {
             );
             None
         };
-        let language = lang_token.as_ref().map(|t| t.text.clone()).unwrap_or_default();
-        let lang_span = lang_token.as_ref().map(|t| t.span).unwrap_or_else(|| self.span_from(block_start));
+        let language = lang_token
+            .as_ref()
+            .map(|t| t.text.clone())
+            .unwrap_or_default();
+        let lang_span = lang_token
+            .as_ref()
+            .map(|t| t.span)
+            .unwrap_or_else(|| self.span_from(block_start));
         match language.as_str() {
             "js" | "ts" | "c" | "cpp" | "python" => {}
             "java" => {
@@ -873,9 +879,7 @@ impl Parser {
             }
         }
 
-        if self.at_keyword(Keyword::As) {
-            self.bump();
-        } else if self.peek().text == "as" {
+        if self.at_keyword(Keyword::As) || self.peek().text == "as" {
             self.bump();
         } else {
             self.error_current(
@@ -2388,9 +2392,7 @@ impl Parser {
             && self
                 .peek_at(1)
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::At))
-            && self
-                .peek_at(2)
-                .is_some_and(|token| token.text == "script")
+            && self.peek_at(2).is_some_and(|token| token.text == "script")
             && self
                 .peek_at(3)
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Colon))

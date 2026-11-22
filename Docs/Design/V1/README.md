@@ -195,14 +195,14 @@ Do not change a design by editing only one file and leaving the others stale.
 ## 10. Current status
 
 - Architecture decisions: D1–D25 confirmed
-- V1 design: drafted, including Nova, NoPM, and proposed inline `@script` interop
+- V1 design: drafted, including Nova, NoPM, and inline `@script` interop
 - Language specification: drafted in `Docs/spec-v0.1.md`
 - Compiler source: lexer, parser, formatter, resolver, type checker, compiler boundary, `astra fmt`, and manifest formatting implemented
-- JavaScript backend: `JS-001` is in progress; the first single-module ESM slice consumes typed AST/HIR, supports the portable value/control-flow subset, and is wired into `astra build`
+- JavaScript backend: `JS-001` is in progress; the backend consumes typed AST/HIR, emits linked multi-module ESM with imports/re-exports, recoverable errors, checked integers, eager tasks, source maps, and inline `@script:js` artifacts, and is wired into `astra build`
 - Nova: the `NOVA-001` interpreter, `NOVA-002` CLI (`run`, `eval`, `repl`, `watch`, `test`, manifest entry), and `NOVA-003` project module loading/linking are implemented
 - NoPM: complete stack through NOPM-004 - package IDs, descriptors, target/mode filtering, deterministic graph, lockfile model/I/O, content-addressed store, path/Git/npm/Cargo/PyPI/NuGet/OCI adapters, CLI lock/tree/install/search/audit/why/update, and registry gateway with signing/federation
 - Conformance suite: not written
-- Inline script interop: design proposed in `10-inline-script-interop.md`; implementation remains after the current backend work
-- Next artifact: finish `JS-001` project imports/effects/concurrency and source maps, then `TS-001`, then `INTEROP-001`
+- Inline script interop: frontend and the JavaScript backend slice are implemented in `10-inline-script-interop.md`; TypeScript-target emission and the C/C++ slice remain
+- Next artifact: finish `JS-001` channels/scheduler and UTF-8 bytes; then `TS-001`, then TypeScript-target interop and the C/C++ slice
 
 V1 is a design baseline. It is not a claim that all of it is implemented.

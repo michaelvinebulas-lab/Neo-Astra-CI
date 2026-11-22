@@ -1,0 +1,6 @@
+private fn secret() {}
+export { secret }
+
+pub fn main() -> i32 {
+    return 0
+}

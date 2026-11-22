@@ -1,0 +1,11 @@
+private struct Hidden {
+    value: i32
+}
+
+pub fn leak() -> Hidden {
+    return Hidden { value: 1 }
+}
+
+pub fn main() -> i32 {
+    return 0
+}

@@ -17,7 +17,7 @@
     "build": "tsc -b",
     "clean": "tsc -b --clean",
     "typecheck": "tsc -b",
-    "test": "node --test orchestrator/tests/manifest.test.mjs orchestrator/tests/nopm.test.mjs orchestrator/tests/registry.test.mjs",
+    "test": "node --test orchestrator/tests/manifest.test.mjs orchestrator/tests/nopm.test.mjs orchestrator/tests/registry.test.mjs orchestrator/tests/codegen-ts.test.mjs",
     "test:boundary": "node scripts/test-boundary.mjs",
     "ci": "node scripts/ci.mjs",
     "verify": "npm run build && npm test && npm run test:boundary && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings",

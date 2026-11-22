@@ -6,6 +6,7 @@
 export {
   CodegenRequestError,
   generateJavaScript,
+  generateModule,
   type CodegenDiagnostic,
   type CodegenRequest,
   type CodegenResult,

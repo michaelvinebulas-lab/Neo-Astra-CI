@@ -5,24 +5,32 @@
 //! are not implemented yet rather than silently changing them.
 
 import {
+  type AstItem,
   type AstModule,
+  type AstType,
   type Block,
   type EnumDecl,
   type Expr,
+  type FunctionType,
   type HirItem,
   type HirModule,
+  type ImportBinding,
   type Literal,
   type MatchArm,
   type ModuleIr,
   type Pattern,
+  type ScriptBlockDecl,
+  type ScriptExport,
   type SemanticType,
   type Span,
   type Stmt,
   type StructDecl,
+  type TypeAliasDecl,
   type TypePath,
   isRecord,
   payloadOf,
   structPayload,
+  typePayload,
   typeTag,
   variantOf,
 } from "./ir.js";
@@ -34,10 +42,28 @@ export interface CodegenDiagnostic {
   readonly span?: Span;
 }
 
-/** Input accepted by `generateJavaScript`. */
+/** Input accepted by `generateJavaScript` and `generateModule`. */
 export interface CodegenRequest {
   readonly moduleName: string;
   readonly ir: unknown;
+  readonly sourceText?: string;
+  /** Canonical module key -> ESM specifier from this module. */
+  readonly moduleSpecifiers?: Readonly<Record<string, string>>;
+  /**
+   * Output language. `"js"` emits plain JavaScript; `"ts"` reuses the exact
+   * same emission pipeline but adds explicit TypeScript annotations, type
+   * declarations, and helper signatures so the output passes `tsc --strict`.
+   */
+  readonly backend?: "js" | "ts";
+}
+
+/** An additional ESM file emitted for a script block. */
+export interface CodegenArtifact {
+  /** Path relative to the project output directory. */
+  readonly path: string;
+  readonly code: string;
+  readonly sourceMap?: string;
+  readonly declarations?: string;
 }
 
 /** Output produced by `generateJavaScript`. */
@@ -45,6 +71,8 @@ export interface CodegenResult {
   readonly code: string;
   readonly diagnostics: readonly CodegenDiagnostic[];
   readonly sourceMap?: string;
+  readonly declarations?: string;
+  readonly artifacts?: readonly CodegenArtifact[];
 }
 
 /** The requested typed module is malformed. */
@@ -112,6 +140,13 @@ const IDENTIFIER = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 const HELPER_ORDER = [
   "panic",
   "abort",
+  "failure",
+  "fail",
+  "taskScope",
+  "spawn",
+  "taskJoin",
+  "taskCancel",
+  "channel",
   "renderFloat",
   "render",
   "renderDebug",
@@ -123,8 +158,17 @@ const HELPER_ORDER = [
   "assert",
   "utf8Len",
   "len",
+  "lenBig",
   "strAt",
+  "charCount",
+  "strBytes",
+  "strChars",
+  "byteAt",
+  "charAt",
+  "strSlice",
+  "bytesNew",
   "index",
+  "indexSet",
   "getArray",
   "tuple",
   "tupleAt",
@@ -141,6 +185,7 @@ const HELPER_ORDER = [
   "unwrapResult",
   "resultError",
   "parseInt",
+  "parseIntBig",
   "div",
   "rem",
   "divBig",
@@ -161,17 +206,27 @@ const HELPER_ORDER = [
   "checked_u32",
   "checked_i64",
   "checked_u64",
+  "checkedInteger",
 ] as const;
 
 type HelperName = (typeof HELPER_ORDER)[number];
 
 const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = {
+  fail: ["failure"],
+  spawn: ["taskScope"],
+  taskJoin: ["failure"],
   render: ["renderFloat"],
   print: ["write", "render"],
   println: ["write", "render"],
   dbg: ["render"],
   assert: ["panic"],
   len: ["panic", "utf8Len"],
+  byteAt: ["some", "none"],
+  charAt: ["some", "none"],
+  strSlice: ["ok", "err"],
+  indexSet: ["panic"],
+  channel: ["ok", "err", "panic"],
+  lenBig: ["panic"],
   strAt: ["panic"],
   index: ["panic"],
   mapGet: ["eq", "none"],
@@ -179,6 +234,7 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   mapKeys: [],
   getArray: ["none"],
   parseInt: ["ok", "err"],
+  parseIntBig: ["ok", "err"],
   div: ["panic"],
   rem: ["panic"],
   divBig: ["panic"],
@@ -191,6 +247,7 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   checked_u32: ["panic"],
   checked_i64: ["panic"],
   checked_u64: ["panic"],
+  checkedInteger: ["ok", "err", "panic"],
   unwrapResult: ["panic"],
   resultError: ["panic"],
   unwrapOption: ["panic"],
@@ -205,6 +262,87 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   abort: [
     "function $abort(message) {",
     '  throw new Error("abort: " + message);',
+    "}",
+  ],
+  failure: [
+    "function $failure(error) {",
+    "  return { $failure: true, error };",
+    "}",
+  ],
+  fail: [
+    "function $fail(error) {",
+    "  throw $failure(error);",
+    "}",
+  ],
+  taskScope: [
+    "const $taskScopes = [];",
+    "function $enterTaskScope() {",
+    "  const scope = { tasks: [] };",
+    "  $taskScopes.push(scope);",
+    "  return scope;",
+    "}",
+    "function $exitTaskScope(scope) {",
+    "  $taskScopes.pop();",
+    "  for (const task of scope.tasks) {",
+    "    if (!task.joined && task.outcome && task.outcome.panic !== undefined) throw task.outcome.panic;",
+    "  }",
+    "}",
+  ],
+  spawn: [
+    "function $spawn(body) {",
+    "  const task = { $task: true, cancelled: false, joined: false, outcome: undefined };",
+    "  try {",
+    "    task.outcome = { ok: true, value: body() };",
+    "  } catch (error) {",
+    "    if (error && error.$failure) task.outcome = { ok: false, error: error.error };",
+    "    else task.outcome = { panic: error };",
+    "  }",
+    "  if ($taskScopes.length > 0) $taskScopes[$taskScopes.length - 1].tasks.push(task);",
+    "  return task;",
+    "}",
+  ],
+  taskJoin: [
+    "function $taskJoin(task) {",
+    "  task.joined = true;",
+    "  if (task.cancelled) {",
+    '    return $failure({ $type: "TaskError", 0: "task was cancelled" });',
+    "  }",
+    "  if (task.outcome.panic !== undefined) throw task.outcome.panic;",
+    "  if (!task.outcome.ok) return $failure(task.outcome.error);",
+    "  return task.outcome.value;",
+    "}",
+  ],
+  taskCancel: [
+    "function $taskCancel(task) {",
+    "  task.cancelled = true;",
+    "  return undefined;",
+    "}",
+  ],
+  channel: [
+    "function $channel() {",
+    "  return { $channel: true, capacity: 16, buffer: [], closed: false };",
+    "}",
+    "function $channelError(message) {",
+    '  return { $type: "ChannelError", 0: message };',
+    "}",
+    "function $channelSend(channel, value) {",
+    '  if (channel.closed) return $err($channelError("send on a closed channel"));',
+    "  if (channel.buffer.length >= channel.capacity) {",
+    '    $panic("channel deadlock: send on a full bounded channel would block (single-threaded runtime)");',
+    "  }",
+    "  channel.buffer.push(value);",
+    "  return $ok(undefined);",
+    "}",
+    "function $channelReceive(channel) {",
+    "  if (channel.buffer.length === 0) {",
+    '    if (channel.closed) return $err($channelError("receive on a closed channel"));',
+    '    $panic("channel deadlock: receive on an empty channel would block (single-threaded runtime)");',
+    "  }",
+    "  return $ok(channel.buffer.shift());",
+    "}",
+    "function $channelClose(channel) {",
+    "  channel.closed = true;",
+    "  return undefined;",
     "}",
   ],
   renderFloat: [
@@ -333,23 +471,91 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     '  $panic("len() is not implemented for this value");',
     "}",
   ],
+  lenBig: [
+    "function $lenBig(value) {",
+    '  if (typeof value === "string") return BigInt(new TextEncoder().encode(value).length);',
+    "  if (Array.isArray(value) || value instanceof Uint8Array) return BigInt(value.length);",
+    "  if (value && value.$map) return BigInt(value.$map.length);",
+    '  $panic("len() is not implemented for this value");',
+    "}",
+  ],
   strAt: [
     "function $strAt(value, index) {",
     "  const characters = Array.from(value);",
-    '  if (!Number.isInteger(index) || index < 0 || index >= characters.length) $panic("index out of bounds");',
-    "  return characters[index];",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= characters.length) $panic("index out of bounds");',
+    "  return characters[position];",
+    "}",
+  ],
+  charCount: [
+    "function $charCount(value) {",
+    "  return Array.from(value).length;",
+    "}",
+  ],
+  strBytes: [
+    "function $strBytes(value) {",
+    "  return Array.from(new TextEncoder().encode(value));",
+    "}",
+  ],
+  strChars: [
+    "function $strChars(value) {",
+    "  return Array.from(value);",
+    "}",
+  ],
+  byteAt: [
+    "function $byteAt(value, index) {",
+    "  const bytes = new TextEncoder().encode(value);",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= bytes.length) return $none;',
+    "  return $some(bytes[position]);",
+    "}",
+  ],
+  charAt: [
+    "function $charAt(value, index) {",
+    "  const characters = Array.from(value);",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= characters.length) return $none;',
+    "  return $some(characters[position]);",
+    "}",
+  ],
+  strSlice: [
+    "function $strSlice(value, start, end) {",
+    "  const bytes = new TextEncoder().encode(value);",
+    "  const from = Number(start);",
+    "  const to = Number(end);",
+    "  const boundary = (position) =>",
+    "    position === bytes.length || (position >= 0 && position < bytes.length && (bytes[position] & 0xc0) !== 0x80);",
+    "  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > bytes.length || !boundary(from) || !boundary(to)) {",
+    '    return $err({ $type: "SliceError", 0: "slice range is out of bounds or splits a UTF-8 scalar value" });',
+    "  }",
+    '  return $ok(new TextDecoder("utf-8").decode(bytes.subarray(from, to)));',
+    "}",
+  ],
+  bytesNew: [
+    "function $bytesNew(length) {",
+    "  return new Uint8Array(Number(length));",
     "}",
   ],
   index: [
     "function $index(value, index) {",
-    '  if (!Number.isInteger(index) || index < 0 || index >= value.length) $panic("index out of bounds");',
-    "  return value[index];",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.length) $panic("index out of bounds");',
+    "  return value[position];",
+    "}",
+  ],
+  indexSet: [
+    "function $indexSet(value, index, item) {",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.length) $panic("index out of bounds");',
+    "  value[position] = item;",
+    "  return item;",
     "}",
   ],
   getArray: [
     "function $getArray(value, index) {",
-    '  if (!Number.isInteger(index) || index < 0 || index >= value.length) return $none;',
-    "  return $some(value[index]);",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.length) return $none;',
+    "  return $some(value[position]);",
     "}",
   ],
   tuple: [
@@ -359,8 +565,9 @@ const HELPERS: Record<HelperName, readonly string[]> = {
   ],
   tupleAt: [
     "function $tupleAt(value, index) {",
-    '  if (!Number.isInteger(index) || index < 0 || index >= value.$tuple.length) $panic("index out of bounds");',
-    "  return value.$tuple[index];",
+    "  const position = Number(index);",
+    '  if (!Number.isInteger(position) || position < 0 || position >= value.$tuple.length) $panic("index out of bounds");',
+    "  return value.$tuple[position];",
     "}",
   ],
   map: [
@@ -491,6 +698,16 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  return $ok(parsed);",
     "}",
   ],
+  parseIntBig: [
+    "function $parseIntBig(value) {",
+    '  if (!/^[+-]?[0-9]+$/.test(value)) return $err({ $type: "ParseIntError", 0: value });',
+    "  const parsed = BigInt(value);",
+    "  if (parsed < -2147483648n || parsed > 2147483647n) {",
+    '    return $err({ $type: "ParseIntError", 0: value });',
+    "  }",
+    "  return $ok(parsed);",
+    "}",
+  ],
   div: [
     "function $div(left, right) {",
     '  if (right === 0) $panic("division by zero");',
@@ -571,24 +788,577 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  return value;",
     "}",
   ],
+  checkedInteger: [
+    "function $checkedInteger(tag, operation, left, right) {",
+    "  const bounds = {",
+    "    i8: [-128, 127],",
+    "    i16: [-32768, 32767],",
+    "    i32: [-2147483648, 2147483647],",
+    "    i64: [-9223372036854775808n, 9223372036854775807n],",
+    "    u8: [0, 255],",
+    "    u16: [0, 65535],",
+    "    u32: [0, 4294967295],",
+    "    u64: [0n, 18446744073709551615n],",
+    "  };",
+    "  const [min, max] = bounds[tag];",
+    "  let value;",
+    "  if (operation === \"div\") {",
+    "    if (right === 0 || right === 0n) $panic(\"division by zero\");",
+    '    value = typeof left === "bigint" ? left / right : Math.trunc(left / right);',
+    '  } else if (operation === "add") {',
+    "    value = left + right;",
+    '  } else if (operation === "sub") {',
+    "    value = left - right;",
+    '  } else if (operation === "mul") {',
+    "    value = left * right;",
+    "  } else {",
+    '    $panic("unsupported checked integer operation");',
+    "  }",
+    "  if (value < min || value > max) {",
+    '    return $err({ $type: "OverflowError", 0: "integer overflow in \'checked_" + operation + "\'" });',
+    "  }",
+    "  return $ok(value);",
+    "}",
+  ],
 };
 
+/**
+ * Internal TypeScript declarations emitted (tree-shaken) only in TS mode.
+ * `$Dyn` is the loose shape the pipeline's duck-typed runtime checks
+ * (`.$failure`, `.$tag`, `.$option`, ...) operate on; `AstraTask` and
+ * `AstraChannel` describe the runtime task/channel records; the nominal
+ * error interfaces mirror the `{$type, 0}` shape the helpers construct.
+ */
+type LooseTypeName =
+  | "$Dyn"
+  | "AstraTask"
+  | "AstraChannel"
+  | "ParseIntError"
+  | "SliceError"
+  | "TaskError"
+  | "ChannelError"
+  | "OverflowError"
+  | "ScriptError";
+
+const BUILTIN_ERROR_TYPES: readonly LooseTypeName[] = [
+  "ParseIntError",
+  "SliceError",
+  "TaskError",
+  "ChannelError",
+  "OverflowError",
+  "ScriptError",
+];
+
+const LOOSE_TYPE_DECLARATIONS: Record<LooseTypeName, string> = {
+  $Dyn: [
+    "type $Dyn = {",
+    "  readonly $failure?: boolean;",
+    "  readonly $result?: boolean;",
+    "  readonly ok?: boolean;",
+    "  readonly value?: unknown;",
+    "  readonly error?: unknown;",
+    "  readonly $option?: boolean;",
+    "  readonly $tuple?: readonly unknown[];",
+    "  readonly $map?: Array<readonly [unknown, unknown]>;",
+    "  readonly $float?: number;",
+    "  readonly $tag?: string;",
+    "  readonly $enum?: string;",
+    "  readonly $type?: string;",
+    "  readonly length?: number;",
+    "  readonly [index: number]: unknown;",
+    "};",
+  ].join("\n"),
+  AstraTask: [
+    "interface AstraTask<T> {",
+    "  readonly $task: true;",
+    "  cancelled: boolean;",
+    "  joined: boolean;",
+    "  outcome:",
+    "    | { readonly ok: true; readonly value: T }",
+    "    | { readonly ok: false; readonly error: unknown }",
+    "    | { readonly panic: unknown }",
+    "    | undefined;",
+    "}",
+  ].join("\n"),
+  AstraChannel: [
+    "interface AstraChannel<T> {",
+    "  readonly $channel: true;",
+    "  capacity: number;",
+    "  buffer: T[];",
+    "  closed: boolean;",
+    "}",
+  ].join("\n"),
+  ParseIntError: 'interface ParseIntError { readonly $type: "ParseIntError"; readonly 0: string }',
+  SliceError: 'interface SliceError { readonly $type: "SliceError"; readonly 0: string }',
+  TaskError: 'interface TaskError { readonly $type: "TaskError"; readonly 0: string }',
+  ChannelError: 'interface ChannelError { readonly $type: "ChannelError"; readonly 0: string }',
+  OverflowError: 'interface OverflowError { readonly $type: "OverflowError"; readonly 0: string }',
+  ScriptError: 'interface ScriptError { readonly $type: "ScriptError"; readonly 0: string }',
+};
+
+const LOOSE_TYPE_ORDER: readonly LooseTypeName[] = [
+  "$Dyn",
+  "AstraTask",
+  "AstraChannel",
+  "ParseIntError",
+  "SliceError",
+  "TaskError",
+  "ChannelError",
+  "OverflowError",
+  "ScriptError",
+];
+
 const INTEGER_TAGS = new Set(["I8", "I16", "I32", "I64", "U8", "U16", "U32", "U64"]);
+
+/**
+ * TypeScript-only helper signatures. The JavaScript backend emits the shared
+ * `HELPERS` sources verbatim; the TypeScript backend replaces the first
+ * (signature) line so helper internals type-check under `tsc --strict` while
+ * the bodies stay byte-identical. A full-text override is used only where a
+ * helper body itself needs a type-directed tweak (casts and guards that are
+ * erased at runtime and cannot change behavior).
+ */
+const TS_HELPER_SIGNATURES: Partial<Record<HelperName, string>> = {
+  panic: "function $panic(message: string): never {",
+  abort: "function $abort(message: string): never {",
+  failure: "function $failure(error: unknown): { readonly $failure: true; readonly error: unknown } {",
+  fail: "function $fail(error: unknown): never {",
+  spawn: "function $spawn<T>(body: () => T): AstraTask<T> {",
+  taskJoin: "function $taskJoin<T>(task: AstraTask<T>): T | { readonly $failure: true; readonly error: unknown } {",
+  taskCancel: "function $taskCancel<T>(task: AstraTask<T>): undefined {",
+  channel: "function $channel<T>(): AstraChannel<T> {",
+  renderFloat: "function $renderFloat(value: number): string {",
+  render: "function $render(value: unknown, debug = false): string {",
+  renderDebug: "function $renderDebug(value: unknown): string {",
+  float: "function $float(value: number): number {",
+  write: "function $write(text: string): undefined {",
+  print: "function $print(value: unknown): undefined {",
+  println: "function $println(value: unknown): undefined {",
+  dbg: "function $dbg(value: unknown): undefined {",
+  assert: "function $assert(condition: boolean): undefined {",
+  utf8Len: "function $utf8Len(value: string): number {",
+  len: "function $len(value: unknown): number {",
+  lenBig: "function $lenBig(value: unknown): bigint {",
+  strAt: "function $strAt(value: string, index: number | bigint): string {",
+  charCount: "function $charCount(value: string): number {",
+  strBytes: "function $strBytes(value: string): number[] {",
+  strChars: "function $strChars(value: string): string[] {",
+  byteAt: "function $byteAt(value: string, index: number | bigint): { readonly $option: true; readonly value: number } | { readonly $option: false } {",
+  charAt: "function $charAt(value: string, index: number | bigint): { readonly $option: true; readonly value: string } | { readonly $option: false } {",
+  strSlice: "function $strSlice(value: string, start: number | bigint, end: number | bigint): { readonly $result: true; readonly ok: true; readonly value: string } | { readonly $result: true; readonly ok: false; readonly error: SliceError } {",
+  bytesNew: "function $bytesNew(length: number | bigint): Uint8Array {",
+  index: "function $index<T>(value: readonly T[] | ArrayLike<T>, index: number | bigint): T {",
+  indexSet: "function $indexSet<T>(value: T[] | { length: number; [n: number]: T }, index: number | bigint, item: T): T {",
+  getArray: "function $getArray<T>(value: readonly T[], index: number | bigint): { readonly $option: true; readonly value: T } | { readonly $option: false } {",
+  tuple: "function $tuple<T extends readonly unknown[]>(values: T): { readonly $tuple: T } {",
+  tupleAt: "function $tupleAt<T extends readonly unknown[], I extends number>(value: { readonly $tuple: T }, index: I | number | bigint): T[I] {",
+  map: "function $map<K, V>(entries: ReadonlyArray<readonly [K, V]>): { readonly $map: Array<readonly [K, V]> } {",
+  mapGet: "function $mapGet<K, V>(map: { readonly $map: ReadonlyArray<readonly [K, V]> }, key: K): { readonly $option: true; readonly value: V } | { readonly $option: false } {",
+  mapInsert: "function $mapInsert<K, V>(map: { readonly $map: Array<readonly [K, V]> }, key: K, value: V): { readonly $option: true; readonly value: V } | { readonly $option: false } {",
+  mapKeys: "function $mapKeys<K, V>(map: { readonly $map: ReadonlyArray<readonly [K, V]> }): K[] {",
+  eq: "function $eq(left: unknown, right: unknown): boolean {",
+  none: "const $none: { readonly $option: false } = Object.freeze({ $option: false });",
+  some: "function $some<T>(value: T): { readonly $option: true; readonly value: T } {",
+  ok: "function $ok<T>(value: T): { readonly $result: true; readonly ok: true; readonly value: T } {",
+  err: "function $err<E>(error: E): { readonly $result: true; readonly ok: false; readonly error: E } {",
+  unwrapOption: "function $unwrapOption<T>(value: { readonly $option: true; readonly value: T } | { readonly $option: false }): T {",
+  unwrapResult: "function $unwrapResult<T, E>(value: { readonly $result: true; readonly ok: true; readonly value: T } | { readonly $result: true; readonly ok: false; readonly error: E }): T {",
+  resultError: "function $resultError<T, E>(value: { readonly $result: true; readonly ok: true; readonly value: T } | { readonly $result: true; readonly ok: false; readonly error: E }): E {",
+  parseInt: "function $parseInt(value: string): { readonly $result: true; readonly ok: true; readonly value: number } | { readonly $result: true; readonly ok: false; readonly error: ParseIntError } {",
+  parseIntBig: "function $parseIntBig(value: string): { readonly $result: true; readonly ok: true; readonly value: bigint } | { readonly $result: true; readonly ok: false; readonly error: ParseIntError } {",
+  div: "function $div(left: number, right: number): number {",
+  rem: "function $rem(left: number, right: number): number {",
+  divBig: "function $divBig(left: bigint, right: bigint): bigint {",
+  remBig: "function $remBig(left: bigint, right: bigint): bigint {",
+  i8: "function $i8(value: number): number {",
+  i16: "function $i16(value: number): number {",
+  i32: "function $i32(value: number): number {",
+  u8: "function $u8(value: number): number {",
+  u16: "function $u16(value: number): number {",
+  u32: "function $u32(value: number): number {",
+  i64: "function $i64(value: number | bigint): bigint {",
+  u64: "function $u64(value: number | bigint): bigint {",
+  checked_i8: "function $checked_i8(value: number): number {",
+  checked_i16: "function $checked_i16(value: number): number {",
+  checked_i32: "function $checked_i32(value: number): number {",
+  checked_u8: "function $checked_u8(value: number): number {",
+  checked_u16: "function $checked_u16(value: number): number {",
+  checked_u32: "function $checked_u32(value: number): number {",
+  checked_i64: "function $checked_i64(value: bigint): bigint {",
+  checked_u64: "function $checked_u64(value: bigint): bigint {",
+  checkedInteger:
+    "function $checkedInteger(tag: string, operation: string, left: number | bigint, right: number | bigint): { readonly $result: true; readonly ok: true; readonly value: number | bigint } | { readonly $result: true; readonly ok: false; readonly error: OverflowError } {",
+};
+
+/** Helpers whose TypeScript bodies differ from the shared JavaScript text. */
+const TS_HELPER_OVERRIDES: Partial<Record<HelperName, readonly string[]>> = {
+  write: [
+    "function $write(text: string): undefined {",
+    "  const runtime = globalThis as unknown as {",
+    "    readonly process?: { readonly stdout?: { readonly write?: (chunk: string) => void } };",
+    "    readonly console?: { readonly log?: (message: unknown) => void };",
+    "  };",
+    '  if (runtime.process !== undefined && runtime.process.stdout && typeof runtime.process.stdout.write === "function") {',
+    "    runtime.process.stdout.write(text);",
+    "    return undefined;",
+    "  }",
+    "  if (runtime.console !== undefined) (runtime.console.log as (message: unknown) => void)(text);",
+    "  return undefined;",
+    "}",
+  ],
+  dbg: [
+    "function $dbg(value: unknown): undefined {",
+    "  const line = $render(value, true);",
+    "  const runtime = globalThis as unknown as {",
+    "    readonly process?: { readonly stderr?: { readonly write?: (chunk: string) => void } };",
+    "    readonly console?: { readonly error?: (message: unknown) => void };",
+    "  };",
+    '  if (runtime.process !== undefined && runtime.process.stderr && typeof runtime.process.stderr.write === "function") {',
+    '    runtime.process.stderr.write(line + "\\n");',
+    "    return undefined;",
+    "  }",
+    "  if (runtime.console !== undefined) (runtime.console.error as (message: unknown) => void)(line);",
+    "  return undefined;",
+    "}",
+  ],
+  map: [
+    "function $map<K, V>(entries: ReadonlyArray<readonly [K, V]>): { readonly $map: Array<readonly [K, V]> } {",
+    "  const values: Array<readonly [K, V]> = [];",
+    "  for (const [key, value] of entries) {",
+    "    const existing = values.findIndex(([candidate]) => $eq(candidate, key));",
+    "    if (existing >= 0) values[existing] = [key, value];",
+    "    else values.push([key, value]);",
+    "  }",
+    "  return { $map: values };",
+    "}",
+  ],
+  float: [
+    "function $float(value: number): number {",
+    "  const boxed: { readonly $float: number; valueOf(): number } = {",
+    "    $float: Number(value),",
+    "    valueOf(): number { return this.$float; },",
+    "  };",
+    "  return boxed as unknown as number;",
+    "}",
+  ],
+  taskScope: [
+    "const $taskScopes: Array<{ tasks: Array<AstraTask<unknown>> }> = [];",
+    "function $enterTaskScope(): { tasks: Array<AstraTask<unknown>> } {",
+    "  const scope: { tasks: Array<AstraTask<unknown>> } = { tasks: [] };",
+    "  $taskScopes.push(scope);",
+    "  return scope;",
+    "}",
+    "function $exitTaskScope(scope: { tasks: Array<AstraTask<unknown>> }): undefined {",
+    "  $taskScopes.pop();",
+    "  for (const task of scope.tasks) {",
+    "    const outcome = task.outcome as { readonly ok?: boolean; readonly panic?: unknown } | undefined;",
+    "    if (!task.joined && outcome !== undefined && outcome.panic !== undefined) throw outcome.panic;",
+    "  }",
+    "  return undefined;",
+    "}",
+  ],
+  spawn: [
+    "function $spawn<T>(body: () => T): AstraTask<T> {",
+    "  const task: AstraTask<T> = { $task: true, cancelled: false, joined: false, outcome: undefined };",
+    "  try {",
+    "    task.outcome = { ok: true, value: body() };",
+    "  } catch (error) {",
+    '    const failure = error as { $failure?: boolean; error?: unknown } | null | undefined;',
+    "    if (failure !== null && failure !== undefined && failure.$failure) task.outcome = { ok: false, error: failure.error };",
+    "    else task.outcome = { panic: error };",
+    "  }",
+    "  if ($taskScopes.length > 0) $taskScopes[$taskScopes.length - 1].tasks.push(task);",
+    "  return task;",
+    "}",
+  ],
+  taskJoin: [
+    "function $taskJoin<T>(task: AstraTask<T>): T | { readonly $failure: true; readonly error: unknown } {",
+    "  task.joined = true;",
+    "  const outcome = task.outcome as",
+    "    | { readonly ok?: boolean; readonly error?: unknown; readonly panic?: unknown }",
+    "    | undefined;",
+    "  if (task.cancelled) {",
+    '    return $failure({ $type: "TaskError", 0: "task was cancelled" });',
+    "  }",
+    "  if (outcome !== undefined && outcome.panic !== undefined) throw outcome.panic;",
+    "  if (outcome !== undefined && !outcome.ok) return $failure(outcome.error);",
+    "  return (task.outcome as { readonly ok: true; readonly value: T }).value;",
+    "}",
+  ],
+  channel: [
+    "function $channel<T>(): AstraChannel<T> {",
+    "  return { $channel: true, capacity: 16, buffer: [], closed: false };",
+    "}",
+    "function $channelError(message: string): ChannelError {",
+    '  return { $type: "ChannelError", 0: message };',
+    "}",
+    "function $channelSend<T>(channel: AstraChannel<T>, value: T): { readonly $result: true; readonly ok: true; readonly value: undefined } | { readonly $result: true; readonly ok: false; readonly error: ChannelError } {",
+    '  if (channel.closed) return $err($channelError("send on a closed channel"));',
+    "  if (channel.buffer.length >= channel.capacity) {",
+    '    $panic("channel deadlock: send on a full bounded channel would block (single-threaded runtime)");',
+    "  }",
+    "  channel.buffer.push(value);",
+    "  return $ok(undefined);",
+    "}",
+    "function $channelReceive<T>(channel: AstraChannel<T>): { readonly $result: true; readonly ok: true; readonly value: T } | { readonly $result: true; readonly ok: false; readonly error: ChannelError } {",
+    "  if (channel.buffer.length === 0) {",
+    '    if (channel.closed) return $err($channelError("receive on a closed channel"));',
+    '    $panic("channel deadlock: receive on an empty channel would block (single-threaded runtime)");',
+    "  }",
+    "  return $ok(channel.buffer.shift() as T);",
+    "}",
+    "function $channelClose<T>(channel: AstraChannel<T>): undefined {",
+    "  channel.closed = true;",
+    "  return undefined;",
+    "}",
+  ],
+  render: [
+    "function $render(value: unknown, debug = false): string {",
+    "  const input = value as $Dyn;",
+    '  if (value === undefined) return "()";',
+    '  if (value === null) return "None";',
+    '  if (typeof value === "bigint") return value.toString();',
+    '  if (typeof value === "string") return debug ? JSON.stringify(value) : value;',
+    '  if (typeof value === "number" || typeof value === "boolean") return String(value);',
+    "  if (value instanceof Uint8Array) {",
+    '    let output = "b\\"";',
+    "    for (const byte of value) {",
+    '      if (byte === 92) output += "\\\\\\\\";',
+    '      else if (byte === 34) output += "\\\\\\"";',
+    '      else if (byte === 10) output += "\\\\n";',
+    '      else if (byte === 13) output += "\\\\r";',
+    '      else if (byte === 9) output += "\\\\t";',
+    '      else if (byte >= 32 && byte <= 126) output += String.fromCharCode(byte);',
+    '      else output += "\\\\u{" + byte.toString(16).padStart(2, "0") + "}";',
+    "    }",
+    '    return output + "\\"";',
+    "  }",
+    "  if (Array.isArray(value)) {",
+    '    return "[" + value.map((item) => $render(item, debug)).join(", ") + "]";',
+    "  }",
+    "  if (input.$tuple) {",
+    '    const items = input.$tuple.map((item) => $render(item, debug));',
+    '    return "(" + items.join(", ") + (items.length === 1 ? "," : "") + ")";',
+    "  }",
+    "  if (input.$map) {",
+    '    return "{" + input.$map.map(([key, item]) => $render(key, debug) + ": " + $render(item, debug)).join(", ") + "}";',
+    "  }",
+    '  if (typeof input.$float === "number") return $renderFloat(input.$float);',
+    '  if (typeof input.$option === "boolean") {',
+    '    return input.$option ? "Some(" + $render(input.value, debug) + ")" : "None";',
+    "  }",
+    "  if (input.$result) {",
+    '    return input.ok ? "Ok(" + $render(input.value, debug) + ")" : "Err(" + $render(input.error, debug) + ")";',
+    "  }",
+    "  if (input.$tag) {",
+    '    let output = input.$enum + "." + input.$tag;',
+    '    const fields = Object.keys(input).filter((key) => /^[0-9]+$/.test(key)).sort((a, b) => Number(a) - Number(b));',
+    "    if (fields.length > 0) {",
+    '      output += "(" + fields.map((key) => $render(input[Number(key)], debug)).join(", ") + ")";',
+    "    }",
+    "    return output;",
+    "  }",
+    "  if (input.$type) {",
+    '    const numeric = Object.keys(input).filter((key) => /^[0-9]+$/.test(key));',
+    "    if (numeric.length > 0) {",
+    '      const fields = numeric.sort((a, b) => Number(a) - Number(b)).map((key) => $render(input[Number(key)], debug));',
+    '      return input.$type + "(" + fields.join(", ") + ")";',
+    "    }",
+    '    const fields = Object.keys(input).filter((key) => key !== "$type").map((key) => key + ": " + $render((input as Record<string, unknown>)[key], debug));',
+    '    return input.$type + " { " + fields.join(", ") + " }";',
+    "  }",
+    "  return String(value);",
+    "}",
+  ],
+  eq: [
+    "function $eq(left: unknown, right: unknown): boolean {",
+    "  if (left === right) return true;",
+    '  if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) return false;',
+    "  const l = left as $Dyn & Record<string, unknown>;",
+    "  const r = right as $Dyn & Record<string, unknown>;",
+    '  if (typeof l.$float === "number" || typeof r.$float === "number") {',
+    '    return typeof l.$float === "number" && typeof r.$float === "number" && l.$float === r.$float;',
+    "  }",
+    "  if (left instanceof Uint8Array || right instanceof Uint8Array) {",
+    "    if (!(left instanceof Uint8Array) || !(right instanceof Uint8Array)) return false;",
+    "    if (left.length !== right.length) return false;",
+    "    for (let index = 0; index < left.length; index += 1) if (left[index] !== right[index]) return false;",
+    "    return true;",
+    "  }",
+    "  if (Array.isArray(left) || Array.isArray(right)) {",
+    "    if (!Array.isArray(left) || !Array.isArray(right)) return false;",
+    "    return left.length === right.length && left.every((item, index) => $eq(item, right[index]));",
+    "  }",
+    "  if (l.$tuple || r.$tuple) {",
+    "    return Boolean(l.$tuple && r.$tuple) && $eq(l.$tuple, r.$tuple);",
+    "  }",
+    "  if (l.$map || r.$map) {",
+    "    const leftEntries = l.$map;",
+    "    const rightEntries = r.$map;",
+    "    if (!leftEntries || !rightEntries || leftEntries.length !== rightEntries.length) return false;",
+    "    return leftEntries.every(([key, value]) => {",
+    "      const entry = rightEntries.find(([candidate]) => $eq(candidate, key));",
+    "      return entry !== undefined && $eq(value, entry[1]);",
+    "    });",
+    "  }",
+    '  if (typeof l.$option === "boolean" || typeof r.$option === "boolean") {',
+    '    return typeof l.$option === "boolean" && typeof r.$option === "boolean" &&',
+    '      l.$option === r.$option && (l.$option === false || $eq(l.value, r.value));',
+    "  }",
+    "  if (l.$result || r.$result) {",
+    "    return Boolean(l.$result && r.$result) && l.ok === r.ok &&",
+    "      (l.ok ? $eq(l.value, r.value) : $eq(l.error, r.error));",
+    "  }",
+    "  if (l.$tag || r.$tag) {",
+    "    if (!l.$tag || !r.$tag || l.$enum !== r.$enum || l.$tag !== r.$tag) return false;",
+    "    const keys = Object.keys(l).filter((key) => /^[0-9]+$/.test(key));",
+    "    if (keys.length !== Object.keys(r).filter((key) => /^[0-9]+$/.test(key)).length) return false;",
+    "    return keys.every((key) => $eq(l[Number(key)], r[Number(key)]));",
+    "  }",
+    "  if (l.$type || r.$type) {",
+    '    if (!l.$type || !r.$type || l.$type !== r.$type) return false;',
+    '    const keys = Object.keys(l).filter((key) => key !== "$type");',
+    '    if (keys.length !== Object.keys(r).filter((key) => key !== "$type").length) return false;',
+    "    return keys.every((key) => Object.prototype.hasOwnProperty.call(r, key) && $eq(l[key], r[key]));",
+    "  }",
+    "  return false;",
+    "}",
+  ],
+  len: [
+    "function $len(value: unknown): number {",
+    '  if (typeof value === "string") return $utf8Len(value);',
+    "  if (Array.isArray(value) || value instanceof Uint8Array) return value.length;",
+    "  const input = value as $Dyn;",
+    "  if (input && input.$map) return input.$map.length;",
+    '  $panic("len() is not implemented for this value");',
+    "}",
+  ],
+  lenBig: [
+    "function $lenBig(value: unknown): bigint {",
+    '  if (typeof value === "string") return BigInt(new TextEncoder().encode(value).length);',
+    "  if (Array.isArray(value) || value instanceof Uint8Array) return BigInt(value.length);",
+    "  const input = value as $Dyn;",
+    "  if (input && input.$map) return BigInt(input.$map.length);",
+    '  $panic("len() is not implemented for this value");',
+    "}",
+  ],
+  strSlice: [
+    "function $strSlice(value: string, start: number | bigint, end: number | bigint): { readonly $result: true; readonly ok: true; readonly value: string } | { readonly $result: true; readonly ok: false; readonly error: SliceError } {",
+    "  const bytes = new TextEncoder().encode(value);",
+    "  const from = Number(start);",
+    "  const to = Number(end);",
+    "  const boundary = (position: number) =>",
+    "    position === bytes.length || (position >= 0 && position < bytes.length && ((bytes[position] as number) & 0xc0) !== 0x80);",
+    "  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > bytes.length || !boundary(from) || !boundary(to)) {",
+    '    return $err({ $type: "SliceError", 0: "slice range is out of bounds or splits a UTF-8 scalar value" });',
+    "  }",
+    '  return $ok(new TextDecoder("utf-8").decode(bytes.subarray(from, to)));',
+    "}",
+  ],
+  mapInsert: [
+    "function $mapInsert<K, V>(map: { readonly $map: Array<readonly [K, V]> }, key: K, value: V): { readonly $option: true; readonly value: V } | { readonly $option: false } {",
+    "  const index = map.$map.findIndex(([candidate]) => $eq(candidate, key));",
+    "  if (index < 0) {",
+    "    map.$map.push([key, value]);",
+    "    return $none;",
+    "  }",
+    "  const previous = map.$map[index][1];",
+    "  map.$map[index] = [key, value];",
+    "  return $some(previous);",
+    "}",
+  ],
+  checkedInteger: [
+    "function $checkedInteger(tag: string, operation: string, left: number | bigint, right: number | bigint): { readonly $result: true; readonly ok: true; readonly value: number | bigint } | { readonly $result: true; readonly ok: false; readonly error: OverflowError } {",
+    "  const bounds: Record<string, readonly [number | bigint, number | bigint]> = {",
+    "    i8: [-128, 127],",
+    "    i16: [-32768, 32767],",
+    "    i32: [-2147483648, 2147483647],",
+    "    i64: [-9223372036854775808n, 9223372036854775807n],",
+    "    u8: [0, 255],",
+    "    u16: [0, 65535],",
+    "    u32: [0, 4294967295],",
+    "    u64: [0n, 18446744073709551615n],",
+    "  };",
+    "  const [min, max] = bounds[tag];",
+    "  let value: number | bigint = 0;",
+    '  if (operation === "div") {',
+    "    if (right === 0 || right === 0n) $panic(\"division by zero\");",
+    '    value = typeof left === "bigint" ? (left as bigint) / (right as bigint) : Math.trunc((left as number) / (right as number));',
+    '  } else if (operation === "add") {',
+    "    value = (left as number) + (right as number);",
+    '  } else if (operation === "sub") {',
+    "    value = (left as number) - (right as number);",
+    '  } else if (operation === "mul") {',
+    "    value = (left as number) * (right as number);",
+    "  } else {",
+    '    $panic("unsupported checked integer operation");',
+    "  }",
+    "  if ((value as number) < (min as number) || (value as number) > (max as number)) {",
+    '    return $err({ $type: "OverflowError", 0: "integer overflow in \'checked_" + operation + "\'" });',
+    "  }",
+    "  return $ok(value);",
+    "}",
+  ],
+};
 const BIG_INTEGER_TAGS = new Set(["I64", "U64"]);
+const USIZE_TAGS = new Set(["Usize", "Isize"]);
+
+function isArbitraryIntegerTag(tag: string): boolean {
+  return INTEGER_TAGS.has(tag) || USIZE_TAGS.has(tag);
+}
+
+function integerWidth(tag: string): { readonly width: number; readonly signed: boolean } | undefined {
+  switch (tag) {
+    case "I8":
+      return { width: 8, signed: true };
+    case "I16":
+      return { width: 16, signed: true };
+    case "I32":
+      return { width: 32, signed: true };
+    case "I64":
+      return { width: 64, signed: true };
+    case "U8":
+      return { width: 8, signed: false };
+    case "U16":
+      return { width: 16, signed: false };
+    case "U32":
+      return { width: 32, signed: false };
+    case "U64":
+      return { width: 64, signed: false };
+    default:
+      return undefined;
+  }
+}
 
 class JavaScriptGenerator {
   private readonly ir: ModuleIr;
   private readonly ast: AstModule;
   private readonly hir: HirModule;
+  private readonly backend: "js" | "ts";
+  private readonly sourceText: string | undefined;
+  private readonly moduleSpecifiers: Readonly<Record<string, string>> | undefined;
   private readonly annotations = new Map<string, SemanticType>();
   private readonly helpers = new Set<HelperName>();
+  private readonly looseTypes = new Set<LooseTypeName>();
   private readonly diagnostics: CodegenDiagnostic[] = [];
   private readonly reported = new Set<string>();
+  private readonly scriptImports: string[] = [];
+  private readonly scriptDeclarations = new Map<string, string>();
+  private readonly scriptArtifacts: CodegenArtifact[] = [];
   private tempIndex = 0;
   private defaultExpression: Expr | undefined;
+  private currentSuccessWrap = false;
 
-  constructor(ir: ModuleIr) {
+  constructor(
+    ir: ModuleIr,
+    sourceText?: string,
+    moduleSpecifiers?: Readonly<Record<string, string>>,
+    backend: "js" | "ts" = "js",
+  ) {
     this.ir = ir;
+    this.sourceText = sourceText;
+    this.moduleSpecifiers = moduleSpecifiers;
+    this.backend = backend;
     if (!isRecord(ir.ast) || !isRecord(ir.hir)) {
       throw new CodegenRequestError("Typed module AST and HIR must be objects.");
     }
@@ -614,39 +1384,143 @@ class JavaScriptGenerator {
     }
   }
 
+  private get isTs(): boolean {
+    return this.backend === "ts";
+  }
+
+  private get backendName(): string {
+    return this.backend === "ts" ? "TypeScript" : "JavaScript";
+  }
+
+  /** Option rendering style for this backend (see `astTypeToTs`). */
+  private get optionStyle(): "null" | "objects" {
+    return this.isTs ? "objects" : "null";
+  }
+
+  /** Renders a typed-AST type using this backend's conventions. */
+  private astType(type: AstType | null | undefined, span: Span): string {
+    return astTypeToTs(
+      type ?? { kind: "Unit", span },
+      this.ir.integerPolicy,
+      this.optionStyle,
+    );
+  }
+
+  private useLooseType(name: LooseTypeName): void {
+    this.looseTypes.add(name);
+  }
+
+  /**
+   * Emits the TypeScript-only internal declarations that the emitted
+   * annotations and helper signatures reference. Both the typed module's
+   * own signatures (via `referencesTypePath`) and the tree-shaken helper
+   * sources are scanned, so exactly the needed declarations are produced.
+   */
+  private emitLooseTypes(): string {
+    if (!this.isTs) {
+      return "";
+    }
+    for (const item of this.ast.items) {
+      if (referencesTypePath(item.kind, "Task")) {
+        this.useLooseType("AstraTask");
+      }
+      if (referencesTypePath(item.kind, "Channel")) {
+        this.useLooseType("AstraChannel");
+      }
+      for (const name of BUILTIN_ERROR_TYPES) {
+        if (referencesTypePath(item.kind, name)) {
+          this.useLooseType(name);
+        }
+      }
+    }
+    // Helper signatures and bodies reference the same internal
+    // declarations; pick up whatever the selected helpers need.
+    for (const name of this.helpers) {
+      const text = this.helperText(name);
+      if (text.includes("$Dyn")) {
+        this.useLooseType("$Dyn");
+      }
+      if (text.includes("AstraTask")) {
+        this.useLooseType("AstraTask");
+      }
+      if (text.includes("AstraChannel")) {
+        this.useLooseType("AstraChannel");
+      }
+      for (const loose of BUILTIN_ERROR_TYPES) {
+        if (new RegExp(`\\b${loose}\\b`).test(text)) {
+          this.useLooseType(loose);
+        }
+      }
+    }
+    const lines = LOOSE_TYPE_ORDER.filter((name) => this.looseTypes.has(name)).map(
+      (name) => LOOSE_TYPE_DECLARATIONS[name],
+    );
+    return lines.join("\n\n");
+  }
+
+  /** Returns the TypeScript text for one helper (override or shared source). */
+  private helperText(name: HelperName): string {
+    if (!this.isTs) {
+      return HELPERS[name].join("\n");
+    }
+    const override = TS_HELPER_OVERRIDES[name];
+    if (override !== undefined) {
+      return override.join("\n");
+    }
+    const signature = TS_HELPER_SIGNATURES[name] ?? HELPERS[name][0] ?? "";
+    return [signature, ...HELPERS[name].slice(1)].join("\n");
+  }
+
   generate(): CodegenResult {
-    if (this.hir.imports.length > 0) {
+    if (this.hir.imports.length > 0 && this.moduleSpecifiers === undefined) {
       this.unsupported(
         this.hir.imports[0]?.span,
-        "Module imports are not implemented by the JavaScript backend yet.",
+        "Module imports require output module specifiers, which this build did not provide.",
       );
     }
     for (const scope of this.ir.manualMemoryScopes) {
       this.diagnostic(
         "NS8003",
-        "Manual memory is not supported by the JavaScript backend.",
+        `Manual memory is not supported by the ${this.backendName} backend.`,
         scope,
       );
     }
 
-    const body: string[] = [];
+    for (const item of this.hir.items) {
+      if (variantOf(item.declaration) === "ScriptBlock") {
+        this.prepareScriptBlock(
+          structPayload<ScriptBlockDecl>(item.declaration, "ScriptBlock"),
+        );
+      }
+    }
+
+    const bodyParts: { readonly text: string; readonly span: Span }[] = [];
     for (const item of this.hir.items) {
       const generated = this.emitItem(item);
       if (generated.length > 0) {
-        body.push(generated);
+        bodyParts.push({ text: generated, span: item.span });
       }
     }
 
     const exports = this.emitExports();
     if (exports.length > 0) {
-      body.push(exports);
+      bodyParts.push({ text: exports, span: this.hir.items[0]?.span ?? { start: 0, end: 0 } });
     }
+    const body = bodyParts.map((part) => part.text);
 
+    const imports = this.emitImports();
+    const looseTypeText = this.emitLooseTypes();
     const helperText = this.emitHelpers();
     const sections: string[] = [
       `// Generated by Neo Astra from ${this.ir.path}.`,
-      "// Target: JavaScript ESM.",
+      `// Target: ${this.backendName} ESM.`,
     ];
+    if (imports.length > 0) {
+      sections.push("", imports);
+    }
+    if (looseTypeText.length > 0) {
+      sections.push("", looseTypeText);
+    }
     if (helperText.length > 0) {
       sections.push("", helperText);
     }
@@ -654,11 +1528,284 @@ class JavaScriptGenerator {
       sections.push("", body.join("\n\n"));
     }
     sections.push("");
+    const code = sections.join("\n");
+    const sourceMap =
+      this.sourceText === undefined
+        ? undefined
+        : createSourceMap(code, this.ir.path, this.sourceText, bodyParts);
+
+    const declarations = this.emitDeclarations();
 
     return {
-      code: sections.join("\n"),
+      code,
       diagnostics: this.diagnostics,
+      ...(sourceMap === undefined ? {} : { sourceMap }),
+      ...(declarations.length === 0 ? {} : { declarations }),
+      ...(this.scriptArtifacts.length === 0
+        ? {}
+        : { artifacts: this.scriptArtifacts }),
     };
+  }
+
+  private emitDeclarations(): string {
+    const named = Object.entries(this.hir.exports.named);
+    if (named.length === 0 && this.hir.exports.default === null) {
+      return "";
+    }
+
+    const lines: string[] = [
+      `// Generated declarations for ${this.ir.path}.`,
+      "",
+    ];
+    for (const imported of this.hir.imports) {
+      const specifier = this.moduleSpecifier(imported.module, imported.span);
+      if (specifier === undefined) {
+        continue;
+      }
+      const kind = imported.kind;
+      switch (variantOf(kind)) {
+        case "Named": {
+          const data = structPayload<{ bindings: readonly ImportBinding[] }>(
+            kind,
+            "Named",
+          );
+          lines.push(
+            `import { ${formatImportBindings(data.bindings)} } from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "Default": {
+          const data = structPayload<{ local: string }>(kind, "Default");
+          lines.push(
+            `import ${jsName(data.local)} from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "DefaultNamed": {
+          const data = structPayload<{
+            default: string;
+            bindings: readonly ImportBinding[];
+          }>(kind, "DefaultNamed");
+          lines.push(
+            `import ${jsName(data.default)}, { ${formatImportBindings(data.bindings)} } from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "Namespace": {
+          const data = structPayload<{ alias: string }>(kind, "Namespace");
+          lines.push(
+            `import * as ${jsName(data.alias)} from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    if (lines.length > 2) {
+      lines.push("");
+    }
+
+    const localExportNames = new Map<string, string>();
+    for (const [exported, entry] of named) {
+      if (variantOf(entry.target) === "Local") {
+        const local = payloadOf(entry.target);
+        if (typeof local === "string") {
+          localExportNames.set(local, exported);
+        }
+      }
+    }
+    if (this.hir.exports.default !== null) {
+      const target = this.hir.exports.default.target;
+      if (variantOf(target) === "Local") {
+        const local = payloadOf(target);
+        if (typeof local === "string" && !localExportNames.has(local)) {
+          localExportNames.set(local, "default");
+        }
+      }
+    }
+    const localExported = (name: string): boolean => localExportNames.has(name);
+
+    // Built-in nominal types cross the module boundary as plain runtime
+    // records, so describe their real shapes for TypeScript consumers.
+    if (this.ast.items.some((item) => referencesTypePath(item.kind, "Task"))) {
+      lines.push(
+        "interface AstraTask<T> {",
+        "  readonly $task: true;",
+        "  readonly cancelled: boolean;",
+        "  join(): T;",
+        "}",
+      );
+    }
+    if (this.ast.items.some((item) => referencesTypePath(item.kind, "Channel"))) {
+      lines.push(
+        "interface AstraChannel<T> {",
+        "  readonly $channel: true;",
+        "  readonly capacity: number;",
+        "  readonly buffer: T[];",
+        "  readonly closed: boolean;",
+        "}",
+      );
+    }
+
+    for (const item of this.ast.items) {
+      this.emitDeclarationItem(item, lines, localExported);
+    }
+
+    for (const [exported, entry] of named) {
+      const target = entry.target;
+      if (variantOf(target) === "Local") {
+        const local = payloadOf(target);
+        if (typeof local === "string") {
+          lines.push(
+            local === exported
+              ? `export { ${jsName(local)} };`
+              : `export { ${jsName(local)} as ${exportName(exported)} };`,
+          );
+        }
+        continue;
+      }
+      if (variantOf(target) === "Reexport") {
+        const data = structPayload<{ module: string; name: string }>(
+          target,
+          "Reexport",
+        );
+        const specifier = this.moduleSpecifier(data.module, entry.span);
+        if (specifier === undefined) {
+          continue;
+        }
+        lines.push(
+          data.name === exported
+            ? `export { ${exportName(data.name)} } from ${JSON.stringify(specifier)};`
+            : `export { ${exportName(data.name)} as ${exportName(exported)} } from ${JSON.stringify(specifier)};`,
+        );
+        continue;
+      }
+      if (variantOf(target) === "Namespace") {
+        const data = structPayload<{ module: string }>(target, "Namespace");
+        const specifier = this.moduleSpecifier(data.module, entry.span);
+        if (specifier !== undefined) {
+          lines.push(
+            `export * as ${exportName(exported)} from ${JSON.stringify(specifier)};`,
+          );
+        }
+      }
+    }
+
+    for (const star of this.hir.exports.stars) {
+      const specifier = this.moduleSpecifier(star.module, star.span);
+      if (specifier !== undefined) {
+        lines.push(`export * from ${JSON.stringify(specifier)};`);
+      }
+    }
+
+    const defaultExport = this.hir.exports.default;
+    if (defaultExport !== null) {
+      const target = defaultExport.target;
+      if (variantOf(target) === "Local") {
+        const local = payloadOf(target);
+        if (typeof local === "string") {
+          lines.push(`export { ${jsName(local)} as default };`);
+        }
+      } else if (variantOf(target) === "Reexport") {
+        const data = structPayload<{ module: string; name: string }>(
+          target,
+          "Reexport",
+        );
+        const specifier = this.moduleSpecifier(data.module, defaultExport.span);
+        if (specifier !== undefined) {
+          lines.push(
+            data.name === "default"
+              ? `export { default } from ${JSON.stringify(specifier)};`
+              : `export { ${exportName(data.name)} as default } from ${JSON.stringify(specifier)};`,
+          );
+        }
+      }
+    }
+
+    return `${lines.join("\n")}\n`;
+  }
+
+  private emitDeclarationItem(
+    item: AstItem,
+    lines: string[],
+    localExported: (name: string) => boolean,
+  ): void {
+    const declaration = item.kind;
+    switch (variantOf(declaration)) {
+      case "Function": {
+        const data = structPayload<{
+          name: string;
+          type_parameters: readonly string[];
+          parameters: readonly { readonly name: string; readonly ty: AstType }[];
+          return_type: AstType | null;
+          error_set: readonly TypePath[];
+        }>(declaration, "Function");
+        if (!localExported(data.name)) {
+          return;
+        }
+        const typeParameters =
+          data.type_parameters.length === 0
+            ? ""
+            : `<${data.type_parameters.join(", ")}>`;
+        const parameters = data.parameters
+          .map(
+            (parameter) =>
+              `${jsName(parameter.name)}: ${this.astType(parameter.ty, item.span)}`,
+          )
+          .join(", ");
+        const returnType =
+          data.error_set.length === 0
+            ? this.astType(data.return_type ?? { kind: "Unit", span: item.span }, item.span)
+            : taggedResultType(
+                this.astType(data.return_type ?? { kind: "Unit", span: item.span }, item.span),
+                data.error_set.map((error) => jsName(error.segments[error.segments.length - 1] ?? "unknown")).join(" | "),
+              );
+        lines.push(
+          `declare function ${jsName(data.name)}${typeParameters}(${parameters}): ${returnType};`,
+        );
+        return;
+      }
+      case "Constant": {
+        const data = structPayload<{
+          name: string;
+          ty: AstType;
+        }>(declaration, "Constant");
+        if (localExported(data.name)) {
+          lines.push(
+            `declare const ${jsName(data.name)}: ${this.astType(data.ty, item.span)};`,
+          );
+        }
+        return;
+      }
+      case "Struct": {
+        const data = structPayload<StructDecl>(declaration, "Struct");
+        lines.push(...structDeclarationLines(data, this.ir.integerPolicy, this.optionStyle));
+        return;
+      }
+      case "Enum": {
+        const data = structPayload<EnumDecl>(declaration, "Enum");
+        lines.push(...enumDeclarationLines(data, this.ir.integerPolicy, this.optionStyle));
+        return;
+      }
+      case "TypeAlias": {
+        const data = structPayload<{
+          name: string;
+          type_parameters: readonly string[];
+          ty: AstType;
+        }>(declaration, "TypeAlias");
+        const typeParameters =
+          data.type_parameters.length === 0
+            ? ""
+            : `<${data.type_parameters.join(", ")}>`;
+        lines.push(
+          `type ${jsName(data.name)}${typeParameters} = ${this.astType(data.ty, item.span)};`,
+        );
+        return;
+      }
+      default:
+        return;
+    }
   }
 
   private emitItem(item: HirItem): string {
@@ -672,14 +1819,25 @@ class JavaScriptGenerator {
         return this.emitEnum(structPayload(declaration, "Enum"));
       case "Constant":
         return this.emitConstant(structPayload(declaration, "Constant"));
-      case "TypeAlias":
-        return "";
+      case "TypeAlias": {
+        if (!this.isTs) {
+          return "";
+        }
+        const data = structPayload<TypeAliasDecl>(declaration, "TypeAlias");
+        const typeParameters =
+          data.type_parameters.length === 0
+            ? ""
+            : `<${data.type_parameters.join(", ")}>`;
+        return `type ${jsName(data.name)}${typeParameters} = ${this.astType(data.ty, data.span)};`;
+      }
       case "ForeignModule":
         this.unsupported(
           item.span,
-          `Foreign module '${item.name}' requires a target adapter that the JavaScript backend does not have yet.`,
+          `Foreign module '${item.name}' requires a target adapter that the ${this.backendName} backend does not have yet.`,
         );
         return "";
+      case "ScriptBlock":
+        return this.scriptDeclarations.get(item.name) ?? "";
       default:
         this.unsupported(item.span, "Unknown resolved declaration kind.");
         return "";
@@ -688,18 +1846,161 @@ class JavaScriptGenerator {
 
   private emitFunction(declaration: {
     readonly name: string;
-    readonly parameters: readonly { readonly name: string }[];
+    readonly type_parameters?: readonly string[];
+    readonly parameters: readonly {
+      readonly name: string;
+      readonly ty: AstType;
+    }[];
     readonly body: Block;
+    readonly return_type?: AstType | null;
+    readonly error_set?: readonly TypePath[];
+    readonly span?: Span;
   }): string {
     const name = jsName(declaration.name);
-    const parameters = declaration.parameters.map((parameter) => jsName(parameter.name));
-    const body = this.emitBlock(declaration.body, "statement");
-    return `function ${name}(${parameters.join(", ")}) ${body}`;
+    const span = declaration.span ?? { start: 0, end: 0 };
+    const typeParameters =
+      this.isTs && (declaration.type_parameters?.length ?? 0) > 0
+        ? `<${(declaration.type_parameters ?? []).join(", ")}>`
+        : "";
+    const parameters = this.isTs
+      ? declaration.parameters.map(
+          (parameter) => `${jsName(parameter.name)}: ${this.astType(parameter.ty, span)}`,
+        )
+      : declaration.parameters.map((parameter) => jsName(parameter.name));
+    const fallible = (declaration.error_set?.length ?? 0) > 0;
+    const returnTypeText = fallible
+      ? taggedResultType(
+          this.astType(declaration.return_type ?? null, span),
+          (declaration.error_set ?? [])
+            .map((error) => jsName(error.segments[error.segments.length - 1] ?? "unknown"))
+            .join(" | "),
+        )
+      : this.astType(declaration.return_type ?? null, span);
+    const wrapsSuccess = fallible && !isResultReturnType(declaration.return_type);
+    const previousWrap = this.currentSuccessWrap;
+    this.currentSuccessWrap = wrapsSuccess;
+    let body = this.emitBlock(declaration.body, "statement");
+    // A void fallible function has no explicit `return`, but callers still
+    // expect a Result-shaped success value when they `match` the call.
+    if (wrapsSuccess) {
+      const statements = declaration.body.statements;
+      const last = statements[statements.length - 1];
+      if (last === undefined || variantOf(last.kind) !== "Return") {
+        this.useHelper("ok");
+        body = `${body.slice(0, -1)}  return $ok(undefined);\n}`;
+      }
+    }
+    if (containsVariant(declaration.body, "Spawn")) {
+      this.useHelper("taskScope");
+      const scope = this.temporary("taskScope");
+      body = [
+        "{",
+        `  const ${scope} = $enterTaskScope();`,
+        `  try ${body}`,
+        "  finally {",
+        `    $exitTaskScope(${scope});`,
+        "  }",
+        "}",
+      ].join("\n");
+    }
+    this.currentSuccessWrap = previousWrap;
+    const signature = this.isTs
+      ? `function ${name}${typeParameters}(${parameters.join(", ")}): ${returnTypeText}`
+      : `function ${name}(${parameters.join(", ")})`;
+    if (!fallible) {
+      return `${signature} ${body}`;
+    }
+
+    // A recoverable failure unwinds the current function like `?` does in the
+    // language. Convert it to a value at the function boundary so callers can
+    // match the error or propagate it again.
+    const caught = this.temporary("caught");
+    if (this.isTs) {
+      return [
+        `${signature} {`,
+        `  try ${body}`,
+        `  catch (${caught}) {`,
+        `    const sentinel = ${caught} as { readonly $failure?: boolean; readonly error?: unknown } | null | undefined;`,
+        `    if (sentinel !== null && sentinel !== undefined && sentinel.$failure) return ${caught} as unknown as ${returnTypeText};`,
+        `    throw ${caught};`,
+        "  }",
+        "}",
+      ].join("\n");
+    }
+    return [
+      `${signature} {`,
+      `  try ${body}`,
+      `  catch (${caught}) {`,
+      `    if (${caught} && ${caught}.$failure) return ${caught};`,
+      `    throw ${caught};`,
+      "  }",
+      "}",
+    ].join("\n");
   }
 
   private emitStruct(declaration: StructDecl): string {
     const name = jsName(declaration.name);
     const fields = declaration.fields;
+    const typeParameters = declaration.type_parameters;
+    const parametersText =
+      typeParameters.length === 0 ? "" : `<${typeParameters.join(", ")}>`;
+    if (this.isTs) {
+      // The type declaration comes from the same renderer as the `.d.ts`
+      // surface (minus the `declare const` line), so the constructor and
+      // the published interface can never drift apart.
+      const typeLines = structDeclarationLines(
+        declaration,
+        this.ir.integerPolicy,
+        this.optionStyle,
+      ).slice(0, -1);
+      if (variantOf(fields) === "Named") {
+        const named = payloadOf(fields) as readonly {
+          readonly name: string;
+          readonly ty: AstType;
+        }[];
+        const signature = named
+          .map(
+            (field) =>
+              `${objectKey(field.name)}: ${this.astType(field.ty, declaration.span)}`,
+          )
+          .join("; ");
+        const body = named
+          .map(
+            (field) => `    ${objectKey(field.name)}: fields${memberAccess(field.name)},`,
+          )
+          .join("\n");
+        return [
+          ...typeLines,
+          `function ${name}${parametersText}(fields: { ${signature} }): ${name}${parametersText} {`,
+          "  return {",
+          `    $type: ${JSON.stringify(declaration.name)},`,
+          body,
+          "  };",
+          "}",
+        ]
+          .filter((line) => line.length > 0)
+          .join("\n");
+      }
+
+      const tuple = payloadOf(fields) as readonly AstType[];
+      const parameters = tuple.map(
+        (field, index) => `value${index}: ${this.astType(field, declaration.span)}`,
+      );
+      const body = tuple
+        .map((_, index) => `    ${index}: value${index},`)
+        .join("\n");
+      return [
+        ...typeLines,
+        `function ${name}${parametersText}(${parameters.join(", ")}): ${name}${parametersText} {`,
+        "  return {",
+        `    $type: ${JSON.stringify(declaration.name)},`,
+        body,
+        "  };",
+        "}",
+      ]
+        .filter((line) => line.length > 0)
+        .join("\n");
+    }
     if (variantOf(fields) === "Named") {
       const named = payloadOf(fields) as readonly { readonly name: string }[];
       const body = named
@@ -753,6 +2054,29 @@ class JavaScriptGenerator {
         .filter((line) => line.length > 0)
         .join("\n");
     });
+    if (this.isTs) {
+      // The instance union and the constructor-object shape come from the
+      // same renderer as the `.d.ts` surface; annotating the frozen object
+      // with the constructor type keeps variant payload arrow parameters
+      // precisely typed through contextual inference.
+      const declarationLines = enumDeclarationLines(
+        declaration,
+        this.ir.integerPolicy,
+        this.optionStyle,
+      );
+      const instanceType = declarationLines[0] ?? `type ${name} = never;`;
+      const constructorType = [
+        "{",
+        ...declarationLines.slice(2, -1),
+        "}",
+      ].join("\n");
+      return [
+        instanceType,
+        `const ${name}: ${constructorType} = Object.freeze({`,
+        variants.join("\n"),
+        "});",
+      ].join("\n");
+    }
     return [
       `const ${name} = Object.freeze({`,
       variants.join("\n"),
@@ -762,9 +2086,209 @@ class JavaScriptGenerator {
 
   private emitConstant(declaration: {
     readonly name: string;
+    readonly ty: AstType;
     readonly value: Expr;
+    readonly span: Span;
   }): string {
+    if (this.isTs) {
+      return `const ${jsName(declaration.name)}: ${this.astType(declaration.ty, declaration.span)} = ${this.emitExpr(declaration.value)};`;
+    }
     return `const ${jsName(declaration.name)} = ${this.emitExpr(declaration.value)};`;
+  }
+
+  private prepareScriptBlock(block: ScriptBlockDecl): void {
+    if (block.language !== "js") {
+      this.diagnostic(
+        "NS7008",
+        `Script language '${block.language}' cannot be emitted by the ${this.backendName} backend yet. Use @script:js or a matching target backend.`,
+        block.header_span,
+      );
+      return;
+    }
+    if (block.raw_source.trim().length === 0) {
+      this.diagnostic(
+        "NS7008",
+        `Script block '${block.name}' has no implementation source.`,
+        block.body_span,
+      );
+      return;
+    }
+
+    for (const exported of block.exports) {
+      if (!hasEsmExport(block.raw_source, exported.name)) {
+        this.diagnostic(
+          "NS7008",
+          `Script block '${block.name}' does not export declared function '${exported.name}'.`,
+          exported.span,
+        );
+      }
+    }
+
+    const artifactPath = scriptArtifactPath(this.ir.path, block.name);
+    const artifactFile = artifactPath.split("/").pop() ?? artifactPath;
+    const alias = `$script_${block.name}`;
+    this.scriptImports.push(
+      `import * as ${alias} from ${JSON.stringify(`./${artifactFile}`)};`,
+    );
+
+    const members = block.exports
+      .map((exported) =>
+        indent(
+          `${objectKey(exported.name)}: ${this.emitScriptExport(alias, exported)},`,
+        ),
+      )
+      .join("\n");
+    this.scriptDeclarations.set(
+      block.name,
+      [`const ${jsName(block.name)} = {`, members, "};"]
+        .filter((line) => line.length > 0)
+        .join("\n"),
+    );
+
+    const code = scriptModuleCode(this.ir.path, block);
+    const sourceMap =
+      this.sourceText === undefined
+        ? undefined
+        : createScriptSourceMap(
+            code,
+            this.ir.path,
+            this.sourceText,
+            block.body_span,
+          );
+    this.scriptArtifacts.push({
+      path: artifactPath,
+      code,
+      ...(sourceMap === undefined ? {} : { sourceMap }),
+      declarations: scriptDeclarations(block, this.ir.integerPolicy),
+    });
+  }
+
+  private emitScriptExport(alias: string, exported: ScriptExport): string {
+    const parameters = this.isTs
+      ? exported.parameters.map(
+          (parameter, index) =>
+            `arg${index}: ${astTypeToTs(parameter.ty, this.ir.integerPolicy, this.optionStyle)}`,
+        )
+      : exported.parameters.map((_, index) => `arg${index}`);
+    const argumentsText = exported.parameters
+      .map((parameter, index) =>
+        astBoundaryToJavaScript(`arg${index}`, parameter.ty),
+      )
+      .join(", ");
+    const invocation = `${alias}${memberAccess(exported.name)}(${argumentsText})`;
+    const returnType = exported.return_type ?? undefined;
+    const fallible =
+      exported.error_set.length > 0 && !isResultReturnType(returnType);
+    if (isOptionType(returnType) || exported.parameters.some((parameter) => isOptionType(parameter.ty))) {
+      this.useHelper("none");
+      this.useHelper("some");
+    }
+    const returnAnnotation = fallible
+      ? taggedResultType(
+          this.astType(returnType ?? null, exported.span),
+          jsName(scriptErrorTypeName(exported.error_set[0])),
+        )
+      : this.astType(returnType ?? null, exported.span);
+    const typedSignature = this.isTs
+      ? `(${parameters.join(", ")}): ${returnAnnotation} =>`
+      : `(${parameters.join(", ")}) =>`;
+
+    if (!fallible) {
+      return `${typedSignature} ${astBoundaryFromJavaScript(
+        invocation,
+        returnType,
+        this.ir.integerPolicy,
+        this.optionStyle,
+      )}`;
+    }
+
+    this.useHelper("ok");
+    this.useHelper("err");
+    const errorType = scriptErrorTypeName(exported.error_set[0]);
+    if (this.isTs) {
+      return [
+        `${typedSignature} {`,
+        "  try {",
+        `    return $ok(${astBoundaryFromJavaScript(invocation, returnType, this.ir.integerPolicy, this.optionStyle)});`,
+        "  } catch (error) {",
+        "    const message = error as { readonly message?: unknown } | null | undefined;",
+        `    return $err({ $type: ${JSON.stringify(errorType)}, 0: String(message !== null && message !== undefined && message.message !== undefined ? message.message : error) });`,
+        "  }",
+        "}",
+      ].join("\n");
+    }
+    return [
+      `${typedSignature} {`,
+      "  try {",
+      `    return $ok(${astBoundaryFromJavaScript(invocation, returnType, this.ir.integerPolicy, this.optionStyle)});`,
+      "  } catch (error) {",
+      `    return $err({ $type: ${JSON.stringify(errorType)}, 0: String(error && error.message !== undefined ? error.message : error) });`,
+      "  }",
+      "}",
+    ].join("\n");
+  }
+
+  private emitImports(): string {
+    const lines: string[] = [...this.scriptImports];
+    for (const imported of this.hir.imports) {
+      const specifier = this.moduleSpecifier(imported.module, imported.span);
+      if (specifier === undefined) {
+        continue;
+      }
+      const kind = imported.kind;
+      switch (variantOf(kind)) {
+        case "SideEffect":
+          lines.push(`import ${JSON.stringify(specifier)};`);
+          break;
+        case "Namespace": {
+          const data = structPayload<{ alias: string }>(kind, "Namespace");
+          lines.push(
+            `import * as ${jsName(data.alias)} from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "Named": {
+          const data = structPayload<{ bindings: readonly ImportBinding[] }>(
+            kind,
+            "Named",
+          );
+          lines.push(
+            `import { ${formatImportBindings(data.bindings)} } from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        case "Default": {
+          const data = structPayload<{ local: string }>(kind, "Default");
+          lines.push(`import ${jsName(data.local)} from ${JSON.stringify(specifier)};`);
+          break;
+        }
+        case "DefaultNamed": {
+          const data = structPayload<{
+            default: string;
+            bindings: readonly ImportBinding[];
+          }>(kind, "DefaultNamed");
+          lines.push(
+            `import ${jsName(data.default)}, { ${formatImportBindings(data.bindings)} } from ${JSON.stringify(specifier)};`,
+          );
+          break;
+        }
+        default:
+          this.unsupported(imported.span, "Unknown import form.");
+          break;
+      }
+    }
+    return lines.join("\n");
+  }
+
+  private moduleSpecifier(module: string, span: Span): string | undefined {
+    const specifier = this.moduleSpecifiers?.[module];
+    if (specifier === undefined) {
+      this.unsupported(
+        span,
+        `No output module specifier was provided for '${module}'.`,
+      );
+    }
+    return specifier;
   }
 
   private emitExports(): string {
@@ -772,28 +2296,60 @@ class JavaScriptGenerator {
     const surface = this.hir.exports;
 
     for (const [exported, entry] of Object.entries(surface.named)) {
-      if (entry.kind === "Type") {
+      if (entry.kind === "Type" && !this.isTs) {
+        // JavaScript has no type exports; the `.d.ts` surface carries them.
+        // TypeScript exports the same local name so consumers get the type
+        // meaning straight from the module.
         continue;
       }
       const target = entry.target;
-      if (variantOf(target) !== "Local") {
-        this.unsupported(
-          entry.span,
-          `Re-export '${exported}' requires project linking, which the JavaScript backend does not implement yet.`,
+      const targetKind = variantOf(target);
+      if (targetKind === "Local") {
+        const local = payloadOf(target);
+        if (typeof local !== "string") {
+          this.unsupported(entry.span, `Invalid local export target for '${exported}'.`);
+          continue;
+        }
+        const localJs = jsName(local);
+        const exportedJs = exportName(exported);
+        lines.push(
+          localJs === exported
+            ? `export { ${localJs} };`
+            : `export { ${localJs} as ${exportedJs} };`,
         );
         continue;
       }
-      const local = payloadOf(target);
-      if (typeof local !== "string") {
-        this.unsupported(entry.span, `Invalid local export target for '${exported}'.`);
+      if (targetKind === "Reexport") {
+        const data = structPayload<{ module: string; name: string }>(
+          target,
+          "Reexport",
+        );
+        const specifier = this.moduleSpecifier(data.module, entry.span);
+        if (specifier === undefined) {
+          continue;
+        }
+        const imported = exportName(data.name);
+        const exportedJs = exportName(exported);
+        lines.push(
+          imported === exportedJs
+            ? `export { ${imported} } from ${JSON.stringify(specifier)};`
+            : `export { ${imported} as ${exportedJs} } from ${JSON.stringify(specifier)};`,
+        );
         continue;
       }
-      const localJs = jsName(local);
-      const exportedJs = exportName(exported);
-      lines.push(
-        localJs === exported
-          ? `export { ${localJs} };`
-          : `export { ${localJs} as ${exportedJs} };`,
+      if (targetKind === "Namespace") {
+        const data = structPayload<{ module: string }>(target, "Namespace");
+        const specifier = this.moduleSpecifier(data.module, entry.span);
+        if (specifier !== undefined) {
+          lines.push(
+            `export * as ${exportName(exported)} from ${JSON.stringify(specifier)};`,
+          );
+        }
+        continue;
+      }
+      this.unsupported(
+        entry.span,
+        `Unsupported export target for '${exported}'.`,
       );
     }
 
@@ -816,6 +2372,19 @@ class JavaScriptGenerator {
         } else {
           lines.push(`export default ${this.emitExpr(this.defaultExpression)};`);
         }
+      } else if (variantOf(target) === "Reexport") {
+        const data = structPayload<{ module: string; name: string }>(
+          target,
+          "Reexport",
+        );
+        const specifier = this.moduleSpecifier(data.module, defaultExport.span);
+        if (specifier !== undefined) {
+          lines.push(
+            data.name === "default"
+              ? `export { default } from ${JSON.stringify(specifier)};`
+              : `export { ${exportName(data.name)} as default } from ${JSON.stringify(specifier)};`,
+          );
+        }
       } else {
         this.unsupported(
           defaultExport.span,
@@ -825,10 +2394,10 @@ class JavaScriptGenerator {
     }
 
     for (const star of surface.stars) {
-      this.unsupported(
-        star.span,
-        "Star re-exports require project linking, which the JavaScript backend does not implement yet.",
-      );
+      const specifier = this.moduleSpecifier(star.module, star.span);
+      if (specifier !== undefined) {
+        lines.push(`export * from ${JSON.stringify(specifier)};`);
+      }
     }
 
     return lines.join("\n");
@@ -839,7 +2408,7 @@ class JavaScriptGenerator {
       return "";
     }
     return HELPER_ORDER.filter((name) => this.helpers.has(name))
-      .map((name) => HELPERS[name].join("\n"))
+      .map((name) => this.helperText(name))
       .join("\n\n");
   }
 
@@ -911,15 +2480,26 @@ class JavaScriptGenerator {
         const data = structPayload<{
           mutable: boolean;
           name: string;
+          ty: AstType | null;
           value: Expr;
         }>(kind, "Let");
-        return `${data.mutable ? "let" : "const"} ${jsName(data.name)} = ${this.emitExpr(
+        const annotation =
+          this.isTs && data.ty !== null
+            ? `: ${this.astType(data.ty, statement.span)}`
+            : "";
+        return `${data.mutable ? "let" : "const"} ${jsName(data.name)}${annotation} = ${this.emitExpr(
           data.value,
         )};`;
       }
       case "Return": {
         const data = structPayload<{ value: Expr | null }>(kind, "Return");
-        return data.value === null ? "return;" : `return ${this.emitExpr(data.value)};`;
+        const value =
+          data.value === null ? "undefined" : this.emitExpr(data.value);
+        if (this.currentSuccessWrap) {
+          this.useHelper("ok");
+          return `return $ok(${value});`;
+        }
+        return data.value === null ? "return;" : `return ${value};`;
       }
       case "Break":
         return "break;";
@@ -1012,6 +2592,18 @@ class JavaScriptGenerator {
         );
       case "Assign": {
         const data = structPayload<{ target: Expr; value: Expr }>(kind, "Assign");
+        if (variantOf(data.target.kind) === "Index") {
+          const indexTarget = structPayload<{ target: Expr; index: Expr }>(
+            data.target.kind,
+            "Index",
+          );
+          const targetType = this.typeAt(indexTarget.target.span);
+          const targetTag = targetType === undefined ? undefined : typeTag(targetType);
+          if (targetTag !== undefined && isSequence(targetTag)) {
+            this.useHelper("indexSet");
+            return `$indexSet(${this.emitExpr(indexTarget.target)}, ${this.emitExpr(indexTarget.index)}, ${this.emitExpr(data.value)})`;
+          }
+        }
         return `${this.emitExpr(data.target)} = ${this.emitExpr(data.value)}`;
       }
       case "Call":
@@ -1031,12 +2623,39 @@ class JavaScriptGenerator {
         return this.emitExpr(
           structPayload<{ target: Expr }>(kind, "TypeArguments").target,
         );
-      case "Propagate":
-        this.unsupported(
-          expression.span,
-          "Error propagation ('?') is not implemented by the JavaScript backend yet.",
-        );
-        return "undefined";
+      case "Propagate": {
+        const inner = payloadOf(kind) as Expr;
+        const value = this.emitExpr(inner);
+        const temporary = this.temporary("propagate");
+        this.useHelper("failure");
+        if (this.isTs) {
+          // The runtime sentinel and Result records share one duck-typed
+          // surface; `$Dyn` models it so the unwrapping logic type-checks,
+          // and the cast restores the statically checked expression type.
+          this.useLooseType("$Dyn");
+          const resultType = this.typeAt(expression.span);
+          const cast =
+            resultType === undefined
+              ? ""
+              : ` as unknown as ${semanticTypeToTs(resultType, this.ir.integerPolicy, this.optionStyle)}`;
+          return [
+            "(() => {",
+            `  const ${temporary} = ${value} as unknown as $Dyn;`,
+            `  if (${temporary} !== null && ${temporary} !== undefined && ${temporary}.$failure) throw ${temporary};`,
+            `  if (${temporary} !== null && ${temporary} !== undefined && ${temporary}.$result === true && ${temporary}.ok !== true) throw $failure(${temporary}.error);`,
+            `  return ${temporary} !== null && ${temporary} !== undefined && ${temporary}.$result === true ? ${temporary}.value : ${temporary};`,
+            `})()${cast}`,
+          ].join("\n");
+        }
+        return [
+          "(() => {",
+          `  const ${temporary} = ${value};`,
+          `  if (${temporary} && ${temporary}.$failure) throw ${temporary};`,
+          `  if (${temporary} && ${temporary}.$result === true && !${temporary}.ok) throw $failure(${temporary}.error);`,
+          `  return ${temporary} && ${temporary}.$result === true ? ${temporary}.value : ${temporary};`,
+          "})()",
+        ].join("\n");
+      }
       case "Array": {
         const values = payloadOf(kind) as readonly Expr[];
         return `[${values.map((value) => this.emitExpr(value)).join(", ")}]`;
@@ -1087,18 +2706,27 @@ class JavaScriptGenerator {
         }>(kind, "Match");
         return this.emitMatchExpression(data.value, data.arms);
       }
-      case "Spawn":
-        this.unsupported(
-          expression.span,
-          "Tasks and spawn blocks are not implemented by the JavaScript backend yet.",
+      case "Spawn": {
+        const block = structPayload<{ body: Block }>(kind, "Spawn").body;
+        const previousWrap = this.currentSuccessWrap;
+        this.currentSuccessWrap = false;
+        const body = this.emitBlock(block, "value");
+        this.currentSuccessWrap = previousWrap;
+        this.useHelper("spawn");
+        return `$spawn(() => ${body})`;
+      }
+      case "Fail": {
+        const data = structPayload<{ error: TypePath; arguments: unknown }>(
+          kind,
+          "Fail",
         );
-        return "undefined";
-      case "Fail":
-        this.unsupported(
+        this.useHelper("fail");
+        return `$fail(${this.emitFailureValue(
+          data.error,
+          data.arguments,
           expression.span,
-          "Fallible error construction is not implemented by the JavaScript backend yet.",
-        );
-        return "undefined";
+        )})`;
+      }
       case "Panic": {
         const message = structPayload<{ message: Expr }>(kind, "Panic").message;
         this.useHelper("panic");
@@ -1124,8 +2752,14 @@ class JavaScriptGenerator {
         const raw = payloadOf(literal);
         const value = stripIntegerSuffix(String(raw));
         const type = this.typeAt(span);
-        if (type !== undefined && BIG_INTEGER_TAGS.has(typeTag(type))) {
-          return `BigInt(${JSON.stringify(value)})`;
+        if (type !== undefined) {
+          const tag = typeTag(type);
+          if (
+            BIG_INTEGER_TAGS.has(tag) ||
+            (this.ir.integerPolicy === "arbitrary" && isArbitraryIntegerTag(tag))
+          ) {
+            return `BigInt(${JSON.stringify(value)})`;
+          }
         }
         return value;
       }
@@ -1152,6 +2786,53 @@ class JavaScriptGenerator {
         this.unsupported(span, "Unknown literal kind.");
         return "undefined";
     }
+  }
+
+  private emitFailureValue(path: TypePath, argumentsValue: unknown, span: Span): string {
+    const name = path.segments[path.segments.length - 1] ?? "";
+    const values =
+      variantOf(argumentsValue) === "Tuple"
+        ? ((payloadOf(argumentsValue) as readonly Expr[]).map((value) =>
+            this.emitExpr(value),
+          ))
+        : ((payloadOf(argumentsValue) as readonly {
+            readonly name: string;
+            readonly value: Expr;
+          }[]).map((field) => this.emitExpr(field.value)));
+
+    const item = this.hir.items.find((candidate) => candidate.name === name);
+    if (item === undefined) {
+      // Built-in nominal errors such as ParseIntError and TaskError use the
+      // same tagged shape that the collection/string helpers produce.
+      const fields = values.map((value, index) => `${index}: ${value}`);
+      return `{ $type: ${JSON.stringify(name)}${fields.length > 0 ? `, ${fields.join(", ")}` : ""} }`;
+    }
+
+    if (item.kind === "Enum") {
+      const declaration = structPayload<EnumDecl>(item.declaration, "Enum");
+      const variant = declaration.variants[0]?.name;
+      if (variant === undefined) {
+        this.unsupported(span, `Failure enum '${name}' has no constructible variant.`);
+        return "undefined";
+      }
+      const constructed = `${jsName(name)}.${objectKey(variant)}`;
+      return values.length === 0 ? constructed : `${constructed}(${values.join(", ")})`;
+    }
+
+    if (variantOf(argumentsValue) === "Struct") {
+      const fields = payloadOf(argumentsValue) as readonly {
+        readonly name: string;
+        readonly value: Expr;
+      }[];
+      const initializers = fields
+        .map(
+          (field) => `    ${objectKey(field.name)}: ${this.emitExpr(field.value)},`,
+        )
+        .join("\n");
+      return `${jsName(name)}({\n${initializers}\n})`;
+    }
+
+    return `${jsName(name)}(${values.join(", ")})`;
   }
 
   private emitIdentifier(name: string, _span: Span): string {
@@ -1208,7 +2889,11 @@ class JavaScriptGenerator {
 
     const type = this.typeAt(span);
     const tag = type === undefined ? undefined : typeTag(type);
-    if (tag !== undefined && INTEGER_TAGS.has(tag)) {
+    if (
+      tag !== undefined &&
+      (INTEGER_TAGS.has(tag) ||
+        (this.ir.integerPolicy === "arbitrary" && USIZE_TAGS.has(tag)))
+    ) {
       const wrap = data.operator.endsWith("Wrap");
       const operator = data.operator.replace(/Wrap$/, "");
       return this.emitIntegerBinary(tag, operator, left, right, wrap, span);
@@ -1274,13 +2959,8 @@ class JavaScriptGenerator {
     wrapping: boolean,
     span: Span,
   ): string {
-    if (this.ir.integerPolicy === "arbitrary" && !wrapping) {
-      this.unsupported(
-        span,
-        "The 'arbitrary' integer policy is not implemented by the JavaScript backend yet.",
-      );
-    }
-    const big = BIG_INTEGER_TAGS.has(tag);
+    const arbitrary = this.ir.integerPolicy === "arbitrary";
+    const big = BIG_INTEGER_TAGS.has(tag) || (arbitrary && isArbitraryIntegerTag(tag));
     const checked =
       !wrapping && this.ir.integerPolicy === "safe-checked";
     let raw: string;
@@ -1317,6 +2997,17 @@ class JavaScriptGenerator {
         return "undefined";
     }
 
+    if (arbitrary) {
+      if (!wrapping) {
+        return raw;
+      }
+      const width = integerWidth(tag);
+      if (width !== undefined) {
+        return `BigInt.as${width.signed ? "Int" : "Uint"}N(${width.width}, ${raw})`;
+      }
+      return raw;
+    }
+
     if (checked) {
       const helper = `checked_${tag.toLowerCase()}` as HelperName;
       if (HELPER_ORDER.includes(helper)) {
@@ -1350,11 +3041,8 @@ class JavaScriptGenerator {
     if (tag === "Usize" || tag === "Isize") {
       return value;
     }
-    if (this.ir.integerPolicy === "arbitrary" && INTEGER_TAGS.has(tag)) {
-      this.unsupported(
-        span,
-        "The 'arbitrary' integer policy is not implemented by the JavaScript backend yet.",
-      );
+    if (this.ir.integerPolicy === "arbitrary" && isArbitraryIntegerTag(tag)) {
+      return value;
     }
     if (this.ir.integerPolicy === "safe-checked" && INTEGER_TAGS.has(tag)) {
       const checked = `checked_${tag.toLowerCase()}` as HelperName;
@@ -1374,6 +3062,7 @@ class JavaScriptGenerator {
   private emitCall(
     data: { readonly callee: Expr; readonly arguments: readonly Expr[] },
     span: Span,
+    typeArguments?: readonly AstType[],
   ): string {
     const args = data.arguments.map((argument) => this.emitExpr(argument));
     const calleeKind = variantOf(data.callee.kind);
@@ -1417,7 +3106,13 @@ class JavaScriptGenerator {
         data.callee.kind,
         "Member",
       );
-      const emitted = this.emitMethodCall(member.target, member.member, args, span);
+      const emitted = this.emitMethodCall(
+        member.target,
+        member.member,
+        args,
+        span,
+        typeArguments,
+      );
       if (emitted !== undefined) {
         return emitted;
       }
@@ -1425,8 +3120,15 @@ class JavaScriptGenerator {
     }
 
     if (calleeKind === "TypeArguments") {
-      const target = structPayload<{ target: Expr }>(data.callee.kind, "TypeArguments");
-      return this.emitCall({ callee: target.target, arguments: data.arguments }, span);
+      const target = structPayload<{
+        readonly target: Expr;
+        readonly arguments: readonly AstType[];
+      }>(data.callee.kind, "TypeArguments");
+      return this.emitCall(
+        { callee: target.target, arguments: data.arguments },
+        span,
+        target.arguments,
+      );
     }
 
     return `${this.emitExpr(data.callee)}(${args.join(", ")})`;
@@ -1437,16 +3139,58 @@ class JavaScriptGenerator {
     method: string,
     args: readonly string[],
     span: Span,
+    typeArguments?: readonly AstType[],
   ): string | undefined {
     const receiverType = this.typeAt(receiver.span);
     const tag = receiverType === undefined ? undefined : typeTag(receiverType);
     const target = this.emitExpr(receiver);
 
+    // Built-in namespace constructors: `Channel.create<T>()` and
+    // `bytes.new(length)`. These only appear when the namespace identifier
+    // carries no value annotation, so user values named `Channel`/`bytes`
+    // still emit through the ordinary paths.
+    if (
+      receiverType === undefined &&
+      method === "create" &&
+      variantOf(receiver.kind) === "Identifier" &&
+      (payloadOf(receiver.kind) as string) === "Channel"
+    ) {
+      this.useHelper("channel");
+      // TypeScript needs the explicit type argument: `$channel()` with no
+      // inference site would widen to `AstraChannel<unknown>` and fail to
+      // match declared `Channel<T>` parameters. JavaScript erases generics
+      // and keeps the bare call.
+      if (this.isTs && typeArguments !== undefined && typeArguments.length > 0) {
+        const rendered = typeArguments
+          .map((argument) => this.astType(argument, span))
+          .join(", ");
+        return `$channel<${rendered}>()`;
+      }
+      return "$channel()";
+    }
+    if (
+      receiverType === undefined &&
+      method === "new" &&
+      variantOf(receiver.kind) === "Identifier" &&
+      (payloadOf(receiver.kind) as string) === "bytes"
+    ) {
+      this.useHelper("bytesNew");
+      return `$bytesNew(${args[0] ?? "0"})`;
+    }
+
     if (method === "len") {
+      if (this.ir.integerPolicy === "arbitrary") {
+        this.useHelper("lenBig");
+        return `$lenBig(${target})`;
+      }
       this.useHelper("len");
       return `$len(${target})`;
     }
     if (method === "is_empty") {
+      if (this.ir.integerPolicy === "arbitrary") {
+        this.useHelper("lenBig");
+        return `($lenBig(${target}) === 0n)`;
+      }
       this.useHelper("len");
       return `($len(${target}) === 0)`;
     }
@@ -1466,8 +3210,76 @@ class JavaScriptGenerator {
       return `$mapInsert(${target}, ${args[0] ?? "undefined"}, ${args[1] ?? "undefined"})`;
     }
     if (method === "to_int" && tag === "Str") {
+      if (this.ir.integerPolicy === "arbitrary") {
+        this.useHelper("parseIntBig");
+        return `$parseIntBig(${target})`;
+      }
       this.useHelper("parseInt");
       return `$parseInt(${target})`;
+    }
+    if (tag === "Str") {
+      switch (method) {
+        case "char_count":
+          this.useHelper("charCount");
+          return this.ir.integerPolicy === "arbitrary"
+            ? `BigInt($charCount(${target}))`
+            : `$charCount(${target})`;
+        case "bytes":
+          this.useHelper("strBytes");
+          return `$strBytes(${target})`;
+        case "chars":
+          this.useHelper("strChars");
+          return `$strChars(${target})`;
+        case "byte_at":
+          this.useHelper("byteAt");
+          return `$byteAt(${target}, ${args[0] ?? "0"})`;
+        case "char_at":
+          this.useHelper("charAt");
+          return `$charAt(${target}, ${args[0] ?? "0"})`;
+        case "slice":
+          this.useHelper("strSlice");
+          return `$strSlice(${target}, ${args[0] ?? "0"}, ${args[1] ?? "0"})`;
+        default:
+          break;
+      }
+    }
+    if (tag === "Named") {
+      const named = payloadOf(receiverType) as readonly [string, ...unknown[]];
+      if (named[0] === "Task") {
+        switch (method) {
+          case "join": {
+            this.useHelper("taskJoin");
+            const emitted = `$taskJoin(${target})`;
+            if (this.isTs) {
+              const resultType = this.typeAt(span);
+              if (resultType !== undefined) {
+                return `${emitted} as unknown as ${semanticTypeToTs(resultType, this.ir.integerPolicy, this.optionStyle)}`;
+              }
+            }
+            return emitted;
+          }
+          case "cancel":
+            this.useHelper("taskCancel");
+            return `$taskCancel(${target})`;
+          default:
+            break;
+        }
+      }
+      if (named[0] === "Channel") {
+        switch (method) {
+          case "send":
+            this.useHelper("channel");
+            return `$channelSend(${target}, ${args[0] ?? "undefined"})`;
+          case "receive":
+            this.useHelper("channel");
+            return `$channelReceive(${target})`;
+          case "close":
+            this.useHelper("channel");
+            return `$channelClose(${target})`;
+          default:
+            break;
+        }
+      }
     }
     if (tag === "Option") {
       switch (method) {
@@ -1478,8 +3290,24 @@ class JavaScriptGenerator {
         case "unwrap":
           this.useHelper("unwrapOption");
           return `$unwrapOption(${target})`;
-        case "unwrap_or":
+        case "unwrap_or": {
+          if (receiverType !== undefined) {
+            // A typed arrow resets TypeScript's initializer narrowing (a
+            // `const` bound to `$none` is flow-pinned to the `false` member,
+            // which would poison the discriminant check). The cast is erased;
+            // runtime evaluation is identical.
+            const optionText = semanticTypeToTs(
+              receiverType,
+              this.ir.integerPolicy,
+              this.optionStyle,
+            );
+            const fallback = args[0] ?? "undefined";
+            return this.isTs
+              ? `((o: ${optionText}) => o.$option ? o.value : ${fallback})(${target})`
+              : `(${target}.$option ? ${target}.value : ${fallback})`;
+          }
           return `(${target}.$option ? ${target}.value : ${args[0] ?? "undefined"})`;
+        }
         default:
           break;
       }
@@ -1493,8 +3321,18 @@ class JavaScriptGenerator {
         case "unwrap":
           this.useHelper("unwrapResult");
           return `$unwrapResult(${target})`;
-        case "unwrap_or":
-          return `(${target}.ok ? ${target}.value : ${args[0] ?? "undefined"})`;
+        case "unwrap_or": {
+          const fallback = args[0] ?? "undefined";
+          if (receiverType !== undefined && this.isTs) {
+            const resultText = semanticTypeToTs(
+              receiverType,
+              this.ir.integerPolicy,
+              this.optionStyle,
+            );
+            return `((o: ${resultText}) => o.ok ? o.value : ${fallback})(${target})`;
+          }
+          return `(${target}.ok ? ${target}.value : ${fallback})`;
+        }
         case "error":
           this.useHelper("resultError");
           return `$resultError(${target})`;
@@ -1530,11 +3368,8 @@ class JavaScriptGenerator {
       return "undefined";
     }
     if (kind === "checked") {
-      this.unsupported(
-        span,
-        "Checked integer methods are not implemented by the JavaScript backend yet.",
-      );
-      return "undefined";
+      this.useHelper("checkedInteger");
+      return `$checkedInteger(${JSON.stringify(tag.toLowerCase())}, ${JSON.stringify(operation)}, ${receiver}, ${argument})`;
     }
     const operator =
       operation === "add" ? "Add" : operation === "sub" ? "Subtract" : operation === "mul" ? "Multiply" : "Divide";
@@ -1660,14 +3495,31 @@ class JavaScriptGenerator {
     }
 
     const temporary = this.temporary("match");
-    const lines = [`const ${temporary} = ${this.emitExpr(value)};`];
+    this.useHelper("err");
+    const rootSemantic = this.typeAt(value.span);
+    const lines: string[] = this.isTs
+      ? [
+          `let ${temporary} = ${this.emitExpr(value)} as unknown as $Dyn;`,
+          `if (${temporary} !== null && ${temporary} !== undefined && ${temporary}.$failure) ${temporary} = $err(${temporary}.error);`,
+        ]
+      : [
+          `let ${temporary} = ${this.emitExpr(value)};`,
+          `if (${temporary} && ${temporary}.$failure) ${temporary} = $err(${temporary}.error);`,
+        ];
+    if (this.isTs) {
+      this.useLooseType("$Dyn");
+    }
     let hasCatchAll = false;
 
     for (const arm of arms) {
       if (hasCatchAll) {
         continue;
       }
-      const pattern = this.lowerPattern(arm.pattern, temporary);
+      const bindingType: PatternBindingType | undefined =
+        this.isTs && rootSemantic !== undefined
+          ? { kind: "semantic", ty: rootSemantic }
+          : undefined;
+      const pattern = this.lowerPattern(arm.pattern, temporary, bindingType);
       const body =
         variantOf(arm.body) === "Expr"
           ? `return ${this.emitExpr(payloadOf(arm.body) as Expr)};`
@@ -1882,11 +3734,123 @@ class JavaScriptGenerator {
   private lowerPattern(
     pattern: Pattern,
     value: string,
+    bindingType?: PatternBindingType,
   ): { readonly checks: readonly string[]; readonly bindings: readonly string[] } {
     const checks: string[] = [];
     const bindings: string[] = [];
-    this.lowerPatternInto(pattern, value, checks, bindings);
+    this.lowerPatternInto(pattern, value, checks, bindings, bindingType);
     return { checks, bindings };
+  }
+
+  /** Renders a pattern binding's TypeScript type, when it can be resolved. */
+  private renderBindingType(
+    bindingType: PatternBindingType | undefined,
+    span: Span,
+  ): string | undefined {
+    if (bindingType === undefined) {
+      return undefined;
+    }
+    return bindingType.kind === "semantic"
+      ? semanticTypeToTs(bindingType.ty, this.ir.integerPolicy, this.optionStyle)
+      : this.astType(bindingType.ty, span);
+  }
+
+  private tupleElementBinding(
+    bindingType: PatternBindingType | undefined,
+    index: number,
+  ): PatternBindingType | undefined {
+    if (bindingType === undefined || bindingType.kind !== "semantic") {
+      return undefined;
+    }
+    const tag = typeTag(bindingType.ty);
+    if (tag === "Tuple") {
+      const element = (typePayload(bindingType.ty) as readonly SemanticType[])[index];
+      return element === undefined ? undefined : { kind: "semantic", ty: element };
+    }
+    if (tag === "Array" || tag === "Slice") {
+      return { kind: "semantic", ty: typePayload(bindingType.ty) as SemanticType };
+    }
+    if (tag === "FixedArray") {
+      const element = (typePayload(bindingType.ty) as readonly [SemanticType, number])[0];
+      return element === undefined ? undefined : { kind: "semantic", ty: element };
+    }
+    return undefined;
+  }
+
+  private optionElementBinding(
+    bindingType: PatternBindingType | undefined,
+  ): PatternBindingType | undefined {
+    if (bindingType === undefined) {
+      return undefined;
+    }
+    if (bindingType.kind === "semantic") {
+      if (typeTag(bindingType.ty) !== "Option") {
+        return undefined;
+      }
+      const element = typePayload(bindingType.ty) as SemanticType;
+      return { kind: "semantic", ty: element };
+    }
+    const path = astPath(bindingType.ty);
+    if (path === undefined || path.segments[path.segments.length - 1] !== "Option") {
+      return undefined;
+    }
+    const element = path.arguments[0];
+    return element === undefined ? undefined : { kind: "ast", ty: element };
+  }
+
+  private resultElementBinding(
+    bindingType: PatternBindingType | undefined,
+    which: 0 | 1,
+  ): PatternBindingType | undefined {
+    if (bindingType === undefined) {
+      return undefined;
+    }
+    if (bindingType.kind === "semantic") {
+      if (typeTag(bindingType.ty) !== "Result") {
+        return undefined;
+      }
+      const element = (typePayload(bindingType.ty) as readonly [SemanticType, SemanticType])[which];
+      return element === undefined ? undefined : { kind: "semantic", ty: element };
+    }
+    const path = astPath(bindingType.ty);
+    if (path === undefined || path.segments[path.segments.length - 1] !== "Result") {
+      return undefined;
+    }
+    const element = path.arguments[which];
+    return element === undefined ? undefined : { kind: "ast", ty: element };
+  }
+
+  private declaredFieldBinding(
+    bindingType: PatternBindingType | undefined,
+    name: string,
+    index: number,
+    kind: "struct" | "enum",
+    variant?: string,
+  ): PatternBindingType | undefined {
+    if (bindingType === undefined) {
+      return undefined;
+    }
+    const item = this.hir.items.find((candidate) => candidate.name === name);
+    if (item === undefined) {
+      return undefined;
+    }
+    if (kind === "enum" && item.kind === "Enum") {
+      const declaration = structPayload<EnumDecl>(item.declaration, "Enum");
+      const target = declaration.variants.find((entry) => entry.name === variant);
+      const field = target?.fields?.[index];
+      return field === undefined ? undefined : { kind: "ast", ty: field.ty };
+    }
+    if (kind === "struct" && item.kind === "Struct") {
+      const declaration = structPayload<StructDecl>(item.declaration, "Struct");
+      const fields = declaration.fields;
+      if (variantOf(fields) === "Named") {
+        const field = (payloadOf(fields) as readonly { readonly ty: AstType }[])[index];
+        return field === undefined ? undefined : { kind: "ast", ty: field.ty };
+      }
+      const field = (payloadOf(fields) as readonly AstType[])[index];
+      return field === undefined ? undefined : { kind: "ast", ty: field };
+    }
+    return undefined;
   }
 
   private lowerPatternInto(
@@ -1894,6 +3858,7 @@ class JavaScriptGenerator {
     value: string,
     checks: string[],
     bindings: string[],
+    bindingType?: PatternBindingType,
   ): void {
     const kind = pattern.kind;
     const tag = variantOf(kind);
@@ -1909,7 +3874,14 @@ class JavaScriptGenerator {
           checks.push(`${value}.$option === false`);
           return;
         }
-        bindings.push(`const ${jsName(name)} = ${value};`);
+        const rendered = this.isTs
+          ? this.renderBindingType(bindingType, pattern.span)
+          : undefined;
+        bindings.push(
+          rendered === undefined
+            ? `const ${jsName(name)} = ${value};`
+            : `const ${jsName(name)} = ${value} as ${rendered};`,
+        );
         return;
       }
       case "Literal": {
@@ -1924,7 +3896,13 @@ class JavaScriptGenerator {
         checks.push(`Array.isArray(${value})`);
         checks.push(`${value}.length === ${items.length}`);
         items.forEach((item, index) => {
-          this.lowerPatternInto(item, `${value}[${index}]`, checks, bindings);
+          this.lowerPatternInto(
+            item,
+            `${value}[${index}]`,
+            checks,
+            bindings,
+            this.tupleElementBinding(bindingType, index),
+          );
         });
         return;
       }
@@ -1938,7 +3916,13 @@ class JavaScriptGenerator {
           checks.push(`${value}.$option === true`);
           const argument = data.arguments[0];
           if (argument !== undefined) {
-            this.lowerPatternInto(argument, `${value}.value`, checks, bindings);
+            this.lowerPatternInto(
+              argument,
+              `${value}.value`,
+              checks,
+              bindings,
+              this.optionElementBinding(bindingType),
+            );
           }
           return;
         }
@@ -1951,25 +3935,46 @@ class JavaScriptGenerator {
               `${value}.${name === "Ok" ? "value" : "error"}`,
               checks,
               bindings,
+              this.resultElementBinding(bindingType, name === "Ok" ? 0 : 1),
             );
           }
           return;
         }
         checks.push(`${value} !== null && ${value}.$type === ${JSON.stringify(name)}`);
         data.arguments.forEach((argument, index) => {
-          this.lowerPatternInto(argument, `${value}[${index}]`, checks, bindings);
+          this.lowerPatternInto(
+            argument,
+            `${value}[${index}]`,
+            checks,
+            bindings,
+            this.declaredFieldBinding(bindingType, name, index, "struct"),
+          );
         });
         return;
       }
       case "Variant": {
         const data = structPayload<{
+          path: TypePath;
           variant: string;
           arguments: readonly Pattern[] | null;
         }>(kind, "Variant");
         checks.push(`${value} !== null && ${value}.$tag === ${JSON.stringify(data.variant)}`);
         if (data.arguments !== null) {
+          const enumName = data.path.segments[data.path.segments.length - 1] ?? "";
           data.arguments.forEach((argument, index) => {
-            this.lowerPatternInto(argument, `${value}[${index}]`, checks, bindings);
+            this.lowerPatternInto(
+              argument,
+              `${value}[${index}]`,
+              checks,
+              bindings,
+              this.declaredFieldBinding(
+                bindingType,
+                enumName,
+                index,
+                "enum",
+                data.variant,
+              ),
+            );
           });
         }
         return;
@@ -2006,8 +4011,24 @@ class JavaScriptGenerator {
 
 /** Generates readable JavaScript ESM for one typed module. */
 export function generateJavaScript(request: CodegenRequest): CodegenResult {
+  return generateModule({ ...request, backend: "js" });
+}
+
+/**
+ * Generates ESM for one typed module in the requested backend language.
+ *
+ * Both backends share one emission pipeline so runtime semantics can never
+ * drift: the TypeScript backend only layers explicit types on top of the
+ * JavaScript the pipeline already produces.
+ */
+export function generateModule(request: CodegenRequest): CodegenResult {
   const ir = parseModuleIr(request.ir);
-  return new JavaScriptGenerator(ir).generate();
+  return new JavaScriptGenerator(
+    ir,
+    request.sourceText,
+    request.moduleSpecifiers,
+    request.backend === "ts" ? "ts" : "js",
+  ).generate();
 }
 
 function parseModuleIr(value: unknown): ModuleIr {
@@ -2039,6 +4060,631 @@ function isSequence(tag: string): boolean {
   return tag === "Array" || tag === "FixedArray" || tag === "Slice" || tag === "Bytes";
 }
 
+function taggedResultType(ok: string, error: string): string {
+  return `{ readonly $result: true; readonly ok: true; readonly value: ${ok} } | { readonly $result: true; readonly ok: false; readonly error: ${error} }`;
+}
+
+/** Walks an AST declaration looking for a reference to a built-in type path. */
+function referencesTypePath(node: unknown, name: string): boolean {
+  if (Array.isArray(node)) {
+    return node.some((child) => referencesTypePath(child, name));
+  }
+  if (node !== null && typeof node === "object") {
+    const path = (node as { readonly Path?: TypePath }).Path;
+    if (path !== undefined && Array.isArray(path.segments)) {
+      if (path.segments[path.segments.length - 1] === name) {
+        return true;
+      }
+    }
+    return Object.values(node as Record<string, unknown>).some((child) =>
+      referencesTypePath(child, name),
+    );
+  }
+  return false;
+}
+
+/**
+ * Renders a typed-AST type as TypeScript.
+ *
+ * `optionStyle` selects how language-level containers map to TypeScript:
+ * the JavaScript backend's historical `.d.ts` surface renders `Option` as
+ * `T | null` and tuples as array types, while the actual emitted runtime
+ * uses tagged records. The TypeScript backend (which type-checks the real
+ * emitted expressions) requests the object forms instead.
+ */
+function astTypeToTs(
+  type: AstType,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+  optionStyle: "null" | "objects" = "null",
+): string {
+  switch (variantOf(type.kind)) {
+    case "Unit":
+      return "void";
+    case "Array":
+    case "Slice":
+      return `${astTypeToTs(payloadOf(type.kind) as AstType, policy, optionStyle)}[]`;
+    case "FixedArray": {
+      const [element] = payloadOf(type.kind) as readonly [AstType, string];
+      return `${astTypeToTs(element, policy, optionStyle)}[]`;
+    }
+    case "Map": {
+      const [key, value] = payloadOf(type.kind) as readonly [AstType, AstType];
+      return `{ readonly $map: Array<[${astTypeToTs(key, policy, optionStyle)}, ${astTypeToTs(value, policy, optionStyle)}]> }`;
+    }
+    case "Tuple": {
+      const values = payloadOf(type.kind) as readonly AstType[];
+      const rendered = `[${values.map((value) => astTypeToTs(value, policy, optionStyle)).join(", ")}]`;
+      return optionStyle === "objects" ? `{ readonly $tuple: ${rendered} }` : rendered;
+    }
+    case "Function": {
+      const data = payloadOf(type.kind) as {
+        readonly parameters: readonly AstType[];
+        readonly return_type: AstType | null;
+      };
+      const parameters = data.parameters
+        .map((parameter, index) => `arg${index}: ${astTypeToTs(parameter, policy, optionStyle)}`)
+        .join(", ");
+      return `(${parameters}) => ${astTypeToTs(
+        data.return_type ?? { kind: "Unit", span: type.span },
+        policy,
+        optionStyle,
+      )}`;
+    }
+    case "Path": {
+      const path = payloadOf(type.kind) as TypePath;
+      const name = path.segments[path.segments.length - 1] ?? "unknown";
+      const argumentsText = path.arguments.map((argument) =>
+        astTypeToTs(argument, policy, optionStyle),
+      );
+      if (path.segments.length > 1 && optionStyle === "objects") {
+        // Namespace-qualified types keep their qualifier in TypeScript
+        // output so the reference resolves against a namespace import.
+        const qualified = path.segments.map(jsName).join(".");
+        return argumentsText.length === 0
+          ? qualified
+          : `${qualified}<${argumentsText.join(", ")}>`;
+      }
+      if (name === "Option" && argumentsText.length === 1) {
+        return optionStyle === "objects"
+          ? `{ readonly $option: true; readonly value: ${argumentsText[0]} } | { readonly $option: false }`
+          : `(${argumentsText[0]} | null)`;
+      }
+      if (name === "Result" && argumentsText.length === 2) {
+        return taggedResultType(argumentsText[0] ?? "unknown", argumentsText[1] ?? "unknown");
+      }
+      if ((name === "Array" || name === "Slice") && argumentsText.length === 1) {
+        return `${argumentsText[0]}[]`;
+      }
+      if (name === "Channel" && argumentsText.length === 1) {
+        return `AstraChannel<${argumentsText[0]}>`;
+      }
+      if (name === "Task" && argumentsText.length === 1) {
+        return `AstraTask<${argumentsText[0]}>`;
+      }
+      if (name === "FixedArray" && argumentsText.length === 1) {
+        return `${argumentsText[0]}[]`;
+      }
+      if (name === "Map" && argumentsText.length === 2) {
+        return `{ readonly $map: Array<[${argumentsText[0]}, ${argumentsText[1]}]> }`;
+      }
+      switch (name.toLowerCase()) {
+        case "i8":
+        case "i16":
+        case "i32":
+        case "u8":
+        case "u16":
+        case "u32":
+          return policy === "arbitrary" ? "bigint" : "number";
+        case "i64":
+        case "u64":
+          return "bigint";
+        case "usize":
+        case "isize":
+          return policy === "arbitrary" ? "bigint" : "number";
+        case "f32":
+        case "f64":
+          return "number";
+        case "bool":
+          return "boolean";
+        case "str":
+          return "string";
+        case "bytes":
+          return "Uint8Array";
+        case "unit":
+          return "void";
+        case "never":
+          return "never";
+        case "error":
+        case "unknown":
+          return "unknown";
+        default:
+          return argumentsText.length === 0
+            ? jsName(name)
+            : `${jsName(name)}<${argumentsText.join(", ")}>`;
+      }
+    }
+    default:
+      return "unknown";
+  }
+}
+
+/**
+ * How a pattern binding's TypeScript type is resolved while lowering match
+ * patterns: semantic types flow down from the matched value's annotation,
+ * AST types come from the declared enum/struct the pattern destructures.
+ */
+type PatternBindingType =
+  | { readonly kind: "semantic"; readonly ty: SemanticType }
+  | { readonly kind: "ast"; readonly ty: AstType };
+
+/**
+ * Renders a checked semantic type as TypeScript. Mirrors `astTypeToTs` but
+ * consumes the `astra_core::types::Type` shapes the checker annotates with,
+ * which is what pattern-binding types resolve through.
+ */
+function semanticTypeToTs(
+  type: SemanticType,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+  optionStyle: "null" | "objects" = "null",
+): string {
+  if (typeof type === "string") {
+    switch (type) {
+      case "I8":
+      case "I16":
+      case "I32":
+      case "U8":
+      case "U16":
+      case "U32":
+        // Under the arbitrary policy these values are `bigint` at runtime
+        // (the same rule the literal/arithmetic emission uses).
+        return policy === "arbitrary" ? "bigint" : "number";
+      case "F32":
+      case "F64":
+        return "number";
+      case "I64":
+      case "U64":
+        return "bigint";
+      case "Usize":
+      case "Isize":
+        return policy === "arbitrary" ? "bigint" : "number";
+      case "Bool":
+        return "boolean";
+      case "Str":
+        return "string";
+      case "Bytes":
+        return "Uint8Array";
+      case "Unit":
+        return "void";
+      case "Never":
+        return "never";
+      case "Error":
+      case "Unknown":
+      default:
+        return "unknown";
+    }
+  }
+  const tag = typeTag(type);
+  const payload = typePayload(type);
+  switch (tag) {
+    case "Option": {
+      const inner = semanticTypeToTs(payload as SemanticType, policy, optionStyle);
+      return optionStyle === "objects"
+        ? `{ readonly $option: true; readonly value: ${inner} } | { readonly $option: false }`
+        : `(${inner} | null)`;
+    }
+    case "Result": {
+      const [ok, error] = payload as readonly [SemanticType, SemanticType];
+      return taggedResultType(
+        semanticTypeToTs(ok ?? "Unknown", policy, optionStyle),
+        semanticTypeToTs(error ?? "Unknown", policy, optionStyle),
+      );
+    }
+    case "Array":
+    case "Slice":
+      return `${semanticTypeToTs(payload as SemanticType, policy, optionStyle)}[]`;
+    case "FixedArray": {
+      const [element] = payload as readonly [SemanticType, number];
+      return `${semanticTypeToTs(element ?? "Unknown", policy, optionStyle)}[]`;
+    }
+    case "Map": {
+      const [key, value] = payload as readonly [SemanticType, SemanticType];
+      return `{ readonly $map: Array<[${semanticTypeToTs(key ?? "Unknown", policy, optionStyle)}, ${semanticTypeToTs(value ?? "Unknown", policy, optionStyle)}]> }`;
+    }
+    case "Tuple": {
+      const values = payload as readonly SemanticType[];
+      const rendered = `[${values.map((value) => semanticTypeToTs(value, policy, optionStyle)).join(", ")}]`;
+      return optionStyle === "objects" ? `{ readonly $tuple: ${rendered} }` : rendered;
+    }
+    case "Function": {
+      const data = payload as FunctionType;
+      const parameters = data.parameters
+        .map(
+          (parameter, index) =>
+            `arg${index}: ${semanticTypeToTs(parameter, policy, optionStyle)}`,
+        )
+        .join(", ");
+      return `(${parameters}) => ${semanticTypeToTs(data.return_type, policy, optionStyle)}`;
+    }
+    case "Named": {
+      const [name, args] = payload as readonly [string, readonly SemanticType[]];
+      const argumentsText = args.map((argument) =>
+        semanticTypeToTs(argument, policy, optionStyle),
+      );
+      if (name === "Option" && argumentsText.length === 1) {
+        return optionStyle === "objects"
+          ? `{ readonly $option: true; readonly value: ${argumentsText[0]} } | { readonly $option: false }`
+          : `(${argumentsText[0]} | null)`;
+      }
+      if (name === "Result" && argumentsText.length === 2) {
+        return taggedResultType(argumentsText[0] ?? "unknown", argumentsText[1] ?? "unknown");
+      }
+      if (
+        (name === "Array" || name === "Slice" || name === "FixedArray") &&
+        argumentsText.length === 1
+      ) {
+        return `${argumentsText[0]}[]`;
+      }
+      if (name === "Map" && argumentsText.length === 2) {
+        return `{ readonly $map: Array<[${argumentsText[0]}, ${argumentsText[1]}]> }`;
+      }
+      if (name === "Channel" && argumentsText.length === 1) {
+        return `AstraChannel<${argumentsText[0]}>`;
+      }
+      if (name === "Task" && argumentsText.length === 1) {
+        return `AstraTask<${argumentsText[0]}>`;
+      }
+      return argumentsText.length === 0
+        ? jsName(name)
+        : `${jsName(name)}<${argumentsText.join(", ")}>`;
+    }
+    case "Generic":
+      return jsName(payload as string);
+    default:
+      return "unknown";
+  }
+}
+
+function structDeclarationLines(
+  declaration: StructDecl,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+  optionStyle: "null" | "objects" = "null",
+): readonly string[] {
+  const name = jsName(declaration.name);
+  const typeParameters = declaration.type_parameters;
+  const parametersText =
+    typeParameters.length === 0 ? "" : `<${typeParameters.join(", ")}>`;
+  const declarationParametersText =
+    typeParameters.length === 0 ? "" : `<${typeParameters.join(", ")}>`;
+  const fields = declaration.fields;
+  if (variantOf(fields) === "Named") {
+    const named = payloadOf(fields) as readonly {
+      readonly name: string;
+      readonly ty: AstType;
+    }[];
+    const body = named
+      .map(
+        (field) =>
+          `  readonly ${objectKey(field.name)}: ${astTypeToTs(field.ty, policy, optionStyle)};`,
+      )
+      .join("\n");
+    const parameters = named
+      .map(
+        (field) =>
+          `${objectKey(field.name)}: ${astTypeToTs(field.ty, policy, optionStyle)}`,
+      )
+      .join("; ");
+    return [
+      `interface ${name}${parametersText} {`,
+      `  readonly $type: ${JSON.stringify(declaration.name)};`,
+      body,
+      "}",
+      `declare const ${name}: ${declarationParametersText === "" ? "" : `${declarationParametersText} `}(fields: { ${parameters} }) => ${name}${parametersText};`,
+    ];
+  }
+
+  const tuple = payloadOf(fields) as readonly AstType[];
+  const body = tuple
+    .map(
+      (field, index) =>
+        `  readonly ${index}: ${astTypeToTs(field, policy, optionStyle)};`,
+    )
+    .join("\n");
+  const parameters = tuple
+    .map(
+      (field, index) =>
+        `value${index}: ${astTypeToTs(field, policy, optionStyle)}`,
+    )
+    .join(", ");
+  return [
+    `interface ${name}${parametersText} {`,
+    `  readonly $type: ${JSON.stringify(declaration.name)};`,
+    body,
+    "}",
+    `declare const ${name}: ${declarationParametersText === "" ? "" : `${declarationParametersText} `}(${parameters}) => ${name}${parametersText};`,
+  ];
+}
+
+function enumDeclarationLines(
+  declaration: EnumDecl,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+  optionStyle: "null" | "objects" = "null",
+): readonly string[] {
+  const name = jsName(declaration.name);
+  const typeParameters = declaration.type_parameters;
+  const parametersText =
+    typeParameters.length === 0 ? "" : `<${typeParameters.join(", ")}>`;
+  const variants = declaration.variants.map((variant) => {
+    const fields = variant.fields ?? [];
+    const payload = fields
+      .map(
+        (field, index) =>
+          `readonly ${index}: ${astTypeToTs(field.ty, policy, optionStyle)};`,
+      )
+      .join(" ");
+    return `{ readonly $enum: ${JSON.stringify(declaration.name)}; readonly $tag: ${JSON.stringify(variant.name)};${payload.length > 0 ? ` ${payload}` : ""} }`;
+  });
+  const members = declaration.variants
+    .map((variant, index) => {
+      const fields = variant.fields ?? [];
+      const variantType = variants[index];
+      if (fields.length === 0) {
+        return `  readonly ${objectKey(variant.name)}: ${variantType};`;
+      }
+      const parameters = fields
+        .map(
+          (field, index) =>
+            `value${index}: ${astTypeToTs(field.ty, policy, optionStyle)}`,
+        )
+        .join(", ");
+      return `  readonly ${objectKey(variant.name)}: ${declarationParameters(typeParameters)}(${parameters}) => ${variantType};`;
+    })
+    .join("\n");
+  return [
+    `type ${name}${parametersText} = ${variants.length === 0 ? "never" : variants.join(" | ")};`,
+    `declare const ${name}: {`,
+    members,
+    "};",
+  ];
+}
+
+function declarationParameters(typeParameters: readonly string[]): string {
+  return typeParameters.length === 0 ? "" : `<${typeParameters.join(", ")}> `;
+}
+
+function scriptArtifactPath(modulePath: string, name: string): string {
+  return `${modulePath.replace(/\.ns$/i, "")}.${name}.js`;
+}
+
+function scriptDeclarations(
+  block: ScriptBlockDecl,
+  policy: "wrapping" | "safe-checked" | "arbitrary",
+): string {
+  const lines = [
+    `// Generated declarations for ${block.name} (${block.language} script block).`,
+    "",
+  ];
+  for (const exported of block.exports) {
+    const parameters = exported.parameters
+      .map(
+        (parameter) =>
+          `${jsName(parameter.name)}: ${astTypeToTs(parameter.ty, policy)}`,
+      )
+      .join(", ");
+    const returnType = astTypeToTs(
+      exported.return_type ?? { kind: "Unit", span: exported.span },
+      policy,
+    );
+    lines.push(
+      `export declare function ${jsName(exported.name)}(${parameters}): ${returnType};`,
+    );
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+function scriptModuleCode(modulePath: string, block: ScriptBlockDecl): string {
+  const header = [
+    `// Generated by Neo Astra from ${modulePath} script '${block.name}'.`,
+    "// Target: JavaScript ESM.",
+  ].join("\n");
+  const body = block.raw_source.endsWith("\n")
+    ? block.raw_source
+    : `${block.raw_source}\n`;
+  return `${header}\n${body}`;
+}
+
+function hasEsmExport(source: string, name: string): boolean {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const patterns = [
+    new RegExp(`\\bexport\\s+(?:async\\s+)?function\\s+${escaped}\\b`),
+    new RegExp(`\\bexport\\s+(?:const|let|var)\\s+${escaped}\\b`),
+    new RegExp(`\\bexport\\s*\\{[^}]*\\b${escaped}\\b[^}]*\\}`),
+  ];
+  return patterns.some((pattern) => pattern.test(source));
+}
+
+function astPath(type: AstType): TypePath | undefined {
+  if (variantOf(type.kind) !== "Path") {
+    return undefined;
+  }
+  return payloadOf(type.kind) as TypePath;
+}
+
+function isOptionType(type: AstType | undefined): boolean {
+  if (type === undefined) {
+    return false;
+  }
+  const path = astPath(type);
+  return path?.segments[path.segments.length - 1] === "Option";
+}
+
+function astBoundaryToJavaScript(expression: string, type: AstType): string {
+  if (isOptionType(type)) {
+    return `(${expression}.$option ? ${expression}.value : null)`;
+  }
+  return expression;
+}
+
+function astBoundaryFromJavaScript(
+  expression: string,
+  type: AstType | undefined,
+  policy: "wrapping" | "safe-checked" | "arbitrary" = "wrapping",
+  optionStyle: "null" | "objects" = "null",
+): string {
+  if (isOptionType(type)) {
+    if (optionStyle === "objects" && type !== undefined) {
+      // The script ABI carries options as `(T | null)`; wrap the boundary
+      // call with an explicitly typed converter for TypeScript output.
+      const nullStyle = astTypeToTs(type, policy, "null");
+      return `((value: ${nullStyle} | undefined) => value === null || value === undefined ? $none : $some(value))(${expression})`;
+    }
+    return `((value) => value === null || value === undefined ? $none : $some(value))(${expression})`;
+  }
+  return expression;
+}
+
+function scriptErrorTypeName(path: TypePath | undefined): string {
+  return path?.segments[path.segments.length - 1] ?? "ScriptError";
+}
+
+function createScriptSourceMap(
+  code: string,
+  sourcePath: string,
+  sourceText: string,
+  bodySpan: Span,
+): string {
+  const headerLines = 2;
+  const bodyStartLine = lineAt(sourceText, bodySpan.start);
+  const sourceLineCount = sourceText.split("\n").length;
+  const generatedLines = code.split("\n");
+  let previousSourceLine = 0;
+  let previousSourceColumn = 0;
+  const mappings = generatedLines.map((_, generatedLine) => {
+    if (generatedLine < headerLines) {
+      return "";
+    }
+    const sourceLine = bodyStartLine + (generatedLine - headerLines);
+    if (sourceLine >= sourceLineCount) {
+      return "";
+    }
+    const segment =
+      encodeVlq(0) +
+      encodeVlq(0) +
+      encodeVlq(sourceLine - previousSourceLine) +
+      encodeVlq(0 - previousSourceColumn);
+    previousSourceLine = sourceLine;
+    previousSourceColumn = 0;
+    return segment;
+  });
+
+  return JSON.stringify({
+    version: 3,
+    sources: [sourcePath],
+    sourcesContent: [sourceText],
+    names: [],
+    mappings: mappings.join(";"),
+  });
+}
+
+function createSourceMap(
+  code: string,
+  sourcePath: string,
+  sourceText: string,
+  anchors: readonly { readonly text: string; readonly span: Span }[],
+): string {
+  const mappedLines = new Map<number, number>();
+  let searchFrom = 0;
+  for (const anchor of anchors) {
+    const index = code.indexOf(anchor.text, searchFrom);
+    if (index < 0) {
+      continue;
+    }
+    searchFrom = index + anchor.text.length;
+    const generatedLine = lineAt(code, index);
+    if (!mappedLines.has(generatedLine)) {
+      mappedLines.set(generatedLine, lineAt(sourceText, anchor.span.start));
+    }
+  }
+
+  const lines = code.split("\n");
+  let previousSource = 0;
+  let previousSourceLine = 0;
+  let previousSourceColumn = 0;
+  const mappings = lines.map((_, generatedLine) => {
+    const sourceLine = mappedLines.get(generatedLine);
+    if (sourceLine === undefined) {
+      return "";
+    }
+    const segment =
+      encodeVlq(0) +
+      encodeVlq(0 - previousSource) +
+      encodeVlq(sourceLine - previousSourceLine) +
+      encodeVlq(0 - previousSourceColumn);
+    previousSource = 0;
+    previousSourceLine = sourceLine;
+    previousSourceColumn = 0;
+    return segment;
+  });
+
+  return JSON.stringify({
+    version: 3,
+    sources: [sourcePath],
+    sourcesContent: [sourceText],
+    names: [],
+    mappings: mappings.join(";"),
+  });
+}
+
+function lineAt(text: string, offset: number): number {
+  let line = 0;
+  for (let index = 0; index < offset && index < text.length; index += 1) {
+    if (text[index] === "\n") {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+const BASE64_VLQ =
+  "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+function encodeVlq(value: number): string {
+  let remaining = value < 0 ? ((-value) << 1) | 1 : value << 1;
+  let output = "";
+  do {
+    let digit = remaining & 31;
+    remaining >>>= 5;
+    if (remaining > 0) {
+      digit |= 32;
+    }
+    output += BASE64_VLQ[digit] ?? "";
+  } while (remaining > 0);
+  return output;
+}
+
+function containsVariant(value: unknown, variant: string): boolean {
+  if (Array.isArray(value)) {
+    return value.some((entry) => containsVariant(entry, variant));
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, variant)) {
+    return true;
+  }
+  return Object.values(value).some((entry) => containsVariant(entry, variant));
+}
+
+function isResultReturnType(type: AstType | null | undefined): boolean {
+  if (type === null || type === undefined) {
+    return false;
+  }
+  if (variantOf(type.kind) !== "Path") {
+    return false;
+  }
+  const path = payloadOf(type.kind) as TypePath;
+  return path.segments[path.segments.length - 1] === "Result";
+}
+
 function stripUnderscores(value: string): string {
   return value.replaceAll("_", "");
 }
@@ -2057,6 +4703,16 @@ function jsName(name: string): string {
 
 function exportName(name: string): string {
   return IDENTIFIER.test(name) ? name : JSON.stringify(name);
+}
+
+function formatImportBindings(bindings: readonly ImportBinding[]): string {
+  return bindings
+    .map((binding) =>
+      binding.imported === binding.local
+        ? jsName(binding.local)
+        : `${exportName(binding.imported)} as ${jsName(binding.local)}`,
+    )
+    .join(", ");
 }
 
 function objectKey(name: string): string {

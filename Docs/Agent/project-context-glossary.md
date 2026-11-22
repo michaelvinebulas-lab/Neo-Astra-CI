@@ -428,7 +428,7 @@ As of 2026-10-25:
 - `Docs/spec-v0.1.md` is the normative v0.1 language specification.
 - `orchestrator/` contains the TypeScript orchestrator scaffold and npm workspace.
 - `crates/` contains the Rust core, capabilities, JSON-RPC protocol, raw Wasm boundary, and backend scaffolds.
-- Rust 1.99.1 (GNU toolchain), Cargo, rustfmt, and clippy are installed.
+- Rust 1.99.1 (GNU toolchain), Cargo, rustfmt, and clippy are installed. `C:\msys64\ucrt64\bin` is on the user `PATH` for GNU `dlltool` (2.46.1) and `gcc` (16.1.0); without `dlltool`, `getrandom`/`windows-sys` fail to build.
 - `scripts/bootstrap.mjs` installs missing JavaScript and Rust dependencies on Windows, macOS, and Linux.
 - `npm run ci` and `.github/workflows/ci.yml` verify both workspaces and the native/Wasm boundary.
 - The lexer, parser, AST, formatter, resolver, module export surfaces, symbol tables, type checker, and cross-module type surfaces (`TYPE-003`) are implemented in `astra-core`, including `//` comment trivia and expression type annotations.

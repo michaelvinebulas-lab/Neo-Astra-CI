@@ -461,7 +461,11 @@ impl Value {
                 output.push_str(language);
                 output.push('>');
             }
-            Self::ScriptFunction { script_name, function_name, .. } => {
+            Self::ScriptFunction {
+                script_name,
+                function_name,
+                ..
+            } => {
                 output.push_str("<script function ");
                 output.push_str(script_name);
                 output.push('.');
@@ -610,12 +614,28 @@ pub fn values_equal(left: &Value, right: &Value) -> bool {
         (Value::Task(left), Value::Task(right)) => Rc::ptr_eq(left, right),
         (Value::ForeignModule(left), Value::ForeignModule(right)) => left == right,
         (
-            Value::ScriptBlock { name: l_name, language: l_lang, .. },
-            Value::ScriptBlock { name: r_name, language: r_lang, .. },
+            Value::ScriptBlock {
+                name: l_name,
+                language: l_lang,
+                ..
+            },
+            Value::ScriptBlock {
+                name: r_name,
+                language: r_lang,
+                ..
+            },
         ) => l_name == r_name && l_lang == r_lang,
         (
-            Value::ScriptFunction { script_name: l_s, function_name: l_f, .. },
-            Value::ScriptFunction { script_name: r_s, function_name: r_f, .. },
+            Value::ScriptFunction {
+                script_name: l_s,
+                function_name: l_f,
+                ..
+            },
+            Value::ScriptFunction {
+                script_name: r_s,
+                function_name: r_f,
+                ..
+            },
         ) => l_s == r_s && l_f == r_f,
         (Value::ModuleNamespace(left), Value::ModuleNamespace(right)) => left == right,
         (

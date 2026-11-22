@@ -441,6 +441,8 @@ impl<'a> Checker<'a> {
             ("ParseIntError", TypeDef::BuiltinNominal),
             ("OverflowError", TypeDef::BuiltinNominal),
             ("TaskError", TypeDef::BuiltinNominal),
+            ("ChannelError", TypeDef::BuiltinNominal),
+            ("SliceError", TypeDef::BuiltinNominal),
         ] {
             self.type_defs.entry(name.to_owned()).or_insert(def);
         }
@@ -1024,7 +1026,9 @@ impl<'a> Checker<'a> {
                     if let Some(target) = self.options.target.as_deref() {
                         let supported = match target {
                             "js" | "ts" => matches!(script.language.as_str(), "js" | "ts"),
-                            "native" | "c" | "llvm" => matches!(script.language.as_str(), "c" | "cpp"),
+                            "native" | "c" | "llvm" => {
+                                matches!(script.language.as_str(), "c" | "cpp")
+                            }
                             _ => false,
                         };
                         if !supported {
@@ -1035,7 +1039,7 @@ impl<'a> Checker<'a> {
                                     script.language
                                 ),
                                 script.span,
-                                &format!("Target '{target}' does not support '{}' script blocks.", script.language),
+                                format!("Target '{target}' does not support '{}' script blocks.", script.language),
                             );
                         }
                     }
@@ -1233,7 +1237,11 @@ impl<'a> Checker<'a> {
                 }
             }
             Type::Result(ok, err) => self.is_boundary_safe(ok) && self.is_boundary_safe(err),
-            Type::Generic(_) | Type::Function(_) | Type::Tuple(_) | Type::Map(_, _) | Type::Never => false,
+            Type::Generic(_)
+            | Type::Function(_)
+            | Type::Tuple(_)
+            | Type::Map(_, _)
+            | Type::Never => false,
             Type::Error | Type::Unknown => true,
         }
     }
@@ -1731,13 +1739,14 @@ impl<'a> Checker<'a> {
             }
             Type::Map(key, _) => (**key).clone(),
             Type::Str => Type::Str,
+            Type::Bytes => Type::U8,
             Type::Unknown | Type::Error => Type::Unknown,
             _ => {
                 self.error(
                     INVALID_OPERANDS,
                     format!("Type '{ty}' is not iterable."),
                     span,
-                    "Iterate over an array, slice, map, or str.",
+                    "Iterate over an array, slice, map, str, or bytes.",
                 );
                 Type::Error
             }
@@ -2033,15 +2042,20 @@ impl<'a> Checker<'a> {
         match &expression.kind {
             ast::ExprKind::Identifier(name) => {
                 if let Some(local) = self.lookup_local(name) {
+                    let ty = local.ty.clone();
+                    let mutable = local.mutable;
+                    self.annotate(expression.span, ty.clone());
                     return LValueInfo {
-                        ty: local.ty.clone(),
-                        mutable: local.mutable,
+                        ty,
+                        mutable,
                         errors: Vec::new(),
                     };
                 }
                 if let Some(value) = self.values.get(name) {
+                    let ty = value.ty.clone();
+                    self.annotate(expression.span, ty.clone());
                     return LValueInfo {
-                        ty: value.ty.clone(),
+                        ty,
                         mutable: false,
                         errors: Vec::new(),
                     };
@@ -2061,6 +2075,7 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Member { target, member } => {
                 let base = self.check_lvalue(target);
                 let ty = self.member_type(&base.ty, member, expression.span, None);
+                self.annotate(expression.span, ty.clone());
                 LValueInfo {
                     ty,
                     mutable: base.mutable,
@@ -2069,9 +2084,11 @@ impl<'a> Checker<'a> {
             }
             ast::ExprKind::Index { target, index } => {
                 let base = self.check_lvalue(target);
-                let index_info = self.check_expr(index, None);
+                let expected_index = expected_index_type(&base.ty);
+                let index_info = self.check_expr(index, expected_index.as_ref());
                 let tuple_index = integer_literal_value(index);
                 let ty = self.index_type(&base.ty, &index_info.ty, tuple_index, expression.span);
+                self.annotate(expression.span, ty.clone());
                 LValueInfo {
                     ty,
                     mutable: base.mutable,
@@ -2258,11 +2275,7 @@ impl<'a> Checker<'a> {
 
     fn check_index(&mut self, target: &ast::Expr, index: &ast::Expr, span: Span) -> ExprInfo {
         let target_info = self.check_expr(target, None);
-        let expected_index = match &target_info.ty {
-            Type::Array(_) | Type::Slice(_) | Type::FixedArray(_, _) => Some(Type::Usize),
-            Type::Map(key, _) => Some((**key).clone()),
-            _ => None,
-        };
+        let expected_index = expected_index_type(&target_info.ty);
         let index_info = self.check_expr(index, expected_index.as_ref());
         let tuple_index = integer_literal_value(index);
         let ty = self.index_type(&target_info.ty, &index_info.ty, tuple_index, span);
@@ -2285,6 +2298,12 @@ impl<'a> Checker<'a> {
                     self.type_mismatch(&Type::Usize, index, span);
                 }
                 (**element).clone()
+            }
+            Type::Bytes => {
+                if !index.accepts(&Type::Usize) && !index.is_opaque() {
+                    self.type_mismatch(&Type::Usize, index, span);
+                }
+                Type::U8
             }
             Type::Map(key, value) => {
                 if !key.accepts(index) && !key.is_opaque() {
@@ -2333,22 +2352,22 @@ impl<'a> Checker<'a> {
                 return self.enum_member(name, &enum_def, member, span, expected);
             }
             if let Some(namespace) = self.namespaces.get(name).cloned() {
-                if let Some(&script_mode) = self.script_modes.get(name) {
-                    if !self.mode.allows(script_mode) {
-                        self.error(
-                            MODE_REQUIREMENT,
-                            format!(
-                                "Script block '{name}' requires '{}' mode, but the active mode is '{}'.",
-                                script_mode.as_str(),
-                                self.mode.as_str()
-                            ),
-                            span,
-                            &format!(
-                                "Move the call into a {}-mode function or raise the mode.",
-                                script_mode.as_str()
-                            ),
-                        );
-                    }
+                if let Some(&script_mode) = self.script_modes.get(name)
+                    && !self.mode.allows(script_mode)
+                {
+                    self.error(
+                        MODE_REQUIREMENT,
+                        format!(
+                            "Script block '{name}' requires '{}' mode, but the active mode is '{}'.",
+                            script_mode.as_str(),
+                            self.mode.as_str()
+                        ),
+                        span,
+                        format!(
+                            "Move the call into a {}-mode function or raise the mode.",
+                            script_mode.as_str()
+                        ),
+                    );
                 }
                 if let Some(value) = namespace.members.get(member) {
                     return ExprInfo::value(value.ty.clone());
@@ -2363,6 +2382,28 @@ impl<'a> Checker<'a> {
                     "Declare the function inside the foreign module block.",
                 );
                 return ExprInfo::value(Type::Error);
+            }
+            // Built-in namespace constructors: `Channel.create<T>()` and
+            // `bytes.new(length)`. They are only recognized when the name is
+            // not shadowed by a local, enum, namespace, or user type.
+            if member == "create" && name == "Channel" && self.resolve_struct(name).is_none() {
+                return ExprInfo::value(Type::Function(FunctionType {
+                    type_parameters: vec!["T".to_owned()],
+                    parameters: Vec::new(),
+                    return_type: Box::new(Type::Named(
+                        "Channel".to_owned(),
+                        vec![Type::Generic("T".to_owned())],
+                    )),
+                    errors: Vec::new(),
+                }));
+            }
+            if member == "new" && name == "bytes" && self.resolve_struct(name).is_none() {
+                return ExprInfo::value(Type::Function(FunctionType {
+                    type_parameters: Vec::new(),
+                    parameters: vec![Type::Usize],
+                    return_type: Box::new(Type::Bytes),
+                    errors: Vec::new(),
+                }));
             }
         }
 
@@ -3836,6 +3877,17 @@ fn builtin_function(name: &str) -> Option<Type> {
     Some(Type::Function(signature))
 }
 
+/// The index type expected by indexed reads and writes for `target`, if the
+/// target supports index syntax. Sequence-like targets (arrays, slices, fixed
+/// arrays, and `bytes`) index by `usize`; maps index by their key type.
+fn expected_index_type(ty: &Type) -> Option<Type> {
+    match ty {
+        Type::Array(_) | Type::Slice(_) | Type::FixedArray(_, _) | Type::Bytes => Some(Type::Usize),
+        Type::Map(key, _) => Some((**key).clone()),
+        _ => None,
+    }
+}
+
 fn builtin_constructor_name(callee: &ast::Expr) -> Option<&str> {
     match &callee.kind {
         ast::ExprKind::Identifier(name) if matches!(name.as_str(), "Some" | "Ok" | "Err") => {
@@ -3865,6 +3917,63 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                 parameters: Vec::new(),
                 return_type: Box::new(Type::I32),
                 errors: vec![Type::Named("ParseIntError".to_owned(), Vec::new())],
+            },
+            "char_count" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Usize),
+                errors: Vec::new(),
+            },
+            "bytes" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Array(Box::new(Type::U8))),
+                errors: Vec::new(),
+            },
+            "chars" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Array(Box::new(Type::Str))),
+                errors: Vec::new(),
+            },
+            "byte_at" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: vec![Type::Usize],
+                return_type: Box::new(Type::Option(Box::new(Type::U8))),
+                errors: Vec::new(),
+            },
+            "char_at" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: vec![Type::Usize],
+                return_type: Box::new(Type::Option(Box::new(Type::Str))),
+                errors: Vec::new(),
+            },
+            "slice" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: vec![Type::Usize, Type::Usize],
+                return_type: Box::new(Type::Str),
+                errors: vec![Type::Named("SliceError".to_owned(), Vec::new())],
+            },
+            _ => return None,
+        },
+        Type::Bytes => match member {
+            "is_empty" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Bool),
+                errors: Vec::new(),
+            },
+            "len" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: Vec::new(),
+                return_type: Box::new(Type::Usize),
+                errors: Vec::new(),
+            },
+            "slice" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: vec![Type::Usize, Type::Usize],
+                return_type: Box::new(Type::Bytes),
+                errors: Vec::new(),
             },
             _ => return None,
         },
@@ -3902,6 +4011,12 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                 type_parameters: Vec::new(),
                 parameters: vec![(**key).clone()],
                 return_type: Box::new(Type::Option(value.clone())),
+                errors: Vec::new(),
+            },
+            "contains" => FunctionType {
+                type_parameters: Vec::new(),
+                parameters: vec![(**key).clone()],
+                return_type: Box::new(Type::Bool),
                 errors: Vec::new(),
             },
             "insert" => FunctionType {
@@ -3975,6 +4090,34 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
             },
             _ => return None,
         },
+        Type::Named(name, arguments) if name == "Channel" => {
+            let element = arguments.first().cloned().unwrap_or(Type::Unknown);
+            match member {
+                // `send` and `receive` are fallible: their error effect is
+                // `ChannelError` (closed channel, or a would-block operation
+                // the runtime cannot service). Runtime backends surface them
+                // as Result-shaped values, like `to_int`.
+                "send" => FunctionType {
+                    type_parameters: Vec::new(),
+                    parameters: vec![element],
+                    return_type: Box::new(Type::Unit),
+                    errors: vec![Type::Named("ChannelError".to_owned(), Vec::new())],
+                },
+                "receive" => FunctionType {
+                    type_parameters: Vec::new(),
+                    parameters: Vec::new(),
+                    return_type: Box::new(element),
+                    errors: vec![Type::Named("ChannelError".to_owned(), Vec::new())],
+                },
+                "close" => FunctionType {
+                    type_parameters: Vec::new(),
+                    parameters: Vec::new(),
+                    return_type: Box::new(Type::Unit),
+                    errors: Vec::new(),
+                },
+                _ => return None,
+            }
+        }
         _ if ty.is_integer() => match member {
             "wrapping_add" | "wrapping_sub" | "wrapping_mul" | "wrapping_div" => FunctionType {
                 type_parameters: Vec::new(),
@@ -5222,6 +5365,168 @@ fn main() {
 }
 "#,
             "NS4001",
+        );
+    }
+
+    #[test]
+    fn accepts_channel_send_receive_and_close() {
+        let source = r#"
+fn produce(channel: Channel<str>) -> () ! ChannelError {
+    channel.send("hello")!
+}
+
+fn consume(channel: Channel<str>) -> () {
+    match channel.receive() {
+        Ok(message) => println(message),
+        Err(error) => println("closed"),
+    }
+    channel.close()
+}
+
+fn main() -> i32 {
+    let channel = Channel.create<str>()
+    match produce(channel) {
+        Ok(value) => {},
+        Err(error) => {},
+    }
+    consume(channel)
+    return 0
+}
+"#;
+        assert!(check(source).is_ok(), "{source}");
+    }
+
+    #[test]
+    fn rejects_unknown_channel_members() {
+        assert_code(
+            r#"
+fn main() -> i32 {
+    let channel = Channel.create<str>()
+    channel.peek()
+    return 0
+}
+"#,
+            "NS4015",
+        );
+    }
+
+    #[test]
+    fn rejects_undeclared_channel_errors() {
+        assert_code(
+            r#"
+fn produce(channel: Channel<str>) -> () {
+    channel.send("hello")!
+}
+"#,
+            "NS4012",
+        );
+    }
+
+    #[test]
+    fn checks_string_byte_operations() {
+        let source = r#"
+fn describe(value: str) -> u8 {
+    let count = value.char_count()
+    let raw = value.bytes()
+    let characters = value.chars()
+    let first = match value.byte_at(0) {
+        Some(byte) => byte,
+        None => 0,
+    }
+    let letter = match value.char_at(0) {
+        Some(character) => character,
+        None => "",
+    }
+    let text = match value.slice(0, 1) {
+        Ok(part) => part,
+        Err(error) => "",
+    }
+    return first
+}
+"#;
+        assert!(check(source).is_ok(), "{source}");
+
+        assert_code(
+            r#"
+fn bad(value: str) -> str {
+    return value.char_count()
+}
+"#,
+            "NS4001",
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_string_operations() {
+        assert_code(
+            r#"
+fn bad(value: str) -> str {
+    return value.klingon()
+}
+"#,
+            "NS4015",
+        );
+    }
+
+    #[test]
+    fn rejects_unhandled_slice_errors() {
+        assert_code(
+            r#"
+fn bad(value: str) -> str {
+    let text = value.slice(0, 1)
+    return text
+}
+"#,
+            "NS4011",
+        );
+    }
+
+    #[test]
+    fn checks_bytes_buffers_and_indexed_writes() {
+        let source = r#"
+fn fill() -> u8 {
+    let mut buffer = bytes.new(4)
+    buffer[0] = 255
+    buffer[1] = 7
+    let index: usize = 2
+    buffer[index] = 9
+    let size = buffer.len()
+    return buffer[0]
+}
+"#;
+        assert!(check(source).is_ok(), "{source}");
+
+        assert_code(
+            r#"
+fn bad() {
+    let mut buffer = bytes.new(2)
+    buffer[0] = true
+}
+"#,
+            "NS4001",
+        );
+
+        assert_code(
+            r#"
+fn bad() {
+    let mut buffer = bytes.new(2)
+    buffer["x"] = 1
+}
+"#,
+            "NS4001",
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_bytes_members() {
+        assert_code(
+            r#"
+fn bad() -> i32 {
+    let buffer = bytes.new(2)
+    return buffer.swap()
+}
+"#,
+            "NS4015",
         );
     }
 }

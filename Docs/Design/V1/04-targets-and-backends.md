@@ -58,8 +58,8 @@ Inline `@script` blocks are target-bound. The full contract is in
 
 | Script language | `js` / `typescript` | C native | Wasm | Status |
 |---|---|---|---|---|
-| `js` | Yes | No | No | First slice |
-| `ts` | Yes, with a pinned transpiler | No | No | Planned |
+| `js` | Yes | No | No | Implemented |
+| `ts` | Yes, with a pinned transpiler | No | No | Planned (`TS-001`) |
 | `c` | No | Yes, C17 + `clang` | Deferred | Second slice |
 | `cpp` | No | Yes, behind a C ABI shim | Deferred | Second slice |
 | `python` | No | Deferred, embedded CPython | No | Post-V1 |
@@ -378,36 +378,51 @@ TypeScript backend never parses `.ns` source.
 
 1. `astra build` loads the manifest and selects a target using the precedence in
    §12.
-2. It reads `nova.entry` and sends the source to `compile`.
-3. The Rust compiler parses, resolves, checks, infers or validates the mode, and
-   returns `ModuleIr` containing the AST, HIR, type annotations, manual-memory
-   scopes, target, and integer policy.
-4. `@neo-astra/codegen-js` emits one ESM module and tree-shaken helpers.
-5. The CLI writes the module under the target `outDir` and adds a
-   `package.json` with `"type": "module"` when the out directory has none.
+2. It reads `nova.entry`, discovers reachable local modules from relative
+   imports, and sends the project sources to `check_project`.
+3. The Rust compiler resolves the project graph, checks every module, infers or
+   validates the mode, and returns one `ModuleIr` per successful module with its
+   AST, HIR, annotations, manual-memory scopes, and integer policy.
+4. `@neo-astra/codegen-js` emits one ESM module per source with rewritten
+   relative import specifiers and tree-shaken helpers.
+5. The CLI writes the modules and source maps under the target `outDir` and adds
+   a `package.json` with `"type": "module"` when the out directory has none.
 
 **Implemented**
 
 - Functions, constants, locals, `if`, `while`, `for`, blocks, `defer`, calls,
   assignments, and supported operators.
-- Fixed-width integer wrapping and `safe-checked` helpers, including `BigInt`
-  for `i64`/`u64`; tagged float values preserve `f64`/`f32` rendering, and `f32`
-  operations use `Math.fround`.
+- Fixed-width integer wrapping, `safe-checked` helpers, and the `arbitrary`
+  policy with `BigInt` for every integer type, including `usize`/`isize`;
+  `BigInt` is also used for `i64`/`u64` under the fixed policies. Tagged float
+  values preserve `f64`/`f32` rendering, and `f32` operations use `Math.fround`.
 - Arrays, structural maps, tuples, structs, enums, `Option`, `Result`, `match`,
   struct/enum/tuple patterns, and `Some`/`None`/`Ok`/`Err` patterns.
 - `print`, `println`, `dbg`, `assert`, bounds-checked indexing, collection
-  methods, string length/to-int, and option/result methods.
+  methods, string length/to-int, option/result methods, and checked integer
+  methods.
+- Recoverable failures: `!Error(...)`, `?` propagation across calls, function
+  boundary conversion to failure values, and matching a failure as `Err`.
+- Eager `spawn` tasks with `join`/`cancel`, joined-panic propagation, and
+  unjoined task panics at function-scope exit.
+- Linked multi-module output: named, default, and namespace imports; named,
+  namespace, default, and star re-exports; relative specifier rewriting.
+- Inline `@script:js` blocks emitted as separate ESM modules with validated
+  exports, `Option` boundary conversion, declared error mapping, and source maps.
+  `@script:ts` waits for `TS-001` or a pinned transpiler.
+- Line-level source maps with embedded `sourcesContent` and a
+  `sourceMappingURL` comment from `astra build`.
+- `.d.ts` declarations for generated modules and inline script modules.
 - Named/default/`pub` exports; type-only exports are erased.
 - Source-located diagnostics for unsupported constructs.
 
 **Current boundaries**
 
-- Project imports, namespace imports, and re-exports are rejected with `NS8001`.
-  Multi-module emission waits for a project-wide typed-module request.
-- Recoverable error effects, `fail`, and `?` are rejected with `NS8001`.
-- Tasks, channels, and `spawn` are rejected with `NS8001`.
-- Source maps, `.d.ts`, checked integer methods, and the `arbitrary` integer
-  policy are not implemented.
+- External/non-project imports remain compile-time errors; V1 does not yet link
+  package-provided modules.
+- Channels and a structured-concurrency scheduler are not implemented. Spawned
+  tasks run eagerly and deterministically in the current function scope.
+- Full UTF-8 byte-slice/index operations are not implemented.
 - `Option` and `Result` use tagged objects. Maps use a structural-key helper, not
   a JavaScript `Map`, so structural key equality and insertion order match the
   language contract.
