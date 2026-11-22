@@ -512,6 +512,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: \${{ matrix.os }}
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -522,6 +526,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
+          token: ''
 
       - name: Install npm for trusted publishing
         run: npm install --global npm@11
@@ -588,6 +594,9 @@ jobs:
     name: npm meta package
     needs: package
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -595,6 +604,8 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
+          token: ''
 
       - name: Install npm for trusted publishing
         run: npm install --global npm@11
