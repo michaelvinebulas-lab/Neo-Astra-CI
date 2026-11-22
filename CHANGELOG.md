@@ -6,12 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-22
+
 ### Added
 - Native Rust CLI, NoPM package manager, toolchain resolution, and JS/TS build bridge.
 
 ### Fixed
 - Packaged JS/TS builds now run when the package lives under a symlinked path,
   including macOS `/var/folders` temp directories.
+- Native `astra` and `nopm` now report the workspace version instead of a
+  hardcoded `1.0.0`, so `--version` and generated lockfiles follow the release
+  bump.
 
 ## [1.0.0] - 2026-11-06
 

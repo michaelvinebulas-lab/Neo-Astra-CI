@@ -450,7 +450,7 @@ mod tests {
         assert_eq!(index.packages[0].root, "pkg");
         assert_eq!(index.packages[0].integrity, None);
         let written = fs::read_to_string(store_index_path(directory.path())).unwrap();
-        assert!(written.contains("\"generatedBy\": \"nopm/1.0.0\""));
+        assert!(written.contains(&format!("\"generatedBy\": \"{GENERATED_BY}\"")));
         assert!(written.contains("\"root\": \"pkg\""));
         assert!(written.contains("\"integrity\": null"));
     }

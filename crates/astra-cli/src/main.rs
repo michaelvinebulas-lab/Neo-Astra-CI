@@ -20,6 +20,8 @@ use astra_toolchain::policy::parse_toolchain_policy;
 
 mod build;
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 #[derive(serde::Serialize)]
 struct ManifestInfo {
     path: String,
@@ -182,7 +184,7 @@ fn main() -> ExitCode {
     }
     match args[0].as_str() {
         "--version" | "-v" | "-V" | "version" => {
-            println!("astra 1.0.0");
+            println!("astra {VERSION}");
             ExitCode::SUCCESS
         }
         "--help" | "-h" | "help" => {
@@ -1720,7 +1722,8 @@ mod tests {
 
     #[test]
     fn version_string_is_astra() {
-        assert_eq!("astra 1.0.0", "astra 1.0.0");
+        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+        assert!(format!("astra {VERSION}").starts_with("astra "));
     }
 
     #[test]

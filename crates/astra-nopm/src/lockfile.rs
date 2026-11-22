@@ -11,8 +11,8 @@ use crate::package_id::{format_package_id, locale_cmp, parse_package_id};
 use crate::resolve::{LockPackage, Resolution};
 
 pub const LOCKFILE_NAME: &str = "core.lock.json";
-pub const GENERATED_BY: &str = "nopm/1.0.0";
-pub const COMPILER_VERSION: &str = "1.0.0";
+pub const GENERATED_BY: &str = concat!("nopm/", env!("CARGO_PKG_VERSION"));
+pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const COMPILER_API_VERSION: &str = "1.0";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -729,10 +729,9 @@ mod tests {
     #[test]
     fn formats_canonical_lockfile_shape() {
         let formatted = format_lockfile(&lockfile());
-        assert!(
-            formatted
-                .starts_with("{\n  \"lockfileVersion\": 1,\n  \"generatedBy\": \"nopm/1.0.0\",")
-        );
+        assert!(formatted.starts_with(&format!(
+            "{{\n  \"lockfileVersion\": 1,\n  \"generatedBy\": \"{GENERATED_BY}\","
+        )));
         assert!(formatted.contains("\"targets\": {\n    \"web\": {\n      \"backend\": \"js\",\n      \"mode\": \"web\"\n    }\n  }"));
         assert!(formatted.contains("\"toolchain\": null"));
         assert!(formatted.ends_with("}\n"));

@@ -20,7 +20,7 @@ use crate::resolve::{collect_descriptors, resolve_for_targets};
 use crate::store::{install_locked_packages, store_index_path};
 use crate::sys::{self, SysContext};
 
-const VERSION: &str = "1.0.0";
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const HELP: &str = "NoPM universal package manager
 
