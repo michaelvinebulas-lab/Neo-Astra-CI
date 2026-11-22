@@ -90,8 +90,9 @@ code generators stay isolated behind an on-demand Node bridge.
 
 Current checkpoints: slices 1, 2a, 2b, 2c, 3a, 3b, and 4 are accepted. The
 packaged CLI is native Cargo output, the JS/TS bridge is isolated under
-`lib/cli`, and native parity is 12/12. No `1.0.1` tag or publish happens until
-release validation is accepted and the release checklist is complete.
+`lib/cli`, and native parity is 12/12. Release validation is green on Ubuntu,
+macOS, and Windows; the `1.0.1` bump, tag, and publish await principal
+approval.
 
 ### Language v0.2 - syntax cleanup (next minor, edition 0.2)
 

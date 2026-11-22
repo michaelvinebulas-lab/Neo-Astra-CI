@@ -4,10 +4,10 @@ Single source of truth for project status, the queue, and decisions.
 Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
-**Last updated:** 2026-11-19
-**Phase:** `1.0.0` released; the native Rust CLI/NoPM port for `1.0.1` has slices 1-4 accepted. Release validation for `1.0.1` is next. Language v0.2 remains Phase 0 documentation and corpus only.
-**Master:** private `master` on the native CLI work line, with the native port and packaging fixes uncommitted; public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`. Nothing from this tree has been pushed to `origin`.
-**Blockers:** run and accept `1.0.1` release validation before tagging; rotate the exposed npm token and validate OIDC publishing; `1.0.0` still lacks provenance and reports `immutable: false`.
+**Last updated:** 2026-11-22
+**Phase:** `1.0.0` released; the native Rust CLI/NoPM port for `1.0.1` has slices 1-4 accepted and release validation is green. The `1.0.1` version bump, tag, and publish are pending principal approval. Language v0.2 remains Phase 0 documentation and corpus only.
+**Master:** private `master` at `9dd651e`, pushed to `ci/master`; Tier-1 run `44963562468` is green on Ubuntu, macOS, and Windows. Public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`. Nothing from this tree has been pushed to `origin`.
+**Blockers:** the `1.0.1` bump, tag, and publish need principal approval; rotate the exposed npm token and validate OIDC publishing; `1.0.0` still lacks provenance and reports `immutable: false`.
 
 ---
 
@@ -71,8 +71,13 @@ and 4. Slice 4 is accepted: the packaged `astra`/`nopm` are Cargo binaries, the
 JS/TS bridge payload and npm postinstall copy `lib` plus the pinned TypeScript
 compiler, and the isolated package smoke covers no-Node native/core commands,
 `astra nopm` dispatch, C/native builds, and `@script:ts`/`@script:js` builds.
-Native parity is 12/12. Release validation for `1.0.1` is the next step; the
-tag and publish remain principal-gated.
+Native parity is 12/12. Release validation is green: `npm run verify`, `npm
+run ci`, `npm run package`, the release dry run, the version check, and the
+error-code check all pass, and cross-platform packaging run `44964210902` is
+green on Ubuntu, macOS, and Windows. The run exercises the isolated package
+smoke (including `@script:ts`/`@script:js`), extracts each archive in a clean
+temp directory, and reports `astra 1.0.0` / `nopm 1.0.0`. The `1.0.1` bump,
+tag, and publish remain principal-gated.
 
 The JavaScript and TypeScript code generators stay in their current TypeScript
 implementation; the native bridge may use Node only for JS/TS builds and
@@ -157,6 +162,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-22 | Fixed the macOS packaged TS bridge: the CLI direct-entry guard compared a canonical `import.meta.url` with a non-canonical `process.argv[1]`, so a package under `/var/folders` (where `/var` is a symlink to `/private/var`) silently did nothing. Both sides are canonicalized now, with a symlinked-entry regression test. | `9dd651e`; `npm test` 243/243; `npm run verify` green; Tier-1 run `44963562468` green on Ubuntu/macOS/Windows; package validation run `44964210902` green on all three; sha256 `081d134b561e3bde229d8c0b351226f4687ba761db73df9035f0490bfdd1de47` (macOS), `aeacf97031c3178b8fdf17b67540cacf2f07a2e4151ba4b2f63fe5600e3491c4` (Windows), `260906f55246a225bf41e53519b9ea63bcb8a3431a42e0c0b1697f8a1fcbaa3f` (Linux) |
 | 2026-11-19 | Native slice 4 accepted. Fixed the npm postinstall TypeScript destination, added a fake-platform postinstall test, expanded the isolated package smoke to cover no-Node native/core commands, `astra nopm` dispatch, C/native builds, and `@script:ts`/`@script:js`, and clarified the package runtime requirements. | `npm test` 242/242; `npm run ci` green; native parity 12/12; `npm run verify` green; `npm run package` exit 0, sha256 `5aafcd86272bd1a229aacf452d3bcb6bfd114eb97b74e2d0caf9282ac12e8400`; generated-package postinstall simulation green |
 | 2026-11-11 | Current-condition docs refresh and new `context.md` handoff. Recorded that native slice 3a is still open after two rejected handbacks, that the uncommitted NoPM code remains fixture-shaped, and that `1.0.1`, v0.2 implementation, and npm publishing remain blocked. | `context.md`; `Docs/state.md`, `priorities.md`, `roadmap.md`, `todo.md`, `release-checklist.md`, `github-trust.md`; no code or tag changes |
 | 2026-11-09 | Native slice 3a second handback rejected. The implementation still hardcodes `targets: ["web"]` and the first dependency, does not validate target support, and leaves `install`/`why`/`update` stubbed. A path package that declares only `native` is rejected by the TypeScript oracle with `NP0006` but accepted by native. The NoPM parity case passes only the fixed `local-utils`/`web` fixture; `cargo test -p astra-nopm` still has one SHA-256 test and no lifecycle tests. | `a433514`, preceding `ea0a2c2`; `cargo fmt --all --check`, targeted clippy, and native parity 11/12 green; behavior mismatch reproduced against `orchestrator/packages/nopm/dist/cli.js` |

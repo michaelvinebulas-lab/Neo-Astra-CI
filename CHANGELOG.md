@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Native Rust CLI, NoPM package manager, toolchain resolution, and JS/TS build bridge.
 
+### Fixed
+- Packaged JS/TS builds now run when the package lives under a symlinked path,
+  including macOS `/var/folders` temp directories.
+
 ## [1.0.0] - 2026-11-06
 
 ### Added

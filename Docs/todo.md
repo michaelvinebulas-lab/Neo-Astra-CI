@@ -150,11 +150,13 @@ Language stays v0.1; do not inject v0.2 syntax into this patch.
 
 ### Open
 
-- [ ] Release validation - `npm run verify`, `npm run ci`, `npm run package`,
-      clean-install smoke, release dry run, error-code check, workflow audit,
-      then tag/publish `1.0.1` (lead/principal only).
-- [ ] Update `CHANGELOG.md`, `Docs/state.md`, and install/package docs when the
-      native package actually ships.
+- [x] Release validation - `npm run verify`, `npm run ci`, `npm run package`,
+      clean-install smoke, release dry run, error-code check, and workflow
+      audit are green. Cross-platform package validation run `44964210902` is
+      green on Ubuntu, macOS, and Windows.
+- [ ] Bump to `1.0.1`, move the `[Unreleased]` changelog entries, then tag and
+      publish (lead/principal only).
+- [ ] Update install/package docs when the native package actually ships.
 
 ## Language v0.2 - syntax cleanup (next minor, edition 0.2)
 

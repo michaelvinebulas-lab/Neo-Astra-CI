@@ -1,10 +1,10 @@
 # Neo Astra context handoff
 
-**Snapshot:** 2026-11-19
+**Snapshot:** 2026-11-22
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** `master`
+**Branch:** `master` at `9dd651e` (pushed to `ci/master`)
 **Published release:** `1.0.0` (tag `v1.0.0` -> `9d832e0`)
-**Next release:** `1.0.1` native Rust CLI/NoPM - slices 1-4 accepted, release validation next, not tagged or published
+**Next release:** `1.0.1` native Rust CLI/NoPM - slices 1-4 accepted, release validation green, not tagged or published
 **Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
@@ -62,10 +62,19 @@ for detail. Update this file when the working state changes materially.
     nopm` dispatch, C/native builds, and `@script:ts`/`@script:js` builds.
   - The npm postinstall path has a lead-owned fake-platform test and a real
     generated-package install simulation.
-- Native parity is **12/12**. `npm test` is 242/242, `npm run ci` is green,
-  and `npm run package` succeeds from an isolated package copy.
-- Release validation for `1.0.1` is the next step. Tagging and publishing
-  remain principal-gated.
+- Native parity is **12/12**. `npm test` is 243/243, `npm run verify` and
+  `npm run ci` are green, and `npm run package` succeeds from an isolated
+  package copy.
+- Release validation is green. Tier-1 run `44963562468` is green on Ubuntu,
+  macOS, and Windows; cross-platform package validation run `44964210902` is
+  green on all three, including the isolated `@script:ts`/`@script:js` smoke
+  and a clean archive extraction that reports `astra 1.0.0` / `nopm 1.0.0`.
+- The macOS packaged-bridge failure was a direct-entry bug: `import.meta.url`
+  is canonicalized while `process.argv[1]` keeps the invoked path, so a package
+  under `/var/folders` (where `/var` -> `/private/var`) silently did nothing.
+  `9dd651e` canonicalizes both sides and adds a symlinked-entry regression
+  test.
+- The `1.0.1` bump, tag, and publish remain principal-gated.
 
 ## v0.2 status
 
@@ -94,8 +103,9 @@ Phase 0 is complete on the documentation side only:
 
 ## Release and npm state
 
-- `1.0.1` is not tagged. Slices 1-4 are accepted and native parity is 12/12;
-  run and accept release validation before tagging.
+- `1.0.1` is not tagged. Slices 1-4 are accepted, native parity is 12/12, and
+  release validation is green; the bump, tag, and publish await principal
+  approval.
 - `v1.0.0` is immutable by policy, but its GitHub release reports
   `immutable: false`. Do not modify its assets.
 - `1.0.0` has registry signatures but no npm provenance attestation; its GitHub
@@ -114,22 +124,20 @@ Phase 0 is complete on the documentation side only:
 
 ## Working tree snapshot
 
-Dirty because the native port and packaging fixes are uncommitted:
+The native port and packaging fixes are committed through `9dd651e`. Only the
+lead/user-owned leftovers remain:
 
-- Modified: the workspace manifests, `crates/astra-cli/**`,
-  `crates/astra-nopm/**`, CI/packaging scripts, `orchestrator/tests/package-npm.test.mjs`,
-  and the lead docs.
-- Untracked: the new `astra-nopm` modules/tests, `Docs/Report/Orchestrator-v2.md`,
-  and `Docs/error-code-ledger.md`.
-- Pre-existing user/untracked files: `432+5`, `700`, `tmp.py`, `tmp_err.txt`.
-- Do not stage any of the above without principal approval.
-- Lead commits are local. `origin` has not been pushed from this tree.
+- Modified: `.gitignore` (adds `test_comparison/`); leave it unstaged.
+- Untracked: `Docs/error-code-ledger.md`; preserve it and do not stage it.
+- `origin` has not been pushed from this tree. Temporary package-validation
+  branches were deleted from `ci` after run `44964210902` passed.
 
 ## Work order
 
-1. Run the `1.0.1` release validation checklist against the accepted native
-   package and npm artifacts.
-2. If validation is green, the lead/principal tags and publishes `1.0.1`.
+1. Release validation is complete and green; record the final archive digests
+   after the version bump.
+2. With principal approval, bump to `1.0.1`, move the `[Unreleased]` changelog
+   entries, tag, and publish.
 3. Then start v0.2 Phase 1 edition plumbing and the rest of the cleanup phases.
 4. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
@@ -145,7 +153,7 @@ Dirty because the native port and packaging fixes are uncommitted:
   paths.
 - npm postinstall copies `bin`, `typescript`, and `lib`; a fake-platform test
   and a generated-package install simulation pass.
-- `npm test` is 242/242, `npm run ci` is green, and `npm run package` exits 0.
+- `npm test` is 243/243, `npm run ci` is green, and `npm run package` exits 0.
 - README text distinguishes native/core runtime requirements from the Node
   bridge needed by JS/TS builds.
 
@@ -180,19 +188,27 @@ npm run test:native-parity
 Last known results at this snapshot:
 
 - native parity: 12/12 green.
-- `npm test`: 242/242 green.
-- `npm run ci`: green.
+- `npm test`: 243/243 green.
+- `npm run ci`: green; Tier-1 run `44963562468` green on Ubuntu/macOS/Windows.
 - `npm run verify`: green.
-- `npm run package`: green; archive sha256
-  `5aafcd86272bd1a229aacf452d3bcb6bfd114eb97b74e2d0caf9282ac12e8400`.
+- `npm run package`: green from an isolated package copy.
+- Cross-platform package validation run `44964210902`: green on
+  Ubuntu/macOS/Windows, including the isolated `@script:ts`/`@script:js` smoke
+  and clean archive extraction (`astra 1.0.0`, `nopm 1.0.0`).
+- Pre-bump archive sha256 (1.0.0 tree):
+  - macOS `neo-astra-1.0.0-darwin-arm64.tar.gz`:
+    `081d134b561e3bde229d8c0b351226f4687ba761db73df9035f0490bfdd1de47`
+  - Windows `neo-astra-1.0.0-win32-x64.zip`:
+    `aeacf97031c3178b8fdf17b67540cacf2f07a2e4151ba4b2f63fe5600e3491c4`
+  - Linux `neo-astra-1.0.0-linux-x64.tar.gz`:
+    `260906f55246a225bf41e53519b9ea63bcb8a3431a42e0c0b1697f8a1fcbaa3f`
 - npm generated-package postinstall simulation: green; `astra`/`nopm` report
   `1.0.0` and the bridge/TypeScript payloads are present.
 
 ## Do not
 
-- Do not treat the accepted slice 4 as release validation; run the checklist
-  before tagging.
-- Do not tag, push `origin`, publish, revoke tokens, or delete `NPM_TOKEN`.
+- Release validation is green, but do not bump, tag, push `origin`, publish,
+  revoke tokens, or delete `NPM_TOKEN` without principal approval.
 - Do not commit Kilo's uncommitted code, the pre-existing untracked files, or
   the active `Docs/Report/Task.md` log without review.
 - Do not describe `1.0.1` or v0.2 as shipped.
