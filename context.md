@@ -2,7 +2,7 @@
 
 **Snapshot:** 2026-11-22
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** `master` at `9dd651e` (pushed to `ci/master`)
+**Branch:** `master` through `1f774de` (pushed to `ci/master`)
 **Published release:** `1.0.0` (tag `v1.0.0` -> `9d832e0`)
 **Next release:** `1.0.1` native Rust CLI/NoPM - slices 1-4 accepted, release validation green, not tagged or published
 **Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
@@ -65,10 +65,11 @@ for detail. Update this file when the working state changes materially.
 - Native parity is **12/12**. `npm test` is 243/243, `npm run verify` and
   `npm run ci` are green, and `npm run package` succeeds from an isolated
   package copy.
-- Release validation is green. Tier-1 run `44963562468` is green on Ubuntu,
-  macOS, and Windows; cross-platform package validation run `44964210902` is
-  green on all three, including the isolated `@script:ts`/`@script:js` smoke
-  and a clean archive extraction that reports `astra 1.0.0` / `nopm 1.0.0`.
+- Release validation is green. Tier-1 runs `44963562468` and `44965046279`
+  are green on Ubuntu, macOS, and Windows; cross-platform package validation
+  run `44964210902` is green on all three, including the isolated
+  `@script:ts`/`@script:js` smoke and a clean archive extraction that reports
+  `astra 1.0.0` / `nopm 1.0.0`.
 - The macOS packaged-bridge failure was a direct-entry bug: `import.meta.url`
   is canonicalized while `process.argv[1]` keeps the invoked path, so a package
   under `/var/folders` (where `/var` -> `/private/var`) silently did nothing.

@@ -6,7 +6,7 @@ or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-22
 **Phase:** `1.0.0` released; the native Rust CLI/NoPM port for `1.0.1` has slices 1-4 accepted and release validation is green. The `1.0.1` version bump, tag, and publish are pending principal approval. Language v0.2 remains Phase 0 documentation and corpus only.
-**Master:** private `master` at `9dd651e`, pushed to `ci/master`; Tier-1 run `44963562468` is green on Ubuntu, macOS, and Windows. Public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`. Nothing from this tree has been pushed to `origin`.
+**Master:** private `master` through `1f774de`, pushed to `ci/master`; Tier-1 runs `44963562468` (code) and `44965046279` (docs) are green on Ubuntu, macOS, and Windows. Public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`. Nothing from this tree has been pushed to `origin`.
 **Blockers:** the `1.0.1` bump, tag, and publish need principal approval; rotate the exposed npm token and validate OIDC publishing; `1.0.0` still lacks provenance and reports `immutable: false`.
 
 ---
