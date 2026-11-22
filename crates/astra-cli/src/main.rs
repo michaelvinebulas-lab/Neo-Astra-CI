@@ -1394,10 +1394,8 @@ fn format_one(path: &str, text: &str) -> (Option<String>, Vec<serde_json::Value>
                     .collect(),
             ),
         }
-    } else if lower.ends_with(".toml") {
-        (Some(text.to_owned()), Vec::new())
     } else {
-        // unknown file type: unchanged
+        // Unknown file types and unhandled TOML manifests pass through unchanged.
         (Some(text.to_owned()), Vec::new())
     }
 }
