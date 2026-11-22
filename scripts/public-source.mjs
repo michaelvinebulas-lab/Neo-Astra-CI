@@ -522,8 +522,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
 
       - name: Install npm for trusted publishing
         run: npm install --global npm@11
@@ -596,8 +594,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
-          package-manager-cache: false
 
       - name: Install npm for trusted publishing
         run: npm install --global npm@11
