@@ -156,8 +156,10 @@ Language stays v0.1; do not inject v0.2 syntax into this patch.
       green on Ubuntu, macOS, and Windows.
 - [x] Bump to `1.0.1`, move the `[Unreleased]` changelog entries, and make the
       native version metadata follow the workspace version.
-- [ ] Tag and publish `1.0.1` from the sanitized source tree; verify
-      provenance, attestations, and a clean install.
+- [x] Tag `v1.0.1` and publish the GitHub release with archives, sidecars, and attestations.
+- [ ] Refresh npm trusted publishing (principal passkey) and rerun the failed
+      release jobs so the platform packages and `neo-astra` meta package reach
+      npm; then verify provenance and a clean install.
 - [ ] Delete the superseded `luminousvalentine-cell/Neo-Astra-CI` repo (needs
       principal `delete_repo` scope).
 - [ ] Update install/package docs when the native package actually ships.

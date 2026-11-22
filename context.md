@@ -4,7 +4,7 @@
 **Working copy:** `C:\Projects\Neo Astra`
 **Branch:** `master` through `fc54f28` (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
 **Published release:** `1.0.0` (tag `v1.0.0` -> `9d832e0`)
-**Next release:** `1.0.1` native Rust CLI/NoPM - bump applied, validation green, tag/publish in progress
+**Next release:** `1.0.1` native Rust CLI/NoPM - tagged and GitHub release published; npm publish pending principal trusted-publishing refresh
 **Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
@@ -83,6 +83,11 @@ for detail. Update this file when the working state changes materially.
   Actions billing/spending block; the new Tier-1 run `45019255462` is green on
   Ubuntu, macOS, and Windows for `fc54f28`. Deleting the old CI repo needs a
   principal `delete_repo` scope refresh.
+- Sanitized source is public at `3093343` and tagged `v1.0.1`. Release run
+  `45021222917` uploaded all three archives plus `.sha256` files and attested
+  them; `gh attestation verify` passed for the Windows archive. npm platform
+  publishes failed with `E404` after OIDC/provenance signing, so npm still has
+  only `1.0.0`; the meta-package job was skipped.
 
 ## v0.2 status
 
@@ -111,9 +116,11 @@ Phase 0 is complete on the documentation side only:
 
 ## Release and npm state
 
-- `1.0.1` is not tagged, but the bump and all validation are complete; push the
-  sanitized `source` branch, open/merge the PR, then tag and publish. The old
-  CI repo deletion is pending a principal `delete_repo` scope refresh.
+- `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives,
+  but npm has no `1.0.1` packages: trusted publishing rejected the platform
+  publishes with `E404`. Principal must refresh `npm trust github` with passkey
+  auth, then rerun the failed release jobs. The old CI repo deletion is also
+  pending a principal `delete_repo` scope refresh.
 - `v1.0.0` is immutable by policy, but its GitHub release reports
   `immutable: false`. Do not modify its assets.
 - `1.0.0` has registry signatures but no npm provenance attestation; its GitHub
@@ -143,10 +150,11 @@ The native port, `1.0.1` bump, and release validation are committed through
 
 ## Work order
 
-1. Release validation and the `1.0.1` bump are complete; push the sanitized
-   `source` branch to `origin`, open/merge the PR, then tag `v1.0.1`.
-2. Verify the public release workflow, provenance, attestations, npm publish,
-   and a clean install; record final archive digests.
+1. Principal: refresh npm trusted publishing with passkey auth, grant a
+   `delete_repo`-scoped token for the old CI repo deletion, then rerun the
+   failed release jobs.
+2. Verify npm `1.0.1` platform packages, the `neo-astra` meta package,
+   provenance, and a clean install; then close out the release.
 3. Then start v0.2 Phase 1 edition plumbing and the rest of the cleanup phases.
 4. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
