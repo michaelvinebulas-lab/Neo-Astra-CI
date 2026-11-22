@@ -26,14 +26,18 @@ const skippedDirectories = new Set([
   "Docs",
   "conformance",
   "dist",
+  "fuzz",
   "node_modules",
   "public",
   "target",
+  "test_comparison",
+  "tools",
 ]);
 const skippedFiles = new Set([
   ".github/workflows/ci.yml",
   "CHANGELOG.md",
   "README.md",
+  "context.md",
   "crates/README.md",
   "orchestrator/README.md",
   "nvdia.ps1",
