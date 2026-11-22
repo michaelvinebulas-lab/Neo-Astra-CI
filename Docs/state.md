@@ -5,9 +5,9 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-22
-**Phase:** `1.0.0` released; the native Rust CLI/NoPM port for `1.0.1` has slices 1-4 accepted and release validation is green. The `1.0.1` version bump, tag, and publish are pending principal approval. Language v0.2 remains Phase 0 documentation and corpus only.
-**Master:** private `master` through `1f774de`, pushed to `ci/master`; Tier-1 runs `44963562468` (code) and `44965046279` (docs) are green on Ubuntu, macOS, and Windows. Public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`. Nothing from this tree has been pushed to `origin`.
-**Blockers:** the `1.0.1` bump, tag, and publish need principal approval; rotate the exposed npm token and validate OIDC publishing; `1.0.0` still lacks provenance and reports `immutable: false`.
+**Phase:** `1.0.0` released; the native Rust CLI/NoPM port for `1.0.1` has slices 1-4 accepted, release validation is green, and the version bump is applied. Tag and publish are pending. Language v0.2 remains Phase 0 documentation and corpus only.
+**Master:** private `master` through `fc54f28`, pushed to `ci` at `michaelvinebulas-lab/Neo-Astra-CI`; Tier-1 run `45019255462` is green on Ubuntu, macOS, and Windows. The old `luminousvalentine-cell/Neo-Astra-CI` repo is superseded; deleting it needs a principal `delete_repo` scope refresh. Public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`. Nothing from this tree has been pushed to `origin`.
+**Blockers:** push the sanitized `source` branch, tag and publish `v1.0.1` (in progress); delete the old CI repo (principal `delete_repo` scope); rotate the exposed npm token and validate OIDC publishing; `1.0.0` still lacks provenance and reports `immutable: false`.
 
 ---
 
@@ -76,8 +76,9 @@ run ci`, `npm run package`, the release dry run, the version check, and the
 error-code check all pass, and cross-platform packaging run `44964210902` is
 green on Ubuntu, macOS, and Windows. The run exercises the isolated package
 smoke (including `@script:ts`/`@script:js`), extracts each archive in a clean
-temp directory, and reports `astra 1.0.0` / `nopm 1.0.0`. The `1.0.1` bump,
-tag, and publish remain principal-gated.
+temp directory, and reports `astra 1.0.0` / `nopm 1.0.0`. The `1.0.1` bump is
+applied (`4d54ac4`); native `--version` and lockfiles now follow the workspace
+version. Tag and publish are the remaining steps.
 
 The JavaScript and TypeScript code generators stay in their current TypeScript
 implementation; the native bridge may use Node only for JS/TS builds and
@@ -162,6 +163,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-22 | Applied the `1.0.1` lockstep bump, moved the changelog entries, and made native `--version`/lockfile metadata derive from the workspace version. Moved CI to `michaelvinebulas-lab/Neo-Astra-CI` after the old account hit an Actions billing/spending block; excluded private handoff files from the public-source generator and merged a comment-only branch split that broke sanitized clippy. | `4d54ac4`, `cad33a1`, `fc54f28`; local `npm run verify`/`npm run ci` green; sanitized `npm ci` + `npm run build` + `npm run package` + clippy green; new Tier-1 run `45019255462` green on all three OSes; old repo deletion needs `delete_repo` scope |
 | 2026-11-22 | Fixed the macOS packaged TS bridge: the CLI direct-entry guard compared a canonical `import.meta.url` with a non-canonical `process.argv[1]`, so a package under `/var/folders` (where `/var` is a symlink to `/private/var`) silently did nothing. Both sides are canonicalized now, with a symlinked-entry regression test. | `9dd651e`; `npm test` 243/243; `npm run verify` green; Tier-1 run `44963562468` green on Ubuntu/macOS/Windows; package validation run `44964210902` green on all three; sha256 `081d134b561e3bde229d8c0b351226f4687ba761db73df9035f0490bfdd1de47` (macOS), `aeacf97031c3178b8fdf17b67540cacf2f07a2e4151ba4b2f63fe5600e3491c4` (Windows), `260906f55246a225bf41e53519b9ea63bcb8a3431a42e0c0b1697f8a1fcbaa3f` (Linux) |
 | 2026-11-19 | Native slice 4 accepted. Fixed the npm postinstall TypeScript destination, added a fake-platform postinstall test, expanded the isolated package smoke to cover no-Node native/core commands, `astra nopm` dispatch, C/native builds, and `@script:ts`/`@script:js`, and clarified the package runtime requirements. | `npm test` 242/242; `npm run ci` green; native parity 12/12; `npm run verify` green; `npm run package` exit 0, sha256 `5aafcd86272bd1a229aacf452d3bcb6bfd114eb97b74e2d0caf9282ac12e8400`; generated-package postinstall simulation green |
 | 2026-11-11 | Current-condition docs refresh and new `context.md` handoff. Recorded that native slice 3a is still open after two rejected handbacks, that the uncommitted NoPM code remains fixture-shaped, and that `1.0.1`, v0.2 implementation, and npm publishing remain blocked. | `context.md`; `Docs/state.md`, `priorities.md`, `roadmap.md`, `todo.md`, `release-checklist.md`, `github-trust.md`; no code or tag changes |

@@ -154,8 +154,12 @@ Language stays v0.1; do not inject v0.2 syntax into this patch.
       clean-install smoke, release dry run, error-code check, and workflow
       audit are green. Cross-platform package validation run `44964210902` is
       green on Ubuntu, macOS, and Windows.
-- [ ] Bump to `1.0.1`, move the `[Unreleased]` changelog entries, then tag and
-      publish (lead/principal only).
+- [x] Bump to `1.0.1`, move the `[Unreleased]` changelog entries, and make the
+      native version metadata follow the workspace version.
+- [ ] Tag and publish `1.0.1` from the sanitized source tree; verify
+      provenance, attestations, and a clean install.
+- [ ] Delete the superseded `luminousvalentine-cell/Neo-Astra-CI` repo (needs
+      principal `delete_repo` scope).
 - [ ] Update install/package docs when the native package actually ships.
 
 ## Language v0.2 - syntax cleanup (next minor, edition 0.2)

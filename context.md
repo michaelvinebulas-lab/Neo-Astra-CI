@@ -2,9 +2,9 @@
 
 **Snapshot:** 2026-11-22
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** `master` through `1f774de` (pushed to `ci/master`)
+**Branch:** `master` through `fc54f28` (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
 **Published release:** `1.0.0` (tag `v1.0.0` -> `9d832e0`)
-**Next release:** `1.0.1` native Rust CLI/NoPM - slices 1-4 accepted, release validation green, not tagged or published
+**Next release:** `1.0.1` native Rust CLI/NoPM - bump applied, validation green, tag/publish in progress
 **Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
@@ -75,7 +75,14 @@ for detail. Update this file when the working state changes materially.
   under `/var/folders` (where `/var` -> `/private/var`) silently did nothing.
   `9dd651e` canonicalizes both sides and adds a symlinked-entry regression
   test.
-- The `1.0.1` bump, tag, and publish remain principal-gated.
+- The `1.0.1` bump is applied (`4d54ac4`); native `--version` and lockfile
+  metadata now derive from the workspace version. The sanitized source tree is
+  regenerated and passes `npm ci`, `npm run build`, `npm run package`, and
+  clippy locally.
+- CI moved to `michaelvinebulas-lab/Neo-Astra-CI` after the old account hit an
+  Actions billing/spending block; the new Tier-1 run `45019255462` is green on
+  Ubuntu, macOS, and Windows for `fc54f28`. Deleting the old CI repo needs a
+  principal `delete_repo` scope refresh.
 
 ## v0.2 status
 
@@ -104,9 +111,9 @@ Phase 0 is complete on the documentation side only:
 
 ## Release and npm state
 
-- `1.0.1` is not tagged. Slices 1-4 are accepted, native parity is 12/12, and
-  release validation is green; the bump, tag, and publish await principal
-  approval.
+- `1.0.1` is not tagged, but the bump and all validation are complete; push the
+  sanitized `source` branch, open/merge the PR, then tag and publish. The old
+  CI repo deletion is pending a principal `delete_repo` scope refresh.
 - `v1.0.0` is immutable by policy, but its GitHub release reports
   `immutable: false`. Do not modify its assets.
 - `1.0.0` has registry signatures but no npm provenance attestation; its GitHub
@@ -125,20 +132,21 @@ Phase 0 is complete on the documentation side only:
 
 ## Working tree snapshot
 
-The native port and packaging fixes are committed through `9dd651e`. Only the
-lead/user-owned leftovers remain:
+The native port, `1.0.1` bump, and release validation are committed through
+`fc54f28`. Only the lead/user-owned leftovers remain:
 
 - Modified: `.gitignore` (adds `test_comparison/`); leave it unstaged.
 - Untracked: `Docs/error-code-ledger.md`; preserve it and do not stage it.
-- `origin` has not been pushed from this tree. Temporary package-validation
-  branches were deleted from `ci` after run `44964210902` passed.
+- `origin` has not been pushed from this tree. The `ci` remote is now
+  `michaelvinebulas-lab/Neo-Astra-CI`; the old `luminousvalentine-cell` CI repo
+  still exists and is pending principal deletion.
 
 ## Work order
 
-1. Release validation is complete and green; record the final archive digests
-   after the version bump.
-2. With principal approval, bump to `1.0.1`, move the `[Unreleased]` changelog
-   entries, tag, and publish.
+1. Release validation and the `1.0.1` bump are complete; push the sanitized
+   `source` branch to `origin`, open/merge the PR, then tag `v1.0.1`.
+2. Verify the public release workflow, provenance, attestations, npm publish,
+   and a clean install; record final archive digests.
 3. Then start v0.2 Phase 1 edition plumbing and the rest of the cleanup phases.
 4. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
@@ -208,8 +216,8 @@ Last known results at this snapshot:
 
 ## Do not
 
-- Release validation is green, but do not bump, tag, push `origin`, publish,
-  revoke tokens, or delete `NPM_TOKEN` without principal approval.
+- The bump is applied and approved; do not tag, push `origin` from the private
+  tree, revoke tokens, or delete `NPM_TOKEN` without principal approval.
 - Do not commit Kilo's uncommitted code, the pre-existing untracked files, or
   the active `Docs/Report/Task.md` log without review.
 - Do not describe `1.0.1` or v0.2 as shipped.
