@@ -9,19 +9,45 @@
 //! boundary, because the AST has no expression-level trivia.
 
 use crate::ast::*;
-use crate::lexer::{Comment, lex};
-use crate::parser::{ParseResult, parse_with_comments};
+use crate::edition::Edition;
+use crate::lexer::{Comment, LexOptions, lex_with_options};
+use crate::parser::{ParseOptions, ParseResult, parse_with_comments_with_options};
 
-/// Formats source by parsing it and then formatting the AST.
+/// Formatter options. Editions are threaded through now; canonical spellings
+/// change in the next phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FormatOptions {
+    pub edition: Edition,
+}
+
+/// Formats source with the default options.
 pub fn format_source(source: &str) -> ParseResult<String> {
-    let (module, comments) = parse_with_comments(source)?;
+    format_source_with_options(source, FormatOptions::default())
+}
+
+/// Formats source with explicit options.
+pub fn format_source_with_options(source: &str, options: FormatOptions) -> ParseResult<String> {
+    let (module, comments) =
+        parse_with_comments_with_options(source, ParseOptions { edition: options.edition })?;
     Ok(format_module_with_comments(&module, source, &comments))
 }
 
 /// Formats a parsed module and re-lexes `source` for comment trivia.
 #[must_use]
 pub fn format_module(module: &Module, source: &str) -> String {
-    let comments = lex(source).comments;
+    format_module_with_options(module, source, FormatOptions::default())
+}
+
+/// Formats a parsed module with explicit options.
+#[must_use]
+pub fn format_module_with_options(module: &Module, source: &str, options: FormatOptions) -> String {
+    let comments = lex_with_options(
+        source,
+        LexOptions {
+            edition: options.edition,
+        },
+    )
+    .comments;
     format_module_with_comments(module, source, &comments)
 }
 

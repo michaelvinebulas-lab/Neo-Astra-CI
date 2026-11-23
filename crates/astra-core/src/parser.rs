@@ -7,7 +7,8 @@
 
 use crate::ast::*;
 use crate::diagnostic::Diagnostic;
-use crate::lexer::{Comment, Keyword, LexResult, Punctuation, Token, TokenKind, lex};
+use crate::edition::Edition;
+use crate::lexer::{Comment, Keyword, LexOptions, LexResult, Punctuation, Token, TokenKind, lex_with_options};
 use crate::literal::{decode_byte_literal, decode_string_literal};
 use crate::span::Span;
 
@@ -31,22 +32,48 @@ const INVALID_SCRIPT_EXPORTS: &str = "NS7003";
 const MALFORMED_SCRIPT_BLOCK: &str = "NS7004";
 const INVALID_SCRIPT_SIGNATURE: &str = "NS7005";
 
-/// Parses one source unit.
+/// Parser options. Editions are threaded through now; syntax behavior changes
+/// land in the next phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParseOptions {
+    pub edition: Edition,
+}
+
+/// Parses one source unit with the default options.
 pub fn parse(source: &str) -> ParseResult<Module> {
-    parse_with_comments(source).map(|(module, _)| module)
+    parse_with_options(source, ParseOptions::default())
+}
+
+/// Parses one source unit with explicit options.
+pub fn parse_with_options(source: &str, options: ParseOptions) -> ParseResult<Module> {
+    parse_with_comments_with_options(source, options).map(|(module, _)| module)
 }
 
 /// Parses one source unit and returns valid line comments as trivia.
 pub fn parse_with_comments(source: &str) -> ParseResult<(Module, Vec<Comment>)> {
+    parse_with_comments_with_options(source, ParseOptions::default())
+}
+
+/// Parses one source unit with explicit options and returns line comments.
+pub fn parse_with_comments_with_options(
+    source: &str,
+    options: ParseOptions,
+) -> ParseResult<(Module, Vec<Comment>)> {
     let LexResult {
         tokens,
         comments,
         diagnostics,
-    } = lex(source);
+    } = lex_with_options(
+        source,
+        LexOptions {
+            edition: options.edition,
+        },
+    );
     let mut parser = Parser {
         tokens,
         index: 0,
         diagnostics,
+        edition: options.edition,
         depth: 0,
         depth_reported: false,
         nesting_drained: false,
@@ -64,6 +91,9 @@ struct Parser {
     tokens: Vec<Token>,
     index: usize,
     diagnostics: Vec<Diagnostic>,
+    /// Selected language edition; consumed by the v0.2 parser rules in Phase 3.
+    #[allow(dead_code)]
+    edition: Edition,
     /// Current recursion depth of expression/type/block parsing.
     depth: usize,
     /// Whether the nesting-limit diagnostic was already reported.

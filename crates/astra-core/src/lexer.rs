@@ -7,6 +7,7 @@
 use unicode_ident::{is_xid_continue, is_xid_start};
 
 use crate::diagnostic::Diagnostic;
+use crate::edition::Edition;
 use crate::span::Span;
 
 /// Canonical reserved words. Keyword aliases map to these variants.
@@ -172,10 +173,23 @@ impl LexResult {
     }
 }
 
-/// Lexes one UTF-8 source unit.
+/// Lexer options. Editions are threaded through now; syntax behavior changes
+/// land in the next phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LexOptions {
+    pub edition: Edition,
+}
+
+/// Lexes one UTF-8 source unit with the default options.
 #[must_use]
 pub fn lex(source: &str) -> LexResult {
-    Lexer::new(source).run()
+    lex_with_options(source, LexOptions::default())
+}
+
+/// Lexes one UTF-8 source unit with explicit options.
+#[must_use]
+pub fn lex_with_options(source: &str, options: LexOptions) -> LexResult {
+    Lexer::new(source, options).run()
 }
 
 enum EscapeOutcome {
@@ -189,6 +203,9 @@ struct Lexer<'a> {
     tokens: Vec<Token>,
     comments: Vec<Comment>,
     diagnostics: Vec<Diagnostic>,
+    /// Selected language edition; consumed by the v0.2 lexer rules in Phase 2.
+    #[allow(dead_code)]
+    edition: Edition,
     /// Brace depth inside a `{@script:…}` header.
     /// 0 = not in a script header. Set to 1 when `{@script:` is entered;
     /// incremented for each inner `{`, decremented for each `}`. When it
@@ -198,13 +215,14 @@ struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    fn new(source: &'a str) -> Self {
+    fn new(source: &'a str, options: LexOptions) -> Self {
         Self {
             source,
             offset: 0,
             tokens: Vec::new(),
             comments: Vec::new(),
             diagnostics: Vec::new(),
+            edition: options.edition,
             script_header_depth: 0,
             script_start: 0,
         }

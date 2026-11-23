@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::ast;
 use crate::diagnostic::Diagnostic;
+use crate::edition::Edition;
 use crate::hir;
 use crate::mode::Mode;
 use crate::resolver::resolve_module;
@@ -59,6 +60,8 @@ const EXPORT_AS_SYMBOL: &str = "NS7013";
 /// Type-checker options.
 #[derive(Debug, Clone, Default)]
 pub struct CheckOptions {
+    /// Language edition. Defaults to `0.1`; syntax behavior changes later.
+    pub edition: Edition,
     /// The resolved capability mode selected by the CLI, environment, or
     /// manifest. Source annotations are validated against this mode.
     pub mode: Mode,
@@ -77,10 +80,18 @@ impl CheckOptions {
     #[must_use]
     pub fn new(mode: Mode) -> Self {
         Self {
+            edition: Edition::V0_1,
             mode,
             target: None,
             module_surfaces: BTreeMap::new(),
         }
+    }
+
+    /// Selects the language edition.
+    #[must_use]
+    pub fn with_edition(mut self, edition: Edition) -> Self {
+        self.edition = edition;
+        self
     }
 
     /// Sets the active compilation target.
@@ -94,6 +105,7 @@ impl CheckOptions {
     #[must_use]
     pub fn with_surfaces(mode: Mode, module_surfaces: BTreeMap<String, ModuleTypeSurface>) -> Self {
         Self {
+            edition: Edition::V0_1,
             mode,
             target: None,
             module_surfaces,
@@ -103,7 +115,8 @@ impl CheckOptions {
 
 impl PartialEq for CheckOptions {
     fn eq(&self, other: &Self) -> bool {
-        self.mode == other.mode
+        self.edition == other.edition
+            && self.mode == other.mode
             && self.target == other.target
             && self.module_surfaces == other.module_surfaces
     }
