@@ -15,10 +15,6 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const reportOnly = process.argv.includes("--report");
 const codePattern = /\b(?:NS|NP|NR|NV|PG)\d{4}\b/g;
 const specPath = join(root, "Docs", "spec-v0.1.md");
-// The v0.2 cleanup reserves codes in its own spec. Accept those as an
-// allow-list for emitted codes, but keep v0.1 as the normative "must emit" set
-// until the v0.2 edition freezes.
-const plannedSpecPath = join(root, "Docs", "spec-v0.2.md");
 
 // Codes that are deliberately not emitted in v0.1. Keep this list short and
 // give each entry a reason; a reserved code is still part of the stable range.
@@ -83,14 +79,12 @@ while ((match = rowPattern.exec(spec)) !== null) {
   specCodes.add(match[1]);
 }
 
-const plannedCodes = new Set();
-try {
-  const plannedSpec = readFileSync(plannedSpecPath, "utf8");
-  rowPattern.lastIndex = 0;
-  while ((match = rowPattern.exec(plannedSpec)) !== null) {
-    plannedCodes.add(match[1]);
-  }
-} catch {}
+// Codes emitted by the v0.2 work while spec-v0.1 stays normative. Add a code
+// here only when a phase actually emits it; this is not a blanket allow-list.
+const plannedCodes = new Set([
+  "NS2008", // unsupported edition, Phase 1 manifest validation
+  "NS2011", // malformed turbofish, Phase 2 lexer
+]);
 
 const missingFromSpec = [...emitted.keys()]
   .filter((code) => !specCodes.has(code) && !plannedCodes.has(code) && !reserved.has(code))

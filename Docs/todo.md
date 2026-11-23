@@ -212,8 +212,11 @@ language is frozen.
       statement boundaries in blocks, list rules in struct/map literals.
 - [x] Fix tuple-index lexing: after `.` in postfix position read an integer-only
       token, never a float; keep `..` ranges and leading-dot chains distinct.
-      Phase 2 added a lexer-context rule so `t.0.1` lexes as two integer indexes
-      while `1.0` remains a float.
+      Phase 2 added an edition-`0.2` lexer-context rule so `t.0.1` lexes as two
+      integer indexes while `1.0` remains a float; v0.1 suffixed forms such as
+      `t.0u8` are unchanged.
+- [ ] Make the LSP edition-aware before a server is packaged: `crates/astra-lsp`
+      still hardcodes `0.1` in project requests and standalone parse/format.
 - [ ] Contextualize `default` and `from`; decide `module` and `type`.
 - [ ] Deprecate `/%`, `spawn ||`, and the special `///` meaning; keep parsing
       the old forms and omit them from canonical docs.

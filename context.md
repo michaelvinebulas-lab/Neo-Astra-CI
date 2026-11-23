@@ -138,8 +138,9 @@ Phase 2 (lexer) is implemented on private master:
   identifier.
 - `Punctuation::Question` (`?`) and `Punctuation::DoubleColon` (`::`) are
   edition-`0.2` tokens. A standalone `::` or `:: <` reports `NS2011`.
-- Tuple indexes after a postfix `.` are integer-only, so `t.0.1` is two indexes
-  while `1.0` remains a float.
+- Tuple indexes after a postfix `.` are integer-only under edition `0.2`, so
+  `t.0.1` is two indexes while `1.0` remains a float. The rule is edition-gated
+  so v0.1 forms such as `t.0u8` keep their existing tokenization.
 - `///` remains an ordinary comment; no doc-comment trivia was added.
 - Lexer tests cover `?`, `::`, `:: <`, `fail` in both editions, `1.0`, `t.0.1`,
   `t.0.1.2`, and comments.

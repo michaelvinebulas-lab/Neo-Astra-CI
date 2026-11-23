@@ -156,10 +156,9 @@ fn parse_core_value(value: serde_json::Value) -> Result<CoreManifest, Vec<Diagno
         .and_then(|package| package.edition.as_deref())
         && let Err(message) = edition.parse::<Edition>()
     {
-        return Err(invalid(
-            "NS2008",
-            format!("{message}; set edition to \"0.1\" or \"0.2\""),
-        ));
+        return Err(vec![
+            Diagnostic::error("NS2008", message).with_hint("Set edition to \"0.1\" or \"0.2\"."),
+        ]);
     }
     Ok(manifest)
 }
@@ -307,8 +306,9 @@ mod tests {
         assert!(error.iter().any(|diagnostic| {
             diagnostic.code == "NS2008"
                 && diagnostic
-                    .message
-                    .contains("set edition to \"0.1\" or \"0.2\"")
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("\"0.1\" or \"0.2\""))
         }));
     }
 

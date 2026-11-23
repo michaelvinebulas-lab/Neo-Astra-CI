@@ -8,6 +8,7 @@ use astra_compiler_api::{
     ProjectSourceUnit, SourceUnit,
 };
 use astra_core::ast::{Item, ItemKind};
+use astra_core::diagnostic::Diagnostic;
 use astra_core::edition::Edition;
 use astra_core::formatter::{FormatOptions, format_source_with_options};
 use astra_core::mode::Mode;
@@ -433,6 +434,19 @@ fn manifest_path(dir: &str, name: &str) -> String {
         .to_string()
 }
 
+fn manifest_code(diagnostics: &[Diagnostic]) -> &'static str {
+    match diagnostics
+        .first()
+        .map(|diagnostic| diagnostic.code.as_str())
+    {
+        Some("NS2008") => "NS2008",
+        Some("NS9001") => "NS9001",
+        Some("NS9002") => "NS9002",
+        Some("NS9003") => "NS9003",
+        _ => "NS9002",
+    }
+}
+
 fn load_project(dir: &str) -> Result<ProjectManifests, ManifestError> {
     let core_names: Vec<&str> = ["core.json", "core.toml"]
         .into_iter()
@@ -463,7 +477,7 @@ fn load_project(dir: &str) -> Result<ProjectManifests, ManifestError> {
     })?;
     let core = if core_name.ends_with(".toml") {
         parse_core_toml(&core_text).map_err(|diagnostics| ManifestError {
-            code: "NS9002",
+            code: manifest_code(&diagnostics),
             message: diagnostics
                 .first()
                 .map(|diagnostic| diagnostic.message.clone())
@@ -472,7 +486,7 @@ fn load_project(dir: &str) -> Result<ProjectManifests, ManifestError> {
         })?
     } else {
         parse_core_json(&core_text).map_err(|diagnostics| ManifestError {
-            code: "NS9002",
+            code: manifest_code(&diagnostics),
             message: diagnostics
                 .first()
                 .map(|diagnostic| diagnostic.message.clone())
@@ -498,9 +512,9 @@ fn load_project(dir: &str) -> Result<ProjectManifests, ManifestError> {
     })
 }
 
-/// Finds the nearest core manifest and returns its edition. Missing or invalid
-/// manifests fall back to `0.1` for single-file commands.
-fn edition_for_path(path: &str) -> Edition {
+/// Finds the nearest core manifest and returns its edition. An existing but
+/// invalid manifest is reported; only a missing manifest falls back to `0.1`.
+fn edition_for_path(path: &str) -> Result<Edition, ManifestError> {
     let mut dir = std::path::Path::new(path)
         .parent()
         .map(std::path::Path::to_path_buf)
@@ -509,16 +523,14 @@ fn edition_for_path(path: &str) -> Edition {
         dir = std::path::PathBuf::from(".");
     }
     loop {
-        if (dir.join("core.json").exists() || dir.join("core.toml").exists())
-            && let Ok(project) = load_project(&dir.to_string_lossy())
-        {
-            return project.edition();
+        if dir.join("core.json").exists() || dir.join("core.toml").exists() {
+            return load_project(&dir.to_string_lossy()).map(|project| project.edition());
         }
         if !dir.pop() {
             break;
         }
     }
-    Edition::V0_1
+    Ok(Edition::V0_1)
 }
 
 fn load_build_manifest(dir: &str) -> Result<(BuildManifest, bool), ManifestError> {
@@ -544,7 +556,7 @@ fn load_build_manifest(dir: &str) -> Result<(BuildManifest, bool), ManifestError
     })?;
     let build = if build_name.ends_with(".toml") {
         parse_build_toml(&build_text).map_err(|diagnostics| ManifestError {
-            code: "NS9002",
+            code: manifest_code(&diagnostics),
             message: diagnostics
                 .first()
                 .map(|diagnostic| diagnostic.message.clone())
@@ -553,7 +565,7 @@ fn load_build_manifest(dir: &str) -> Result<(BuildManifest, bool), ManifestError
         })?
     } else {
         parse_build_json(&build_text).map_err(|diagnostics| ManifestError {
-            code: "NS9002",
+            code: manifest_code(&diagnostics),
             message: diagnostics
                 .first()
                 .map(|diagnostic| diagnostic.message.clone())
@@ -1185,6 +1197,10 @@ fn cmd_check(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
+    let edition = match edition_for_path(&file) {
+        Ok(edition) => edition,
+        Err(error) => return emit_manifest_error(&error, json),
+    };
     let request = CompileRequest {
         api_version: API_VERSION.to_owned(),
         source: SourceUnit {
@@ -1192,7 +1208,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
             text,
         },
         target,
-        edition: edition_for_path(&file),
+        edition,
         mode,
         integer_policy: Default::default(),
     };
@@ -1293,8 +1309,13 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
             }
         };
 
+        let edition = match edition_for_path(f) {
+            Ok(edition) => edition,
+            Err(error) => return emit_manifest_error(&error, json),
+        };
+
         // determine formatted output
-        let (formatted_opt, diagnostics) = format_one(f, &text, edition_for_path(f));
+        let (formatted_opt, diagnostics) = format_one(f, &text, edition);
 
         if !diagnostics.is_empty() {
             has_error = true;
@@ -1454,12 +1475,11 @@ fn cmd_ast_dir(dir: &str, json: bool) -> ExitCode {
         Ok(text) => text,
         Err(code) => return code,
     };
-    match parse_with_options(
-        &text,
-        ParseOptions {
-            edition: edition_for_path(&entry),
-        },
-    ) {
+    let edition = match edition_for_path(&entry) {
+        Ok(edition) => edition,
+        Err(error) => return emit_manifest_error(&error, json),
+    };
+    match parse_with_options(&text, ParseOptions { edition }) {
         Ok(module) => {
             if json {
                 let module_value = serde_json::to_value(&module).unwrap_or_default();
@@ -1549,13 +1569,12 @@ fn cmd_ast(args: &[String]) -> ExitCode {
         Ok(t) => t,
         Err(code) => return code,
     };
+    let edition = match edition_for_path(&file) {
+        Ok(edition) => edition,
+        Err(error) => return emit_manifest_error(&error, json),
+    };
 
-    match parse_with_options(
-        &text,
-        ParseOptions {
-            edition: edition_for_path(&file),
-        },
-    ) {
+    match parse_with_options(&text, ParseOptions { edition }) {
         Ok(module) => {
             let module_value = serde_json::to_value(&module).unwrap_or_default();
             if json {
@@ -1611,12 +1630,11 @@ fn cmd_explain_dir(dir: &str, json: bool, _mode: Option<Mode>, _target: &str) ->
         Ok(text) => text,
         Err(code) => return code,
     };
-    match parse_with_options(
-        &text,
-        ParseOptions {
-            edition: edition_for_path(&entry),
-        },
-    ) {
+    let edition = match edition_for_path(&entry) {
+        Ok(edition) => edition,
+        Err(error) => return emit_manifest_error(&error, json),
+    };
+    match parse_with_options(&text, ParseOptions { edition }) {
         Ok(module) => {
             let inference = infer_module_mode_named(&module, display_path(&entry));
             if json {
@@ -1723,13 +1741,12 @@ fn cmd_explain(args: &[String]) -> ExitCode {
         Ok(t) => t,
         Err(code) => return code,
     };
+    let edition = match edition_for_path(&file) {
+        Ok(edition) => edition,
+        Err(error) => return emit_manifest_error(&error, json),
+    };
 
-    match parse_with_options(
-        &text,
-        ParseOptions {
-            edition: edition_for_path(&file),
-        },
-    ) {
+    match parse_with_options(&text, ParseOptions { edition }) {
         Ok(module) => {
             let inference = infer_module_mode_named(&module, display_path(&file));
             let inference_value = serde_json::to_value(&inference).unwrap_or_default();
