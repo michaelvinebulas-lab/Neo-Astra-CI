@@ -526,8 +526,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
-          token: ''
 
       - name: Install npm for trusted publishing
         run: npm install --global npm@11
@@ -579,7 +577,7 @@ jobs:
         env:
           NPM_CONFIG_FETCH_TIMEOUT: "1800000"
           NPM_CONFIG_FETCH_RETRIES: "5"
-          NPM_CONFIG_ALWAYS_AUTH: "false"
+          NPM_CONFIG_LOGLEVEL: "verbose"
         run: |
           package_dir=dist/npm/platform
           name=$(node -p "require('./$package_dir/package.json').name")
@@ -604,8 +602,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
-          token: ''
 
       - name: Install npm for trusted publishing
         run: npm install --global npm@11
@@ -618,7 +614,7 @@ jobs:
         env:
           NPM_CONFIG_FETCH_TIMEOUT: "1800000"
           NPM_CONFIG_FETCH_RETRIES: "5"
-          NPM_CONFIG_ALWAYS_AUTH: "false"
+          NPM_CONFIG_LOGLEVEL: "verbose"
         run: |
           package_dir=dist/npm/meta
           name=$(node -p "require('./$package_dir/package.json').name")
