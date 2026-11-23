@@ -5,7 +5,7 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-23
-**Phase:** `1.0.1` is fully published on GitHub and npm with archives, checksums, attestations, SLSA provenance, and a verified clean install. Public docs describe `1.0.1`. Language v0.2 Phases 1-2 (edition plumbing and lexer) are implemented on private master; v0.1 behavior is unchanged and `1.1.0` is not yet released.
+**Phase:** `1.0.1` is fully published on GitHub and npm with archives, checksums, attestations, SLSA provenance, and a verified clean install. Public docs describe `1.0.1`. Language v0.2 Phases 1-2 (edition plumbing and lexer) are implemented on private master; v0.1 behavior is unchanged apart from the intentional tuple-index lexer fix, and `1.1.0` is not yet released.
 **Master:** private `master` through `d0f0a93` plus the status docs, pushed to `ci` at `michaelvinebulas-lab/Neo-Astra-CI`; public `master` at `50817d0`, tag `v1.0.1` at `3093343`. Release assets are present and attested. The old `luminousvalentine-cell/Neo-Astra-CI` repo and the `NPM_TOKEN` secret are deleted.
 **Blockers:** revoke the exposed 1.0.0 npm token; `1.0.0` still lacks provenance and reports `immutable: false`; npm trusted publishers expire after two days and must be re-created before each release.
 
