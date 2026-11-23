@@ -1,13 +1,13 @@
 # Neo Astra Language Specification v0.2 (skeleton)
 
-**Status:** Non-normative skeleton for the `0.2.0` cleanup train
-**Date:** 2026-11-08
+**Status:** Non-normative skeleton; Phases 0-5 core work is green, CLI wiring is outstanding
+**Date:** 2026-11-08 (updated 2026-11-24)
 **Normative source today:** [`spec-v0.1.md`](spec-v0.1.md)
 **Decision sources:** [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md),
 [`Report/RFC-A-error-model.md`](Report/RFC-A-error-model.md),
 [`Report/RFC-B-generics.md`](Report/RFC-B-generics.md)
-**Freeze gate:** Phases 0-5 of the v0.2 plan must be green before this file
-becomes normative.
+**Freeze gate:** Phases 0-5 of the v0.2 plan, including CLI wiring and full
+conformance, must be green before this file becomes normative.
 
 This file records the intended v0.2 grammar, edition rules, deprecations, and
 diagnostics. It is **not** a second normative specification. Until the Phase 6

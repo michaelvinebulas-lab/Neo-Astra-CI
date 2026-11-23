@@ -36,6 +36,15 @@ pub fn check_canonical(source: &str, edition: Edition) -> Vec<Diagnostic> {
 
     let tokens = lex_with_options(source, LexOptions { edition }).tokens;
     let mut diagnostics = Vec::new();
+    let skip_newlines = |mut index: usize| {
+        while tokens
+            .get(index)
+            .is_some_and(|token| token.kind == TokenKind::Newline)
+        {
+            index += 1;
+        }
+        index
+    };
 
     for (index, token) in tokens.iter().enumerate() {
         if let TokenKind::Keyword(_) = token.kind
@@ -68,7 +77,7 @@ pub fn check_canonical(source: &str, edition: Edition) -> Vec<Diagnostic> {
 
         if token.kind == TokenKind::Keyword(Keyword::Spawn)
             && tokens
-                .get(index + 1)
+                .get(skip_newlines(index + 1))
                 .is_some_and(|next| next.kind == TokenKind::Punct(Punctuation::PipePipe))
         {
             diagnostics.push(
@@ -79,25 +88,33 @@ pub fn check_canonical(source: &str, edition: Edition) -> Vec<Diagnostic> {
             continue;
         }
 
-        if token.kind == TokenKind::Punct(Punctuation::LBrace)
-            && tokens
-                .get(index + 1)
-                .is_some_and(|next| next.kind == TokenKind::Punct(Punctuation::At))
-            && tokens
-                .get(index + 2)
-                .is_some_and(|next| next.kind == TokenKind::Identifier)
-            && tokens
-                .get(index + 3)
-                .is_some_and(|next| next.kind == TokenKind::Punct(Punctuation::Colon))
-        {
-            diagnostics.push(
-                Diagnostic::error(
-                    DEPRECATED_SPELLING,
-                    "The old scope-block spelling is deprecated in edition 0.2.",
-                )
-                .with_span(token.span)
-                .with_hint("Use @mode(name) { ... } or @memory(name) { ... }."),
-            );
+        if token.kind == TokenKind::Punct(Punctuation::LBrace) {
+            let mut cursor = skip_newlines(index + 1);
+            let is_at = tokens
+                .get(cursor)
+                .is_some_and(|next| next.kind == TokenKind::Punct(Punctuation::At));
+            if is_at {
+                cursor = skip_newlines(cursor + 1);
+                let has_name = tokens
+                    .get(cursor)
+                    .is_some_and(|next| next.kind == TokenKind::Identifier);
+                if has_name {
+                    cursor = skip_newlines(cursor + 1);
+                    let has_colon = tokens
+                        .get(cursor)
+                        .is_some_and(|next| next.kind == TokenKind::Punct(Punctuation::Colon));
+                    if has_colon {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                DEPRECATED_SPELLING,
+                                "The old scope-block spelling is deprecated in edition 0.2.",
+                            )
+                            .with_span(token.span)
+                            .with_hint("Use @mode(name) { ... } or @memory(name) { ... }."),
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -132,6 +149,14 @@ public function f() {
         assert!(codes.contains(&"NS2009"), "{codes:?}");
         assert!(codes.contains(&"NS2012"), "{codes:?}");
         assert!(codes.contains(&"NS2013"), "{codes:?}");
+        assert!(codes.contains(&"NS2015"), "{codes:?}");
+
+        let with_newlines = "{\n@mode:core;\nlet x = 1\n}";
+        let diagnostics = check_canonical(with_newlines, Edition::V0_2);
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
         assert!(codes.contains(&"NS2015"), "{codes:?}");
     }
 

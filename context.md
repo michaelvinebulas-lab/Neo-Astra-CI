@@ -182,6 +182,28 @@ Phase 4 (formatter and canonical lint) core work is landed:
   `astra fmt --canonical` need to be added once the parallel agent's CLI
   changes are committed. `astra migrate` remains the only rewrite path.
 
+Phase 5 (migration and validation) core work is landed:
+
+- `crates/astra-core/src/migrate.rs` is the only rewrite path. It converts
+  aliases, prefix `!Error(...)` / `!Error { ... }` (including dropping a
+  redundant `return`), postfix `!`, old scope blocks, confident `path<T>(...)`
+  calls, and `spawn ||`. `/%` is preserved with a warning; manifests and edition
+  fields are never edited without an explicit opt-in.
+- Migration is idempotent and exposed through `astra_compiler_api`. The v0.2
+  migrate corpus is exercised by `crates/astra-core/tests/edition_v0_2_migrate.rs`.
+- Added conformance cases for tuple indexes, continuation, and leading binary
+  operators, plus parser fixes for multiline struct-init lookahead and
+  `spawn { ... }` under edition `0.2`.
+- CLI commands (`astra migrate` with `--dry-run`/`--check`/`--json`, plus
+  `check --canonical-syntax` and `fmt --canonical`) remain unwired because the
+  CLI files are owned by a parallel agent.
+
+Phase 6 (freeze) is prepared but not declared: `spec-v0.2.md` stays
+non-normative until the CLI commands are wired and the full corpus is green.
+No `1.1.0` tag or publish was cut. The next actions are the CLI wiring
+(`astra migrate`, `check --canonical-syntax`, `fmt --canonical`), then the final
+freeze docs and release checklist.
+
 ## Release and npm state
 
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.

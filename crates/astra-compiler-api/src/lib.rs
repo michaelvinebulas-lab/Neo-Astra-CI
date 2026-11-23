@@ -15,6 +15,7 @@ use astra_core::diagnostic::Diagnostic;
 use astra_core::edition::Edition;
 use astra_core::formatter::{FormatOptions, format_source_with_options};
 use astra_core::ir::Program;
+use astra_core::migrate::migrate_source as rewrite_source;
 use astra_core::parser::{ParseOptions, parse_with_options};
 use astra_core::resolver::resolve_module;
 use astra_core::resolver::{ModuleGraph, collect_module_specifiers};
@@ -29,6 +30,14 @@ use serde_json::{Value, json};
 #[must_use]
 pub fn check_canonical(source: &str, edition: Edition) -> Vec<Diagnostic> {
     lint_canonical(source, edition)
+}
+
+/// Migrates one source unit to edition `0.2` without touching manifests.
+pub use astra_core::migrate::{MigrateOptions, Migration};
+
+/// Runs the source-to-source migrator over one source unit.
+pub fn migrate_source(source: &str, options: MigrateOptions) -> Result<Migration, Vec<Diagnostic>> {
+    rewrite_source(source, options)
 }
 
 /// Compiler API version. This is separate from the language version.

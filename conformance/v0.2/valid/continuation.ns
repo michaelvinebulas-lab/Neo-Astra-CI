@@ -1,0 +1,14 @@
+// edition: 0.2
+// purpose: continue after trailing binary operators and before a dot
+
+struct User {
+    name: str,
+}
+
+fn run(user: User) -> i32 {
+    let value = 1 +
+        2
+    let name = user
+        .name
+    return value
+}

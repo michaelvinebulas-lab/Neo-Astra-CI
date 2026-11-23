@@ -2425,7 +2425,7 @@ impl Parser {
             self.expect_punct(Punctuation::FatArrow, "'=>'");
             let body = if self.at_punct(Punctuation::LBrace) {
                 MatchArmBody::Block(self.parse_block())
-            } else if self.edition == Edition::V0_2 && self.at_keyword(Keyword::Return) {
+            } else if self.at_keyword(Keyword::Return) {
                 // `arm => return value` is a block-bodied arm with a single
                 // return statement. The AST has no statement arm variant.
                 let statement = self
@@ -2482,6 +2482,13 @@ impl Parser {
 
     fn parse_spawn_expression(&mut self) -> Expr {
         let start = self.bump().span.start;
+        if self.edition == Edition::V0_2 && self.at_punct(Punctuation::LBrace) {
+            let body = self.parse_block();
+            return Expr {
+                kind: ExprKind::Spawn { body },
+                span: self.span_from(start),
+            };
+        }
         self.expect_punct(Punctuation::PipePipe, "'||'");
         let body = self.parse_block();
         Expr {
@@ -3090,12 +3097,17 @@ impl Parser {
     }
 
     fn looks_like_struct_init(&self) -> bool {
-        self.at_punct(Punctuation::LBrace)
+        if !self.at_punct(Punctuation::LBrace) {
+            return false;
+        }
+        let name = self.skip_newlines_at(self.index + 1);
+        let colon = self.skip_newlines_at(name + 1);
+        self.tokens
+            .get(name)
+            .is_some_and(|token| token.kind == TokenKind::Identifier)
             && self
-                .peek_at(1)
-                .is_some_and(|token| token.kind == TokenKind::Identifier)
-            && self
-                .peek_at(2)
+                .tokens
+                .get(colon)
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Colon))
     }
 

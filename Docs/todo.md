@@ -261,9 +261,10 @@ language is frozen.
       byte-identical and explicit `"0.2"` still parses the v0.1 surface.
 - [ ] Parser diagnostics for every deprecated or edition-rejected spelling with
       the canonical replacement.
-- [ ] Formatter/codemod rewrites for aliases, `!` forms, scope blocks, and
-      turbofish.
-- [ ] One conformance case per changed construct, including negative parses.
+- [x] Formatter/codemod rewrites for aliases, `!` forms, scope blocks, and
+      turbofish (`crates/astra-core/src/migrate.rs`); CLI command wiring remains.
+- [x] One conformance case per changed construct, including negative parses
+      (`conformance/v0.2`, `edition_v0_2_checker.rs`, `edition_v0_2_migrate.rs`).
 - [ ] Error-code ledger entries for new syntax diagnostics.
 - [ ] Encode the v0.2 EBNF in a parser generator and require zero grammar
       conflicts, especially for turbofish, struct literals vs blocks, and
@@ -272,8 +273,9 @@ language is frozen.
       freeze.
 - [ ] Freeze `spec-v0.2.md`, then update parser, checker, formatter, codegen,
       conformance, examples, and CLI together.
-- [ ] Implement `edition = "0.2"` gating so the compiler accepts v0.1 and v0.2
-      syntax, and `astra migrate` migrates source.
+- [x] Implement `edition = "0.2"` gating so the compiler accepts v0.1 and v0.2
+      syntax, and migrate source. The `astra migrate` CLI command is still
+      unwired.
 - [ ] Treat the feature-gap list above as a separate train; do not make it a
       blocker for the v0.2 cleanup freeze.
 
