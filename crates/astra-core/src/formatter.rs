@@ -27,8 +27,12 @@ pub fn format_source(source: &str) -> ParseResult<String> {
 
 /// Formats source with explicit options.
 pub fn format_source_with_options(source: &str, options: FormatOptions) -> ParseResult<String> {
-    let (module, comments) =
-        parse_with_comments_with_options(source, ParseOptions { edition: options.edition })?;
+    let (module, comments) = parse_with_comments_with_options(
+        source,
+        ParseOptions {
+            edition: options.edition,
+        },
+    )?;
     Ok(format_module_with_comments(&module, source, &comments))
 }
 

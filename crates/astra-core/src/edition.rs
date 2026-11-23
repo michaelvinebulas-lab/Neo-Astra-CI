@@ -37,7 +37,9 @@ impl FromStr for Edition {
         match value {
             "0.1" => Ok(Edition::V0_1),
             "0.2" => Ok(Edition::V0_2),
-            other => Err(format!("unsupported edition `{other}`; expected `0.1` or `0.2`")),
+            other => Err(format!(
+                "unsupported edition `{other}`; expected `0.1` or `0.2`"
+            )),
         }
     }
 }

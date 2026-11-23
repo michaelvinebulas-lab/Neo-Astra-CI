@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use astra_capabilities::Mode;
 use astra_codegen_c::{CModule, EmitKind, IntegerPolicy, ProjectEntry, generate};
 use astra_core::checker::{CheckOptions, check_resolved};
+use astra_core::edition::Edition;
 use astra_core::parser::parse;
 use astra_core::resolver::resolve_module;
 use astra_core::type_surface::{ProjectModule, check_module_graph};
@@ -959,6 +960,7 @@ fn compiler_api_c_target_returns_artifacts() {
             text: "pub fn add(a: i32, b: i32) -> i32 { return a + b }\n".to_owned(),
         },
         target: "c".to_owned(),
+        edition: Edition::V0_1,
         mode: None,
         integer_policy: IntegerPolicy::Wrapping,
     };
@@ -1012,6 +1014,7 @@ fn compiler_api_rejects_unsupported_target() {
             text: "fn main() {}\n".to_owned(),
         },
         target: "native".to_owned(),
+        edition: Edition::V0_1,
         mode: None,
         integer_policy: IntegerPolicy::Wrapping,
     };

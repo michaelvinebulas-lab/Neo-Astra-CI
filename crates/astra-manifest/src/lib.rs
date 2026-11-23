@@ -1,4 +1,5 @@
 use astra_core::diagnostic::Diagnostic;
+use astra_core::edition::Edition;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -149,6 +150,17 @@ fn parse_core_value(value: serde_json::Value) -> Result<CoreManifest, Vec<Diagno
     let manifest: CoreManifest = serde_json::from_value(value)
         .map_err(|error| invalid("NS9001", format!("invalid core manifest: {error}")))?;
     reject_cross_manifest_keys(&manifest.extra, false)?;
+    if let Some(edition) = manifest
+        .package
+        .as_ref()
+        .and_then(|package| package.edition.as_deref())
+        && let Err(message) = edition.parse::<Edition>()
+    {
+        return Err(invalid(
+            "NS2008",
+            format!("{message}; set edition to \"0.1\" or \"0.2\""),
+        ));
+    }
     Ok(manifest)
 }
 
@@ -275,6 +287,29 @@ mod tests {
     fn parse_core_json_allows_an_absent_package() {
         let manifest = parse_core_json("{}").unwrap();
         assert!(manifest.package.is_none());
+    }
+
+    #[test]
+    fn parse_core_json_accepts_supported_editions() {
+        for edition in ["0.1", "0.2"] {
+            let text = format!(r#"{{"package":{{"name":"foo","edition":"{edition}"}}}}"#);
+            let manifest = parse_core_json(&text).unwrap();
+            assert_eq!(
+                manifest.package.as_ref().unwrap().edition.as_deref(),
+                Some(edition)
+            );
+        }
+    }
+
+    #[test]
+    fn parse_core_json_rejects_unsupported_edition_with_a_migration_hint() {
+        let error = parse_core_json(r#"{"package":{"edition":"2026"}}"#).unwrap_err();
+        assert!(error.iter().any(|diagnostic| {
+            diagnostic.code == "NS2008"
+                && diagnostic
+                    .message
+                    .contains("set edition to \"0.1\" or \"0.2\"")
+        }));
     }
 
     #[test]

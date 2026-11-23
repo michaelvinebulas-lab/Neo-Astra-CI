@@ -314,6 +314,7 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
                 text: entry_text.clone(),
             },
             target: "c".to_owned(),
+            edition: project.edition(),
             mode,
             integer_policy,
         };
@@ -360,6 +361,7 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
                 })
                 .collect(),
             target: "c".to_owned(),
+            edition: project.edition(),
             mode,
             integer_policy,
             library: library_mode,

@@ -15,6 +15,10 @@ const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const reportOnly = process.argv.includes("--report");
 const codePattern = /\b(?:NS|NP|NR|NV|PG)\d{4}\b/g;
 const specPath = join(root, "Docs", "spec-v0.1.md");
+// The v0.2 cleanup reserves codes in its own spec. Accept those as an
+// allow-list for emitted codes, but keep v0.1 as the normative "must emit" set
+// until the v0.2 edition freezes.
+const plannedSpecPath = join(root, "Docs", "spec-v0.2.md");
 
 // Codes that are deliberately not emitted in v0.1. Keep this list short and
 // give each entry a reason; a reserved code is still part of the stable range.
@@ -79,8 +83,17 @@ while ((match = rowPattern.exec(spec)) !== null) {
   specCodes.add(match[1]);
 }
 
+const plannedCodes = new Set();
+try {
+  const plannedSpec = readFileSync(plannedSpecPath, "utf8");
+  rowPattern.lastIndex = 0;
+  while ((match = rowPattern.exec(plannedSpec)) !== null) {
+    plannedCodes.add(match[1]);
+  }
+} catch {}
+
 const missingFromSpec = [...emitted.keys()]
-  .filter((code) => !specCodes.has(code) && !reserved.has(code))
+  .filter((code) => !specCodes.has(code) && !plannedCodes.has(code) && !reserved.has(code))
   .sort();
 const missingFromCode = [...specCodes]
   .filter((code) => !emitted.has(code) && !reserved.has(code))
@@ -91,7 +104,7 @@ process.stdout.write(
 );
 
 if (missingFromSpec.length > 0) {
-  process.stdout.write("\nEmitted but absent from Docs/spec-v0.1.md:\n");
+  process.stdout.write("\nEmitted but absent from Docs/spec-v0.1.md and unplanned in Docs/spec-v0.2.md:\n");
   for (const code of missingFromSpec) {
     process.stdout.write(`  ${code}  ${[...emitted.get(code)].slice(0, 3).join(", ")}\n`);
   }

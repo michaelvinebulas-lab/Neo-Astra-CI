@@ -8,7 +8,9 @@
 use crate::ast::*;
 use crate::diagnostic::Diagnostic;
 use crate::edition::Edition;
-use crate::lexer::{Comment, Keyword, LexOptions, LexResult, Punctuation, Token, TokenKind, lex_with_options};
+use crate::lexer::{
+    Comment, Keyword, LexOptions, LexResult, Punctuation, Token, TokenKind, lex_with_options,
+};
 use crate::literal::{decode_byte_literal, decode_string_literal};
 use crate::span::Span;
 

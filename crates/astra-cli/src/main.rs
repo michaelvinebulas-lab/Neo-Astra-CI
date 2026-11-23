@@ -8,9 +8,10 @@ use astra_compiler_api::{
     ProjectSourceUnit, SourceUnit,
 };
 use astra_core::ast::{Item, ItemKind};
-use astra_core::formatter::format_source;
+use astra_core::edition::Edition;
+use astra_core::formatter::{FormatOptions, format_source_with_options};
 use astra_core::mode::Mode;
-use astra_core::parser::parse;
+use astra_core::parser::{ParseOptions, parse_with_options};
 use astra_manifest::{
     BuildManifest, CoreManifest, format_build_json, format_build_toml, format_core_json,
     format_core_toml, parse_build_json, parse_build_toml, parse_core_json, parse_core_toml,
@@ -128,6 +129,15 @@ impl ProjectManifests {
             Some("arbitrary") => IntegerPolicy::Arbitrary,
             _ => IntegerPolicy::Wrapping,
         }
+    }
+
+    fn edition(&self) -> Edition {
+        self.core
+            .package
+            .as_ref()
+            .and_then(|package| package.edition.as_deref())
+            .and_then(|edition| edition.parse::<Edition>().ok())
+            .unwrap_or_default()
     }
 
     fn package_name(&self) -> Option<String> {
@@ -488,6 +498,29 @@ fn load_project(dir: &str) -> Result<ProjectManifests, ManifestError> {
     })
 }
 
+/// Finds the nearest core manifest and returns its edition. Missing or invalid
+/// manifests fall back to `0.1` for single-file commands.
+fn edition_for_path(path: &str) -> Edition {
+    let mut dir = std::path::Path::new(path)
+        .parent()
+        .map(std::path::Path::to_path_buf)
+        .unwrap_or_default();
+    if dir.as_os_str().is_empty() {
+        dir = std::path::PathBuf::from(".");
+    }
+    loop {
+        if (dir.join("core.json").exists() || dir.join("core.toml").exists())
+            && let Ok(project) = load_project(&dir.to_string_lossy())
+        {
+            return project.edition();
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    Edition::V0_1
+}
+
 fn load_build_manifest(dir: &str) -> Result<(BuildManifest, bool), ManifestError> {
     let build_names: Vec<&str> = ["build.json", "build.toml"]
         .into_iter()
@@ -840,6 +873,7 @@ fn project_check(project: &ProjectManifests, json: bool, mode: Option<Mode>) -> 
             api_version: API_VERSION.to_owned(),
             sources,
             target,
+            edition: project.edition(),
             mode: selected_mode,
             integer_policy: project.integer_policy(),
         };
@@ -896,7 +930,12 @@ fn project_check(project: &ProjectManifests, json: bool, mode: Option<Mode>) -> 
     if !invalid_ffi {
         let active_target = project.active_target();
         for (_key, absolute_path, text) in &ordered {
-            let Ok(module) = parse(text) else {
+            let Ok(module) = parse_with_options(
+                text,
+                ParseOptions {
+                    edition: project.edition(),
+                },
+            ) else {
                 continue;
             };
             let mut declarations = Vec::new();
@@ -1153,6 +1192,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
             text,
         },
         target,
+        edition: edition_for_path(&file),
         mode,
         integer_policy: Default::default(),
     };
@@ -1254,7 +1294,7 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
         };
 
         // determine formatted output
-        let (formatted_opt, diagnostics) = format_one(f, &text);
+        let (formatted_opt, diagnostics) = format_one(f, &text, edition_for_path(f));
 
         if !diagnostics.is_empty() {
             has_error = true;
@@ -1337,10 +1377,14 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
     }
 }
 
-fn format_one(path: &str, text: &str) -> (Option<String>, Vec<serde_json::Value>) {
+fn format_one(
+    path: &str,
+    text: &str,
+    edition: Edition,
+) -> (Option<String>, Vec<serde_json::Value>) {
     let lower = path.to_lowercase();
     if lower.ends_with(".ns") {
-        match format_source(text) {
+        match format_source_with_options(text, FormatOptions { edition }) {
             Ok(f) => (Some(f), Vec::new()),
             Err(diags) => {
                 let mut out = Vec::new();
@@ -1410,7 +1454,12 @@ fn cmd_ast_dir(dir: &str, json: bool) -> ExitCode {
         Ok(text) => text,
         Err(code) => return code,
     };
-    match parse(&text) {
+    match parse_with_options(
+        &text,
+        ParseOptions {
+            edition: edition_for_path(&entry),
+        },
+    ) {
         Ok(module) => {
             if json {
                 let module_value = serde_json::to_value(&module).unwrap_or_default();
@@ -1501,7 +1550,12 @@ fn cmd_ast(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    match parse(&text) {
+    match parse_with_options(
+        &text,
+        ParseOptions {
+            edition: edition_for_path(&file),
+        },
+    ) {
         Ok(module) => {
             let module_value = serde_json::to_value(&module).unwrap_or_default();
             if json {
@@ -1557,7 +1611,12 @@ fn cmd_explain_dir(dir: &str, json: bool, _mode: Option<Mode>, _target: &str) ->
         Ok(text) => text,
         Err(code) => return code,
     };
-    match parse(&text) {
+    match parse_with_options(
+        &text,
+        ParseOptions {
+            edition: edition_for_path(&entry),
+        },
+    ) {
         Ok(module) => {
             let inference = infer_module_mode_named(&module, display_path(&entry));
             if json {
@@ -1665,7 +1724,12 @@ fn cmd_explain(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    match parse(&text) {
+    match parse_with_options(
+        &text,
+        ParseOptions {
+            edition: edition_for_path(&file),
+        },
+    ) {
         Ok(module) => {
             let inference = infer_module_mode_named(&module, display_path(&file));
             let inference_value = serde_json::to_value(&inference).unwrap_or_default();

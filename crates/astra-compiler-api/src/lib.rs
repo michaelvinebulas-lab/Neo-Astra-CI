@@ -11,9 +11,10 @@ use astra_capabilities::{Mode, ModeInference, infer_module_mode_named, infer_pro
 use astra_codegen_c::{CModule, IntegerPolicy as CIntegerPolicy};
 use astra_core::checker::{CheckOptions, TypeAnnotation, check_resolved};
 use astra_core::diagnostic::Diagnostic;
-use astra_core::formatter::format_source;
+use astra_core::edition::Edition;
+use astra_core::formatter::{FormatOptions, format_source_with_options};
 use astra_core::ir::Program;
-use astra_core::parser::parse;
+use astra_core::parser::{ParseOptions, parse_with_options};
 use astra_core::resolver::resolve_module;
 use astra_core::resolver::{ModuleGraph, collect_module_specifiers};
 use astra_core::type_surface::{ProjectModule, check_module_graph_with_imports};
@@ -76,6 +77,9 @@ pub struct CompileRequest {
     pub api_version: String,
     pub source: SourceUnit,
     pub target: String,
+    /// Language edition. Defaults to `0.1` for old callers.
+    #[serde(default)]
+    pub edition: Edition,
     /// Explicit mode. When omitted, the compiler infers the least-privileged
     /// mode from the source graph.
     #[serde(default)]
@@ -283,6 +287,9 @@ pub struct ProjectCheckRequest {
     /// Ordered module sources, keyed by their canonical import specifier.
     pub sources: Vec<ProjectSourceUnit>,
     pub target: String,
+    /// Language edition. Defaults to `0.1` for old callers.
+    #[serde(default)]
+    pub edition: Edition,
     /// Explicit project mode. When omitted, the project graph is inferred.
     #[serde(default)]
     pub mode: Option<Mode>,
@@ -348,7 +355,12 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
 
     for unit in &request.sources {
         path_map.insert(unit.key.clone(), unit.path.clone());
-        match parse(&unit.text) {
+        match parse_with_options(
+            &unit.text,
+            ParseOptions {
+                edition: request.edition,
+            },
+        ) {
             Ok(module) => {
                 ast_map.insert(unit.key.clone(), module.clone());
                 project_modules.push(ProjectModule {
@@ -489,7 +501,7 @@ pub fn check_project(request: &ProjectCheckRequest) -> ProjectCheckResponse {
     let graph = check_module_graph_with_imports(
         &ordered_modules,
         &module_graph,
-        CheckOptions::new(selected_mode),
+        CheckOptions::new(selected_mode).with_edition(request.edition),
     );
 
     let ok = graph.is_ok();
@@ -579,6 +591,9 @@ pub struct ProjectCompileRequest {
     /// Ordered module sources, keyed by their canonical import specifier.
     pub sources: Vec<ProjectSourceUnit>,
     pub target: String,
+    /// Language edition. Defaults to `0.1` for old callers.
+    #[serde(default)]
+    pub edition: Edition,
     /// Explicit project mode. When omitted, the compiler infers.
     #[serde(default)]
     pub mode: Option<Mode>,
@@ -669,7 +684,12 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
 
     for unit in &request.sources {
         path_map.insert(unit.key.clone(), unit.path.clone());
-        match astra_core::parser::parse(&unit.text) {
+        match parse_with_options(
+            &unit.text,
+            ParseOptions {
+                edition: request.edition,
+            },
+        ) {
             Ok(module) => {
                 project_modules.push(astra_core::type_surface::ProjectModule {
                     key: unit.key.clone(),
@@ -747,7 +767,7 @@ pub fn compile_project(request: &ProjectCompileRequest) -> ProjectCompileRespons
     let graph = astra_core::type_surface::check_module_graph_with_imports(
         &ordered_modules,
         &module_graph,
-        astra_core::checker::CheckOptions::new(selected_mode),
+        astra_core::checker::CheckOptions::new(selected_mode).with_edition(request.edition),
     );
 
     if !graph.is_ok() {
@@ -888,7 +908,12 @@ impl FrontendCompiler {
     }
 
     fn run(&self, request: &CompileRequest, typed: bool) -> CompileResponse {
-        match parse(&request.source.text) {
+        match parse_with_options(
+            &request.source.text,
+            ParseOptions {
+                edition: request.edition,
+            },
+        ) {
             Ok(module) => {
                 let inference = infer_module_mode_named(&module, &request.source.path);
                 let mode_source = if request.mode.is_some() {
@@ -911,7 +936,11 @@ impl FrontendCompiler {
 
                 match resolve_module(&module) {
                     Ok(resolved) => {
-                        match check_resolved(&module, &resolved, CheckOptions::new(selected_mode)) {
+                        match check_resolved(
+                            &module,
+                            &resolved,
+                            CheckOptions::new(selected_mode).with_edition(request.edition),
+                        ) {
                             Ok(checked) => {
                                 let name = checked.module.name.clone();
                                 let metadata = json!({
@@ -1126,7 +1155,12 @@ pub fn process_json(input: &str) -> String {
         },
         "format" => match parse_compile_request(request.params) {
             Ok(compile_request) => {
-                let response = match format_source(&compile_request.source.text) {
+                let response = match format_source_with_options(
+                    &compile_request.source.text,
+                    FormatOptions {
+                        edition: compile_request.edition,
+                    },
+                ) {
                     Ok(source) => FormatResponse::success(source),
                     Err(diagnostics) => FormatResponse::failure(diagnostics),
                 };
@@ -1161,7 +1195,12 @@ pub fn process_json(input: &str) -> String {
 /// Parses one source unit into the surface AST. Parse errors are reported as a
 /// failed response, mirroring `check` and `format`.
 fn ast_for_request(request: &CompileRequest) -> AstResponse {
-    match parse(&request.source.text) {
+    match parse_with_options(
+        &request.source.text,
+        ParseOptions {
+            edition: request.edition,
+        },
+    ) {
         Ok(module) => AstResponse::success(module),
         Err(diagnostics) => AstResponse::failure(diagnostics),
     }
@@ -1170,7 +1209,12 @@ fn ast_for_request(request: &CompileRequest) -> AstResponse {
 /// Infers the least-privileged mode for one source unit and returns both the
 /// structured evidence and its human-readable rendering.
 fn explain_for_request(request: &CompileRequest) -> ExplainResponse {
-    match parse(&request.source.text) {
+    match parse_with_options(
+        &request.source.text,
+        ParseOptions {
+            edition: request.edition,
+        },
+    ) {
         Ok(module) => ExplainResponse::success(infer_module_mode_named(
             &module,
             request.source.path.clone(),
@@ -1352,6 +1396,7 @@ mod tests {
             api_version: "99.0".to_owned(),
             sources: Vec::new(),
             target: "c".to_owned(),
+            edition: astra_core::edition::Edition::V0_1,
             mode: None,
             integer_policy: super::IntegerPolicy::Wrapping,
             library: false,
@@ -1372,6 +1417,7 @@ mod tests {
             api_version: API_VERSION.to_owned(),
             sources: Vec::new(),
             target: "c".to_owned(),
+            edition: astra_core::edition::Edition::V0_1,
             mode: None,
             integer_policy: super::IntegerPolicy::Wrapping,
             library: false,
@@ -1488,6 +1534,15 @@ mod tests {
         assert!(output.contains("// body"));
         assert!(output.contains("// value"));
         assert!(!output.contains("public function"));
+    }
+
+    #[test]
+    fn format_accepts_explicit_edition_and_defaults_to_v0_1() {
+        let base = r#"{"jsonrpc":"2.0","id":"fmt","method":"format","params":{"apiVersion":"1.0","source":{"path":"src/main.ns","text":"pub fn f() { var x = 1 }\n"},"target":"js""#;
+        let default_output = process_json(&format!("{base}}}}}"));
+        let explicit_output = process_json(&format!("{base},\"edition\":\"0.2\"}}}}"));
+        assert_eq!(default_output, explicit_output);
+        assert!(default_output.contains("pub fn f()"));
     }
 
     #[test]
