@@ -1,10 +1,10 @@
 # Neo Astra context handoff
 
-**Snapshot:** 2026-11-22
+**Snapshot:** 2026-11-23
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** `master` through `fc54f28` (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
-**Published release:** `1.0.0` (tag `v1.0.0` -> `9d832e0`)
-**Next release:** `1.0.1` native Rust CLI/NoPM - tagged and GitHub release published; npm publish pending principal trusted-publishing refresh
+**Branch:** `master` through `9450708` plus the final status docs (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
+**Published release:** `1.0.1` (tag `v1.0.1` -> `3093343`)
+**Next release:** v0.2 planning; no active release
 **Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
@@ -49,9 +49,14 @@ for detail. Update this file when the working state changes materially.
 
 ## Current reality
 
-- `1.0.0` is published. Public source master is `17ceaf6`; tag `v1.0.0` points
-  at `9d832e0`; release run `42278798124` published the platform packages and
-  the `neo-astra` meta package.
+- `1.0.1` is published on GitHub and npm. Public master is `bed7546` (plus the
+  workflow cleanup); tag `v1.0.1` points at `3093343`; release run
+  `45125506996` published all four npm packages with provenance and re-uploaded
+  the attested archives.
+- npm has `neo-astra@1.0.1`, `neo-astra-linux-x64@1.0.1`,
+  `neo-astra-darwin-arm64@1.0.1`, and `neo-astra-windows-x64@1.0.1`; `latest`
+  is `1.0.1`. A clean Windows install reports `astra 1.0.1`/`nopm 1.0.1`, and
+  `npm audit signatures` verifies registry signatures and attestations.
 - The native Rust port has landed slices 1, 2a, 2b, 2c, 3a, 3b, and 4. Slice 4
   is accepted.
 - Slice 4 packaging:
@@ -83,11 +88,12 @@ for detail. Update this file when the working state changes materially.
   Actions billing/spending block; the new Tier-1 run `45019255462` is green on
   Ubuntu, macOS, and Windows for `fc54f28`. Deleting the old CI repo needs a
   principal `delete_repo` scope refresh.
-- Sanitized source is public at `3093343` and tagged `v1.0.1`. Release run
-  `45021222917` uploaded all three archives plus `.sha256` files and attested
-  them; `gh attestation verify` passed for the Windows archive. npm platform
-  publishes failed with `E404` after OIDC/provenance signing, so npm still has
-  only `1.0.0`; the meta-package job was skipped.
+- The npm publish failures were two separate bugs: `actions/setup-node@v4`
+  wrote `github.token` into `.npmrc` when `registry-url` was set (`E404`), and
+  the trusted publishers created with npm 11.13.0 omitted the required
+  `createPackage` permission (`package not found`). The workflow no longer sets
+  `registry-url`, and the trust configs were recreated with
+  `npx npm@latest ... --allow-publish`.
 
 ## v0.2 status
 
@@ -116,22 +122,18 @@ Phase 0 is complete on the documentation side only:
 
 ## Release and npm state
 
-- `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives,
-  but npm has no `1.0.1` packages: trusted publishing rejected the platform
-  publishes with `E404`. Principal must refresh `npm trust github` with passkey
-  auth, then rerun the failed release jobs. The old CI repo deletion is also
-  pending a principal `delete_repo` scope refresh.
+- `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.
+  npm has all four `1.0.1` packages with SLSA provenance. The old CI repo and
+  the `NPM_TOKEN` secret are deleted.
 - `v1.0.0` is immutable by policy, but its GitHub release reports
   `immutable: false`. Do not modify its assets.
 - `1.0.0` has registry signatures but no npm provenance attestation; its GitHub
-  archive attestations return 404. Verify provenance/attestations on `1.0.1`.
-- npm trusted publishing is configured for the four packages, but not validated
-  until the first successful OIDC publish. `npm trust list` currently requires
-  passkey re-authentication and returns `EOTP`; that is a principal action.
-  Refresh the relationship immediately before the next release, because
-  unvalidated configurations expire after two days.
-- The token exposed during 1.0.0 still needs revocation. Keep `NPM_TOKEN` only
-  as a rollback until the first successful OIDC publish, then delete it.
+  archive attestations return 404. `1.0.1` has both.
+- npm trusted publishing uses `--allow-publish` configs created with npm
+  12.2.3+. `npm trust` still requires passkey re-authentication and returns
+  `EOTP`; that is a principal action. Unvalidated configs expire after two
+  days, so recreate them immediately before the next release.
+- The token exposed during 1.0.0 still needs revocation.
 - The LSP `serverInfo` version still reports `2.0.0`; correct before shipping
   the server.
 - No public CI workflow exists yet; do not add required status checks until the

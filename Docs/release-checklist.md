@@ -92,15 +92,23 @@ Use this checklist for every release. No step may be skipped.
 - The workflow publishes the platform npm packages first and the `neo-astra`
   meta package last through npm trusted publishing (OIDC). It must not read
   `NPM_TOKEN`; the trusted relationships are configured once per package with
-  `npm trust github`, using `release.yml` and
-  `luminousvalentine-cell/Neo-Astra`.
-- The trusted relationships were added on 2026-11-07 but are unvalidated until
-  the first successful OIDC publish. `npm trust list` currently requires
+  `npx -y npm@latest trust github`, using `release.yml`,
+  `luminousvalentine-cell/Neo-Astra`, and `--allow-publish`.
+- npm 12.2.3 or later is required to create the relationship. Older CLIs omit
+  the required `permissions` field and get `400`; a config without
+  `createPackage` cannot publish and makes the OIDC exchange report
+  `package not found`.
+- Do not set `registry-url` on `actions/setup-node@v4`. Its `token` input
+  defaults to `github.token`, so `registry-url` writes the GitHub token into
+  `.npmrc` as the npm auth token and publish fails with `E404`.
+- The trusted relationships added on 2026-11-07 expired before the first
+  successful publish. On 2026-11-23 the OIDC exchange returned
+  `OIDC token exchange error - package not found`. Revoke the old IDs, then
+  re-create them with `--allow-publish` immediately before the release;
+  unvalidated configurations expire after two days. `npm trust` requires
   passkey re-authentication and returns `EOTP`; record that as a principal
-  action. Refresh the relationships immediately before the release because
-  unvalidated configurations expire after two days.
-- Keep the old `NPM_TOKEN` secret until the first successful OIDC release, then
-  delete it. Revoke the exposed 1.0.0 token immediately; see
-  `Docs/github-trust.md`.
+  action.
+- `NPM_TOKEN` is already deleted; do not re-add it. Revoke the exposed 1.0.0
+  token immediately; see `Docs/github-trust.md`.
 - Verify npm provenance and archive attestations for `1.0.1`; `1.0.0` has
   neither.

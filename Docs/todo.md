@@ -157,11 +157,14 @@ Language stays v0.1; do not inject v0.2 syntax into this patch.
 - [x] Bump to `1.0.1`, move the `[Unreleased]` changelog entries, and make the
       native version metadata follow the workspace version.
 - [x] Tag `v1.0.1` and publish the GitHub release with archives, sidecars, and attestations.
-- [ ] Refresh npm trusted publishing (principal passkey) and rerun the failed
-      release jobs so the platform packages and `neo-astra` meta package reach
-      npm; then verify provenance and a clean install.
-- [ ] Delete the superseded `luminousvalentine-cell/Neo-Astra-CI` repo (needs
-      principal `delete_repo` scope).
+- [x] Recreate the four trusted publishers with `--allow-publish` using npm
+      12.2.3+, then publish all four `1.0.1` packages. Release run
+      `45125506996` is green; `npm view` reports `1.0.1` and `latest` for all
+      four; `npm audit signatures` verifies signatures and attestations; a clean
+      Windows install reports `astra 1.0.1`/`nopm 1.0.1`.
+- [x] Delete the superseded `luminousvalentine-cell/Neo-Astra-CI` repo and the
+      `NPM_TOKEN` secret.
+- [ ] Revoke the npm token exposed during the 1.0.0 release.
 - [ ] Update install/package docs when the native package actually ships.
 
 ## Language v0.2 - syntax cleanup (next minor, edition 0.2)

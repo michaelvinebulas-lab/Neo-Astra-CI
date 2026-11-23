@@ -577,7 +577,6 @@ jobs:
         env:
           NPM_CONFIG_FETCH_TIMEOUT: "1800000"
           NPM_CONFIG_FETCH_RETRIES: "5"
-          NPM_CONFIG_LOGLEVEL: "verbose"
         run: |
           package_dir=dist/npm/platform
           name=$(node -p "require('./$package_dir/package.json').name")
@@ -614,7 +613,6 @@ jobs:
         env:
           NPM_CONFIG_FETCH_TIMEOUT: "1800000"
           NPM_CONFIG_FETCH_RETRIES: "5"
-          NPM_CONFIG_LOGLEVEL: "verbose"
         run: |
           package_dir=dist/npm/meta
           name=$(node -p "require('./$package_dir/package.json').name")

@@ -3,8 +3,9 @@
 This is an internal operations note. Public policy lives in `public/SECURITY.md`
 and `public/CONTRIBUTING.md`.
 
-**Last checked:** 2026-11-11. **Current release:** `1.0.1` is not tagged; the
-native CLI/NoPM port is blocked at slice 3a and native parity is 11/12.
+**Last checked:** 2026-11-23. **Current release:** `v1.0.1` is tagged at public
+`3093343`; the GitHub release assets and attestations are published. npm
+`1.0.1` is blocked on re-creating the trusted publishers.
 
 ## Verified
 
@@ -21,9 +22,12 @@ native CLI/NoPM port is blocked at slice 3a and native parity is 11/12.
   attestation. The 1.0.0 GitHub assets also return 404 from the attestation
   API. The provenance workflow landed after the tag, so do not claim
   provenance for 1.0.0; verify it on 1.0.1 and later.
-- The principal added the GitHub Actions trusted relationship for all four
-  packages on 2026-11-07. It is not validated until the first successful OIDC
-  publish, and npm expires unvalidated configurations after two days.
+- The principal added the GitHub Actions trusted relationships for all four
+  packages on 2026-11-07. npm expires unvalidated configurations after two
+  days, so those relationships expired before the first successful publish.
+  On 2026-11-23 the OIDC exchange returned
+  `OIDC token exchange error - package not found` for every platform package.
+  Re-create the relationships immediately before the next publish attempt.
 - `public/` carries `LICENSE`, `NOTICE`, `CONTRIBUTORS.md`, `SECURITY.md`,
   `CONTRIBUTING.md`, `CODEOWNERS`, issue templates, and the support matrix.
 - The generated mirror is formatted, compiles, and is clippy-clean with
@@ -69,10 +73,18 @@ release, or a principal decision.
 
 The release workflow now:
 
-- requests `id-token: write`;
+- requests `id-token: write` at the job level;
 - installs npm 11 (trusted publishing requires npm 11.5.1 or later);
-- sets `registry-url` and disables package-manager caching;
+- does **not** set `registry-url` on `actions/setup-node@v4`, because that
+  action defaults its `token` input to `github.token` and writes the GitHub
+  token into `.npmrc` as the npm auth token; that caused `E404` on publish;
 - publishes with `--provenance` and no `NODE_AUTH_TOKEN`.
+
+The trust configuration itself must be created with npm **12.2.3 or later**.
+Older CLIs (including 11.13.0) do not send the required `permissions` field,
+so the registry rejects the request with `400`; and a config without
+`createPackage` cannot publish, so the OIDC exchange reports
+`package not found`.
 
 npm's current 2FA is a security key/passkey (WebAuthn), not an
 authenticator-app TOTP. Do not pass a Chrome passkey to `--otp`; it is not a
@@ -87,30 +99,39 @@ first successful publish within two days or they expire and must be recreated.
 For that reason, configure immediately before the release that will validate
 them.
 
-After authenticating as an account that can administer all four packages, add
-one trusted relationship per package:
+After authenticating as an account that can administer all four packages,
+revoke any old relationship, then add one publish-enabled relationship per
+package:
 
 ```sh
 npm login
+# Revoke old IDs from `npm trust list <package> --json` first.
+npx -y npm@latest trust revoke <package> --id=<old-id>
 for package in \
   neo-astra \
   neo-astra-windows-x64 \
   neo-astra-linux-x64 \
   neo-astra-darwin-arm64; do
-  npm trust github "$package" \
+  npx -y npm@latest trust github "$package" \
     --file release.yml \
     --repository luminousvalentine-cell/Neo-Astra \
+    --allow-publish \
     --yes
 done
-npm trust list neo-astra
+npx -y npm@latest trust list neo-astra --json
 ```
+
+The `trust list` output must include `"permissions": ["createPackage"]`.
+Without `--allow-publish`, the config only permits stage publishing and the
+release still fails.
 
 The workflow filename must stay exactly `release.yml`, and the repository must
 stay exactly `luminousvalentine-cell/Neo-Astra`. Do not set an environment
 unless the release jobs add a matching GitHub environment.
 
-After the first successful OIDC publish, delete the `NPM_TOKEN` secret. Keep it
-until the trusted publisher is verified so a rollback is possible.
+After the first successful OIDC publish, delete the `NPM_TOKEN` secret. It is
+already deleted; do not re-add it. If a rollback is needed, create a fresh
+short-lived token, use it for that publish only, and revoke it immediately.
 
 ## Rulesets
 

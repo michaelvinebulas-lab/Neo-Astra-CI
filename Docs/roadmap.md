@@ -15,10 +15,9 @@ The project follows semantic versioning, and every package moves together:
 - **Major** (`2.0.0`) - only for a change that makes older projects or older
   generated output incompatible.
 
-The published line is **1.0.0**. The `1.0.1` native CLI/NoPM replacement is in
-progress and is not released. Future releases move in lockstep; every entry
-below names the version it lands in, and nothing is scheduled beyond what is
-written.
+The published line is **1.0.1**. The native CLI/NoPM replacement is released.
+Future releases move in lockstep; every entry below names the version it lands
+in, and nothing is scheduled beyond what is written.
 
 ---
 
@@ -90,9 +89,8 @@ code generators stay isolated behind an on-demand Node bridge.
 
 Current checkpoints: slices 1, 2a, 2b, 2c, 3a, 3b, and 4 are accepted. The
 packaged CLI is native Cargo output, the JS/TS bridge is isolated under
-`lib/cli`, native parity is 12/12, and release validation is green. The
-`1.0.1` bump and tag are applied; npm publishing and old-CI-repo deletion
-remain.
+`lib/cli`, native parity is 12/12, and release validation is green. `1.0.1` is
+released on GitHub and npm; all four packages carry SLSA provenance.
 
 ### Language v0.2 - syntax cleanup (next minor, edition 0.2)
 

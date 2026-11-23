@@ -4,10 +4,10 @@ Single source of truth for project status, the queue, and decisions.
 Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
-**Last updated:** 2026-11-22
-**Phase:** `1.0.0` released; the native Rust CLI/NoPM port for `1.0.1` has slices 1-4 accepted, release validation is green, the version bump is applied, and the tag/GitHub release are published. npm publishing is blocked on trusted-publishing auth. Language v0.2 remains Phase 0 documentation and corpus only.
-**Master:** private `master` through `fc54f28`, pushed to `ci` at `michaelvinebulas-lab/Neo-Astra-CI`; Tier-1 run `45019255462` is green on Ubuntu, macOS, and Windows. The old `luminousvalentine-cell/Neo-Astra-CI` repo is superseded; deleting it needs a principal `delete_repo` scope refresh. Public `17ceaf6` (reworked docs + native phase-1 crates); tag `v1.0.0` targets `9d832e0`. Nothing from this tree has been pushed to `origin`.
-**Blockers:** refresh npm trusted publishing with principal passkey auth, then rerun the failed release jobs and publish the meta package; delete the old CI repo (principal `delete_repo` scope); rotate the exposed npm token; `1.0.0` still lacks provenance and reports `immutable: false`.
+**Last updated:** 2026-11-23
+**Phase:** `1.0.1` is tagged and the GitHub release is published with archives, checksums, and attestations. Public docs describe `1.0.1`. npm `1.0.1` is still unpublished: the 2026-11-07 trusted publishers expired (npm drops unvalidated configs after two days), and the OIDC exchange now returns `OIDC token exchange error - package not found`. Language v0.2 remains Phase 0 documentation and corpus only.
+**Master:** private `master` through `9450708`, pushed to `ci` at `michaelvinebulas-lab/Neo-Astra-CI`; public `master` at `bed7546`, tag `v1.0.1` at `3093343`. Release assets are present and attested. The old `luminousvalentine-cell/Neo-Astra-CI` repo and the `NPM_TOKEN` secret are deleted.
+**Blockers:** re-create the four npm trusted publishers immediately before the next publish (principal passkey auth), then dispatch `release.yml`; revoke the exposed 1.0.0 npm token; `1.0.0` still lacks provenance and reports `immutable: false`.
 
 ---
 
@@ -80,9 +80,12 @@ temp directory, and reports `astra 1.0.0` / `nopm 1.0.0`. The `1.0.1` bump is
 applied (`4d54ac4`); native `--version` and lockfiles now follow the workspace
 version. `v1.0.1` is tagged at public `3093343`; release run `45021222917`
 uploaded the three archives plus `.sha256` sidecars and attested them. The npm
-platform publishes failed with `E404` after OIDC/provenance signing, so no
-`1.0.1` packages reached npm and the meta-package job was skipped; principal
-passkey auth is needed to refresh trusted publishing.
+platform publishes still fail: the trusted publishers created on 2026-11-07
+expired before their first use, so the OIDC exchange returns
+`OIDC token exchange error - package not found`. The workflow no longer sets
+`registry-url`; `actions/setup-node@v4` was injecting `github.token` as the npm
+auth token and causing `E404`. Re-create the four publishers, then dispatch
+`release.yml` immediately.
 
 The JavaScript and TypeScript code generators stay in their current TypeScript
 implementation; the native bridge may use Node only for JS/TS builds and
@@ -167,6 +170,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-23 | Diagnosed the npm blocker: the trusted publishers created 2026-11-07 expired before first use, and the OIDC exchange returns `OIDC token exchange error - package not found`. Removed `registry-url` from the release workflow because `actions/setup-node@v4` defaults `token` to `github.token` and wrote the GitHub token into `.npmrc`, causing `E404`. Added verbose OIDC logging. Re-created the `neo-astra` trust once, but the CLI create still returns `E400`; principal passkey auth and the npm UI remain the path. | public master `bed7546`; run `45121630145`; `npm trust list` shows all four configs with `release.yml` + `luminousvalentine-cell/Neo-Astra`; npm still reports only `1.0.0` |
 | 2026-11-22 | Tagged `v1.0.1` from the sanitized public tree and started release run `45021222917`. The three archives, `.sha256` sidecars, and build attestations landed on the GitHub release; npm platform publishes all failed with `E404` after OIDC/provenance signing, and the meta-package job was skipped. | public master `3093343`, tag `v1.0.1`; run `45021222917`; `gh attestation verify` green for the Windows archive; sha256 `b4d506a972231cd5feb839b2c508c0036ab34d818b414969a0dd3543551593af` (macOS), `89d14e76d28e4a6957bc4fac4b70f5af55459657fb9c1efdd31776c064b83a19` (Windows), `4e7fae52df2b1a1adf81fbbcbd3f111be8874a51baf3743d5fd3298b6ca8ee43` (Linux) |
 | 2026-11-22 | Applied the `1.0.1` lockstep bump, moved the changelog entries, and made native `--version`/lockfile metadata derive from the workspace version. Moved CI to `michaelvinebulas-lab/Neo-Astra-CI` after the old account hit an Actions billing/spending block; excluded private handoff files from the public-source generator and merged a comment-only branch split that broke sanitized clippy. | `4d54ac4`, `cad33a1`, `fc54f28`; local `npm run verify`/`npm run ci` green; sanitized `npm ci` + `npm run build` + `npm run package` + clippy green; new Tier-1 run `45019255462` green on all three OSes; old repo deletion needs `delete_repo` scope |
 | 2026-11-22 | Fixed the macOS packaged TS bridge: the CLI direct-entry guard compared a canonical `import.meta.url` with a non-canonical `process.argv[1]`, so a package under `/var/folders` (where `/var` is a symlink to `/private/var`) silently did nothing. Both sides are canonicalized now, with a symlinked-entry regression test. | `9dd651e`; `npm test` 243/243; `npm run verify` green; Tier-1 run `44963562468` green on Ubuntu/macOS/Windows; package validation run `44964210902` green on all three; sha256 `081d134b561e3bde229d8c0b351226f4687ba761db73df9035f0490bfdd1de47` (macOS), `aeacf97031c3178b8fdf17b67540cacf2f07a2e4151ba4b2f63fe5600e3491c4` (Windows), `260906f55246a225bf41e53519b9ea63bcb8a3431a42e0c0b1697f8a1fcbaa3f` (Linux) |
