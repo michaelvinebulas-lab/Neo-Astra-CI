@@ -242,8 +242,13 @@ language is frozen.
 
 ### Migration and freeze
 
-- [ ] Implement `edition` plumbing first and keep the default at `"0.1"`; no
-      syntax behavior changes in that step.
+- [x] Implement `edition` plumbing first and keep the default at `"0.1"`; no
+      syntax behavior changes in that step. `Edition` lives in
+      `crates/astra-core/src/edition.rs`; options-aware lex/parse/format entry
+      points and `CheckOptions.edition` are threaded through the compiler API,
+      manifest validation (`NS2008`), and the native CLI. Gate tests in
+      `crates/astra-core/tests/edition_v0_1_compat.rs` prove v0.1 output is
+      byte-identical and explicit `"0.2"` still parses the v0.1 surface.
 - [ ] Parser diagnostics for every deprecated or edition-rejected spelling with
       the canonical replacement.
 - [ ] Formatter/codemod rewrites for aliases, `!` forms, scope blocks, and

@@ -2,9 +2,9 @@
 
 **Snapshot:** 2026-11-23
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** `master` through `6df4f2c` (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
+**Branch:** `master` through `d0f0a93` plus the status docs (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
 **Published release:** `1.0.1` (tag `v1.0.1` -> `3093343`)
-**Next release:** v0.2 planning; no active release
+**Next release:** `1.1.0` - language v0.2 syntax cleanup (edition 0.2)
 **Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
@@ -118,6 +118,19 @@ Phase 0 is complete on the documentation side only:
   Feature gaps are a separate later train.
 - Do not wire the v0.2 corpus into the v0.1 runner or move fixtures into
   `conformance/cases` / `conformance/rejects` before the parser phase gate.
+
+Phase 1 (edition plumbing) is implemented on private master:
+
+- `crates/astra-core/src/edition.rs` defines `Edition { V0_1, V0_2 }` with
+  `FromStr`, `Display`, and `V0_1` as default.
+- Options-aware `lex_with_options` / `parse_with_options` /
+  `format_source_with_options` preserve the existing default entry points.
+  `CheckOptions.edition` defaults to `V0_1`.
+- Compiler API requests carry `#[serde(default)] edition`; the native CLI reads
+  the nearest manifest and passes the edition to check/fmt/ast/explain/build.
+  Invalid manifest editions are rejected with `NS2008` and a migration hint.
+- No syntax behavior changed. Gate tests prove v0.1 output is byte-identical
+  and explicit `"0.2"` still parses the v0.1 surface.
 
 ## Release and npm state
 
