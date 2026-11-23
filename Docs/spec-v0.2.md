@@ -548,11 +548,11 @@ existing parse codes, and `NS4010`-`NS4019` remain the type/effect codes.
 |---|---|---|
 | `NS2008` | Unsupported or invalid edition | `core.toml`; hint to `"0.1"`/`"0.2"` |
 | `NS2009` | Deprecated canonical alias | applies to the seven aliases; message names the replacement |
-| `NS2010` | Expression-position type arguments require `::<...>` | v0.2 bare `<` is comparison |
-| `NS2011` | Malformed turbofish | `:: <` and standalone `::` (Phase 2 lexer); second turbofish is a Phase 3 parser check |
+| `NS2010` | Expression-position type arguments require `::<...>` | bare `path<T>(...)` and qualified variant paths such as `Option.None::<T>` (Phase 3 parser) |
+| `NS2011` | Malformed turbofish | `:: <` and standalone `::` (Phase 2 lexer); second or misplaced turbofish (Phase 3 parser) |
 | `NS2012` | Deprecated `spawn ||` | formatter emits `spawn` |
 | `NS2013` | Deprecated `/%` | no automatic rewrite; semantics differ from `/` |
-| `NS2014` | Invalid tuple index | reserved for the Phase 3 parser check of a float token after `.`; the Phase 2 lexer prevents that token in edition 0.2 |
+| `NS2014` | Invalid tuple index | reserved; the Phase 2 lexer makes a digit after `.` integer-only, so a float token cannot reach this check in edition 0.2 |
 | `NS2015` | Deprecated or removed v0.1 spelling | old scope block: accepted but deprecated (`--canonical-syntax` rejects); prefix `!Error(...)` / postfix `!`: rejected under edition 0.2 |
 | `NS2016` | Canonical-syntax lint family | reserved aggregate; details may use `NS2009`-`NS2015` |
 | `NS2017`-`NS2019` | Reserved for v0.2 front-end follow-ups | do not assign outside this block |

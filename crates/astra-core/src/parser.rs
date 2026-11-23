@@ -23,6 +23,11 @@ const INVALID_TYPE: &str = "NS2003";
 const INVALID_PATTERN: &str = "NS2004";
 const INVALID_ITEM: &str = "NS2005";
 const BOUNDARY: &str = "NS2006";
+const BARE_TYPE_ARGUMENTS: &str = "NS2010";
+const MALFORMED_TURBOFISH: &str = "NS2011";
+const INVALID_TYPE_ARGUMENT: &str = "NS4018";
+const DEPRECATED_SYNTAX: &str = "NS2015";
+const INVALID_CONTROL_FLOW: &str = "NS4014";
 
 /// Nesting limit for the recursive-descent parser (HARD-001). Beyond this depth
 /// the parser reports `NS2002` and unwinds instead of risking a stack
@@ -155,6 +160,17 @@ impl Parser {
                 exported: false,
                 kind: ItemKind::ScriptBlock(script.clone()),
                 span: script.span,
+            });
+        }
+
+        if self.at_canonical_scope() {
+            let scoped = self.parse_canonical_scoped_items();
+            return Some(Item {
+                attributes,
+                visibility: Visibility::Normal,
+                exported: false,
+                kind: ItemKind::ScopedItems(scoped.clone()),
+                span: scoped.span,
             });
         }
 
@@ -310,6 +326,9 @@ impl Parser {
         let mut attributes = Vec::new();
 
         while self.at_punct(Punctuation::At) {
+            if self.at_canonical_scope() {
+                break;
+            }
             let start = self.bump().span.start;
             let name = self.expect_identifier().unwrap_or_default();
             let mut arguments = Vec::new();
@@ -661,6 +680,9 @@ impl Parser {
             parameters.push(self.expect_identifier().unwrap_or_default());
             if self.eat_punct(Punctuation::Comma) {
                 self.skip_newlines();
+                if self.edition == Edition::V0_2 && self.at_punct(Punctuation::Gt) {
+                    break;
+                }
                 continue;
             }
             break;
@@ -1258,6 +1280,123 @@ impl Parser {
         }
     }
 
+    fn parse_canonical_scoped_items(&mut self) -> ScopedItems {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Scope nesting exceeds the supported depth.");
+            let span = self.peek().span;
+            self.depth -= 1;
+            return ScopedItems {
+                annotation: ScopeAnnotation {
+                    kind: ScopeKind::Mode,
+                    value: String::new(),
+                    span,
+                },
+                items: Vec::new(),
+                span,
+            };
+        }
+        let start = self.peek().span.start;
+        let annotation = self.parse_canonical_scope_annotation();
+        self.expect_punct(Punctuation::LBrace, "'{'");
+        let mut items = Vec::new();
+
+        self.skip_separators();
+        while !self.at_punct(Punctuation::RBrace) && !self.at_eof() {
+            let before = self.index;
+            let attributes = self.parse_attributes();
+            if let Some(item) = self.parse_item_with_attributes(attributes) {
+                items.push(item);
+            }
+            self.finish_boundary(true);
+            if self.index == before {
+                self.bump();
+            }
+        }
+
+        self.expect_punct(Punctuation::RBrace, "'}'");
+        self.depth -= 1;
+
+        ScopedItems {
+            annotation,
+            items,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_canonical_scoped_statements(&mut self) -> ScopedStatements {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Scope nesting exceeds the supported depth.");
+            let span = self.peek().span;
+            self.depth -= 1;
+            return ScopedStatements {
+                annotation: ScopeAnnotation {
+                    kind: ScopeKind::Mode,
+                    value: String::new(),
+                    span,
+                },
+                statements: Vec::new(),
+                span,
+            };
+        }
+        let start = self.peek().span.start;
+        let annotation = self.parse_canonical_scope_annotation();
+        self.expect_punct(Punctuation::LBrace, "'{'");
+        let mut statements = Vec::new();
+
+        self.skip_separators();
+        while !self.at_punct(Punctuation::RBrace) && !self.at_eof() {
+            let before = self.index;
+            if let Some(statement) = self.parse_statement() {
+                statements.push(statement);
+            }
+            self.finish_boundary(true);
+            if self.index == before {
+                self.bump();
+            }
+        }
+
+        self.expect_punct(Punctuation::RBrace, "'}'");
+        self.depth -= 1;
+
+        ScopedStatements {
+            annotation,
+            statements,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_canonical_scope_annotation(&mut self) -> ScopeAnnotation {
+        let start = self
+            .expect_punct(Punctuation::At, "'@'")
+            .map_or_else(|| self.peek().span.start, |token| token.span.start);
+        let name = self.expect_identifier().unwrap_or_default();
+        self.expect_punct(Punctuation::LParen, "'('");
+        self.skip_newlines();
+        let value = self.expect_identifier().unwrap_or_default();
+        self.skip_newlines();
+        self.expect_punct(Punctuation::RParen, "')'");
+        let kind = match name.as_str() {
+            "mode" => ScopeKind::Mode,
+            "memory" => ScopeKind::Memory,
+            _ => {
+                self.error_current(
+                    INVALID,
+                    format!("Unknown scope annotation '@{name}'."),
+                    "Use @mode(...) or @memory(...).",
+                );
+                ScopeKind::Mode
+            }
+        };
+
+        ScopeAnnotation {
+            kind,
+            value,
+            span: self.span_from(start),
+        }
+    }
+
     fn parse_scope_annotation_body(&mut self) -> ScopeAnnotation {
         let start = self
             .expect_punct(Punctuation::At, "'@'")
@@ -1344,6 +1483,14 @@ impl Parser {
     fn parse_statement(&mut self) -> Option<Stmt> {
         let start = self.peek().span.start;
 
+        if self.at_canonical_scope() {
+            let scoped = self.parse_canonical_scoped_statements();
+            return Some(Stmt {
+                kind: StmtKind::Scoped(scoped.clone()),
+                span: scoped.span,
+            });
+        }
+
         if self.at_keyword(Keyword::Let) {
             return self.parse_let_statement();
         }
@@ -1356,6 +1503,14 @@ impl Parser {
             {
                 None
             } else {
+                if self.edition == Edition::V0_2 && self.at_keyword(Keyword::Fail) {
+                    self.error(
+                        INVALID_CONTROL_FLOW,
+                        "'return fail' is redundant in edition 0.2.",
+                        self.peek().span,
+                        "Remove `return`; `fail` already diverges.",
+                    );
+                }
                 Some(self.parse_expression())
             };
             return Some(Stmt {
@@ -1520,6 +1675,7 @@ impl Parser {
         let left = self.parse_logical_or();
 
         if self.eat_punct(Punctuation::Eq) {
+            self.skip_continuation_newlines();
             let value = self.parse_assignment();
             let span = Span::new(left.span.start, value.span.end);
             return Expr {
@@ -1538,6 +1694,7 @@ impl Parser {
         let mut expression = self.parse_logical_and();
 
         while self.eat_punct(Punctuation::PipePipe) {
+            self.skip_continuation_newlines();
             let right = self.parse_logical_and();
             let span = Span::new(expression.span.start, right.span.end);
             expression = Expr {
@@ -1557,6 +1714,7 @@ impl Parser {
         let mut expression = self.parse_equality();
 
         while self.eat_punct(Punctuation::AmpAmp) {
+            self.skip_continuation_newlines();
             let right = self.parse_equality();
             let span = Span::new(expression.span.start, right.span.end);
             expression = Expr {
@@ -1587,6 +1745,7 @@ impl Parser {
             let Some(operator) = operator else {
                 break;
             };
+            self.skip_continuation_newlines();
 
             let right = self.parse_comparison();
             let span = Span::new(expression.span.start, right.span.end);
@@ -1622,6 +1781,7 @@ impl Parser {
             let Some(operator) = operator else {
                 break;
             };
+            self.skip_continuation_newlines();
 
             let right = self.parse_additive();
             let span = Span::new(expression.span.start, right.span.end);
@@ -1657,6 +1817,7 @@ impl Parser {
             let Some(operator) = operator else {
                 break;
             };
+            self.skip_continuation_newlines();
 
             let right = self.parse_multiplicative();
             let span = Span::new(expression.span.start, right.span.end);
@@ -1694,6 +1855,7 @@ impl Parser {
             let Some(operator) = operator else {
                 break;
             };
+            self.skip_continuation_newlines();
 
             let right = self.parse_unary();
             let span = Span::new(expression.span.start, right.span.end);
@@ -1739,6 +1901,13 @@ impl Parser {
         let mut expression = self.parse_primary();
 
         loop {
+            if self.edition == Edition::V0_2
+                && self.at(TokenKind::Newline)
+                && self.next_non_newline_is_punct(Punctuation::Dot)
+            {
+                self.skip_newlines();
+            }
+
             if self.eat_punct(Punctuation::Dot) {
                 let member = if self.at(TokenKind::Identifier) || self.at(TokenKind::Integer) {
                     self.bump().text
@@ -1791,6 +1960,14 @@ impl Parser {
 
             if self.eat_punct(Punctuation::Bang) {
                 let span = Span::new(expression.span.start, self.last_end());
+                if self.edition == Edition::V0_2 {
+                    self.error(
+                        DEPRECATED_SYNTAX,
+                        "Postfix `!` is not allowed in edition 0.2.",
+                        span,
+                        "Use `?` to propagate a failure.",
+                    );
+                }
                 expression = Expr {
                     kind: ExprKind::Propagate(Box::new(expression)),
                     span,
@@ -1798,7 +1975,91 @@ impl Parser {
                 continue;
             }
 
-            if self.at_punct(Punctuation::Lt)
+            if self.edition == Edition::V0_2 && self.eat_punct(Punctuation::Question) {
+                let span = Span::new(expression.span.start, self.last_end());
+                expression = Expr {
+                    kind: ExprKind::Propagate(Box::new(expression)),
+                    span,
+                };
+                continue;
+            }
+
+            if self.edition == Edition::V0_2 && self.at_punct(Punctuation::DoubleColon) {
+                let start = expression.span.start;
+                let turbofish_span = self.peek().span;
+                if matches!(&expression.kind, ExprKind::TypeArguments { .. }) {
+                    self.error(
+                        MALFORMED_TURBOFISH,
+                        "Only one turbofish is allowed in a postfix chain.",
+                        turbofish_span,
+                        "Remove the second turbofish.",
+                    );
+                    self.bump();
+                    let _ = self.parse_type_arguments();
+                    continue;
+                }
+
+                self.bump();
+                let arguments = self.parse_type_arguments();
+                let span = Span::new(start, self.last_end());
+                let target_is_path = matches!(
+                    &expression.kind,
+                    ExprKind::Identifier(_) | ExprKind::Member { .. }
+                );
+                let followed_by_call = self.at_punct(Punctuation::LParen);
+                let followed_by_struct_init =
+                    self.at_punct(Punctuation::LBrace) && self.looks_like_struct_init();
+                if !target_is_path {
+                    self.error(
+                        MALFORMED_TURBOFISH,
+                        "A turbofish must follow a path.",
+                        span,
+                        "Use path::<...>(...) or path::<...> { ... }.",
+                    );
+                } else if !followed_by_call
+                    && !followed_by_struct_init
+                    && matches!(&expression.kind, ExprKind::Member { .. })
+                {
+                    self.error(
+                        BARE_TYPE_ARGUMENTS,
+                        "A qualified value path cannot carry expression-position type arguments.",
+                        span,
+                        "Use the bare variant name, such as None::<i32>.",
+                    );
+                }
+                expression = Expr {
+                    kind: ExprKind::TypeArguments {
+                        target: Box::new(expression),
+                        arguments,
+                    },
+                    span,
+                };
+                continue;
+            }
+
+            if self.edition == Edition::V0_2 && self.at_punct(Punctuation::Lt) {
+                let lt_span = self.peek().span;
+                if let Some(arguments) = self.try_type_arguments_for_call() {
+                    self.error(
+                        BARE_TYPE_ARGUMENTS,
+                        "Expression-position type arguments require `::<...>` in edition 0.2.",
+                        lt_span,
+                        "Write path::<T>(value) instead of path<T>(value).",
+                    );
+                    let span = Span::new(expression.span.start, self.last_end());
+                    expression = Expr {
+                        kind: ExprKind::TypeArguments {
+                            target: Box::new(expression),
+                            arguments,
+                        },
+                        span,
+                    };
+                    continue;
+                }
+            }
+
+            if self.edition == Edition::V0_1
+                && self.at_punct(Punctuation::Lt)
                 && let Some(arguments) = self.try_type_arguments_for_call()
             {
                 let span = Span::new(expression.span.start, self.last_end());
@@ -1902,7 +2163,18 @@ impl Parser {
             TokenKind::Punct(Punctuation::LParen) => self.parse_parenthesized(),
             TokenKind::Punct(Punctuation::LBracket) => self.parse_array_literal(),
             TokenKind::Punct(Punctuation::LBrace) => self.parse_brace_expression(),
-            TokenKind::Punct(Punctuation::Bang) => self.parse_fail_expression(),
+            TokenKind::Punct(Punctuation::Bang) => {
+                if self.edition == Edition::V0_2 {
+                    self.error(
+                        DEPRECATED_SYNTAX,
+                        "Prefix `!` failure construction is not allowed in edition 0.2.",
+                        token.span,
+                        "Use `fail Error(...)` or `fail Error { field: value }`.",
+                    );
+                }
+                self.parse_fail_expression()
+            }
+            TokenKind::Keyword(Keyword::Fail) => self.parse_fail_keyword_expression(),
             TokenKind::Keyword(Keyword::If) => self.parse_if_expression(),
             TokenKind::Keyword(Keyword::Match) => self.parse_match_expression(),
             TokenKind::Keyword(Keyword::Spawn) => self.parse_spawn_expression(),
@@ -1913,12 +2185,19 @@ impl Parser {
                 self.parse_message_expression(|message| ExprKind::Abort { message })
             }
             _ => {
-                self.error(
-                    INVALID,
-                    "Expected an expression.",
-                    token.span,
-                    "Add a literal, identifier, call, block, if, or match expression.",
-                );
+                let (message, hint) =
+                    if self.edition == Edition::V0_2 && is_binary_operator_token(&token.kind) {
+                        (
+                            "A binary operator cannot start an expression.",
+                            "Add a left-hand operand before the operator.",
+                        )
+                    } else {
+                        (
+                            "Expected an expression.",
+                            "Add a literal, identifier, call, block, if, or match expression.",
+                        )
+                    };
+                self.error(INVALID, message, token.span, hint);
                 if !self.at_eof()
                     && !self.at(TokenKind::Newline)
                     && !self.at_punct(Punctuation::Semicolon)
@@ -1953,6 +2232,9 @@ impl Parser {
             let mut elements = vec![first];
             loop {
                 self.skip_newlines();
+                if self.edition == Edition::V0_2 && self.at_punct(Punctuation::RParen) {
+                    break;
+                }
                 elements.push(self.parse_expression());
                 self.skip_newlines();
                 if self.eat_punct(Punctuation::Comma) {
@@ -2099,6 +2381,14 @@ impl Parser {
     fn parse_if_expression(&mut self) -> Expr {
         let start = self.bump().span.start;
         let condition = self.parse_expression();
+        if self.edition == Edition::V0_2 && expression_has_unparenthesized_struct_init(&condition) {
+            self.error(
+                EXPECTED,
+                "Wrap a struct initializer in parentheses in a condition.",
+                condition.span,
+                "Write (User { field: value }) instead of User { field: value }.",
+            );
+        }
         let then_branch = self.parse_block();
         let else_branch = if self.eat_keyword(Keyword::Else) {
             if self.at_keyword(Keyword::If) {
@@ -2135,9 +2425,21 @@ impl Parser {
             self.expect_punct(Punctuation::FatArrow, "'=>'");
             let body = if self.at_punct(Punctuation::LBrace) {
                 MatchArmBody::Block(self.parse_block())
+            } else if self.edition == Edition::V0_2 && self.at_keyword(Keyword::Return) {
+                // `arm => return value` is a block-bodied arm with a single
+                // return statement. The AST has no statement arm variant.
+                let statement = self
+                    .parse_statement()
+                    .expect("a return keyword always parses a statement");
+                let span = statement.span;
+                MatchArmBody::Block(Block {
+                    statements: vec![statement],
+                    span,
+                })
             } else {
                 MatchArmBody::Expr(self.parse_expression())
             };
+            let block_body = matches!(body, MatchArmBody::Block(_));
             arms.push(MatchArm {
                 pattern,
                 body,
@@ -2147,9 +2449,24 @@ impl Parser {
             if self.index == before {
                 self.bump();
             }
-            self.skip_newlines();
-            self.eat_punct(Punctuation::Comma);
-            self.skip_newlines();
+            if self.eat_punct(Punctuation::Comma) {
+                self.skip_newlines();
+            } else {
+                let next = self.skip_newlines_at(self.index);
+                let at_close = self
+                    .tokens
+                    .get(next)
+                    .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::RBrace));
+                if self.edition == Edition::V0_2 && !block_body && !at_close && !self.at_eof() {
+                    self.error(
+                        BOUNDARY,
+                        "Expected ',' after a match arm.",
+                        self.span_from(arm_start),
+                        "Add a comma between match arms, or use a block body to omit it.",
+                    );
+                }
+                self.skip_newlines();
+            }
         }
 
         self.expect_punct(Punctuation::RBrace, "'}'");
@@ -2175,6 +2492,15 @@ impl Parser {
 
     fn parse_fail_expression(&mut self) -> Expr {
         let start = self.bump().span.start;
+        self.parse_fail_tail(start, "!Error(args) or !Error { field: value }")
+    }
+
+    fn parse_fail_keyword_expression(&mut self) -> Expr {
+        let start = self.bump().span.start;
+        self.parse_fail_tail(start, "fail Error(args) or fail Error { field: value }")
+    }
+
+    fn parse_fail_tail(&mut self, start: usize, example: &str) -> Expr {
         let error = self.parse_type_path();
 
         let arguments = if self.eat_punct(Punctuation::LParen) {
@@ -2185,7 +2511,7 @@ impl Parser {
             self.error_current(
                 EXPECTED,
                 "Expected '(' or '{' after a failure type.",
-                "Construct a failure with !Error(args) or !Error { field: value }.",
+                format!("Construct a failure with {example}."),
             );
             FailArguments::Tuple(Vec::new())
         };
@@ -2263,6 +2589,9 @@ impl Parser {
                 arguments.push(self.parse_type());
                 if self.eat_punct(Punctuation::Comma) {
                     self.skip_newlines();
+                    if self.edition == Edition::V0_2 && self.at_punct(Punctuation::Gt) {
+                        break;
+                    }
                     continue;
                 }
                 break;
@@ -2325,6 +2654,9 @@ impl Parser {
                     patterns.push(self.parse_pattern());
                     if self.eat_punct(Punctuation::Comma) {
                         self.skip_newlines();
+                        if self.edition == Edition::V0_2 && self.at_punct(Punctuation::RParen) {
+                            break;
+                        }
                         continue;
                     }
                     break;
@@ -2474,6 +2806,19 @@ impl Parser {
         let start = token.span.start;
 
         match token.kind {
+            TokenKind::Punct(Punctuation::Underscore) if self.edition == Edition::V0_2 => {
+                self.bump();
+                self.error(
+                    INVALID_TYPE_ARGUMENT,
+                    "Wildcard type arguments are not supported in edition 0.2.",
+                    token.span,
+                    "Write an explicit type instead of `_`.",
+                );
+                Type {
+                    kind: TypeKind::Unit,
+                    span: token.span,
+                }
+            }
             TokenKind::Punct(Punctuation::LBracket) => {
                 self.bump();
                 let element = self.parse_type();
@@ -2518,6 +2863,10 @@ impl Parser {
                 loop {
                     elements.push(self.parse_type());
                     if self.eat_punct(Punctuation::Comma) {
+                        self.skip_newlines();
+                        if self.edition == Edition::V0_2 && self.at_punct(Punctuation::RParen) {
+                            break;
+                        }
                         continue;
                     }
                     break;
@@ -2667,6 +3016,64 @@ impl Parser {
             && self
                 .peek_at(3)
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Colon))
+    }
+
+    fn at_canonical_scope(&self) -> bool {
+        if self.edition != Edition::V0_2 || !self.at_punct(Punctuation::At) {
+            return false;
+        }
+        let mut index = self.index + 1;
+        let Some(name) = self.tokens.get(index) else {
+            return false;
+        };
+        if name.kind != TokenKind::Identifier || !matches!(name.text.as_str(), "mode" | "memory") {
+            return false;
+        }
+        index += 1;
+        if self.tokens.get(index).map(|token| &token.kind)
+            != Some(&TokenKind::Punct(Punctuation::LParen))
+        {
+            return false;
+        }
+        index = self.skip_newlines_at(index + 1);
+        if !self
+            .tokens
+            .get(index)
+            .is_some_and(|token| token.kind == TokenKind::Identifier)
+        {
+            return false;
+        }
+        index = self.skip_newlines_at(index + 1);
+        if self.tokens.get(index).map(|token| &token.kind)
+            != Some(&TokenKind::Punct(Punctuation::RParen))
+        {
+            return false;
+        }
+        index = self.skip_newlines_at(index + 1);
+        self.tokens.get(index).map(|token| &token.kind)
+            == Some(&TokenKind::Punct(Punctuation::LBrace))
+    }
+
+    fn skip_continuation_newlines(&mut self) {
+        if self.edition == Edition::V0_2 {
+            self.skip_newlines();
+        }
+    }
+
+    fn next_non_newline_is_punct(&self, punctuation: Punctuation) -> bool {
+        let index = self.skip_newlines_at(self.index);
+        self.tokens.get(index).map(|token| &token.kind) == Some(&TokenKind::Punct(punctuation))
+    }
+
+    fn skip_newlines_at(&self, mut index: usize) -> usize {
+        while self
+            .tokens
+            .get(index)
+            .is_some_and(|token| token.kind == TokenKind::Newline)
+        {
+            index += 1;
+        }
+        index
     }
 
     fn looks_like_scope_annotation(&self) -> bool {
@@ -2892,6 +3299,48 @@ impl Parser {
     }
 }
 
+fn is_binary_operator_token(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Punct(
+            Punctuation::Plus
+                | Punctuation::Minus
+                | Punctuation::Star
+                | Punctuation::Slash
+                | Punctuation::Percent
+                | Punctuation::PlusWrap
+                | Punctuation::MinusWrap
+                | Punctuation::StarWrap
+                | Punctuation::SlashWrap
+                | Punctuation::EqEq
+                | Punctuation::BangEq
+                | Punctuation::Lt
+                | Punctuation::LtEq
+                | Punctuation::Gt
+                | Punctuation::GtEq
+                | Punctuation::AmpAmp
+                | Punctuation::PipePipe
+                | Punctuation::Eq
+        )
+    )
+}
+
+fn expression_has_unparenthesized_struct_init(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::StructInit { .. } => true,
+        ExprKind::Binary { left, right, .. } => {
+            expression_has_unparenthesized_struct_init(left)
+                || expression_has_unparenthesized_struct_init(right)
+        }
+        ExprKind::Assign { target, value } => {
+            expression_has_unparenthesized_struct_init(target)
+                || expression_has_unparenthesized_struct_init(value)
+        }
+        ExprKind::Unary { operand, .. } => expression_has_unparenthesized_struct_init(operand),
+        _ => false,
+    }
+}
+
 fn expression_to_type_path(expression: &Expr) -> Option<TypePath> {
     match &expression.kind {
         ExprKind::Identifier(name) => Some(TypePath {
@@ -2920,14 +3369,617 @@ fn expression_to_type_path(expression: &Expr) -> Option<TypePath> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, parse_with_comments};
+    use super::{ParseOptions, parse, parse_with_comments, parse_with_options};
     use crate::ast::{
-        ElseBranch, ExprKind, ImportForm, ItemKind, PatternKind, StmtKind, StructFields, TypeKind,
-        Visibility,
+        ElseBranch, ExprKind, FailArguments, ImportForm, ItemKind, PatternKind, ScopeKind,
+        StmtKind, StructFields, TypeKind, Visibility,
     };
+    use crate::edition::Edition;
 
     fn parse_ok(source: &str) -> crate::ast::Module {
         parse(source).unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"))
+    }
+
+    fn parse_v02(source: &str) -> Result<crate::ast::Module, Vec<crate::diagnostic::Diagnostic>> {
+        parse_with_options(
+            source,
+            ParseOptions {
+                edition: Edition::V0_2,
+            },
+        )
+    }
+
+    #[test]
+    fn v0_2_parses_fail_keyword_in_both_shapes() {
+        let tuple = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    fail Error("x")
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &tuple.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Fail { error, arguments } = &expression.kind else {
+            panic!("expected fail expression");
+        };
+        assert_eq!(error.segments, vec!["Error"]);
+        assert!(matches!(arguments, FailArguments::Tuple(items) if items.len() == 1));
+
+        let named = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    fail Error { message: "x" }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &named.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Fail { arguments, .. } = &expression.kind else {
+            panic!("expected fail expression");
+        };
+        assert!(matches!(arguments, FailArguments::Struct(fields) if fields.len() == 1));
+    }
+
+    #[test]
+    fn v0_2_parses_postfix_question_as_propagation() {
+        let kind = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    work()?
+}
+"#,
+        )
+        .map(|module| {
+            let ItemKind::Function(function) = &module.items[0].kind else {
+                panic!("expected function");
+            };
+            let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+                panic!("expected expression statement");
+            };
+            expression.kind.clone()
+        })
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+
+        let ExprKind::Propagate(inner) = kind else {
+            panic!("expected propagation");
+        };
+        assert!(matches!(inner.kind, ExprKind::Call { .. }));
+    }
+
+    #[test]
+    fn v0_2_rejects_prefix_and_postfix_bang_with_migration_hints() {
+        let prefix = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    !Error("x")
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(prefix.iter().any(|diagnostic| {
+            diagnostic.code == "NS2015"
+                && diagnostic
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("fail Error"))
+        }));
+
+        let postfix = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    work()!
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(postfix.iter().any(|diagnostic| {
+            diagnostic.code == "NS2015"
+                && diagnostic
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("`?`"))
+        }));
+    }
+
+    #[test]
+    fn v0_2_rejects_return_fail_as_redundant() {
+        let diagnostics = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    return fail Error("x")
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "NS4014"
+                && diagnostic
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("Remove `return`"))
+        }));
+    }
+
+    #[test]
+    fn v0_1_keeps_bang_forms_and_treats_fail_as_an_identifier() {
+        let prefix = parse_ok(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    !Error("x")
+}
+"#,
+        );
+        let ItemKind::Function(function) = &prefix.items[0].kind else {
+            panic!("expected function");
+        };
+        assert!(matches!(
+            function.body.statements[0].kind,
+            StmtKind::Expr(ref expression) if matches!(expression.kind, ExprKind::Fail { .. })
+        ));
+
+        let postfix = parse_ok(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    work()!
+}
+"#,
+        );
+        let ItemKind::Function(function) = &postfix.items[0].kind else {
+            panic!("expected function");
+        };
+        assert!(matches!(
+            function.body.statements[0].kind,
+            StmtKind::Expr(ref expression) if matches!(expression.kind, ExprKind::Propagate(_))
+        ));
+
+        let identifier = parse_ok(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    fail
+}
+"#,
+        );
+        let ItemKind::Function(function) = &identifier.items[0].kind else {
+            panic!("expected function");
+        };
+        assert!(matches!(
+            function.body.statements[0].kind,
+            StmtKind::Expr(ref expression)
+                if matches!(&expression.kind, ExprKind::Identifier(name) if name == "fail")
+        ));
+    }
+
+    #[test]
+    fn v0_2_parses_turbofish_calls_constructors_and_unit_variants() {
+        let call = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    identity::<i32>(5)
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &call.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Call { callee, .. } = &expression.kind else {
+            panic!("expected call");
+        };
+        assert!(matches!(
+            &callee.kind,
+            ExprKind::TypeArguments { arguments, .. } if arguments.len() == 1
+        ));
+
+        let constructor = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    Box::<i32> { value: 1 }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &constructor.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::StructInit { path, .. } = &expression.kind else {
+            panic!("expected struct initializer");
+        };
+        assert_eq!(path.segments, vec!["Box"]);
+        assert_eq!(path.arguments.len(), 1);
+
+        let unit_variant = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    None::<i32>
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &unit_variant.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        assert!(matches!(expression.kind, ExprKind::TypeArguments { .. }));
+    }
+
+    #[test]
+    fn v0_2_rejects_second_and_misplaced_turbofish() {
+        let second = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    identity::<i32>::<u8>()
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(second.iter().any(|diagnostic| {
+            diagnostic.code == "NS2011" && diagnostic.message.contains("Only one turbofish")
+        }));
+
+        let indexed = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    xs[0]::<i32>()
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(indexed.iter().any(|diagnostic| {
+            diagnostic.code == "NS2011" && diagnostic.message.contains("must follow a path")
+        }));
+
+        let member = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    math.add::<i32>
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(member.iter().any(|diagnostic| {
+            diagnostic.code == "NS2010" && diagnostic.message.contains("qualified value path")
+        }));
+    }
+
+    #[test]
+    fn v0_1_keeps_the_bare_angle_type_argument_heuristic() {
+        let module = parse_ok(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    identity<i32>(5)
+}
+"#,
+        );
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Call { callee, .. } = &expression.kind else {
+            panic!("expected call");
+        };
+        assert!(matches!(
+            &callee.kind,
+            ExprKind::TypeArguments { arguments, .. } if arguments.len() == 1
+        ));
+    }
+
+    #[test]
+    fn v0_2_parses_canonical_scope_blocks_at_item_and_statement_positions() {
+        let items = parse_v02(
+            r#"
+module app.main
+
+@mode(system) {
+    pub fn helper() -> i32 {
+        return 1
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::ScopedItems(scoped) = &items.items[0].kind else {
+            panic!("expected scoped items");
+        };
+        assert_eq!(scoped.annotation.kind, ScopeKind::Mode);
+        assert_eq!(scoped.annotation.value, "system");
+        assert_eq!(scoped.items.len(), 1);
+
+        let statements = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    @memory(system) {
+        let value = 1
+        return value
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &statements.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Scoped(scoped) = &function.body.statements[0].kind else {
+            panic!("expected scoped statements");
+        };
+        assert_eq!(scoped.annotation.kind, ScopeKind::Memory);
+        assert_eq!(scoped.annotation.value, "system");
+        assert_eq!(scoped.statements.len(), 2);
+    }
+
+    #[test]
+    fn v0_2_allows_nested_canonical_scopes_without_semicolons() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    @mode(system) {
+        @memory(system) {
+            return 1
+        }
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Scoped(outer) = &function.body.statements[0].kind else {
+            panic!("expected outer scope");
+        };
+        let StmtKind::Scoped(inner) = &outer.statements[0].kind else {
+            panic!("expected inner scope");
+        };
+        assert_eq!(inner.annotation.kind, ScopeKind::Memory);
+    }
+
+    #[test]
+    fn v0_1_keeps_the_braced_scope_block_form() {
+        let module = parse_ok(
+            r#"
+module app.main
+
+{@mode:system;
+    pub fn helper() -> i32 {
+        return 1
+    }
+}
+"#,
+        );
+        let ItemKind::ScopedItems(scoped) = &module.items[0].kind else {
+            panic!("expected scoped items");
+        };
+        assert_eq!(scoped.annotation.kind, ScopeKind::Mode);
+        assert_eq!(scoped.annotation.value, "system");
+    }
+
+    #[test]
+    fn v0_2_allows_trailing_commas_in_lists() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn identity<T,>(value: T,) -> (T,) {
+    let pair = (value, value,)
+    match pair {
+        (first, _,) => first,
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        assert_eq!(function.type_parameters, vec!["T"]);
+        assert!(function.return_type.is_some());
+        let StmtKind::Let { value, .. } = &function.body.statements[0].kind else {
+            panic!("expected let");
+        };
+        assert!(matches!(value.kind, ExprKind::Tuple(ref elements) if elements.len() == 2));
+    }
+
+    #[test]
+    fn v0_2_continues_after_a_trailing_binary_operator_and_before_a_dot() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn run(user: User) -> i32 {
+    let value = 1 +
+        2
+    let name = user
+        .name
+    return value
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Let { value, .. } = &function.body.statements[0].kind else {
+            panic!("expected let");
+        };
+        assert!(matches!(
+            value.kind,
+            ExprKind::Binary {
+                operator: crate::ast::BinaryOp::Add,
+                ..
+            }
+        ));
+        let StmtKind::Let { value, .. } = &function.body.statements[1].kind else {
+            panic!("expected let");
+        };
+        assert!(matches!(value.kind, ExprKind::Member { .. }));
+    }
+
+    #[test]
+    fn v0_2_rejects_a_leading_binary_operator() {
+        let diagnostics = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    let value = * 2
+    return value
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "NS2002"
+                && diagnostic
+                    .message
+                    .contains("binary operator cannot start an expression")
+        }));
+    }
+
+    #[test]
+    fn v0_2_enforces_match_arm_commas_except_after_blocks() {
+        let missing = parse_v02(
+            r#"
+module app.main
+
+fn run(value: i32) -> i32 {
+    match value {
+        1 => 1
+        2 => 2
+    }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(missing.iter().any(|diagnostic| {
+            diagnostic.code == "NS2006" && diagnostic.message.contains("match arm")
+        }));
+
+        let blocks = parse_v02(
+            r#"
+module app.main
+
+fn run(value: i32) -> i32 {
+    match value {
+        1 => { return 1 }
+        2 => { return 2 }
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &blocks.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected match expression");
+        };
+        assert!(matches!(expression.kind, ExprKind::Match { ref arms, .. } if arms.len() == 2));
+    }
+
+    #[test]
+    fn v0_1_does_not_continue_after_a_trailing_binary_operator() {
+        assert!(
+            parse(
+                r#"
+module app.main
+
+fn run() -> i32 {
+    let value = 1 +
+        2
+    return value
+}
+"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn v0_2_ast_serializes_fail_and_propagation_contract() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    let value = work()?
+    fail Error { message: "x" }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let value = serde_json::to_value(&module).expect("AST must serialize");
+
+        let statements = &value["items"][0]["kind"]["Function"]["body"]["statements"];
+        let propagate = &statements[0]["kind"]["Let"]["value"]["kind"]["Propagate"];
+        assert!(
+            propagate.is_object(),
+            "postfix `?` must serialize as Propagate"
+        );
+        let failure = &statements[1]["kind"]["Expr"]["kind"]["Fail"];
+        assert!(
+            failure["error"].is_object(),
+            "fail type path must serialize"
+        );
+        assert!(
+            failure["arguments"]["Struct"].is_array(),
+            "named fail arguments must serialize as Struct"
+        );
     }
 
     #[test]

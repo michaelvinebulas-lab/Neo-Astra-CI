@@ -204,12 +204,15 @@ language is frozen.
 - [x] Freeze the generic-call RFC: `::<...>` in expression position, method and
       associated calls, constructors, precedence, and negative comparison cases.
       Decisions accepted; implementation is gated after native `1.0.1`.
-- [ ] Replace `{@mode:name; ...}` / `{@memory:name; ...}` with
-      `@mode(name) { ... }` / `@memory(name) { ... }`.
-- [ ] Use commas everywhere (trailing allowed); block-bodied match arms may
+- [x] Replace `{@mode:name; ...}` / `{@memory:name; ...}` with
+      `@mode(name) { ... }` / `@memory(name) { ... }` under edition `0.2`.
+- [x] Use commas everywhere (trailing allowed); block-bodied match arms may
       omit the comma.
-- [ ] State line continuation by delimiter kind: whitespace in `(...)`/`[...]`,
+- [x] State line continuation by delimiter kind: whitespace in `(...)`/`[...]`,
       statement boundaries in blocks, list rules in struct/map literals.
+- [x] Add edition-`0.2` checker rules for `Err` member heads, member
+      exhaustiveness, and D7 declared-set subset checking; add an AST
+      serialization contract test.
 - [x] Fix tuple-index lexing: after `.` in postfix position read an integer-only
       token, never a float; keep `..` ranges and leading-dot chains distinct.
       Phase 2 added an edition-`0.2` lexer-context rule so `t.0.1` lexes as two

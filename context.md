@@ -145,6 +145,28 @@ Phase 2 (lexer) is implemented on private master:
 - Lexer tests cover `?`, `::`, `:: <`, `fail` in both editions, `1.0`, `t.0.1`,
   `t.0.1.2`, and comments.
 
+Phase 3 (parser and checker) is implemented on private master:
+
+- Under `0.2`, `fail Type(args)` and `fail Type { field: value }` parse to
+  `ExprKind::Fail`; `return fail ...` reports `NS4014`; prefix `!Error(...)` and
+  postfix `!` report `NS2015` with migration hints. Edition `0.1` keeps both
+  old forms and treats `fail` as an identifier.
+- Postfix `?` parses to `ExprKind::Propagate` at postfix precedence.
+- `::<...>` turbofish parses on calls and constructors; a second turbofish is
+  `NS2011`, a bare `path<T>(...)` or qualified variant path is `NS2010`, and the
+  v0.1 lookahead heuristic is edition-`0.1` only.
+- `@mode(name) { ... }` and `@memory(name) { ... }` parse at item and statement
+  positions; the old `{@mode:name; ...}` form is unchanged for `0.1`.
+- Edition `0.2` allows trailing commas in every list, requires commas between
+  expression-bodied match arms, continues after trailing binary operators and
+  before `.`, and rejects a leading binary operator.
+- The checker validates `Err` member heads (`NS4017`), member exhaustiveness
+  (`NS4010`), and D7 declared-set subset checking; variant constructors are in
+  value scope. An AST serialization contract test pins `Fail`/`Propagate`.
+- Two v0.2 corpus `valid` cases remain deferred because they need behavior
+  changes outside the cleanup: `scopes.ns` (mode widening) and `turbofish.ns`
+  (generic struct-initializer inference). The parser tests cover their syntax.
+
 ## Release and npm state
 
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.
