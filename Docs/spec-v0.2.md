@@ -1,18 +1,18 @@
 # Neo Astra Language Specification v0.2 (skeleton)
 
-**Status:** Non-normative skeleton; Phases 0-5 core work is green, CLI wiring is outstanding
-**Date:** 2026-11-08 (updated 2026-11-24)
-**Normative source today:** [`spec-v0.1.md`](spec-v0.1.md)
+**Status:** Normative for `edition = "0.2"`; `spec-v0.1.md` remains normative for `edition = "0.1"`
+**Date:** 2026-11-08 (frozen 2026-11-24)
+**Normative source for v0.1:** [`spec-v0.1.md`](spec-v0.1.md)
 **Decision sources:** [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md),
 [`Report/RFC-A-error-model.md`](Report/RFC-A-error-model.md),
 [`Report/RFC-B-generics.md`](Report/RFC-B-generics.md)
-**Freeze gate:** Phases 0-5 of the v0.2 plan, including CLI wiring and full
-conformance, must be green before this file becomes normative.
+**Freeze note:** The v0.2 grammar and AST subset are frozen. CLI flag wiring
+and the remaining conformance gaps are release-blocking follow-ups; do not tag
+`1.1.0` until they land.
 
-This file records the intended v0.2 grammar, edition rules, deprecations, and
-diagnostics. It is **not** a second normative specification. Until the Phase 6
-freeze, `spec-v0.1.md` remains the only normative language contract. Where this
-skeleton and `spec-v0.1.md` disagree, `spec-v0.1.md` wins for every shipped
+This file records the frozen v0.2 grammar, edition rules, deprecations, and
+diagnostics. It is normative for `edition = "0.2"`; `spec-v0.1.md` is normative
+for `edition = "0.1"`. Where the two disagree, each applies only to its own
 edition.
 
 ## 0. Scope

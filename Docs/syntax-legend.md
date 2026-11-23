@@ -4,9 +4,10 @@
 **Normative source:** [`spec-v0.1.md`](./spec-v0.1.md)  
 **Rule:** If this legend and the specification disagree, the specification wins.
 
-**v0.2 proposal:** A syntax cleanup is planned in
-[`Report/Syntax-v0.2.md`](./Report/Syntax-v0.2.md). This legend still documents
-the v0.1 contract; do not treat the proposal as shipped syntax.
+**v0.2 edition:** The frozen cleanup contract is
+[`spec-v0.2.md`](./spec-v0.2.md). This legend documents the v0.1 contract;
+edition `0.2` uses `fail`, postfix `?`, `::<...>`, and
+`@mode(name) { ... }` / `@memory(name) { ... }`.
 
 This is a plain-language map of every syntax family and operator in Neo Astra. It is meant for reading code, writing examples, and explaining diagnostics.
 

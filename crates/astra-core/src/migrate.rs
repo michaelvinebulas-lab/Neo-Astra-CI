@@ -428,6 +428,30 @@ public function run() -> i32 ! Error {
     }
 
     #[test]
+    fn leaves_error_sets_and_not_equal_alone() {
+        let source =
+            "fn f() -> i32 ! Error {\n    if 1 != 2 { return 0 }\n    return !Error(\"x\")\n}\n";
+        let migrated = v02(source);
+        assert!(migrated.contains("-> i32 ! Error"), "{migrated}");
+        assert!(migrated.contains("1 != 2"), "{migrated}");
+        assert!(migrated.contains("fail Error(\"x\")"), "{migrated}");
+    }
+
+    #[test]
+    fn rewrites_named_fail_and_multiple_type_arguments() {
+        let source = "fn f() -> i32 ! Error {\n    let value = pair<i32, str>(1, \"x\")\n    return !Error { message: \"bad\" }\n}\n";
+        let migrated = v02(source);
+        assert!(
+            migrated.contains("pair::<i32, str>(1, \"x\")"),
+            "{migrated}"
+        );
+        assert!(
+            migrated.contains("fail Error { message: \"bad\" }"),
+            "{migrated}"
+        );
+    }
+
+    #[test]
     fn is_idempotent_and_formats_to_canonical_source() {
         let source = r#"
 public function run() -> i32 ! Error {
