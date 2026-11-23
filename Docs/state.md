@@ -6,7 +6,7 @@ or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-23
 **Phase:** `1.0.1` is tagged and the GitHub release is published with archives, checksums, and attestations. Public docs describe `1.0.1`. npm `1.0.1` is still unpublished: the 2026-11-07 trusted publishers expired (npm drops unvalidated configs after two days), and the OIDC exchange now returns `OIDC token exchange error - package not found`. Language v0.2 remains Phase 0 documentation and corpus only.
-**Master:** private `master` through `9450708`, pushed to `ci` at `michaelvinebulas-lab/Neo-Astra-CI`; public `master` at `bed7546`, tag `v1.0.1` at `3093343`. Release assets are present and attested. The old `luminousvalentine-cell/Neo-Astra-CI` repo and the `NPM_TOKEN` secret are deleted.
+**Master:** private `master` through `6df4f2c`, pushed to `ci` at `michaelvinebulas-lab/Neo-Astra-CI`; public `master` at `50817d0`, tag `v1.0.1` at `3093343`. Release assets are present and attested. The old `luminousvalentine-cell/Neo-Astra-CI` repo and the `NPM_TOKEN` secret are deleted.
 **Blockers:** re-create the four npm trusted publishers immediately before the next publish (principal passkey auth), then dispatch `release.yml`; revoke the exposed 1.0.0 npm token; `1.0.0` still lacks provenance and reports `immutable: false`.
 
 ---

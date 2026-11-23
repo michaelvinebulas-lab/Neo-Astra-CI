@@ -2,7 +2,7 @@
 
 **Snapshot:** 2026-11-23
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** `master` through `9450708` plus the final status docs (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
+**Branch:** `master` through `6df4f2c` (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
 **Published release:** `1.0.1` (tag `v1.0.1` -> `3093343`)
 **Next release:** v0.2 planning; no active release
 **Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
@@ -49,9 +49,8 @@ for detail. Update this file when the working state changes materially.
 
 ## Current reality
 
-- `1.0.1` is published on GitHub and npm. Public master is `bed7546` (plus the
-  workflow cleanup); tag `v1.0.1` points at `3093343`; release run
-  `45125506996` published all four npm packages with provenance and re-uploaded
+- `1.0.1` is published on GitHub and npm. Public master is `50817d0`; tag
+  `v1.0.1` points at `3093343`; release run `45125506996` published all four npm packages with provenance and re-uploaded
   the attested archives.
 - npm has `neo-astra@1.0.1`, `neo-astra-linux-x64@1.0.1`,
   `neo-astra-darwin-arm64@1.0.1`, and `neo-astra-windows-x64@1.0.1`; `latest`
