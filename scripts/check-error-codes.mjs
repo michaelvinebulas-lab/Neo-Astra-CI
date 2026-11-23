@@ -83,9 +83,12 @@ while ((match = rowPattern.exec(spec)) !== null) {
 // here only when a phase actually emits it; this is not a blanket allow-list.
 const plannedCodes = new Set([
   "NS2008", // unsupported edition, Phase 1 manifest validation
+  "NS2009", // deprecated canonical alias, Phase 4 canonical lint
   "NS2010", // bare/qualified expression-position type arguments, Phase 3 parser
   "NS2011", // malformed turbofish, Phase 2 lexer + Phase 3 parser
-  "NS2015", // deprecated prefix `!Error(...)` / postfix `!`, Phase 3 parser
+  "NS2012", // deprecated `spawn ||`, Phase 4 canonical lint
+  "NS2013", // deprecated `/%`, Phase 4 canonical lint
+  "NS2015", // deprecated v0.1 spellings, Phase 3 parser + Phase 4 lint
 ]);
 
 const missingFromSpec = [...emitted.keys()]

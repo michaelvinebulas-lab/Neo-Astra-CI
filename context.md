@@ -167,6 +167,21 @@ Phase 3 (parser and checker) is implemented on private master:
   changes outside the cleanup: `scopes.ns` (mode widening) and `turbofish.ns`
   (generic struct-initializer inference). The parser tests cover their syntax.
 
+Phase 4 (formatter and canonical lint) core work is landed:
+
+- The formatter carries the edition. Under `0.2` it emits `fail`, postfix `?`,
+  `::<...>` for expression-position type arguments, and
+  `@mode(name) { ... }` / `@memory(name) { ... }`. Under `0.1` it keeps
+  `!Error(...)`, postfix `!`, bare `<...>`, and `{@mode:name; ...}`.
+- `/%` is preserved in both editions; `spawn ||` is canonicalized to `spawn`
+  under `0.2`. Round-trip and idempotence tests cover both editions.
+- `crates/astra-core/src/canonical.rs` is a source/token-aware deny lint for
+  deprecated aliases, `/%`, `spawn ||`, and old scope blocks under `0.2`. It is
+  check-only and exposed as `astra_compiler_api::check_canonical`.
+- CLI flag wiring is still open: `astra check --canonical-syntax` and
+  `astra fmt --canonical` need to be added once the parallel agent's CLI
+  changes are committed. `astra migrate` remains the only rewrite path.
+
 ## Release and npm state
 
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.

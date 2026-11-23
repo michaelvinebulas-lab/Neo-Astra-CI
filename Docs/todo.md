@@ -169,9 +169,9 @@ Language stays v0.1; do not inject v0.2 syntax into this patch.
 
 ## 1.1.0 - Language v0.2 syntax cleanup (edition 0.2)
 
-**Status:** Phase 0 complete on the documentation side; non-normative. The
-parser, checker, formatter, and codegen have not changed. `spec-v0.1.md` remains
-normative, and `conformance/v0.2` is not loaded by the v0.1 runner.
+**Status:** Phases 0-3 are complete on private master; Phase 4 formatter and
+canonical-lint core work is landed. `spec-v0.1.md` remains normative, and
+`conformance/v0.2` is not loaded by the v0.1 runner.
 
 Plan, decisions, and reviewer RFCs: [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md),
 [`RFC-A-error-model.md`](Report/RFC-A-error-model.md), and
@@ -230,10 +230,12 @@ language is frozen.
 - [ ] Keep all seven aliases accepted for compatibility; do not remove parser
       support.
 - [ ] Omit aliases from canonical docs and examples.
-- [ ] Keep formatter canonicalization to `fn`, `let`, `const`, `type`,
-      `struct`, `mut`, and `pub`.
+- [x] Keep formatter canonicalization to `fn`, `let`, `const`, `type`,
+      `struct`, `mut`, and `pub`; edition `0.2` also emits `fail`, `?`,
+      `::<...>`, and `@mode(...)` / `@memory(...)`.
 - [ ] Add the deny-by-default `canonical-syntax` lint and check-only
-      `fmt --canonical`; `astra migrate` performs rewrites.
+      `fmt --canonical`; `astra migrate` performs rewrites. Core lint is in
+      `crates/astra-core/src/canonical.rs`; CLI flag wiring remains.
 - [ ] Run the canonical lint in stdlib CI.
 - [ ] Optional later: make the aliases contextual so the words can be
       identifiers.

@@ -5,6 +5,7 @@
 //! and lowering land in later milestones.
 
 pub mod ast;
+pub mod canonical;
 pub mod checker;
 pub mod diagnostic;
 pub mod edition;

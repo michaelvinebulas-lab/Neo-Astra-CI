@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use astra_capabilities::{Mode, ModeInference, infer_module_mode_named, infer_project};
 #[allow(unused_imports)]
 use astra_codegen_c::{CModule, IntegerPolicy as CIntegerPolicy};
+use astra_core::canonical::check_canonical as lint_canonical;
 use astra_core::checker::{CheckOptions, TypeAnnotation, check_resolved};
 use astra_core::diagnostic::Diagnostic;
 use astra_core::edition::Edition;
@@ -20,6 +21,15 @@ use astra_core::resolver::{ModuleGraph, collect_module_specifiers};
 use astra_core::type_surface::{ProjectModule, check_module_graph_with_imports};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+
+/// Runs the deny-by-default canonical syntax lint for one source unit.
+///
+/// This is a check-only pass: it reports deprecated spellings and never edits
+/// source. Migration is the only rewrite path.
+#[must_use]
+pub fn check_canonical(source: &str, edition: Edition) -> Vec<Diagnostic> {
+    lint_canonical(source, edition)
+}
 
 /// Compiler API version. This is separate from the language version.
 pub const API_VERSION: &str = "1.0";
