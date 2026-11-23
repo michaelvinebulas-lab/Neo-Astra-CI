@@ -131,6 +131,42 @@ pub fn main() -> i32 {
 }
 
 #[test]
+fn standalone_turbofish_on_a_function_path_is_rejected() {
+    let diagnostics = check_v02(
+        r#"
+fn identity<T>(value: T) -> T {
+    return value
+}
+
+pub fn main() -> i32 {
+    let value = identity::<i32>
+    return 0
+}
+"#,
+    )
+    .unwrap_err();
+    assert!(codes(diagnostics).contains(&"NS2010".to_owned()));
+}
+
+#[test]
+fn v0_1_keeps_bare_enum_variants_out_of_value_scope() {
+    let source = r#"
+enum Maybe<T> {
+    Just(T),
+    Nothing,
+}
+
+pub fn main() -> i32 {
+    let value = Just(1)
+    return 0
+}
+"#;
+    let diagnostics = check_source(source, CheckOptions::default()).unwrap_err();
+    let found = codes(diagnostics);
+    assert!(found.contains(&"NS4002".to_owned()), "{found:?}");
+}
+
+#[test]
 fn d7_rejects_fail_outside_the_declared_error_set() {
     let diagnostics = check_v02(
         r#"

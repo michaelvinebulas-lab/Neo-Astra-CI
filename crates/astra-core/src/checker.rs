@@ -36,6 +36,7 @@ const INVALID_STRUCT_FIELD: &str = "NS4016";
 const INVALID_PATTERN: &str = "NS4017";
 const INVALID_TYPE_ARGUMENT: &str = "NS4018";
 const TASK_BOUNDARY: &str = "NS4019";
+const BARE_TYPE_ARGUMENTS: &str = "NS2010";
 const MODE_REQUIREMENT: &str = "NS5001";
 const MODE_WIDENING: &str = "NS5002";
 const CAPABILITY_REQUIREMENT: &str = "NS5003";
@@ -566,6 +567,9 @@ impl<'a> Checker<'a> {
                             .collect(),
                     );
                     for variant in &declaration.variants {
+                        if self.options.edition != Edition::V0_2 {
+                            continue;
+                        }
                         self.variant_owners
                             .insert(variant.name.clone(), declaration.name.clone());
                         let value_ty = match &variant.fields {
@@ -2460,7 +2464,24 @@ impl<'a> Checker<'a> {
                 for argument in arguments {
                     let _ = self.resolve_type(argument, &BTreeMap::new());
                 }
-                self.check_expr(target, expected)
+                let info = self.check_expr(target, expected);
+                if self.options.edition == Edition::V0_2 {
+                    let unit_variant = match &target.kind {
+                        ast::ExprKind::Identifier(name) => {
+                            name == "None" || self.variant_owners.contains_key(name)
+                        }
+                        _ => false,
+                    };
+                    if !unit_variant {
+                        self.error(
+                            BARE_TYPE_ARGUMENTS,
+                            "Type arguments on a value require a call or constructor.",
+                            expression.span,
+                            "Write path::<T>(value) or use a unit variant such as None::<T>.",
+                        );
+                    }
+                }
+                info
             }
             ast::ExprKind::Propagate(inner) => self.check_propagation(inner, expression.span),
             ast::ExprKind::Array(elements) => self.check_array(elements, expression.span, expected),
