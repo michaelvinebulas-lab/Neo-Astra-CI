@@ -12,6 +12,7 @@ use crate::diagnostic::Diagnostic;
 use crate::edition::Edition;
 use crate::hir;
 use crate::mode::Mode;
+use crate::parser::{ParseOptions, parse_with_options};
 use crate::resolver::resolve_module;
 use crate::span::Span;
 use crate::type_surface::{ImportedTypeDef, ModuleTypeSurface};
@@ -150,7 +151,12 @@ pub struct CheckResult {
 
 /// Parses, resolves, and type-checks one standalone source module.
 pub fn check_source(source: &str, options: CheckOptions) -> Result<CheckResult, Vec<Diagnostic>> {
-    let module = crate::parser::parse(source)?;
+    let module = parse_with_options(
+        source,
+        ParseOptions {
+            edition: options.edition,
+        },
+    )?;
     check_module(&module, options)
 }
 

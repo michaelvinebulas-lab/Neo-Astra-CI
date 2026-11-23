@@ -590,10 +590,11 @@ impl<'a> Lexer<'a> {
 
         // After a postfix `.`, a digit is an integer-only tuple index. It must
         // not absorb the following dot as a float (`t.0.1` is two indexes).
-        let tuple_index = matches!(
-            self.tokens.last(),
-            Some(token) if token.kind == TokenKind::Punct(Punctuation::Dot)
-        );
+        let tuple_index = self.edition == Edition::V0_2
+            && matches!(
+                self.tokens.last(),
+                Some(token) if token.kind == TokenKind::Punct(Punctuation::Dot)
+            );
 
         let mut is_float = false;
 
@@ -1282,7 +1283,7 @@ mod tests {
     #[test]
     fn tuple_indexes_are_integers_after_a_postfix_dot() {
         for (source, indexes) in [("t.0.1", 2), ("t.0.1.2", 3)] {
-            let result = lex(source);
+            let result = v02(source);
             assert!(!result.has_errors(), "{source}: {:?}", result.diagnostics);
             let integer_indexes = result
                 .tokens
@@ -1305,6 +1306,18 @@ mod tests {
             TokenKind::Float,
             "a leading digit still starts a float"
         );
+    }
+
+    #[test]
+    fn v0_1_keeps_suffixed_postfix_numbers_as_one_token() {
+        let result = lex("t.0u8");
+        assert!(!result.has_errors(), "{:?}", result.diagnostics);
+        let integers = result
+            .tokens
+            .iter()
+            .filter(|token| token.kind == TokenKind::Integer)
+            .count();
+        assert_eq!(integers, 1, "t.0u8 must stay a single integer token");
     }
 
     #[test]
