@@ -212,7 +212,7 @@ Owner: reviewer (error-model/generic-call RFCs), lead (integration), principal
 - Deprecate the aliases rather than removing parser support; `var` is deprecated
   in favour of `let`/`let mut`. Add the deny-by-default `canonical-syntax` lint
   and `fmt --canonical`; `astra migrate` is the only rewrite path.
-- Choose the next minor package version and gate syntax with
+- Ship the syntax cleanup as `1.1.0` and gate syntax with
   `edition = "0.2"`; keep both editions and use `astra migrate` for source
   migration.
 - Add `if let`/`while let`, ranges, bitwise operators, `char`, and lambdas only
@@ -235,8 +235,8 @@ language; do not move parser, checker, codegen, and CLI at the same time.
 
 ## P2 - product expansion
 
-- `high` mode (1.2).
-- Browser playground (1.1), after native CLI and LSP.
+- `high` mode (1.3).
+- Browser playground (1.2), after native CLI and LSP.
 - Rust, Go, Lua, Ruby, and Java targets.
 - Managed WebAssembly target.
 - First-party machine-code backend.

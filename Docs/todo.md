@@ -167,7 +167,7 @@ Language stays v0.1; do not inject v0.2 syntax into this patch.
 - [ ] Revoke the npm token exposed during the 1.0.0 release.
 - [ ] Update install/package docs when the native package actually ships.
 
-## Language v0.2 - syntax cleanup (next minor, edition 0.2)
+## 1.1.0 - Language v0.2 syntax cleanup (edition 0.2)
 
 **Status:** Phase 0 complete on the documentation side; non-normative. The
 parser, checker, formatter, and codegen have not changed. `spec-v0.1.md` remains
@@ -262,7 +262,7 @@ language is frozen.
 - [ ] Treat the feature-gap list above as a separate train; do not make it a
       blocker for the v0.2 cleanup freeze.
 
-## 1.1.0 - browser playground
+## 1.2.0 - browser playground
 
 The native CLI replacement moved to the `1.0.1` section above.
 
@@ -318,7 +318,7 @@ The native CLI replacement moved to the `1.0.1` section above.
 - [ ] Works in current Chrome, Firefox, Safari, and Edge.
 - [ ] Static hosting, offline assets, README, and privacy note.
 
-## 1.2.0 - high-level mode
+## 1.3.0 - high-level mode
 
 - [ ] Write the language section: the new mode, the low-level surface it
       removes, and the conveniences it adds.

@@ -343,9 +343,10 @@ same time:
 These features add AST nodes and backend work. They are **not** part of the
 v0.2 cleanup freeze and must not delay the cleanup release.
 
-### 5.11 Decisions required before Phase 1
+### 5.11 Decisions for Phase 1
 
-These are recommendations, not taken decisions:
+These decisions are accepted for the `1.1.0` cleanup; change them before Phase 1
+freezes if needed.
 
 | Question | Recommendation |
 |---|---|
@@ -353,7 +354,7 @@ These are recommendations, not taken decisions:
 | Formatter behavior | Edition-aware: v0.1 input formats to v0.1-valid spellings; v0.2 input formats to v0.2 canonical spellings. |
 | Strict enforcement spelling | `astra check --canonical-syntax` errors; `astra fmt --check` only checks formatting; `astra fmt --canonical` is check-only for v0.2 canonical source. `astra migrate` is the only rewrite path. |
 | Migration command | Implement `astra migrate` (not `ns fix`); keep `ns fix` only as a documentation alias if the principal wants one. |
-| Feature release boundary | Ship `0.2.0` as cleanup only; ship feature gaps in a later minor so the grammar freezes first. |
+| Feature release boundary | Ship `1.1.0` as cleanup only; ship feature gaps in a later minor so the grammar freezes first. |
 
 ## 6. Migration map (proposal)
 
@@ -378,15 +379,15 @@ These are recommendations, not taken decisions:
 ## 7. Version and release note
 
 Changing syntax is incompatible with existing `.ns` source, but the language is
-still pre-1.0. The package version is the next minor release, not `2.0.0`.
+still pre-1.0. The package version is **1.1.0**, not `2.0.0`.
 Compatibility is selected per project with `edition = "0.2"` in `core.toml`:
 
 - `edition = "0.1"` keeps the v0.1 syntax.
 - `edition = "0.2"` selects the cleaned syntax and its diagnostics.
 - The compiler accepts both editions; `astra migrate` rewrites v0.1 source to
   v0.2.
-- The exact next minor number is scheduled when the release line is chosen.
-  The plan assumes `0.2.0` is the cleanup release.
+- The cleanup release is `1.1.0`; browser playground follows as `1.2.0` and
+  high-level mode as `1.3.0`.
 
 Do not tag or publish v0.2 until the edition field, parser diagnostics, and
 migration path are implemented and green.

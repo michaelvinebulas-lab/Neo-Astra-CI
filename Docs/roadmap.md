@@ -92,7 +92,7 @@ packaged CLI is native Cargo output, the JS/TS bridge is isolated under
 `lib/cli`, native parity is 12/12, and release validation is green. `1.0.1` is
 released on GitHub and npm; all four packages carry SLSA provenance.
 
-### Language v0.2 - syntax cleanup (next minor, edition 0.2)
+### 1.1.0 - Language v0.2 syntax cleanup (edition 0.2)
 
 Phase 0 is complete on the documentation side: the accepted cleanup plan, RFC
 A/B decisions, non-normative `spec-v0.2.md` skeleton, focused grammar-conflict
@@ -106,17 +106,17 @@ separators and line continuation, tuple-index lexing, and deprecation of `/%`,
 removed: the parser keeps accepting them, canonical docs omit them, and the
 canonical lint rejects them in strict mode. Feature gaps
 (`if let`, ranges, bitwise operators, `char`, lambdas) are added only after the
-grammar is frozen. The package version is the next minor, not `2.0.0`;
+grammar is frozen. The package version is **1.1.0**, not `2.0.0`;
 compatibility is selected with `edition = "0.2"`. Plan, decisions, and RFCs:
 [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md).
 
-### 1.1.0 - Browser playground
+### 1.2.0 - Browser playground
 
 - A static, browser-hosted playground: edit source and manifest, check, format,
   view the AST and mode explanation, generate JavaScript, and run simple
   programs in a sandboxed frame - no server required.
 
-### 1.2.0 - High-level mode
+### 1.3.0 - High-level mode
 
 - A `high` mode that reads like a high-level language: no manual memory,
   pointers, regions, FFI, or script interop; top-level statements, an implicit
