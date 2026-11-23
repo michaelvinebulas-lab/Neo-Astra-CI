@@ -132,6 +132,18 @@ Phase 1 (edition plumbing) is implemented on private master:
 - No syntax behavior changed. Gate tests prove v0.1 output is byte-identical
   and explicit `"0.2"` still parses the v0.1 surface.
 
+Phase 2 (lexer) is implemented on private master:
+
+- `Keyword::Fail` maps `fail` only under edition `0.2`; under `0.1` it stays an
+  identifier.
+- `Punctuation::Question` (`?`) and `Punctuation::DoubleColon` (`::`) are
+  edition-`0.2` tokens. A standalone `::` or `:: <` reports `NS2011`.
+- Tuple indexes after a postfix `.` are integer-only, so `t.0.1` is two indexes
+  while `1.0` remains a float.
+- `///` remains an ordinary comment; no doc-comment trivia was added.
+- Lexer tests cover `?`, `::`, `:: <`, `fail` in both editions, `1.0`, `t.0.1`,
+  `t.0.1.2`, and comments.
+
 ## Release and npm state
 
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.

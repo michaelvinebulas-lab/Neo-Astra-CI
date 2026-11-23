@@ -23,6 +23,7 @@ pub enum Keyword {
     Else,
     Enum,
     Export,
+    Fail,
     False,
     Fn,
     For,
@@ -62,6 +63,7 @@ impl Keyword {
             Self::Else => "else",
             Self::Enum => "enum",
             Self::Export => "export",
+            Self::Fail => "fail",
             Self::False => "false",
             Self::Fn => "fn",
             Self::For => "for",
@@ -113,6 +115,7 @@ pub enum Punctuation {
     Dot,
     Comma,
     Colon,
+    DoubleColon,
     Semicolon,
     Arrow,
     FatArrow,
@@ -124,6 +127,7 @@ pub enum Punctuation {
     RBrace,
     At,
     Pipe,
+    Question,
     Underscore,
 }
 
@@ -584,9 +588,19 @@ impl<'a> Lexer<'a> {
             }
         }
 
+        // After a postfix `.`, a digit is an integer-only tuple index. It must
+        // not absorb the following dot as a float (`t.0.1` is two indexes).
+        let tuple_index = matches!(
+            self.tokens.last(),
+            Some(token) if token.kind == TokenKind::Punct(Punctuation::Dot)
+        );
+
         let mut is_float = false;
 
-        if self.peek() == Some('.') && self.peek_n(1).is_some_and(|c| c.is_ascii_digit()) {
+        if !tuple_index
+            && self.peek() == Some('.')
+            && self.peek_n(1).is_some_and(|c| c.is_ascii_digit())
+        {
             is_float = true;
             self.bump();
             while let Some(character) = self.peek() {
@@ -598,7 +612,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        if matches!(self.peek(), Some('e' | 'E')) {
+        if !tuple_index && matches!(self.peek(), Some('e' | 'E')) {
             let has_digit = match self.peek_n(1) {
                 Some('+' | '-') => self.peek_n(2).is_some_and(|c| c.is_ascii_digit()),
                 Some(character) => character.is_ascii_digit(),
@@ -624,7 +638,9 @@ impl<'a> Lexer<'a> {
         if is_float {
             self.push(TokenKind::Float, start);
         } else {
-            self.byte_suffix();
+            if !tuple_index {
+                self.byte_suffix();
+            }
             self.push(TokenKind::Integer, start);
         }
     }
@@ -655,7 +671,11 @@ impl<'a> Lexer<'a> {
         let kind = if text == "_" {
             TokenKind::Punct(Punctuation::Underscore)
         } else if let Some(keyword) = keyword(text) {
-            TokenKind::Keyword(keyword)
+            if keyword == Keyword::Fail && self.edition != Edition::V0_2 {
+                TokenKind::Identifier
+            } else {
+                TokenKind::Keyword(keyword)
+            }
         } else {
             TokenKind::Identifier
         };
@@ -851,7 +871,25 @@ impl<'a> Lexer<'a> {
             }
             '.' => one(self, Punctuation::Dot),
             ',' => one(self, Punctuation::Comma),
-            ':' => one(self, Punctuation::Colon),
+            ':' => {
+                if self.peek() == Some(':') && self.edition == Edition::V0_2 {
+                    self.bump();
+                    let rest = self.source.get(self.offset..).unwrap_or_default();
+                    if self.peek() == Some('<') {
+                        one(self, Punctuation::DoubleColon);
+                    } else {
+                        let hint = if rest.trim_start().starts_with('<') {
+                            "Write `::<` with no space."
+                        } else {
+                            "A standalone `::` is not valid; use `::<...>` for type arguments."
+                        };
+                        self.diagnostic("NS2011", "Malformed turbofish.", hint, start, self.offset);
+                        one(self, Punctuation::DoubleColon);
+                    }
+                } else {
+                    one(self, Punctuation::Colon);
+                }
+            }
             ';' => one(self, Punctuation::Semicolon),
             '(' => one(self, Punctuation::LParen),
             ')' => one(self, Punctuation::RParen),
@@ -882,6 +920,7 @@ impl<'a> Lexer<'a> {
                 }
                 one(self, Punctuation::At);
             }
+            '?' if self.edition == Edition::V0_2 => one(self, Punctuation::Question),
             _ => {
                 self.diagnostic(
                     "NS1005",
@@ -915,6 +954,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "else" => Keyword::Else,
         "enum" => Keyword::Enum,
         "export" => Keyword::Export,
+        "fail" => Keyword::Fail,
         "false" => Keyword::False,
         "fn" | "function" => Keyword::Fn,
         "for" => Keyword::For,
@@ -943,7 +983,7 @@ fn keyword(text: &str) -> Option<Keyword> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Keyword, Punctuation, TokenKind, lex};
+    use super::{Edition, Keyword, LexOptions, Punctuation, TokenKind, lex, lex_with_options};
 
     fn kinds(source: &str) -> Vec<TokenKind> {
         lex(source)
@@ -1175,5 +1215,103 @@ mod tests {
             kinds("b b\"x\""),
             vec![TokenKind::Identifier, TokenKind::ByteString, TokenKind::Eof]
         );
+    }
+
+    fn v02(source: &str) -> super::LexResult {
+        lex_with_options(
+            source,
+            LexOptions {
+                edition: Edition::V0_2,
+            },
+        )
+    }
+
+    #[test]
+    fn fail_is_a_keyword_only_in_edition_0_2() {
+        assert_eq!(kinds("fail"), vec![TokenKind::Identifier, TokenKind::Eof]);
+        let result = v02("fail");
+        assert!(!result.has_errors());
+        assert_eq!(result.tokens[0].kind, TokenKind::Keyword(Keyword::Fail));
+    }
+
+    #[test]
+    fn question_is_a_token_only_in_edition_0_2() {
+        assert!(lex("?").has_errors());
+        let result = v02("x?");
+        assert!(!result.has_errors());
+        assert_eq!(
+            result.tokens[1].kind,
+            TokenKind::Punct(Punctuation::Question)
+        );
+    }
+
+    #[test]
+    fn double_colon_requires_a_following_angle_bracket() {
+        let valid = v02("::<i32>");
+        assert!(!valid.has_errors());
+        assert_eq!(
+            valid.tokens[0].kind,
+            TokenKind::Punct(Punctuation::DoubleColon)
+        );
+
+        for source in ["::", ":: <i32>"] {
+            let result = v02(source);
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == "NS2011"),
+                "{source}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn v0_1_keeps_two_colons_for_a_standalone_double_colon() {
+        assert_eq!(
+            kinds("::"),
+            vec![
+                TokenKind::Punct(Punctuation::Colon),
+                TokenKind::Punct(Punctuation::Colon),
+                TokenKind::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn tuple_indexes_are_integers_after_a_postfix_dot() {
+        for (source, indexes) in [("t.0.1", 2), ("t.0.1.2", 3)] {
+            let result = lex(source);
+            assert!(!result.has_errors(), "{source}: {:?}", result.diagnostics);
+            let integer_indexes = result
+                .tokens
+                .iter()
+                .filter(|token| token.kind == TokenKind::Integer)
+                .count();
+            assert_eq!(integer_indexes, indexes, "{source}");
+            assert!(
+                result
+                    .tokens
+                    .iter()
+                    .all(|token| token.kind != TokenKind::Float),
+                "{source} must not produce a float"
+            );
+        }
+
+        let float = lex("1.0");
+        assert_eq!(
+            float.tokens[0].kind,
+            TokenKind::Float,
+            "a leading digit still starts a float"
+        );
+    }
+
+    #[test]
+    fn triple_slash_stays_an_ordinary_comment() {
+        let result = lex("/// doc\nfn main() {}");
+        assert!(!result.has_errors());
+        assert_eq!(result.comments.len(), 1);
+        assert_eq!(result.comments[0].text, "/// doc");
     }
 }

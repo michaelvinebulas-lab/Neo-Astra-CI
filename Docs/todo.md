@@ -210,8 +210,10 @@ language is frozen.
       omit the comma.
 - [ ] State line continuation by delimiter kind: whitespace in `(...)`/`[...]`,
       statement boundaries in blocks, list rules in struct/map literals.
-- [ ] Fix tuple-index lexing: after `.` in postfix position read an integer-only
+- [x] Fix tuple-index lexing: after `.` in postfix position read an integer-only
       token, never a float; keep `..` ranges and leading-dot chains distinct.
+      Phase 2 added a lexer-context rule so `t.0.1` lexes as two integer indexes
+      while `1.0` remains a float.
 - [ ] Contextualize `default` and `from`; decide `module` and `type`.
 - [ ] Deprecate `/%`, `spawn ||`, and the special `///` meaning; keep parsing
       the old forms and omit them from canonical docs.
