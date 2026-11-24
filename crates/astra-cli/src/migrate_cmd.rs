@@ -10,9 +10,30 @@ use astra_compiler_api::{MigrateOptions, check_canonical, migrate_source};
 use astra_core::edition::Edition;
 
 use crate::{
-    ReportedDiagnostic, byte_offset_to_line_col, display_path, discover_ns, edition_for_path,
-    print_diagnostics, reported_json,
+    ReportedDiagnostic, byte_offset_to_line_col, discover_ns, display_path, edition_for_path,
+    reported_json,
 };
+
+fn emit_reported(diagnostics: &[ReportedDiagnostic]) {
+    for diagnostic in diagnostics {
+        let location = match (diagnostic.path.as_deref(), diagnostic.line) {
+            (None, _) => String::new(),
+            (Some(path), None) => format!("{path}: "),
+            (Some(path), Some(line)) => {
+                format!("{path}:{line}:{}: ", diagnostic.column.unwrap_or(1))
+            }
+        };
+        let hint = diagnostic
+            .hint
+            .as_deref()
+            .map(|hint| format!("\n  help: {hint}"))
+            .unwrap_or_default();
+        eprintln!(
+            "{}{}[{}]: {}{}",
+            location, diagnostic.severity, diagnostic.code, diagnostic.message, hint
+        );
+    }
+}
 
 fn targets(path: &str) -> Vec<String> {
     if Path::new(path).is_dir() {
@@ -94,7 +115,7 @@ pub fn cmd_canonical_check(args: &[String]) -> ExitCode {
     }
 
     if !json {
-        print_diagnostics(&all);
+        emit_reported(&all);
     }
     if has_errors {
         ExitCode::FAILURE
@@ -163,7 +184,7 @@ pub fn cmd_migrate(args: &[String]) -> ExitCode {
                     .iter()
                     .map(|diagnostic| json_diagnostic(diagnostic, &display_path(&file), &text))
                     .collect::<Vec<_>>();
-                print_diagnostics(&reported);
+                emit_reported(&reported);
                 failures += 1;
                 continue;
             }
