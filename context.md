@@ -201,9 +201,10 @@ Phase 5 (migration and validation) core work is landed:
 Phase 6 (freeze) is complete on the tree: `spec-v0.2.md` is normative for
 `edition = "0.2"`, `spec-v0.1.md` remains normative for `edition = "0.1"`, and
 the lockstep `1.1.0` bump is applied across Cargo, npm, lockfiles, and CLI
-version constants. No `1.1.0` tag or publish was cut. Remaining release
-blockers: CLI wiring (`astra migrate`, `check --canonical-syntax`,
-`fmt --canonical`) and two deferred corpus cases (`scopes.ns`, `turbofish.ns`).
+version constants. The CLI commands `astra migrate`, `check --canonical-syntax`,
+and `fmt --canonical` are wired in `crates/astra-cli/src/migrate_cmd.rs`. No
+`1.1.0` tag or publish was cut. Remaining release blockers: two deferred corpus
+cases (`scopes.ns`, `turbofish.ns`) and the principal-owned release steps.
 
 ## Release and npm state
 

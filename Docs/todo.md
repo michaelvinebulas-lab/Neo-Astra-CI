@@ -233,9 +233,10 @@ language is frozen.
 - [x] Keep formatter canonicalization to `fn`, `let`, `const`, `type`,
       `struct`, `mut`, and `pub`; edition `0.2` also emits `fail`, `?`,
       `::<...>`, and `@mode(...)` / `@memory(...)`.
-- [ ] Add the deny-by-default `canonical-syntax` lint and check-only
+- [x] Add the deny-by-default `canonical-syntax` lint and check-only
       `fmt --canonical`; `astra migrate` performs rewrites. Core lint is in
-      `crates/astra-core/src/canonical.rs`; CLI flag wiring remains.
+      `crates/astra-core/src/canonical.rs`; CLI wiring is in
+      `crates/astra-cli/src/migrate_cmd.rs`.
 - [ ] Run the canonical lint in stdlib CI.
 - [ ] Optional later: make the aliases contextual so the words can be
       identifiers.
@@ -274,8 +275,7 @@ language is frozen.
 - [ ] Freeze `spec-v0.2.md`, then update parser, checker, formatter, codegen,
       conformance, examples, and CLI together.
 - [x] Implement `edition = "0.2"` gating so the compiler accepts v0.1 and v0.2
-      syntax, and migrate source. The `astra migrate` CLI command is still
-      unwired.
+      syntax, and migrate source, including the `astra migrate` CLI command.
 - [ ] Treat the feature-gap list above as a separate train; do not make it a
       blocker for the v0.2 cleanup freeze.
 

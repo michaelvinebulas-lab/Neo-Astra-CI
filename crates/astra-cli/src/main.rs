@@ -21,6 +21,7 @@ use astra_toolchain::doctor::doctor_with_download as run_doctor;
 use astra_toolchain::policy::parse_toolchain_policy;
 
 mod build;
+mod migrate_cmd;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -202,7 +203,13 @@ fn main() -> ExitCode {
             print_help();
             ExitCode::SUCCESS
         }
-        "check" => cmd_check(&args[1..]),
+        "check" => {
+            if args[1..].iter().any(|arg| arg == "--canonical-syntax") {
+                migrate_cmd::cmd_canonical_check(&args[1..])
+            } else {
+                cmd_check(&args[1..])
+            }
+        },
         "nopm" => {
             // dispatch to astra-nopm run function
             let code = astra_nopm::run(&args[1..]);
@@ -210,7 +217,14 @@ fn main() -> ExitCode {
         }
         "doctor" => cmd_doctor(&args[1..]),
         "build" => build::cmd_build(&args[1..]),
-        "fmt" => cmd_fmt(&args[1..]),
+        "fmt" => {
+            if args[1..].iter().any(|arg| arg == "--canonical") {
+                migrate_cmd::cmd_canonical_check(&args[1..])
+            } else {
+                cmd_fmt(&args[1..])
+            }
+        }
+        "migrate" => migrate_cmd::cmd_migrate(&args[1..]),
         "ast" => cmd_ast(&args[1..]),
         "explain" => cmd_explain(&args[1..]),
         other => {
@@ -367,6 +381,8 @@ fn print_help() {
     println!("  doctor [dir] [--json]  Resolve and print the toolchain ladder");
     println!("  build [dir]            Build the configured target");
     println!("  fmt [path] [--check]   Format .ns source and core.json/core.toml");
+    println!("  migrate [path]         Rewrite v0.1 source to canonical edition 0.2");
+    println!("                           (--check, --dry-run, --json, --change-edition)");
     println!("  ast [path]             Print the parsed AST of a file or the project entry");
     println!("  explain [path]         Explain mode/capability inference for a file or entry");
     println!();
