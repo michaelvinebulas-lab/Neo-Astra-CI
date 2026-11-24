@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-24
+
+### Added
+- Language edition `0.2` syntax cleanup: `fail Type(...)`, postfix `?`,
+  `::<...>` turbofish, canonical scope blocks, canonical aliases, and a
+  deny-by-default canonical-syntax lint.
+- Source-to-source migration core for edition `0.2`.
+
+### Changed
+- The formatter is edition-aware and emits canonical `0.2` spellings while
+  preserving v0.1 spellings under edition `0.1`.
+
 ## [1.0.1] - 2026-11-22
 
 ### Added

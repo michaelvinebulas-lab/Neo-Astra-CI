@@ -198,12 +198,12 @@ Phase 5 (migration and validation) core work is landed:
   `check --canonical-syntax` and `fmt --canonical`) remain unwired because the
   CLI files are owned by a parallel agent.
 
-Phase 6 (freeze) is in progress: `spec-v0.2.md` is now normative for
-`edition = "0.2"`, with `spec-v0.1.md` normative for `edition = "0.1"`; the
-`spec-v0.1.md` and `syntax-legend.md` pointers were updated. No `1.1.0` tag or
-publish was cut. The remaining release-blocking work is CLI wiring
-(`astra migrate`, `check --canonical-syntax`, `fmt --canonical`) and the two
-deferred corpus cases; then the final release checklist and version bump.
+Phase 6 (freeze) is complete on the tree: `spec-v0.2.md` is normative for
+`edition = "0.2"`, `spec-v0.1.md` remains normative for `edition = "0.1"`, and
+the lockstep `1.1.0` bump is applied across Cargo, npm, lockfiles, and CLI
+version constants. No `1.1.0` tag or publish was cut. Remaining release
+blockers: CLI wiring (`astra migrate`, `check --canonical-syntax`,
+`fmt --canonical`) and two deferred corpus cases (`scopes.ns`, `turbofish.ns`).
 
 ## Release and npm state
 
