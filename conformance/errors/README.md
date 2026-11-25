@@ -15,13 +15,25 @@ Directives (runner-only, ordinary comments to the language):
 
 The standalone runner is `scripts/run.rs1` (std-only Rust):
 
+PowerShell (Windows) — note the `&` call operator and the `.exe` suffix:
+
 ```powershell
+cargo build -p astra-cli --bin astra-native
+rustc scripts/run.rs1 -o run-errors
+& .\run-errors.exe                 # this directory only (23 cases)
+& .\run-errors.exe --all           # also conformance/rejects and v0.2 invalid (60 cases)
+& .\run-errors.exe --coverage      # report ledger codes not exercised by cases
+& .\run-errors.exe --root <repo>   # run from another working directory
+```
+
+bash (macOS/Linux):
+
+```bash
 cargo build -p astra-cli --bin astra-native
 rustc scripts/run.rs1 -o run-errors
 ./run-errors                       # this directory only (23 cases)
 ./run-errors --all                 # also conformance/rejects and v0.2 invalid (60 cases)
 ./run-errors --coverage            # report ledger codes not exercised by cases
-./run-errors --root <repo>         # run from another working directory
 ```
 
 Set `ASTRA_BIN` to override the compiler binary path.
