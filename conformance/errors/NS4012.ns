@@ -1,0 +1,9 @@
+// edition: 0.2
+struct A(str)
+struct B(str)
+fn f() -> i32 ! A { fail A("x")
+}
+fn g() -> i32 ! B { let x = f()?
+    return 0
+}
+

@@ -1,0 +1,5 @@
+// edition: 0.2
+@mode(bogus) {
+    fn f() -> i32 { return 1 }
+}
+

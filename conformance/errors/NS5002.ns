@@ -1,0 +1,5 @@
+// edition: 0.2
+@mode(core) { fn f() -> i32 {
+    @mode(system) { return 1 }
+} }
+
