@@ -19,7 +19,7 @@ PowerShell (Windows) — note the `&` call operator and the `.exe` suffix:
 
 ```powershell
 cargo build -p astra-cli --bin astra-native
-rustc scripts/run.rs1 -o run-errors
+rustc scripts/run.rs1 -o run-errors.exe   # keep the .exe: rustc does not add it for -o
 & .\run-errors.exe                 # this directory only (23 cases)
 & .\run-errors.exe --all           # also conformance/rejects and v0.2 invalid (60 cases)
 & .\run-errors.exe --coverage      # report ledger codes not exercised by cases
