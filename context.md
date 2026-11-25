@@ -198,6 +198,11 @@ Phase 5 (migration and validation) core work is landed:
   `check --canonical-syntax` and `fmt --canonical`) remain unwired because the
   CLI files are owned by a parallel agent.
 
+The error-output rework (Slices A, B, C) is landed at `8caf2ea`, including the
+review cleanup: ledger committed and enforced, LSP project `relatedInformation`,
+error-set secondary labels, and bounded parser recovery. `parse_error.ns` emits
+2 diagnostics with `NS2001` retained; the NS2002 depth guard is untouched.
+
 Phase 6 (freeze) is complete on the tree: `spec-v0.2.md` is normative for
 `edition = "0.2"`, `spec-v0.1.md` remains normative for `edition = "0.1"`, and
 the lockstep `1.1.0` bump is applied across Cargo, npm, lockfiles, and CLI
