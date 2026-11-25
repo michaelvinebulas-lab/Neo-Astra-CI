@@ -45,12 +45,28 @@ struct TextEdit {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspLocation {
+    uri: String,
+    range: Range,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LspRelatedInformation {
+    location: LspLocation,
+    message: String,
+}
+
+#[derive(Serialize)]
 struct LspDiagnostic {
     range: Range,
     severity: u32,
     code: String,
     source: String,
     message: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    related_information: Vec<LspRelatedInformation>,
 }
 
 struct Server {
@@ -543,7 +559,7 @@ fn publish_project_diagnostics(snapshot: &ProjectSnapshot) {
         let diagnostics: Vec<LspDiagnostic> = module
             .diagnostics
             .iter()
-            .map(|diagnostic| diag_to_lsp(&module.text, diagnostic))
+            .map(|diagnostic| diag_to_lsp(&module.text, diagnostic, Some(&module.uri)))
             .collect();
         write_message(&json!({
             "jsonrpc": "2.0",
@@ -600,7 +616,10 @@ fn write_message(value: &Value) {
 }
 
 fn publish_diagnostics_for_text(uri: &str, text: &str, diags: &[Diagnostic]) {
-    let lsp_diags: Vec<LspDiagnostic> = diags.iter().map(|d| diag_to_lsp(text, d)).collect();
+    let lsp_diags: Vec<LspDiagnostic> = diags
+        .iter()
+        .map(|d| diag_to_lsp(text, d, Some(uri)))
+        .collect();
     write_message(&json!({
         "jsonrpc": "2.0",
         "method": "textDocument/publishDiagnostics",
@@ -611,7 +630,7 @@ fn publish_diagnostics_for_text(uri: &str, text: &str, diags: &[Diagnostic]) {
     }));
 }
 
-fn diag_to_lsp(text: &str, d: &Diagnostic) -> LspDiagnostic {
+fn diag_to_lsp(text: &str, d: &Diagnostic, uri: Option<&str>) -> LspDiagnostic {
     let (start, end) = if let Some(span) = d.span {
         (
             offset_to_position(text, span.start),
@@ -631,6 +650,30 @@ fn diag_to_lsp(text: &str, d: &Diagnostic) -> LspDiagnostic {
     } else {
         d.message.clone()
     };
+    let related_information = match uri {
+        Some(uri) => d
+            .related
+            .iter()
+            .filter(|entry| entry.file.is_empty())
+            .map(|entry| LspRelatedInformation {
+                location: LspLocation {
+                    uri: uri.to_owned(),
+                    range: Range {
+                        start: Position {
+                            line: offset_to_position(text, entry.span.start).0,
+                            character: offset_to_position(text, entry.span.start).1,
+                        },
+                        end: Position {
+                            line: offset_to_position(text, entry.span.end).0,
+                            character: offset_to_position(text, entry.span.end).1,
+                        },
+                    },
+                },
+                message: entry.message.clone(),
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     LspDiagnostic {
         range: Range {
             start: Position {
@@ -646,6 +689,7 @@ fn diag_to_lsp(text: &str, d: &Diagnostic) -> LspDiagnostic {
         code: d.code.clone(),
         source: "astra".to_owned(),
         message,
+        related_information,
     }
 }
 
@@ -702,7 +746,7 @@ mod tests {
     fn diagnostics_use_utf16_ranges() {
         let text = "a😀b";
         let diagnostic = Diagnostic::error("NS4001", "bad").with_span(Span::new(1, 5));
-        let mapped = diag_to_lsp(text, &diagnostic);
+        let mapped = diag_to_lsp(text, &diagnostic, None);
         assert_eq!(mapped.range.start.character, 1);
         assert_eq!(mapped.range.end.character, 3);
         assert_eq!(mapped.source, "astra");

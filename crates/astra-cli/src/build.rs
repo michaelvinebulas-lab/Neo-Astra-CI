@@ -16,10 +16,7 @@ use astra_compiler_api::{
 use astra_core::mode::Mode;
 use astra_manifest::TargetSection;
 
-use crate::{
-    ManifestError, ProjectManifests, ReportedDiagnostic, byte_offset_to_line_col, display_path,
-    load_project, severity_name,
-};
+use crate::{ProjectManifests, ReportedDiagnostic, display_path, load_project};
 
 #[derive(serde::Serialize)]
 struct BuildReport {
@@ -161,7 +158,8 @@ fn option_error(option: &str) -> Box<ReportedDiagnostic> {
 fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
     let fatal = |diagnostic| fatal_report(options, diagnostic);
     let project_dir = options.project.clone().unwrap_or_else(|| ".".to_owned());
-    let project = load_project(&project_dir).map_err(|error| fatal(manifest_diagnostic(&error)))?;
+    let project =
+        load_project(&project_dir).map_err(|error| fatal(crate::manifest_reported(&error)))?;
     let target_name = options
         .target
         .clone()
@@ -372,7 +370,7 @@ fn run_build(options: &BuildOptions) -> Result<BuildReport, BuildReport> {
             response
                 .diagnostics
                 .iter()
-                .map(|diagnostic| compiler_diagnostic(diagnostic, &entry_path, &entry_text)),
+                .map(|diagnostic| compiler_diagnostic_unattributed(diagnostic, &entry_path)),
         );
         for module in &response.modules {
             files.push(GeneratedFile {
@@ -1018,35 +1016,18 @@ fn compiler_diagnostic(
     path: &Path,
     text: &str,
 ) -> ReportedDiagnostic {
-    let (line, column) = diagnostic
-        .span
-        .as_ref()
-        .map(|span| {
-            let (line, column) = byte_offset_to_line_col(text, span.start);
-            (Some(line), Some(column))
-        })
-        .unwrap_or((None, None));
-    crate::reported_json(
-        &diagnostic.code,
-        severity_name(diagnostic.severity),
-        &diagnostic.message,
-        diagnostic.hint.as_deref(),
-        Some(&display_path(&path.to_string_lossy())),
-        line,
-        column,
-    )
+    crate::core_diagnostic(diagnostic, &display_path(&path.to_string_lossy()), text)
+        .with_snippet(text)
 }
 
-fn manifest_diagnostic(error: &ManifestError) -> ReportedDiagnostic {
-    crate::reported_json(
-        error.code,
-        "error",
-        &error.message,
-        None,
-        Some(&error.path),
-        None,
-        None,
-    )
+/// Multi-module responses carry a flat diagnostic list with no owning module,
+/// so a span cannot be attributed. Report the diagnostic without a snippet
+/// instead of rendering the entry file's text under an unrelated span.
+fn compiler_diagnostic_unattributed(
+    diagnostic: &astra_core::diagnostic::Diagnostic,
+    path: &Path,
+) -> ReportedDiagnostic {
+    crate::core_diagnostic(diagnostic, &display_path(&path.to_string_lossy()), "")
 }
 
 fn diag(code: &str, message: &str, path: Option<&str>) -> ReportedDiagnostic {
@@ -1105,9 +1086,7 @@ fn print_report(report: &BuildReport) {
 }
 
 fn print_diagnostics(diagnostics: &[ReportedDiagnostic]) {
-    for diagnostic in diagnostics {
-        crate::print_reported(diagnostic);
-    }
+    crate::print_diagnostics(diagnostics);
 }
 
 fn resolve_host_compiler(

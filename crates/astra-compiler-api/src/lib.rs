@@ -108,6 +108,32 @@ pub struct CompileRequest {
     pub integer_policy: IntegerPolicy,
 }
 
+/// Parameters for the `migrate` command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrateRequest {
+    pub api_version: String,
+    pub source: SourceUnit,
+    /// Source edition. Migration always targets `0.2`; this is advisory.
+    #[serde(default)]
+    pub edition: Edition,
+    /// Whether the caller also opted in to rewriting the manifest edition.
+    #[serde(default)]
+    pub change_edition: bool,
+}
+
+/// Result of the `migrate` command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MigrateResponse {
+    pub api_version: String,
+    /// False when migration could not run (parse error); diagnostics are then errors.
+    pub ok: bool,
+    pub changed: bool,
+    pub diagnostics: Vec<Diagnostic>,
+    pub source: String,
+}
+
 /// A compiler result returned inside a JSON-RPC response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1137,7 +1163,7 @@ pub fn process_json(input: &str) -> String {
             json!({
                 "apiVersion": API_VERSION,
                 "coreVersion": env!("CARGO_PKG_VERSION"),
-                "commands": ["initialize", "check", "check_project", "compile", "compile_project", "ast", "format", "explain", "shutdown"],
+                "commands": ["initialize", "check", "check_project", "compile", "compile_project", "ast", "format", "explain", "migrate", "shutdown"],
                 "features": ["resolver", "type-checker", "project-checker", "typed-ir", "project-compile-c"],
                 "targets": ["js", "ts", "native", "wasm-web", "wasm-wasi"],
             }),
@@ -1205,6 +1231,13 @@ pub fn process_json(input: &str) -> String {
             ),
             Err(message) => JsonRpcResponse::error(request.id, -32602, message),
         },
+        "migrate" => match parse_migrate_request(request.params) {
+            Ok(migrate_request) => JsonRpcResponse::success(
+                request.id,
+                serde_json::to_value(migrate_for_request(&migrate_request)).unwrap_or(Value::Null),
+            ),
+            Err(message) => JsonRpcResponse::error(request.id, -32602, message),
+        },
         _ => JsonRpcResponse::error(request.id, -32601, "Method not found."),
     };
 
@@ -1242,6 +1275,29 @@ fn explain_for_request(request: &CompileRequest) -> ExplainResponse {
     }
 }
 
+fn migrate_for_request(request: &MigrateRequest) -> MigrateResponse {
+    let options = MigrateOptions {
+        target_edition: Edition::V0_2,
+        change_edition: request.change_edition,
+    };
+    match migrate_source(&request.source.text, options) {
+        Ok(migration) => MigrateResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: true,
+            changed: migration.changed,
+            diagnostics: migration.diagnostics,
+            source: migration.source,
+        },
+        Err(diagnostics) => MigrateResponse {
+            api_version: API_VERSION.to_owned(),
+            ok: false,
+            changed: false,
+            diagnostics,
+            source: request.source.text.clone(),
+        },
+    }
+}
+
 fn parse_compile_request(params: Option<Value>) -> Result<CompileRequest, String> {
     let params = params.ok_or_else(|| "Missing params.".to_owned())?;
     let request: CompileRequest =
@@ -1254,6 +1310,13 @@ fn parse_compile_request(params: Option<Value>) -> Result<CompileRequest, String
         ));
     }
 
+    Ok(request)
+}
+
+fn parse_migrate_request(params: Option<Value>) -> Result<MigrateRequest, String> {
+    let params = params.ok_or_else(|| "Missing params.".to_owned())?;
+    let request: MigrateRequest =
+        serde_json::from_value(params).map_err(|error| format!("Invalid params: {error}"))?;
     Ok(request)
 }
 

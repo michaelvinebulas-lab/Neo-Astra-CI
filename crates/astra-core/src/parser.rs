@@ -90,8 +90,47 @@ pub fn parse_with_comments_with_options(
     if parser.diagnostics.is_empty() {
         Ok((module, comments))
     } else {
-        Err(parser.diagnostics)
+        Err(suppress_cascades(parser.diagnostics, source))
     }
+}
+
+/// Bounds parser cascades per source line.
+///
+/// Only parser codes are eligible: `NS2002` is the nesting-limit guard and is
+/// always kept, and non-parser codes are never suppressed. Within one line we
+/// keep at most two *distinct* parser codes; later repeats and a third distinct
+/// code are consequences of the first mistake rather than independent errors.
+/// Line numbers use raw byte offsets (`\n` is ASCII), so a span that is not on a
+/// character boundary still gets a stable line.
+fn suppress_cascades(diagnostics: Vec<Diagnostic>, source: &str) -> Vec<Diagnostic> {
+    let mut per_line: std::collections::HashMap<usize, (usize, std::collections::HashSet<String>)> =
+        std::collections::HashMap::new();
+    diagnostics
+        .into_iter()
+        .filter(|diagnostic| {
+            if !diagnostic.code.starts_with("NS2") || diagnostic.code == "NS2002" {
+                return true;
+            }
+            let line = diagnostic.span.map_or(0, |span| {
+                source.as_bytes()[..span.start.min(source.len())]
+                    .iter()
+                    .filter(|byte| **byte == b'\n')
+                    .count()
+            });
+            let (count, codes) = per_line
+                .entry(line)
+                .or_insert((0, std::collections::HashSet::new()));
+            if codes.contains(&diagnostic.code) {
+                return false;
+            }
+            if *count >= 2 {
+                return false;
+            }
+            codes.insert(diagnostic.code.clone());
+            *count += 1;
+            true
+        })
+        .collect()
 }
 
 struct Parser {
@@ -634,6 +673,19 @@ impl Parser {
         }
     }
 
+    /// Skips to the next recovery anchor without emitting more diagnostics.
+    ///
+    /// A malformed item should not desynchronise the rest of the file. Anchors
+    /// are delimiters that bound the item we were parsing.
+    fn recover_to_anchor(&mut self, anchors: &[Punctuation]) {
+        while !self.at_eof()
+            && !self.at(TokenKind::Newline)
+            && !anchors.iter().any(|anchor| self.at_punct(*anchor))
+        {
+            self.bump();
+        }
+    }
+
     fn parse_parameters(&mut self) -> Vec<Parameter> {
         let mut parameters = Vec::new();
         self.expect_punct(Punctuation::LParen, "'('");
@@ -644,8 +696,19 @@ impl Parser {
             return parameters;
         }
 
+        let mut recovered = false;
         loop {
             let start = self.peek().span.start;
+            if !self.at(TokenKind::Identifier) {
+                self.error_current(
+                    EXPECTED,
+                    "Expected a parameter name.",
+                    "Write name: Type inside the parentheses.",
+                );
+                self.recover_to_anchor(&[Punctuation::RParen, Punctuation::LBrace]);
+                recovered = true;
+                break;
+            }
             let name = self.expect_identifier().unwrap_or_default();
             self.expect_punct(Punctuation::Colon, "':'");
             let ty = self.parse_type();
@@ -666,7 +729,11 @@ impl Parser {
         }
 
         self.skip_newlines();
-        self.expect_punct(Punctuation::RParen, "')'");
+        if recovered {
+            self.eat_punct(Punctuation::RParen);
+        } else {
+            self.expect_punct(Punctuation::RParen, "')'");
+        }
         parameters
     }
 
@@ -3381,7 +3448,10 @@ fn expression_to_type_path(expression: &Expr) -> Option<TypePath> {
 
 #[cfg(test)]
 mod tests {
-    use super::{ParseOptions, parse, parse_with_comments, parse_with_options};
+    use super::{
+        ParseOptions, parse, parse_with_comments, parse_with_comments_with_options,
+        parse_with_options,
+    };
     use crate::ast::{
         ElseBranch, ExprKind, FailArguments, ImportForm, ItemKind, PatternKind, ScopeKind,
         StmtKind, StructFields, TypeKind, Visibility,
@@ -4417,6 +4487,52 @@ module io
             diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.code == "NS3002")
+        );
+    }
+
+    #[test]
+    fn slice_c_parse_error_stays_bounded() {
+        let diagnostics =
+            parse_with_comments_with_options("public fn broken( {\n", ParseOptions::default())
+                .expect_err("expected a parse error");
+        assert!(
+            diagnostics.len() <= 2,
+            "one malformed parameter list must not cascade: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "NS2001")
+        );
+    }
+
+    #[test]
+    fn slice_c_malformed_struct_body_stays_bounded() {
+        let diagnostics = parse_with_comments_with_options(
+            "struct Broken {\n    name: ,\n}\n",
+            ParseOptions::default(),
+        )
+        .expect_err("expected a parse error");
+        assert!(
+            diagnostics.len() <= 2,
+            "one malformed field must not cascade: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "NS2003")
+        );
+    }
+
+    #[test]
+    fn slice_c_depth_guard_is_never_suppressed() {
+        let source = format!("fn f() -> i32 {{ return {} }}\n", "(".repeat(80));
+        let diagnostics = parse_with_comments_with_options(&source, ParseOptions::default())
+            .expect_err("expected a depth-limit error");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "NS2002")
         );
     }
 }

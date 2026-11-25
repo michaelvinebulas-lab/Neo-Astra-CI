@@ -29,6 +29,16 @@ impl Severity {
     }
 }
 
+/// A secondary source location attached to a diagnostic.
+///
+/// An empty `file` means "the same file as the primary span".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelatedSpan {
+    pub file: String,
+    pub span: Span,
+    pub message: String,
+}
+
 /// A stable, structured compiler diagnostic.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnostic {
@@ -37,6 +47,9 @@ pub struct Diagnostic {
     pub message: String,
     pub span: Option<Span>,
     pub hint: Option<String>,
+    /// Secondary locations that explain the primary span.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related: Vec<RelatedSpan>,
 }
 
 impl Diagnostic {
@@ -49,6 +62,7 @@ impl Diagnostic {
             message: message.into(),
             span: None,
             hint: None,
+            related: Vec::new(),
         }
     }
 
@@ -63,6 +77,22 @@ impl Diagnostic {
     #[must_use]
     pub fn with_hint(mut self, hint: impl Into<String>) -> Self {
         self.hint = Some(hint.into());
+        self
+    }
+
+    /// Attaches a secondary location. An empty `file` means the primary file.
+    #[must_use]
+    pub fn with_related(
+        mut self,
+        file: impl Into<String>,
+        span: Span,
+        message: impl Into<String>,
+    ) -> Self {
+        self.related.push(RelatedSpan {
+            file: file.into(),
+            span,
+            message: message.into(),
+        });
         self
     }
 }

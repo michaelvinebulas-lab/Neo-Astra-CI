@@ -21,7 +21,9 @@ use astra_toolchain::doctor::doctor_with_download as run_doctor;
 use astra_toolchain::policy::parse_toolchain_policy;
 
 mod build;
+mod error_catalog;
 mod migrate_cmd;
+mod render;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -33,6 +35,18 @@ struct ManifestInfo {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
+struct ReportedRelated {
+    file: String,
+    start: usize,
+    end: usize,
+    message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    column: Option<usize>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
 struct ReportedDiagnostic {
     code: String,
     severity: String,
@@ -41,6 +55,53 @@ struct ReportedDiagnostic {
     path: Option<String>,
     line: Option<usize>,
     column: Option<usize>,
+    /// Secondary locations that explain the primary span.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    related: Vec<ReportedRelated>,
+    /// Byte range of the primary span. Kept out of the JSON protocol.
+    #[serde(skip)]
+    span: Option<(usize, usize)>,
+    /// Pre-rendered underlined snippet. Kept out of the JSON protocol.
+    #[serde(skip)]
+    snippet: Option<String>,
+}
+
+impl ReportedDiagnostic {
+    /// Attaches the byte range of the primary span.
+    pub(crate) fn with_span(mut self, span: Option<(usize, usize)>) -> Self {
+        self.span = span;
+        self
+    }
+
+    /// Attaches secondary locations.
+    pub(crate) fn with_related(mut self, related: Vec<ReportedRelated>) -> Self {
+        self.related = related;
+        self
+    }
+
+    /// Attaches the underlined snippet for the already-computed span position.
+    ///
+    /// Callers that cannot attribute a span to the text they hold must skip
+    /// this step rather than render an unrelated source line.
+    pub(crate) fn with_snippet(mut self, text: &str) -> Self {
+        let Some((start, end)) = self.span else {
+            return self;
+        };
+        if start > text.len() {
+            return self;
+        }
+        let line = match self.line {
+            Some(line) => line,
+            None => {
+                let (line, column) = byte_offset_to_line_col(text, start);
+                self.line = Some(line);
+                self.column = Some(column);
+                line
+            }
+        };
+        self.snippet = render::snippet(text, start, end, line);
+        self
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -209,7 +270,7 @@ fn main() -> ExitCode {
             } else {
                 cmd_check(&args[1..])
             }
-        },
+        }
         "nopm" => {
             // dispatch to astra-nopm run function
             let code = astra_nopm::run(&args[1..]);
@@ -592,6 +653,18 @@ fn load_build_manifest(dir: &str) -> Result<(BuildManifest, bool), ManifestError
     Ok((build, true))
 }
 
+pub(crate) fn manifest_reported(error: &ManifestError) -> ReportedDiagnostic {
+    reported_json(
+        error.code,
+        "error",
+        &error.message,
+        None,
+        Some(&error.path),
+        None,
+        None,
+    )
+}
+
 fn emit_manifest_error(error: &ManifestError, json: bool) -> ExitCode {
     if json {
         let diagnostic = ManifestDiagnostic {
@@ -605,12 +678,12 @@ fn emit_manifest_error(error: &ManifestError, json: bool) -> ExitCode {
             serde_json::to_string_pretty(&diagnostic).unwrap_or_default()
         );
     } else {
-        eprintln!("{}: {}", error.code, error.message);
+        print_diagnostics(&[manifest_reported(error)]);
     }
     ExitCode::FAILURE
 }
 
-fn reported_json(
+pub(crate) fn reported_json(
     code: &str,
     severity: &str,
     message: &str,
@@ -627,25 +700,86 @@ fn reported_json(
         path: path.map(str::to_owned),
         line,
         column,
+        related: Vec::new(),
+        span: None,
+        snippet: None,
     }
 }
 
-fn print_reported(diagnostic: &ReportedDiagnostic) {
-    let location = match (diagnostic.path.as_deref(), diagnostic.line) {
-        (None, _) => String::new(),
-        (Some(path), None) => format!("{path}: "),
-        (Some(path), Some(line)) => {
-            format!("{path}:{line}:{}: ", diagnostic.column.unwrap_or(1))
+/// Converts a core diagnostic into the CLI form, filling span and snippet.
+pub(crate) fn core_diagnostic(
+    diagnostic: &Diagnostic,
+    path: &str,
+    text: &str,
+) -> ReportedDiagnostic {
+    let span = diagnostic.span.map(|span| (span.start, span.end));
+    let (line, column) = match span {
+        Some((start, _)) if start <= text.len() => {
+            let (line, column) = byte_offset_to_line_col(text, start);
+            (Some(line), Some(column))
         }
+        _ => (None, None),
     };
-    eprint!(
-        "{location}{}[{}]: {}",
-        diagnostic.severity, diagnostic.code, diagnostic.message
-    );
-    if let Some(hint) = &diagnostic.hint {
-        eprint!("\n  help: {hint}");
+    let related = diagnostic
+        .related
+        .iter()
+        .map(|entry| {
+            let same_file = entry.file.is_empty() || entry.file == path;
+            let (line, column) = if same_file && entry.span.start <= text.len() {
+                let (line, column) = byte_offset_to_line_col(text, entry.span.start);
+                (Some(line), Some(column))
+            } else {
+                (None, None)
+            };
+            ReportedRelated {
+                file: if entry.file.is_empty() {
+                    path.to_owned()
+                } else {
+                    entry.file.clone()
+                },
+                start: entry.span.start,
+                end: entry.span.end,
+                message: entry.message.clone(),
+                line,
+                column,
+            }
+        })
+        .collect();
+    reported_json(
+        &diagnostic.code,
+        severity_name(diagnostic.severity),
+        &diagnostic.message,
+        diagnostic.hint.as_deref(),
+        Some(path),
+        line,
+        column,
+    )
+    .with_span(span)
+    .with_related(related)
+}
+
+/// Converts core diagnostics and renders them for a single owning source file.
+pub(crate) fn print_core_diagnostics(diagnostics: &[Diagnostic], path: &str, text: &str) {
+    let rendered: Vec<ReportedDiagnostic> = diagnostics
+        .iter()
+        .map(|diagnostic| core_diagnostic(diagnostic, path, text).with_snippet(text))
+        .collect();
+    print_diagnostics(&rendered);
+}
+
+fn print_reported(diagnostic: &ReportedDiagnostic) {
+    eprintln!("{}", render::render(diagnostic));
+}
+
+/// Prints every diagnostic, then the trailing summary when errors were emitted.
+pub(crate) fn print_diagnostics(diagnostics: &[ReportedDiagnostic]) {
+    for diagnostic in diagnostics {
+        print_reported(diagnostic);
     }
-    eprintln!();
+    if let Some(line) = render::summary(diagnostics) {
+        eprintln!();
+        eprintln!("{line}");
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -920,23 +1054,8 @@ fn project_check(project: &ProjectManifests, json: bool, mode: Option<Mode>) -> 
                 .cloned()
                 .unwrap_or_else(|| (module.path.clone(), String::new()));
             for diagnostic in &module.diagnostics {
-                let (line, column) = match &diagnostic.span {
-                    Some(span) => {
-                        let (line, column) = byte_offset_to_line_col(&text, span.start);
-                        (Some(line), Some(column))
-                    }
-                    None => (None, None),
-                };
                 let path = display_path(&absolute_path);
-                flat.push(reported_json(
-                    &diagnostic.code,
-                    severity_name(diagnostic.severity),
-                    &diagnostic.message,
-                    diagnostic.hint.as_deref(),
-                    Some(&path),
-                    line,
-                    column,
-                ));
+                flat.push(core_diagnostic(diagnostic, &path, &text).with_snippet(&text));
             }
         }
     }
@@ -977,23 +1096,20 @@ fn project_check(project: &ProjectManifests, json: bool, mode: Option<Mode>) -> 
                     &active_target,
                 );
                 for (message, hint) in problems {
-                    let (line, column) = match declaration.span {
-                        Some((start, _)) => {
-                            let (line, column) = byte_offset_to_line_col(text, start);
-                            (Some(line), Some(column))
-                        }
-                        None => (None, None),
-                    };
                     let path = display_path(absolute_path);
-                    flat.push(reported_json(
-                        "NS7007",
-                        "error",
-                        &message,
-                        Some(hint),
-                        Some(&path),
-                        line,
-                        column,
-                    ));
+                    flat.push(
+                        reported_json(
+                            "NS7007",
+                            "error",
+                            &message,
+                            Some(hint),
+                            Some(&path),
+                            None,
+                            None,
+                        )
+                        .with_span(declaration.span)
+                        .with_snippet(text),
+                    );
                 }
             }
         }
@@ -1017,14 +1133,16 @@ fn project_check(project: &ProjectManifests, json: bool, mode: Option<Mode>) -> 
             serde_json::to_string_pretty(&report).unwrap_or_default()
         );
     } else {
-        println!("Manifest: {}", project.core_path);
-        println!("Format: {}", project.core_format);
-        if let Some(package) = &package {
-            println!("Package: {package}");
+        // The header identifies the manifest that was checked. It is suppressed
+        // on failure so stdout stays empty when diagnostics are emitted, and
+        // under --json, which has its own manifest block.
+        if !has_error {
+            println!("Manifest: {}", project.core_path);
+            if let Some(package) = &package {
+                println!("Package: {package}");
+            }
         }
-        for diagnostic in &flat {
-            print_reported(diagnostic);
-        }
+        print_diagnostics(&flat);
     }
 
     if has_error {
@@ -1091,7 +1209,7 @@ fn cmd_doctor(args: &[String]) -> ExitCode {
                     serde_json::to_string_pretty(&failure).unwrap_or_default()
                 );
             } else {
-                eprintln!("{}: {}", error.code, error.message);
+                print_diagnostics(&[manifest_reported(&error)]);
             }
             return ExitCode::FAILURE;
         }
@@ -1115,7 +1233,9 @@ fn cmd_doctor(args: &[String]) -> ExitCode {
                     serde_json::to_string_pretty(&failure).unwrap_or_default()
                 );
             } else {
-                eprintln!("{}: {}", code, message);
+                print_diagnostics(&[reported_json(
+                    &code, "error", &message, None, None, None, None,
+                )]);
             }
             return ExitCode::FAILURE;
         }
@@ -1221,7 +1341,7 @@ fn cmd_check(args: &[String]) -> ExitCode {
         api_version: API_VERSION.to_owned(),
         source: SourceUnit {
             path: file.clone(),
-            text,
+            text: text.clone(),
         },
         target,
         edition,
@@ -1229,17 +1349,22 @@ fn cmd_check(args: &[String]) -> ExitCode {
         integer_policy: Default::default(),
     };
     let compiler = FrontendCompiler;
-    let response = compiler.check(&request);
+    let mut response = compiler.check(&request);
 
     if json {
+        for diagnostic in &mut response.diagnostics {
+            for related in &mut diagnostic.related {
+                if related.file.is_empty() {
+                    related.file = display_path(&file);
+                }
+            }
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&response).unwrap_or_default()
         );
     } else {
-        for diagnostic in &response.diagnostics {
-            eprintln!("{diagnostic}");
-        }
+        print_core_diagnostics(&response.diagnostics, &display_path(&file), &text);
     }
 
     if response.program.is_some() && response.diagnostics.is_empty() {
@@ -1316,6 +1441,7 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
     let mut has_diff = false;
     let mut file_reports: Vec<FmtFileReport> = Vec::new();
     let mut human_lines: Vec<String> = Vec::new();
+    let mut rendered: Vec<ReportedDiagnostic> = Vec::new();
 
     for f in &files {
         let text = match read_file(f) {
@@ -1339,12 +1465,20 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
                 file_reports.push(FmtFileReport {
                     path: display_path(f),
                     status: "error".to_owned(),
-                    diagnostics,
+                    diagnostics: diagnostics
+                        .iter()
+                        .map(|diagnostic| serde_json::json!(diagnostic.to_string()))
+                        .collect(),
                 });
             } else {
-                for d in &diagnostics {
-                    eprintln!("{}", d);
-                }
+                rendered.extend(
+                    diagnostics
+                        .iter()
+                        .map(|diagnostic| {
+                            core_diagnostic(diagnostic, &display_path(f), &text).with_snippet(&text)
+                        })
+                        .collect::<Vec<ReportedDiagnostic>>(),
+                );
             }
             continue;
         }
@@ -1388,8 +1522,9 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
         };
         println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
     } else {
+        print_diagnostics(&rendered);
         if has_error {
-            // already printed
+            // diagnostics and the summary were printed above
         } else if files.is_empty() {
             println!("No formattable files found.");
         } else if !has_diff {
@@ -1414,66 +1549,32 @@ fn cmd_fmt(args: &[String]) -> ExitCode {
     }
 }
 
-fn format_one(
-    path: &str,
-    text: &str,
-    edition: Edition,
-) -> (Option<String>, Vec<serde_json::Value>) {
+fn format_one(path: &str, text: &str, edition: Edition) -> (Option<String>, Vec<Diagnostic>) {
     let lower = path.to_lowercase();
     if lower.ends_with(".ns") {
         match format_source_with_options(text, FormatOptions { edition }) {
             Ok(f) => (Some(f), Vec::new()),
-            Err(diags) => {
-                let mut out = Vec::new();
-                for d in diags {
-                    out.push(serde_json::json!(d.to_string()));
-                }
-                (None, out)
-            }
+            Err(diagnostics) => (None, diagnostics),
         }
     } else if lower.ends_with("core.json") {
         match parse_core_json(text) {
             Ok(m) => (Some(format!("{}\n", format_core_json(&m))), Vec::new()),
-            Err(diags) => {
-                let mut out = Vec::new();
-                for d in diags {
-                    out.push(serde_json::json!(d.to_string()));
-                }
-                (None, out)
-            }
+            Err(diagnostics) => (None, diagnostics),
         }
     } else if lower.ends_with("build.json") {
         match parse_build_json(text) {
             Ok(m) => (Some(format!("{}\n", format_build_json(&m))), Vec::new()),
-            Err(diags) => {
-                let mut out = Vec::new();
-                for d in diags {
-                    out.push(serde_json::json!(d.to_string()));
-                }
-                (None, out)
-            }
+            Err(diagnostics) => (None, diagnostics),
         }
     } else if lower.ends_with("core.toml") {
         match format_core_toml(text) {
             Ok(formatted) => (Some(formatted), Vec::new()),
-            Err(diagnostics) => (
-                None,
-                diagnostics
-                    .iter()
-                    .map(|diagnostic| serde_json::json!(diagnostic.to_string()))
-                    .collect(),
-            ),
+            Err(diagnostics) => (None, diagnostics),
         }
     } else if lower.ends_with("build.toml") {
         match format_build_toml(text) {
             Ok(formatted) => (Some(formatted), Vec::new()),
-            Err(diagnostics) => (
-                None,
-                diagnostics
-                    .iter()
-                    .map(|diagnostic| serde_json::json!(diagnostic.to_string()))
-                    .collect(),
-            ),
+            Err(diagnostics) => (None, diagnostics),
         }
     } else {
         // Unknown file types and unhandled TOML manifests pass through unchanged.
@@ -1519,9 +1620,7 @@ fn cmd_ast_dir(dir: &str, json: bool) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(diagnostics) => {
-            for diagnostic in &diagnostics {
-                eprintln!("{diagnostic}");
-            }
+            print_core_diagnostics(&diagnostics, &display_path(&entry), &text);
             ExitCode::FAILURE
         }
     }
@@ -1613,9 +1712,7 @@ fn cmd_ast(args: &[String]) -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(diagnostics) => {
-            for diagnostic in &diagnostics {
-                eprintln!("{diagnostic}");
-            }
+            print_core_diagnostics(&diagnostics, &display_path(&file), &text);
             if json {
                 println!(
                     "{}",
@@ -1676,9 +1773,7 @@ fn cmd_explain_dir(dir: &str, json: bool, _mode: Option<Mode>, _target: &str) ->
             }
         }
         Err(diagnostics) => {
-            for diagnostic in &diagnostics {
-                eprintln!("{diagnostic}");
-            }
+            print_core_diagnostics(&diagnostics, &display_path(&entry), &text);
             if json {
                 println!(
                     "{}",
@@ -1699,6 +1794,17 @@ fn cmd_explain_dir(dir: &str, json: bool, _mode: Option<Mode>, _target: &str) ->
         }
     }
 }
+fn is_error_code(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 6 || !bytes[2..].iter().all(u8::is_ascii_digit) {
+        return false;
+    }
+    matches!(
+        (bytes[0], bytes[1]),
+        (b'N', b'S' | b'P' | b'R' | b'V') | (b'P', b'G')
+    )
+}
+
 fn cmd_explain(args: &[String]) -> ExitCode {
     let mut file: Option<String> = None;
     let mut json = false;
@@ -1749,6 +1855,12 @@ fn cmd_explain(args: &[String]) -> ExitCode {
     }
     let _ = (&mode, &target);
     let file = file.unwrap_or_else(|| ".".to_owned());
+    if is_error_code(&file) {
+        eprintln!(
+            "error: explanations are not bundled in this build; see spec-v0.1.md §14 or spec-v0.2.md §6"
+        );
+        return ExitCode::FAILURE;
+    }
     let path = std::path::Path::new(&file);
     if path.is_dir() {
         return cmd_explain_dir(&file, json, mode, &target);
@@ -1788,9 +1900,7 @@ fn cmd_explain(args: &[String]) -> ExitCode {
             }
         }
         Err(diagnostics) => {
-            for diagnostic in &diagnostics {
-                eprintln!("{diagnostic}");
-            }
+            print_core_diagnostics(&diagnostics, &display_path(&file), &text);
             if json {
                 println!(
                     "{}",

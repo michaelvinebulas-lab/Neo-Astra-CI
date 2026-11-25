@@ -200,11 +200,18 @@ struct Local {
 #[derive(Debug, Clone)]
 struct ValueDef {
     ty: Type,
+    /// Declaration site, used for secondary labels such as "defined here".
+    span: Option<Span>,
 }
 
 impl ValueDef {
     fn new(ty: Type) -> Self {
-        Self { ty }
+        Self { ty, span: None }
+    }
+
+    fn with_span(mut self, span: Span) -> Self {
+        self.span = Some(span);
+        self
     }
 }
 
@@ -232,6 +239,7 @@ struct StructDef {
 struct EnumDef {
     type_parameters: Vec<String>,
     variants: Vec<ast::EnumVariant>,
+    span: Option<Span>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +277,10 @@ struct FunctionContext {
     name: String,
     return_type: Type,
     declared_errors: Vec<Type>,
+    span: Span,
+    /// Span covering the `! E1 | E2` clause, used as the secondary label for
+    /// unhandled or undeclared error effects.
+    error_set_span: Option<Span>,
 }
 
 /// One recoverable error effect together with its construction or call site.
@@ -487,6 +499,7 @@ impl<'a> Checker<'a> {
                         TypeDef::Enum(EnumDef {
                             type_parameters: declaration.type_parameters.clone(),
                             variants: declaration.variants.clone(),
+                            span: Some(item.span),
                         }),
                     );
                 }
@@ -522,7 +535,7 @@ impl<'a> Checker<'a> {
                     let signature = self.function_signature(declaration);
                     self.values.insert(
                         declaration.name.clone(),
-                        ValueDef::new(Type::Function(signature.clone())),
+                        ValueDef::new(Type::Function(signature.clone())).with_span(item.span),
                     );
                     self.resolved.items[index].ty = Some(Type::Function(signature));
                 }
@@ -550,7 +563,7 @@ impl<'a> Checker<'a> {
                             };
                             self.values.insert(
                                 declaration.name.clone(),
-                                ValueDef::new(Type::Function(signature)),
+                                ValueDef::new(Type::Function(signature)).with_span(item.span),
                             );
                         }
                     }
@@ -773,6 +786,7 @@ impl<'a> Checker<'a> {
                             TypeDef::Enum(EnumDef {
                                 type_parameters,
                                 variants,
+                                span: None,
                             }),
                         );
                         let ty = Type::Named(enum_name, Vec::new());
@@ -952,6 +966,12 @@ impl<'a> Checker<'a> {
                 name: declaration.name.clone(),
                 return_type: (*signature.return_type).clone(),
                 declared_errors: signature.errors.clone(),
+                span: declaration.span,
+                error_set_span: declaration
+                    .error_set
+                    .first()
+                    .zip(declaration.error_set.last())
+                    .map(|(first, last)| Span::new(first.span.start, last.span.end)),
             });
 
             let body = self.check_block(&declaration.body, false, None);
@@ -2880,16 +2900,23 @@ impl<'a> Checker<'a> {
         };
 
         if function.parameters.len() != arguments.len() {
-            self.error(
+            let mut diagnostic = Diagnostic::error(
                 ARGUMENT_COUNT,
                 format!(
                     "Function expects {} argument(s), but {} were provided.",
                     function.parameters.len(),
                     arguments.len()
                 ),
-                span,
-                "Match the declared function signature.",
-            );
+            )
+            .with_span(span)
+            .with_hint("Match the declared function signature.");
+            if let Some(name) = callee_identifier(callee)
+                && let Some(declaration) = self.values.get(&name).and_then(|value| value.span)
+            {
+                diagnostic =
+                    diagnostic.with_related(String::new(), declaration, "Function defined here.");
+            }
+            self.diagnostics.push(diagnostic);
         }
 
         let mut substitutions = BTreeMap::new();
@@ -2924,7 +2951,11 @@ impl<'a> Checker<'a> {
                 }
             });
             let expected_argument = expected_argument.flatten();
-            let info = self.check_expr(argument, expected_argument.as_ref());
+            // Check the argument against the parameter type without reporting
+            // the mismatch here; the explicit parameter loop below reports it
+            // once, with the callee declaration as a related label.
+            let info = self.check_expr_inner(argument, expected_argument.as_ref());
+            self.annotate(argument.span, info.ty.clone());
             append_effects(&mut errors, info.errors.clone());
             argument_infos.push(info);
         }
@@ -2957,7 +2988,15 @@ impl<'a> Checker<'a> {
             }
             let parameter = parameter.substitute(&substitutions);
             if !parameter.accepts(&argument.ty) && !parameter.is_opaque() {
-                self.type_mismatch(&parameter, &argument.ty, arguments[index].span);
+                let related = callee_identifier(callee)
+                    .and_then(|name| self.values.get(&name).and_then(|value| value.span))
+                    .map(|declaration| (declaration, "Function defined here."));
+                self.type_mismatch_with_related(
+                    &parameter,
+                    &argument.ty,
+                    arguments[index].span,
+                    related,
+                );
             }
         }
 
@@ -3911,27 +3950,39 @@ impl<'a> Checker<'a> {
                 .filter(|name| !coverage.err_members.contains(*name))
                 .collect::<Vec<_>>();
             if !missing_members.is_empty() {
-                self.error(
+                let mut diagnostic = Diagnostic::error(
                     NON_EXHAUSTIVE_MATCH,
                     format!(
                         "Non-exhaustive match: missing Err member(s) {}.",
                         missing_members.join(", ")
                     ),
-                    span,
+                )
+                .with_span(span)
+                .with_hint(
                     "Add an Err arm for every declared error member, or a final wildcard arm.",
                 );
+                if let Some(declaration) = self.enum_declaration_span(&scrutinee.ty) {
+                    diagnostic =
+                        diagnostic.with_related(String::new(), declaration, "Enum declared here.");
+                }
+                self.diagnostics.push(diagnostic);
             }
         }
 
         let patterns = arms.iter().map(|arm| &arm.pattern).collect::<Vec<_>>();
         if !self.patterns_are_exhaustive(&patterns, &scrutinee_type) {
             let missing = coverage.missing(&shape);
-            self.error(
+            let mut diagnostic = Diagnostic::error(
                 NON_EXHAUSTIVE_MATCH,
                 format!("Non-exhaustive match: missing {}.", missing.join(", ")),
-                span,
-                "Add the missing case(s) or a wildcard arm.",
-            );
+            )
+            .with_span(span)
+            .with_hint("Add the missing case(s) or a wildcard arm.");
+            if let Some(declaration) = self.enum_declaration_span(&scrutinee_type) {
+                diagnostic =
+                    diagnostic.with_related(String::new(), declaration, "Enum declared here.");
+            }
+            self.diagnostics.push(diagnostic);
         }
 
         let ty = if diverges {
@@ -4838,13 +4889,35 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn enum_declaration_span(&self, ty: &Type) -> Option<Span> {
+        let name = type_name(ty)?;
+        match self.type_defs.get(name) {
+            Some(TypeDef::Enum(definition)) => definition.span,
+            _ => None,
+        }
+    }
+
     fn type_mismatch(&mut self, expected: &Type, actual: &Type, span: Span) {
-        self.error(
+        self.type_mismatch_with_related(expected, actual, span, None);
+    }
+
+    fn type_mismatch_with_related(
+        &mut self,
+        expected: &Type,
+        actual: &Type,
+        span: Span,
+        related: Option<(Span, &'static str)>,
+    ) {
+        let mut diagnostic = Diagnostic::error(
             TYPE_MISMATCH,
             format!("Type mismatch: expected '{expected}', found '{actual}'."),
-            span,
-            "Convert the value explicitly; Neo Astra has no implicit coercion.",
-        );
+        )
+        .with_span(span)
+        .with_hint("Convert the value explicitly; Neo Astra has no implicit coercion.");
+        if let Some((declaration, message)) = related {
+            diagnostic = diagnostic.with_related(String::new(), declaration, message);
+        }
+        self.diagnostics.push(diagnostic);
     }
 
     fn report_effects(&mut self, errors: &[ErrorEffect]) {
@@ -4852,16 +4925,22 @@ impl<'a> Checker<'a> {
             if error.ty.is_opaque() {
                 continue;
             }
-            self.error(
+            let mut diagnostic = Diagnostic::error(
                 UNHANDLED_ERROR,
                 format!("Unhandled error effect: {}.", error.ty),
-                error.span,
-                if self.options.edition == Edition::V0_2 {
-                    "Propagate with '?' or handle the error with match."
-                } else {
-                    "Propagate with '!' or handle the error with match."
-                },
-            );
+            )
+            .with_span(error.span)
+            .with_hint(if self.options.edition == Edition::V0_2 {
+                "Propagate with '?' or handle the error with match."
+            } else {
+                "Propagate with '!' or handle the error with match."
+            });
+            if let Some(function) = &self.current_function {
+                let declaration = function.error_set_span.unwrap_or(function.span);
+                diagnostic =
+                    diagnostic.with_related(String::new(), declaration, "Declared error set.");
+            }
+            self.diagnostics.push(diagnostic);
         }
     }
 
@@ -4881,18 +4960,21 @@ impl<'a> Checker<'a> {
         };
 
         if !effect_is_compatible(&function.declared_errors, &error.ty) {
-            self.error(
+            let declaration = function.error_set_span.unwrap_or(function.span);
+            let diagnostic = Diagnostic::error(
                 UNDECLARED_ERROR,
                 format!(
                     "Error type '{}' is not declared by function '{}'.",
                     error.ty, function.name
                 ),
-                error.span,
-                format!(
-                    "Add '! {}' to the error set of '{}'.",
-                    error.ty, function.name
-                ),
-            );
+            )
+            .with_span(error.span)
+            .with_hint(format!(
+                "Add '! {}' to the error set of '{}'.",
+                error.ty, function.name
+            ))
+            .with_related(String::new(), declaration, "Declared error set.");
+            self.diagnostics.push(diagnostic);
         }
     }
 }
@@ -5023,6 +5105,17 @@ fn expected_index_type(ty: &Type) -> Option<Type> {
     match ty {
         Type::Array(_) | Type::Slice(_) | Type::FixedArray(_, _) | Type::Bytes => Some(Type::Usize),
         Type::Map(key, _) => Some((**key).clone()),
+        _ => None,
+    }
+}
+
+fn callee_identifier(callee: &ast::Expr) -> Option<String> {
+    match &callee.kind {
+        ast::ExprKind::Identifier(name) => Some(name.clone()),
+        ast::ExprKind::TypeArguments { target, .. } => match &target.kind {
+            ast::ExprKind::Identifier(name) => Some(name.clone()),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -6286,6 +6379,34 @@ fn call() -> i32 {
 }
 "#,
             "NS4004",
+        );
+    }
+
+    #[test]
+    fn argument_count_points_at_the_declaration() {
+        let diagnostics = super::check_source(
+            r#"
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+fn call() -> i32 {
+    return add(1)
+}
+"#,
+            super::CheckOptions::new(super::Mode::Core),
+        )
+        .expect_err("arity error expected");
+        let arity = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == "NS4004")
+            .expect("NS4004 diagnostic");
+        assert_eq!(arity.related.len(), 1);
+        assert_eq!(arity.related[0].message, "Function defined here.");
+        assert_eq!(arity.related[0].file, "");
+        assert!(
+            arity.related[0].span.start < arity.span.expect("call span").start,
+            "declaration must precede the call"
         );
     }
 

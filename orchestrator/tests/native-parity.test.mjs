@@ -48,6 +48,13 @@ if (enabled) {
     ["build", "-q", "-p", "astra-cli", "-p", "astra-nopm"],
     { cwd: root, stdio: "inherit" },
   );
+  // The TypeScript CLI talks to the JSON-RPC compiler binary, not to
+  // `astra-native`; rebuild it so compiler-core changes reach the oracle.
+  execFileSync(
+    "cargo",
+    ["build", "-q", "-p", "astra-compiler-api", "--bin", "astra-compiler"],
+    { cwd: root, stdio: "inherit" },
+  );
 }
 
 function runNode(args, cwd) {
@@ -191,6 +198,24 @@ pub fn main() -> i32 {
 }
 `;
 
+const ARITY = `module app.main
+
+fn add(a: i32, b: i32) -> i32 {
+    return a + b
+}
+
+pub fn main() -> i32 {
+    return add(1)
+}
+`;
+
+const MIGRATE = `// edition: 0.1
+
+function greet(name: str) -> str {
+    return name
+}
+`;
+
 test("native help and version match the shipped CLI", { skip }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "astra-native-help-"));
   try {
@@ -217,18 +242,96 @@ test("native check matches valid, broken, and JSON output", { skip }, async () =
       const expectedDir = await makeProject(source);
       const actualDir = await makeProject(source);
       try {
+        const expected = runNode(["check", expectedDir, ...extra], expectedDir);
+        const actual = runNative(["check", actualDir, ...extra], actualDir);
         compareResult(
           `check ${label} ${extra.join(" ")}`,
-          runNode(["check", expectedDir, ...extra], expectedDir),
-          runNative(["check", actualDir, ...extra], actualDir),
+          expected,
+          actual,
           expectedDir,
           actualDir,
         );
+
+        if (extra.length === 0 && label === "broken") {
+          assert.equal(actual.stdout, "", "native: failing check must keep stdout empty");
+          assert.equal(expected.stdout, "", "oracle: failing check must keep stdout empty");
+          assert.match(actual.stderr, /error\[NS/);
+          assert.match(actual.stderr, /aborting/);
+        }
+
+        if (extra.length === 0 && label === "valid") {
+          assert.match(actual.stdout, /^Manifest: /m);
+          assert.match(actual.stdout, /^Package: /m);
+          assert.doesNotMatch(actual.stdout, /^Format: /m);
+        }
       } finally {
         await rm(expectedDir, { recursive: true, force: true });
         await rm(actualDir, { recursive: true, force: true });
       }
     }
+  }
+});
+
+test("native check renders related declaration labels", { skip }, async () => {
+  const expectedDir = await makeProject(ARITY);
+  const actualDir = await makeProject(ARITY);
+  try {
+    const expected = runNode(["check", expectedDir], expectedDir);
+    const actual = runNative(["check", actualDir], actualDir);
+
+    compareResult("check arity", expected, actual, expectedDir, actualDir);
+
+    assert.match(actual.stderr, /note: Function defined here\./);
+
+    const json = runNative(["check", actualDir, "--json"], actualDir);
+    const report = JSON.parse(json.stdout);
+    const arity = report.diagnostics.find((entry) => entry.code === "NS4004");
+    assert.ok(arity, "NS4004 must be reported");
+    assert.equal(arity.related?.length, 1, "NS4004 must carry one related span");
+    assert.match(arity.related[0].message, /Function defined here/);
+  } finally {
+    await rm(expectedDir, { recursive: true, force: true });
+    await rm(actualDir, { recursive: true, force: true });
+  }
+});
+
+test("native migrate matches the oracle", { skip }, async () => {
+  const expectedDir = await makeProject(MIGRATE);
+  const actualDir = await makeProject(MIGRATE);
+  try {
+    for (const extra of [["--check"], ["--dry-run"], ["--json"]]) {
+      const expected = runNode(["migrate", expectedDir, ...extra], expectedDir);
+      const actual = runNative(["migrate", actualDir, ...extra], actualDir);
+      compareResult(
+        `migrate ${extra.join(" ")}`,
+        expected,
+        actual,
+        expectedDir,
+        actualDir,
+      );
+    }
+  } finally {
+    await rm(expectedDir, { recursive: true, force: true });
+    await rm(actualDir, { recursive: true, force: true });
+  }
+});
+
+test("native explain reports a missing corpus for a diagnostic code", { skip }, async () => {
+  const expectedDir = await makeProject(VALID);
+  const actualDir = await makeProject(VALID);
+  try {
+    const expected = runNode(["explain", "NS4001"], expectedDir);
+    const actual = runNative(["explain", "NS4001"], actualDir);
+
+    assert.equal(actual.status, 1, "native: explain <code> must fail");
+    assert.equal(expected.status, 1, "oracle: explain <code> must fail");
+    assert.match(actual.stderr, /explanations are not bundled/);
+    assert.doesNotMatch(actual.stderr, /cannot read/);
+
+    compareResult("explain NS4001", expected, actual, expectedDir, actualDir);
+  } finally {
+    await rm(expectedDir, { recursive: true, force: true });
+    await rm(actualDir, { recursive: true, force: true });
   }
 });
 

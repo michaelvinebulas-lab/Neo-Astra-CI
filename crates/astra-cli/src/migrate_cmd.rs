@@ -15,24 +15,7 @@ use crate::{
 };
 
 fn emit_reported(diagnostics: &[ReportedDiagnostic]) {
-    for diagnostic in diagnostics {
-        let location = match (diagnostic.path.as_deref(), diagnostic.line) {
-            (None, _) => String::new(),
-            (Some(path), None) => format!("{path}: "),
-            (Some(path), Some(line)) => {
-                format!("{path}:{line}:{}: ", diagnostic.column.unwrap_or(1))
-            }
-        };
-        let hint = diagnostic
-            .hint
-            .as_deref()
-            .map(|hint| format!("\n  help: {hint}"))
-            .unwrap_or_default();
-        eprintln!(
-            "{}{}[{}]: {}{}",
-            location, diagnostic.severity, diagnostic.code, diagnostic.message, hint
-        );
-    }
+    crate::print_diagnostics(diagnostics);
 }
 
 fn targets(path: &str) -> Vec<String> {
@@ -204,11 +187,12 @@ pub fn cmd_migrate(args: &[String]) -> ExitCode {
             );
         } else if dry_run {
             println!("{}", result.source);
-        } else if !check && result.changed {
-            if let Err(error) = std::fs::write(&file, &result.source) {
-                eprintln!("astra-native: {}: {error}", display_path(&file));
-                failures += 1;
-            }
+        } else if !check
+            && result.changed
+            && let Err(error) = std::fs::write(&file, &result.source)
+        {
+            eprintln!("astra-native: {}: {error}", display_path(&file));
+            failures += 1;
         }
         if check && result.changed {
             println!("would migrate {}", display_path(&file));
