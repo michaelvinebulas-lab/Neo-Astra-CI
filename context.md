@@ -213,6 +213,15 @@ cases (`scopes.ns`, `turbofish.ns`) and the principal-owned release steps.
 
 ## Release and npm state
 
+- `1.1.1` is released. Tag `v1.1.1` points at public master `868007e`; release
+  run `45750335485` is green on Windows/macOS/Linux. GitHub release has three
+  archives with `.sha256` sidecars; all four npm packages are at `1.1.1` with
+  provenance, and archive attestation verifies. The four npm trusted
+  publishers were recreated with `--allow-publish` and validated by this
+  publish. `v1.1.0` is a failed immutable tag with no published artifacts —
+  its release stopped at a packaging smoke fixture that used edition `2026`.
+- Remaining principal action: revoke the npm token exposed during `1.0.0`.
+
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.
   npm has all four `1.0.1` packages with SLSA provenance. The old CI repo and
   the `NPM_TOKEN` secret are deleted.

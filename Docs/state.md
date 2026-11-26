@@ -4,10 +4,10 @@ Single source of truth for project status, the queue, and decisions.
 Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
-**Last updated:** 2026-11-23
-**Phase:** `1.0.1` is fully published on GitHub and npm with archives, checksums, attestations, SLSA provenance, and a verified clean install. Public docs describe `1.0.1`. Language v0.2 Phases 1-3 (edition plumbing, lexer, and parser/checker) are implemented on private master; v0.1 behavior is unchanged and `1.1.0` is not yet released.
-**Master:** private `master` through the Phase 3 work, pushed to `ci` at `michaelvinebulas-lab/Neo-Astra-CI`; public `master` at `50817d0`, tag `v1.0.1` at `3093343`. Release assets are present and attested. The old `luminousvalentine-cell/Neo-Astra-CI` repo and the `NPM_TOKEN` secret are deleted.
-**Blockers:** revoke the exposed 1.0.0 npm token; `1.0.0` still lacks provenance and reports `immutable: false`; npm trusted publishers expire after two days and must be re-created before each release.
+**Last updated:** 2026-11-26
+**Phase:** `1.1.1` is released: language v0.2 syntax cleanup (edition plumbing, lexer, parser/checker, formatter, canonical lint, migration) plus the error-output rework and bounded parser recovery. `v1.1.0` was tagged but its release failed on a packaging smoke fixture that used an unsupported edition, so no assets or npm packages were published for it; the fix shipped as `1.1.1`.
+**Master:** private `master` at `75c655a`, pushed to `ci`; public `master` at `868007e`, tag `v1.1.1` at the same commit. Release run `45750335485` is green on Windows, macOS, and Linux; GitHub release has three archives plus `.sha256` sidecars, and all four npm packages are at `1.1.1` with provenance.
+**Blockers:** revoke the exposed 1.0.0 npm token; `1.0.0` still lacks provenance and reports `immutable: false`; npm trusted publishers expire after two days and must be re-created before each future release.
 
 ---
 
@@ -170,6 +170,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-26 | Released `1.1.1`: PR #9 fixed the packaging smoke fixture's edition, merged cleanly, and `v1.1.1` was tagged and pushed. Release run `45750335485` green on all three OSes; GitHub release has three archives + sidecars; all four npm packages at `1.1.1` with provenance; archive attestation verified. `v1.1.0` remains a failed immutable tag with no published artifacts. | `gh run view 45750335485`, `gh release view v1.1.1`, registry queries, `gh attestation verify` |
 | 2026-11-26 | Added a 23-case per-code error corpus (`conformance/errors`) and a std-only Rust runner (`scripts/run.rs1`). `--all` runs 60 cases across the new corpus, `conformance/rejects`, and `conformance/v0.2/invalid`; all pass. `--coverage` reports ledger codes not exercised by source cases. | `rustc scripts/run.rs1 -o run-errors && ./run-errors --root . --all` → 60 cases, 0 failed |
 | 2026-11-26 | Landed the error-output review fixes and completed Slice C: recovery anchor in `parse_parameters`, `suppress_cascades` capped at two distinct parser codes per line (NS2002 exempt), and golden parser tests. `parse_error.ns` now emits 2 diagnostics (was 3) with `NS2001` retained. Closed review gaps: committed and CI-enforced the error-code ledger, corrected the doc's non-goals/JSON claims, wired LSP project `relatedInformation`, pointed NS4011/NS4012 secondary labels at the `! E` clause, preferred type symbols in private-leak labels, aligned TS/Rust CR trimming, and added generated-catalog drift checking. | clean worktree at `8caf2ea`: `cargo test --workspace`, `npm run verify`, `check-error-codes`, native parity 15/15 all green |
 | 2026-11-24 | Wired the v0.2 CLI commands in a separate `migrate_cmd` module: `astra migrate` (`--check`, `--dry-run`, `--json`, `--change-edition`), `check --canonical-syntax`, and `fmt --canonical`. Only the dispatch hooks were added to `main.rs`; the parallel agent's diagnostic-rendering edits remain unstaged. | `cargo check -p astra-cli` green; manual smoke of all three commands |
