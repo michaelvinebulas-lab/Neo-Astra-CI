@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-26
+
+### Fixed
+- The packaging smoke fixture now uses a supported edition (`0.1`) so the
+  release build's packaged `astra check` succeeds.
+
 ## [1.1.0] - 2026-11-24
 
 ### Added
