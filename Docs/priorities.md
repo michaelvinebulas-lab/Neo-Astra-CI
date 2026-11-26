@@ -33,22 +33,19 @@ web and system are preview; high is future work.
 
 ## P0 - urgent, before promoting or advertising
 
-### P0-1. Rotate the exposed npm credential
+### P0-1. Rotate the exposed npm credential (done)
 
 Owner: principal + lead.
 
-- Revoke the token shared during setup. The 1.0.0 token is still exposed.
-- The release workflow now uses npm trusted publishing / OIDC for all four
-  packages; the trusted relationships were added on 2026-11-07 but are not
-  validated until the first successful OIDC publish.
-- `npm trust list` currently requires passkey re-authentication and returns
-  `EOTP`; record that as a principal action, do not bypass it.
-- Configure or refresh the trusted relationships immediately before the
-  `1.0.1` release, because unvalidated configurations expire after two days.
-- Keep `NPM_TOKEN` only as a rollback until the first successful OIDC publish,
-  then delete it. Never put a token in a tracked file or workflow log.
-- Acceptance: old token revoked, OIDC publish works without a long-lived token,
-  and `NPM_TOKEN` is deleted after the verified release.
+- The 1.0.0 token has been revoked and `NPM_TOKEN` deleted from the repository.
+- The release workflow uses npm trusted publishing / OIDC for all four packages.
+  The relationships were recreated with `--allow-publish` immediately before
+  the `1.1.1` release and were validated by that publish; provenance is present
+  on all four packages.
+- Re-create the relationships again before any future release: unvalidated
+  configurations expire after two days. `npm trust` requires passkey
+  re-authentication; do not bypass it with a short-lived token.
+- Never put a token in a tracked file or workflow log.
 
 ### P0-2. Freeze the published release
 

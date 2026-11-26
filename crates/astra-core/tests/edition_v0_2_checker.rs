@@ -23,21 +23,9 @@ fn codes(diagnostics: Vec<Diagnostic>) -> Vec<String> {
 fn v0_2_conformance_corpus_matches_expectations() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../conformance/v0.2");
 
-    // Two corpus cases document future behavior, not the frozen cleanup:
-    // scopes.ns widens core -> system (mode rules are unchanged), and
-    // turbofish.ns relies on generic struct-initializer inference the checker
-    // does not implement. Their syntax is covered by the parser tests.
-    let deferred = ["scopes.ns", "turbofish.ns"];
     let mut failures = Vec::new();
     for entry in fs::read_dir(root.join("valid")).expect("valid directory") {
         let path = entry.expect("valid entry").path();
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| deferred.contains(&name))
-        {
-            continue;
-        }
         if path.extension().is_some_and(|extension| extension == "ns") {
             let source = fs::read_to_string(&path).expect("read valid source");
             if let Err(diagnostics) = check_v02(&source) {

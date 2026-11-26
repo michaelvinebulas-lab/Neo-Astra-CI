@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Generic struct initializers infer type arguments from field values.
+- Planning section for the `1.1.2` Phase 7 feature gaps: `if let`, ranges,
+  bitwise operators, `char`, lambdas, and the complete suffix table.
+
+### Fixed
+- The v0.2 conformance corpus is fully green: canonical scope blocks no longer
+  widen capabilities, and `Wrapper { value: 9 }` infers its type argument.
+
 ## [1.1.1] - 2026-11-26
 
 ### Fixed

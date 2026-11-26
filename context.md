@@ -40,10 +40,9 @@ for detail. Update this file when the working state changes materially.
   changes are lead/principal actions. Do not perform them from Kilo's handback.
 - Do not stage or commit Kilo/user files. Preserve pre-existing untracked files.
 - Apache-2.0 stays fixed across the workspace and npm packages.
-- `1.0.1` stays on language v0.1. Do not inject the v0.2 cleanup into the
-  native port.
-- v0.2 is not normative and its parser/checker/codegen implementation has not
-  started. `spec-v0.1.md` wins until the v0.2 freeze.
+- `1.0.1` stays on language v0.1; the v0.2 cleanup shipped in `1.1.1`.
+- `spec-v0.2.md` is normative for edition `0.2`; `spec-v0.1.md` remains
+  normative for edition `0.1`. Phase 7 feature gaps are queued for `1.1.2`.
 - Prefer deprecation/canonicalization over deleting valid syntax. Only change
   semantics where necessary.
 
@@ -178,9 +177,9 @@ Phase 4 (formatter and canonical lint) core work is landed:
 - `crates/astra-core/src/canonical.rs` is a source/token-aware deny lint for
   deprecated aliases, `/%`, `spawn ||`, and old scope blocks under `0.2`. It is
   check-only and exposed as `astra_compiler_api::check_canonical`.
-- CLI flag wiring is still open: `astra check --canonical-syntax` and
-  `astra fmt --canonical` need to be added once the parallel agent's CLI
-  changes are committed. `astra migrate` remains the only rewrite path.
+- CLI wiring landed: `astra check --canonical-syntax`, `astra fmt --canonical`,
+  and `astra migrate` are implemented in `crates/astra-cli/src/migrate_cmd.rs`.
+  `astra migrate` remains the only rewrite path.
 
 Phase 5 (migration and validation) core work is landed:
 
@@ -220,7 +219,8 @@ cases (`scopes.ns`, `turbofish.ns`) and the principal-owned release steps.
   publishers were recreated with `--allow-publish` and validated by this
   publish. `v1.1.0` is a failed immutable tag with no published artifacts —
   its release stopped at a packaging smoke fixture that used edition `2026`.
-- Remaining principal action: revoke the npm token exposed during `1.0.0`.
+- The npm token exposed during `1.0.0` has been revoked; the next principal
+  action is only to re-create trusted publishers before a future release.
 
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.
   npm has all four `1.0.1` packages with SLSA provenance. The old CI repo and
@@ -233,7 +233,7 @@ cases (`scopes.ns`, `turbofish.ns`) and the principal-owned release steps.
   12.2.3+. `npm trust` still requires passkey re-authentication and returns
   `EOTP`; that is a principal action. Unvalidated configs expire after two
   days, so recreate them immediately before the next release.
-- The token exposed during 1.0.0 still needs revocation.
+- The token exposed during 1.0.0 was revoked; `NPM_TOKEN` stays deleted.
 - The LSP `serverInfo` version still reports `2.0.0`; correct before shipping
   the server.
 - No public CI workflow exists yet; do not add required status checks until the
@@ -241,24 +241,22 @@ cases (`scopes.ns`, `turbofish.ns`) and the principal-owned release steps.
 
 ## Working tree snapshot
 
-The native port, `1.0.1` bump, and release validation are committed through
-`fc54f28`. Only the lead/user-owned leftovers remain:
+Private `master` is at the `1.1.2` prep commit, pushed to `ci`. Public `master`
+has the sanitized `1.1.1` release; tag `v1.1.1` is immutable. Only one
+lead/user-owned leftover remains:
 
 - Modified: `.gitignore` (adds `test_comparison/`); leave it unstaged.
-- Untracked: `Docs/error-code-ledger.md`; preserve it and do not stage it.
-- `origin` has not been pushed from this tree. The `ci` remote is now
-  `michaelvinebulas-lab/Neo-Astra-CI`; the old `luminousvalentine-cell` CI repo
-  still exists and is pending principal deletion.
 
 ## Work order
 
-1. Principal: refresh npm trusted publishing with passkey auth, grant a
-   `delete_repo`-scoped token for the old CI repo deletion, then rerun the
-   failed release jobs.
-2. Verify npm `1.0.1` platform packages, the `neo-astra` meta package,
-   provenance, and a clean install; then close out the release.
-3. Then start v0.2 Phase 1 edition plumbing and the rest of the cleanup phases.
-4. The V2 C++20 orchestrator rewrite is a later track; see
+1. Write the Phase 7 design notes in `Docs/Report/` and decide the edition gate
+   before implementing any feature gap.
+2. Implement `if let` / `while let`, ranges, bitwise operators, `char`, lambdas,
+   and the suffix table with parser, checker, formatter, and all three backends.
+3. Add conformance and serialization-contract tests for each new construct.
+4. Re-create npm trusted publishers immediately before the `1.1.2` release;
+   the `1.1.1` configs are validated already but expire after two days.
+5. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
    isolated JS/TS bridge until C++ parity is proven.
 
@@ -330,4 +328,5 @@ Last known results at this snapshot:
   tree, revoke tokens, or delete `NPM_TOKEN` without principal approval.
 - Do not commit Kilo's uncommitted code, the pre-existing untracked files, or
   the active `Docs/Report/Task.md` log without review.
-- Do not describe `1.0.1` or v0.2 as shipped.
+- Do not describe Phase 7 feature gaps as shipped; `1.1.1` contains the v0.2
+  cleanup only.

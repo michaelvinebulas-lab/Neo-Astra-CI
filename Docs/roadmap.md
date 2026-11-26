@@ -92,23 +92,28 @@ packaged CLI is native Cargo output, the JS/TS bridge is isolated under
 `lib/cli`, native parity is 12/12, and release validation is green. `1.0.1` is
 released on GitHub and npm; all four packages carry SLSA provenance.
 
-### 1.1.0 - Language v0.2 syntax cleanup (edition 0.2)
+### 1.1.0 / 1.1.1 - Language v0.2 syntax cleanup (edition 0.2)
 
-Phase 0 is complete on the documentation side: the accepted cleanup plan, RFC
-A/B decisions, non-normative `spec-v0.2.md` skeleton, focused grammar-conflict
-harness, and non-loaded corpus are recorded. No parser, checker, formatter, or
-codegen behavior has changed, and `spec-v0.1.md` remains normative.
-
-A breaking cleanup of the v0.1 surface: one error vocabulary, turbofish for
-expression type arguments, `@mode(...)` / `@memory(...)` scope blocks, settled
-separators and line continuation, tuple-index lexing, and deprecation of `/%`,
-`spawn ||`, and the special `///` meaning. Aliases are deprecated rather than
-removed: the parser keeps accepting them, canonical docs omit them, and the
-canonical lint rejects them in strict mode. Feature gaps
-(`if let`, ranges, bitwise operators, `char`, lambdas) are added only after the
-grammar is frozen. The package version is **1.1.0**, not `2.0.0`;
-compatibility is selected with `edition = "0.2"`. Plan, decisions, and RFCs:
+Shipped as **1.1.1**: `v1.1.0` was tagged but its release failed on a packaging
+fixture with an unsupported edition, so that tag has no published artifacts.
+The cleanup reuses the existing AST and adds a stable edition gate: edition
+`0.1` keeps the old syntax byte-for-byte, edition `0.2` selects `fail`, postfix
+`?`, `::<...>` turbofish, `@mode(...)` / `@memory(...)` scope blocks, canonical
+aliases, settled separators and line continuation, and integer-only tuple
+indexes. `/%` is preserved; `spawn ||` and old scope blocks are deprecated and
+rewritten only by `astra migrate`. `spec-v0.2.md` is normative for edition
+`0.2`; `spec-v0.1.md` remains normative for edition `0.1`. Plan and RFCs:
 [`Report/Syntax-v0.2.md`](Report/Syntax-v0.2.md).
+
+### 1.1.2 - Phase 7 feature gaps (planned)
+
+Add the deferred syntax features with AST nodes and explicit backend support,
+each with its runtime story: `if let` / `while let`, ranges (`a..b`, `a..=b`)
+with `for`/iterators/slicing, bitwise operators (`& | ^ << >>`) with `|` in
+expression versus error-set context documented, `char` and scalar literals,
+and lambdas (`fn(x) => expr`) with parameter inference and capture rules.
+Complete the integer/float suffix table. Do not ship any of these without a
+new edition gate or an additive release.
 
 ### 1.2.0 - Browser playground
 

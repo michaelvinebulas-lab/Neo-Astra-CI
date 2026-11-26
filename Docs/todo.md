@@ -241,7 +241,7 @@ language is frozen.
 - [ ] Optional later: make the aliases contextual so the words can be
       identifiers.
 
-### Feature gaps
+### Feature gaps (now queued for `1.1.2`; see the prep section below)
 
 - [ ] `if let` / `while let`.
 - [ ] Ranges with `for`, iterator, and slice semantics.
@@ -276,8 +276,26 @@ language is frozen.
       conformance, examples, and CLI together.
 - [x] Implement `edition = "0.2"` gating so the compiler accepts v0.1 and v0.2
       syntax, and migrate source, including the `astra migrate` CLI command.
-- [ ] Treat the feature-gap list above as a separate train; do not make it a
-      blocker for the v0.2 cleanup freeze.
+- [x] Treat the feature-gap list above as a separate train; it was not a blocker
+      for the v0.2 cleanup freeze and is queued for `1.1.2`.
+
+## 1.1.2 - Phase 7 feature gaps (prep)
+
+Each item needs a decision record covering AST nodes, runtime semantics, and
+all three backends before implementation starts.
+
+- [ ] Write a design note per feature in `Docs/Report/`: `if let` / `while let`,
+      ranges (`a..b`, `a..=b`) with `for`/iterators/slicing, bitwise operators
+      (`& | ^ << >>`) with `|` in expression vs error-set positions, `char` and
+      scalar literals, lambdas (`fn(x) => expr`) with inference and capture
+      rules, and the complete integer/float suffix table.
+- [ ] Decide the edition gate: each feature must be additive under `0.2` or
+      land behind a new edition marker; never silently change the frozen grammar.
+- [ ] Add parser/lexer tests and conformance cases for every new spelling,
+      including negative cases and canonical lint behavior.
+- [ ] Thread new AST nodes through resolver, checker, formatter, and C/JS/TS
+      codegen explicitly; add serialization contract tests.
+- [ ] Update `spec-v0.2.md` only after the features are implemented and gated.
 
 ## 1.2.0 - browser playground
 

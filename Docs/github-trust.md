@@ -57,9 +57,10 @@ release, or a principal decision.
 - The v1.0.0 GitHub release reports `immutable: false`. Treat the tag as
   immutable by policy; do not modify its assets. Immutability for future
   releases must be enabled in repository settings, if available.
-- The npm token exposed during the 1.0.0 release still needs to be revoked.
-  The release workflow no longer reads `NPM_TOKEN`; publish authentication is
-  OIDC trusted publishing.
+- The npm token exposed during the 1.0.0 release has been revoked. The release
+  workflow no longer reads `NPM_TOKEN`; publish authentication is OIDC trusted
+  publishing. The recreated configs were validated by the `1.1.1` publish and
+  must be re-created again before the next release.
 - The trusted relationships were added but are unvalidated until the first
   successful OIDC publish. `npm trust list` currently requires passkey
   re-authentication and returns `EOTP`; record that as a principal action, not

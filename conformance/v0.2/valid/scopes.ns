@@ -8,9 +8,10 @@
 }
 
 pub fn main() -> i32 {
-    @mode(system) {
-        @memory(manual) {
-            return 1
+    @memory(auto) {
+        @mode(core) {
+            let value = 1
         }
     }
+    return 1
 }

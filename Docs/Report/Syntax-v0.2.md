@@ -341,7 +341,8 @@ same time:
 6. complete integer/float suffix table
 
 These features add AST nodes and backend work. They are **not** part of the
-v0.2 cleanup freeze and must not delay the cleanup release.
+v0.2 cleanup freeze, which shipped as `1.1.1`. They are queued for `1.1.2` and
+require a new edition gate or an explicitly additive release boundary.
 
 ### 5.11 Decisions for Phase 1
 

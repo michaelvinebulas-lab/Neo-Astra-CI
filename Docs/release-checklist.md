@@ -108,7 +108,8 @@ Use this checklist for every release. No step may be skipped.
   unvalidated configurations expire after two days. `npm trust` requires
   passkey re-authentication and returns `EOTP`; record that as a principal
   action.
-- `NPM_TOKEN` is already deleted; do not re-add it. Revoke the exposed 1.0.0
-  token immediately; see `Docs/github-trust.md`.
+- `NPM_TOKEN` is already deleted and the exposed 1.0.0 token has been revoked;
+  do not re-add it. Re-create the trusted publishers before each future
+  release; see `Docs/github-trust.md`.
 - Verify npm provenance and archive attestations for `1.0.1`; `1.0.0` has
   neither.

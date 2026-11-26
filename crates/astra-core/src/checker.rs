@@ -3758,11 +3758,59 @@ impl<'a> Checker<'a> {
             return ExprInfo::value(Type::Error);
         };
 
-        if !check_arity(&struct_def.type_parameters, &arguments, &name, span, self) {
+        // With no explicit type arguments, infer them from field values like
+        // function calls do. This makes `Wrapper { value: 9 }` valid without
+        // spelling `::<i32>`.
+        let infer = arguments.is_empty() && !struct_def.type_parameters.is_empty();
+        let mut inferred = BTreeMap::new();
+        if infer {
+            let generics = generic_map(&struct_def.type_parameters);
+            for field in fields {
+                let Some(declared) = struct_def
+                    .fields
+                    .iter()
+                    .find(|candidate| candidate.name.as_deref() == Some(field.name.as_str()))
+                else {
+                    continue;
+                };
+                let generic_ty = declared.ty.substitute(&generics);
+                let info = self.check_expr(&field.value, None);
+                infer_substitutions(&generic_ty, &info.ty, &mut inferred);
+            }
+            for parameter in &struct_def.type_parameters {
+                if !inferred.contains_key(parameter) {
+                    self.error(
+                        INVALID_TYPE_ARGUMENT,
+                        format!("Cannot infer type parameter '{parameter}' for '{name}'."),
+                        span,
+                        "Add explicit type arguments after the struct name.",
+                    );
+                    inferred.insert(parameter.clone(), Type::Unknown);
+                }
+            }
+        } else if !check_arity(&struct_def.type_parameters, &arguments, &name, span, self) {
             return ExprInfo::value(Type::Error);
         }
 
-        let substitutions = substitutions(&struct_def.type_parameters, &arguments);
+        let substitutions = if infer {
+            inferred
+        } else {
+            substitutions(&struct_def.type_parameters, &arguments)
+        };
+        let arguments = if infer {
+            struct_def
+                .type_parameters
+                .iter()
+                .map(|parameter| {
+                    substitutions
+                        .get(parameter)
+                        .cloned()
+                        .unwrap_or(Type::Unknown)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            arguments
+        };
         let mut errors = Vec::new();
         let mut seen = BTreeSet::new();
 
@@ -3781,9 +3829,11 @@ impl<'a> Checker<'a> {
                 .find(|candidate| candidate.name.as_deref() == Some(field.name.as_str()));
             match declared {
                 Some(declared) => {
-                    let expected = declared.ty.substitute(&substitutions);
-                    let info = self.check_expr(&field.value, Some(&expected));
-                    append_effects(&mut errors, info.errors);
+                    if !infer {
+                        let expected = declared.ty.substitute(&substitutions);
+                        let info = self.check_expr(&field.value, Some(&expected));
+                        append_effects(&mut errors, info.errors);
+                    }
                 }
                 None => {
                     self.error(
