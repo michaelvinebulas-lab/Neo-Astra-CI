@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Edition-`0.2` syntax `if let` / `while let`, desugared to `match` / `while`
+  so all backends inherit existing pattern semantics.
 - Generic struct initializers infer type arguments from field values.
 - Planning section for the `1.1.2` Phase 7 feature gaps: `if let`, ranges,
   bitwise operators, `char`, lambdas, and the complete suffix table.

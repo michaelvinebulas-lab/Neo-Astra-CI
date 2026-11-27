@@ -330,7 +330,8 @@ Checker work:
 Add in this order, each with its runtime/iterator/slice story defined at the
 same time:
 
-1. `if let` / `while let`
+1. `if let` / `while let` — implemented for edition `0.2` in `1.1.2` as a
+   desugaring to `match` / `while`; see [`Phase7-if-let.md`](Phase7-if-let.md).
 2. ranges (`a..b`, `a..=b`) with `for`, iterators, and slicing
 3. bitwise `& | ^ << >>`, with `|` in expression position and error-set
    position documented as separate contexts

@@ -1608,6 +1608,14 @@ impl Parser {
         }
 
         if self.eat_keyword(Keyword::While) {
+            if self.edition == Edition::V0_2 && self.at_keyword(Keyword::Let) {
+                self.bump();
+                let pattern = self.parse_pattern();
+                self.expect_punct(Punctuation::Eq, "'='");
+                let value = self.parse_expression();
+                let body = self.parse_block();
+                return Some(self.desugar_while_let(pattern, value, body, start));
+            }
             let condition = self.parse_expression();
             let body = self.parse_block();
             return Some(Stmt {
@@ -2447,6 +2455,27 @@ impl Parser {
 
     fn parse_if_expression(&mut self) -> Expr {
         let start = self.bump().span.start;
+
+        // Edition 0.2 adds `if let PATTERN = EXPR`. It is desugared to the
+        // existing match form so every backend inherits match semantics.
+        if self.edition == Edition::V0_2 && self.at_keyword(Keyword::Let) {
+            self.bump();
+            let pattern = self.parse_pattern();
+            self.expect_punct(Punctuation::Eq, "'='");
+            let value = self.parse_expression();
+            let then_branch = self.parse_block();
+            let else_branch = if self.eat_keyword(Keyword::Else) {
+                if self.at_keyword(Keyword::If) {
+                    Some(ElseBranch::If(Box::new(self.parse_if_expression())))
+                } else {
+                    Some(ElseBranch::Block(self.parse_block()))
+                }
+            } else {
+                None
+            };
+            return self.desugar_if_let(pattern, value, then_branch, else_branch, start);
+        }
+
         let condition = self.parse_expression();
         if self.edition == Edition::V0_2 && expression_has_unparenthesized_struct_init(&condition) {
             self.error(
@@ -2474,6 +2503,97 @@ impl Parser {
                 else_branch,
             },
             span: self.span_from(start),
+        }
+    }
+
+    /// Rewrites `if let P = V { T } else { E }` to `match V { P => T, _ => E }`.
+    fn desugar_if_let(
+        &self,
+        pattern: Pattern,
+        value: Expr,
+        then_branch: Block,
+        else_branch: Option<ElseBranch>,
+        start: usize,
+    ) -> Expr {
+        let span = self.span_from(start);
+        let else_body = match else_branch {
+            Some(ElseBranch::Block(block)) => MatchArmBody::Block(block),
+            Some(ElseBranch::If(expression)) => MatchArmBody::Expr(*expression),
+            None => MatchArmBody::Expr(Expr {
+                kind: ExprKind::Literal(Literal::Unit),
+                span,
+            }),
+        };
+        let arms = vec![
+            MatchArm {
+                pattern,
+                body: MatchArmBody::Block(then_branch),
+                span,
+            },
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Wildcard,
+                    span,
+                },
+                body: else_body,
+                span,
+            },
+        ];
+        Expr {
+            kind: ExprKind::Match {
+                value: Box::new(value),
+                arms,
+            },
+            span,
+        }
+    }
+
+    /// Rewrites `while let P = V { B }` to a `while true` loop whose body
+    /// matches `V`; a non-match breaks out of the loop.
+    fn desugar_while_let(&self, pattern: Pattern, value: Expr, body: Block, start: usize) -> Stmt {
+        let span = self.span_from(start);
+        let match_expression = Expr {
+            kind: ExprKind::Match {
+                value: Box::new(value),
+                arms: vec![
+                    MatchArm {
+                        pattern,
+                        body: MatchArmBody::Block(body),
+                        span,
+                    },
+                    MatchArm {
+                        pattern: Pattern {
+                            kind: PatternKind::Wildcard,
+                            span,
+                        },
+                        body: MatchArmBody::Block(Block {
+                            statements: vec![Stmt {
+                                kind: StmtKind::Break,
+                                span,
+                            }],
+                            span,
+                        }),
+                        span,
+                    },
+                ],
+            },
+            span,
+        };
+        Stmt {
+            kind: StmtKind::While {
+                condition: Expr {
+                    kind: ExprKind::Literal(Literal::Bool(true)),
+                    span,
+                },
+                body: Block {
+                    statements: vec![Stmt {
+                        kind: StmtKind::Expr(match_expression),
+                        span,
+                    }],
+                    span,
+                },
+            },
+            span,
         }
     }
 
@@ -3453,8 +3573,8 @@ mod tests {
         parse_with_options,
     };
     use crate::ast::{
-        ElseBranch, ExprKind, FailArguments, ImportForm, ItemKind, PatternKind, ScopeKind,
-        StmtKind, StructFields, TypeKind, Visibility,
+        ElseBranch, ExprKind, FailArguments, ImportForm, ItemKind, Literal, MatchArmBody,
+        PatternKind, ScopeKind, StmtKind, StructFields, TypeKind, Visibility,
     };
     use crate::edition::Edition;
 
@@ -4534,5 +4654,89 @@ module io
                 .iter()
                 .any(|diagnostic| diagnostic.code == "NS2002")
         );
+    }
+
+    #[test]
+    fn v0_2_if_let_desugars_to_match() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn classify(value: Option<i32>) -> i32 {
+    if let Some(inner) = value {
+        return inner
+    } else {
+        return 0
+    }
+}
+"#,
+        )
+        .expect("if let should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Match { value: _, arms } = &expression.kind else {
+            panic!("expected match desugaring");
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(arms[0].body, MatchArmBody::Block(_)));
+        assert!(matches!(arms[1].pattern.kind, PatternKind::Wildcard));
+        assert!(matches!(arms[1].body, MatchArmBody::Block(_)));
+    }
+
+    #[test]
+    fn v0_2_while_let_desugars_to_while_match_break() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn drain(values: [Option<i32>]) -> i32 {
+    while let Some(value) = values.pop() {
+        return value
+    }
+    return 0
+}
+"#,
+        )
+        .expect("while let should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::While { condition, body } = &function.body.statements[0].kind else {
+            panic!("expected while desugaring");
+        };
+        assert!(matches!(
+            condition.kind,
+            ExprKind::Literal(Literal::Bool(true))
+        ));
+        let StmtKind::Expr(expression) = &body.statements[0].kind else {
+            panic!("expected match expression in loop body");
+        };
+        let ExprKind::Match { arms, .. } = &expression.kind else {
+            panic!("expected match desugaring");
+        };
+        assert_eq!(arms.len(), 2);
+        let MatchArmBody::Block(break_block) = &arms[1].body else {
+            panic!("expected break arm");
+        };
+        assert!(matches!(break_block.statements[0].kind, StmtKind::Break));
+    }
+
+    #[test]
+    fn v0_1_still_rejects_if_let() {
+        let source = r#"
+module app.main
+
+fn classify(value: Option<i32>) -> i32 {
+    if let Some(inner) = value {
+        return inner
+    }
+    return 0
+}
+"#;
+        assert!(parse(source).is_err());
     }
 }

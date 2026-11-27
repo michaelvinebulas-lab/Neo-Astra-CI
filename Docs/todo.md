@@ -243,7 +243,8 @@ language is frozen.
 
 ### Feature gaps (now queued for `1.1.2`; see the prep section below)
 
-- [ ] `if let` / `while let`.
+- [x] `if let` / `while let` (edition `0.2`; desugars to `match`/`while`, see
+      `Docs/Report/Phase7-if-let.md`).
 - [ ] Ranges with `for`, iterator, and slice semantics.
 - [ ] Bitwise `& | ^ << >>`, documenting expression `|` vs error-set `|`.
 - [ ] Add `char` plus scalar literals.

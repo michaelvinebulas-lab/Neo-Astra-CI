@@ -249,10 +249,11 @@ lead/user-owned leftover remains:
 
 ## Work order
 
-1. Write the Phase 7 design notes in `Docs/Report/` and decide the edition gate
-   before implementing any feature gap.
-2. Implement `if let` / `while let`, ranges, bitwise operators, `char`, lambdas,
-   and the suffix table with parser, checker, formatter, and all three backends.
+1. `if let` / `while let` are done for edition `0.2` via desugaring to `match` /
+   `while` (see `Docs/Report/Phase7-if-let.md`); no AST or backend changes.
+2. Write design notes for ranges, bitwise operators, `char`, lambdas, and the
+   suffix table, then implement them with parser, checker, formatter, and all
+   three backends.
 3. Add conformance and serialization-contract tests for each new construct.
 4. Re-create npm trusted publishers immediately before the `1.1.2` release;
    the `1.1.1` configs are validated already but expire after two days.
