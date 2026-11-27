@@ -113,6 +113,8 @@ pub enum Punctuation {
     Bang,
     Eq,
     Dot,
+    DotDot,
+    DotDotEq,
     Comma,
     Colon,
     DoubleColon,
@@ -870,7 +872,19 @@ impl<'a> Lexer<'a> {
                     one(self, Punctuation::Pipe);
                 }
             }
-            '.' => one(self, Punctuation::Dot),
+            '.' => {
+                if self.edition == Edition::V0_2 && self.peek() == Some('.') {
+                    self.bump();
+                    if self.peek() == Some('=') {
+                        self.bump();
+                        one(self, Punctuation::DotDotEq);
+                    } else {
+                        one(self, Punctuation::DotDot);
+                    }
+                } else {
+                    one(self, Punctuation::Dot);
+                }
+            }
             ',' => one(self, Punctuation::Comma),
             ':' => {
                 if self.peek() == Some(':') && self.edition == Edition::V0_2 {

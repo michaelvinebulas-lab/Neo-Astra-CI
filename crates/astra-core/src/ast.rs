@@ -413,6 +413,13 @@ pub enum ExprKind {
         target: Box<Expr>,
         index: Box<Expr>,
     },
+    /// `start..end` / `start..=end`. Currently first-class only as a `for`
+    /// iterable; index-position ranges are parsed as `.slice(start, end)`.
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
     Member {
         target: Box<Expr>,
         member: String,

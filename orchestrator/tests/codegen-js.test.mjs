@@ -60,7 +60,10 @@ function hostedCCompiler() {
   return null;
 }
 
-function compileSource(source, { mode = "core", integerPolicy = "wrapping" } = {}) {
+function compileSource(
+  source,
+  { mode = "core", integerPolicy = "wrapping", edition } = {},
+) {
   const request = JSON.stringify({
     jsonrpc: "2.0",
     id: "codegen",
@@ -71,6 +74,7 @@ function compileSource(source, { mode = "core", integerPolicy = "wrapping" } = {
       target: "js",
       mode,
       integerPolicy,
+      ...(edition === undefined ? {} : { edition }),
     },
   });
   const result = spawnSync(binary, [], { input: request, encoding: "utf8" });
@@ -2759,4 +2763,32 @@ test("astra build --target c emits one qualified translation unit per module", (
   } finally {
     rmSync(project, { recursive: true, force: true });
   }
+});
+
+test("javascript backend runs exclusive and inclusive ranges", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let mut total = 0",
+      "    for value in 0..3 {",
+      "        total = total + value",
+      "    }",
+      "    for value in 0..=3 {",
+      "        total = total + value",
+      "    }",
+      "    let values = [10, 20, 30, 40]",
+      "    println(values[0..2].len())",
+      "    println(values[1..=2].len())",
+      "    return total",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /for \(let /);
+  assert.match(generated.code, /\$arraySlice/);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "2\n2\nRETURN=9");
 });

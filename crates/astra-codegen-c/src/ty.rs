@@ -490,6 +490,7 @@ impl TyCtxt {
             Type::Result(ok, err) => format!("Result_{}_{}", self.ident(ok), self.ident(err)),
             Type::Array(inner) => format!("Array_{}", self.ident(inner)),
             Type::Slice(inner) => format!("Slice_{}", self.ident(inner)),
+            Type::Range(inner) => format!("Range_{}", self.ident(inner)),
             Type::FixedArray(inner, n) => format!("FixedArray_{}_{}", self.ident(inner), n),
             Type::Map(key, value) => format!("Map_{}_{}", self.ident(key), self.ident(value)),
             Type::Tuple(elements) => {
@@ -564,6 +565,8 @@ impl TyCtxt {
             Type::Bool => "bool".into(),
             Type::Str => "NS_Str".into(),
             Type::Bytes => "NS_Bytes".into(),
+            // Range values are consumed by `emit_for` and never stored.
+            Type::Range(_) => "NS_Unit".into(),
             Type::Unit => "NS_Unit".into(),
             Type::Never => {
                 self.rejects.push(Reject {

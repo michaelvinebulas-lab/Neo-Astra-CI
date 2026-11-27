@@ -1747,7 +1747,7 @@ impl Parser {
     }
 
     fn parse_assignment(&mut self) -> Expr {
-        let left = self.parse_logical_or();
+        let left = self.parse_range();
 
         if self.eat_punct(Punctuation::Eq) {
             self.skip_continuation_newlines();
@@ -1763,6 +1763,32 @@ impl Parser {
         }
 
         left
+    }
+
+    /// Ranges bind looser than logical operators and tighter than assignment.
+    fn parse_range(&mut self) -> Expr {
+        let start = self.parse_logical_or();
+        if self.edition != Edition::V0_2 {
+            return start;
+        }
+        let inclusive = if self.eat_punct(Punctuation::DotDotEq) {
+            true
+        } else if self.eat_punct(Punctuation::DotDot) {
+            false
+        } else {
+            return start;
+        };
+        self.skip_continuation_newlines();
+        let end = self.parse_logical_or();
+        let span = Span::new(start.span.start, end.span.end);
+        Expr {
+            kind: ExprKind::Range {
+                start: Box::new(start),
+                end: Box::new(end),
+                inclusive,
+            },
+            span,
+        }
     }
 
     fn parse_logical_or(&mut self) -> Expr {
@@ -2023,13 +2049,58 @@ impl Parser {
                 let index = self.parse_expression();
                 self.expect_punct(Punctuation::RBracket, "']'");
                 let span = Span::new(expression.span.start, self.last_end());
-                expression = Expr {
-                    kind: ExprKind::Index {
-                        target: Box::new(expression),
-                        index: Box::new(index),
-                    },
-                    span,
-                };
+                if self.edition == Edition::V0_2 && matches!(index.kind, ExprKind::Range { .. }) {
+                    let index_span = index.span;
+                    let ExprKind::Range {
+                        start,
+                        end,
+                        inclusive,
+                    } = index.kind
+                    else {
+                        unreachable!("range was checked above");
+                    };
+                    // Checker annotations are keyed by span. Every synthetic
+                    // node therefore needs a distinct span; reusing the whole
+                    // index span would overwrite the receiver/argument types.
+                    let callee = Expr {
+                        kind: ExprKind::Member {
+                            target: Box::new(expression),
+                            member: "slice".to_owned(),
+                        },
+                        span: index_span,
+                    };
+                    let end = if inclusive {
+                        let end_span = end.span;
+                        Expr {
+                            kind: ExprKind::Binary {
+                                operator: BinaryOp::Add,
+                                left: end,
+                                right: Box::new(Expr {
+                                    kind: ExprKind::Literal(Literal::Integer("1".to_owned())),
+                                    span: Span::new(end_span.end, end_span.end),
+                                }),
+                            },
+                            span: end_span,
+                        }
+                    } else {
+                        *end
+                    };
+                    expression = Expr {
+                        kind: ExprKind::Call {
+                            callee: Box::new(callee),
+                            arguments: vec![*start, end],
+                        },
+                        span,
+                    };
+                } else {
+                    expression = Expr {
+                        kind: ExprKind::Index {
+                            target: Box::new(expression),
+                            index: Box::new(index),
+                        },
+                        span,
+                    };
+                }
                 continue;
             }
 
@@ -4723,6 +4794,104 @@ fn drain(values: [Option<i32>]) -> i32 {
             panic!("expected break arm");
         };
         assert!(matches!(break_block.statements[0].kind, StmtKind::Break));
+    }
+
+    #[test]
+    fn v0_2_parses_exclusive_range_in_for() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn count() -> i32 {
+    let mut total = 0
+    for value in 0..3 {
+        total = total + value
+    }
+    return total
+}
+"#,
+        )
+        .expect("range should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::For { iterable, .. } = &function.body.statements[1].kind else {
+            panic!("expected for loop");
+        };
+        let ExprKind::Range {
+            start: _,
+            end: _,
+            inclusive,
+        } = &iterable.kind
+        else {
+            panic!("expected range iterable");
+        };
+        assert!(!inclusive);
+    }
+
+    #[test]
+    fn v0_2_parses_inclusive_range_in_for() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn count() -> i32 {
+    let mut total = 0
+    for value in 0..=3 {
+        total = total + value
+    }
+    return total
+}
+"#,
+        )
+        .expect("inclusive range should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::For { iterable, .. } = &function.body.statements[1].kind else {
+            panic!("expected for loop");
+        };
+        assert!(matches!(
+            &iterable.kind,
+            ExprKind::Range {
+                inclusive: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn v0_2_index_range_lowers_to_slice_call() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn part(text: str) -> str ! SliceError {
+    return text[0..2]?
+}
+"#,
+        )
+        .expect("index range should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Return {
+            value: Some(expression),
+        } = &function.body.statements[0].kind
+        else {
+            panic!("expected return");
+        };
+        let ExprKind::Propagate(inner) = &expression.kind else {
+            panic!("expected propagation");
+        };
+        let ExprKind::Call { callee, arguments } = &inner.kind else {
+            panic!("expected slice call");
+        };
+        assert!(matches!(
+            &callee.kind,
+            ExprKind::Member { member, .. } if member == "slice"
+        ));
+        assert_eq!(arguments.len(), 2);
     }
 
     #[test]

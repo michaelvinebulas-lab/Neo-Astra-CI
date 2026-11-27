@@ -61,6 +61,7 @@ export type SemanticType =
   | { readonly Array: SemanticType }
   | { readonly FixedArray: readonly [SemanticType, number] }
   | { readonly Slice: SemanticType }
+  | { readonly Range: SemanticType }
   | { readonly Map: readonly [SemanticType, SemanticType] }
   | { readonly Tuple: readonly SemanticType[] }
   | { readonly Function: FunctionType }
@@ -357,6 +358,13 @@ export type ExprKind =
       readonly Index: {
         readonly target: Expr;
         readonly index: Expr;
+      };
+    }
+  | {
+      readonly Range: {
+        readonly start: Expr;
+        readonly end: Expr;
+        readonly inclusive: boolean;
       };
     }
   | {

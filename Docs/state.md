@@ -6,8 +6,8 @@ or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-26
 **Phase:** `1.1.1` is released: language v0.2 syntax cleanup (edition plumbing, lexer, parser/checker, formatter, canonical lint, migration) plus the error-output rework and bounded parser recovery. `v1.1.0` was tagged but its release failed on a packaging smoke fixture that used an unsupported edition, so no assets or npm packages were published for it; the fix shipped as `1.1.1`.
-**Master:** private `master` at `75c655a`, pushed to `ci`; public `master` at `868007e`, tag `v1.1.1` at the same commit. Release run `45750335485` is green on Windows, macOS, and Linux; GitHub release has three archives plus `.sha256` sidecars, and all four npm packages are at `1.1.1` with provenance.
-**Blockers:** `1.0.0` still lacks provenance and reports `immutable: false`. npm trusted publishers expire after two days and must be re-created before each future release. The exposed `1.0.0` npm token has been revoked. Next version: `1.1.2`, carrying the Phase 7 feature gaps (`if let`, ranges, bitwise ops, `char`, lambdas).
+**Master:** private `master` at the Phase 7 ranges commit, pushed to `ci`; public `master` at `868007e`, tag `v1.1.1` at the same commit. Release run `45750335485` is green on Windows, macOS, and Linux; GitHub release has three archives plus `.sha256` sidecars, and all four npm packages are at `1.1.1` with provenance.
+**Blockers:** `1.0.0` still lacks provenance and reports `immutable: false`. npm trusted publishers expire after two days and must be re-created before each future release. The exposed `1.0.0` npm token has been revoked. Next version: `1.1.2`, carrying the Phase 7 feature gaps; `if let` / `while let` and ranges are implemented, bitwise ops, `char`, lambdas, and the suffix table remain.
 
 ---
 
@@ -170,6 +170,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-27 | Phase 7 slice 2: edition-`0.2` ranges (`a..b`, `a..=b`) as a real AST/type with single-evaluation `for` loops in C/JS/TS/Nova, plus index-position range sugar lowered to `.slice(start, end)`; new array/slice `slice` method in checker and all backends; design note in `Docs/Report/Phase7-ranges.md`; parser/checker/formatter, C, JS, TS, and corpus tests green. | `cargo test --workspace`, `npm run verify`, native parity 15/15, `phase7_ranges` 6/6, C range tests 3/3 |
 | 2026-11-26 | Phase 7 slice 1: edition-`0.2` `if let` / `while let` parse and typecheck by desugaring to existing `match` / `while` nodes; design note in `Docs/Report/Phase7-if-let.md`; parser and checker tests green. | `cargo test -p astra-core --lib` 232/232, `phase7_if_let` 4/4 |
 | 2026-11-26 | Cleanup and `1.1.2` prep: reverted a stray codemod that had rewritten shared conformance fixtures to v0.2 syntax without edition directives (this had broken `npm test`); resolved the two aspirational corpus cases (`scopes.ns` now uses valid nested core scopes with an explicit return; `turbofish.ns` now passes thanks to generic struct-initializer inference in `check_struct_init`); updated roadmap, priorities, todo, and release notes; recorded the npm token revocation. Gates green. | `npm run verify`, native parity 15/15, `edition_v0_2_checker` 9/9 |
 | 2026-11-26 | Released `1.1.1`: PR #9 fixed the packaging smoke fixture's edition, merged cleanly, and `v1.1.1` was tagged and pushed. Release run `45750335485` green on all three OSes; GitHub release has three archives + sidecars; all four npm packages at `1.1.1` with provenance; archive attestation verified. `v1.1.0` remains a failed immutable tag with no published artifacts. | `gh run view 45750335485`, `gh release view v1.1.1`, registry queries, `gh attestation verify` |

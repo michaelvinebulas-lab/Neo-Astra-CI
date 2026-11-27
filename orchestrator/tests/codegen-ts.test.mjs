@@ -31,7 +31,7 @@ const tscPath = join(root, "node_modules", "typescript", "lib", "tsc.js");
 
 function compileSource(
   source,
-  { mode = "core", integerPolicy = "wrapping", target = "ts" } = {},
+  { mode = "core", integerPolicy = "wrapping", target = "ts", edition } = {},
 ) {
   const request = JSON.stringify({
     jsonrpc: "2.0",
@@ -43,6 +43,7 @@ function compileSource(
       target,
       mode,
       integerPolicy,
+      ...(edition === undefined ? {} : { edition }),
     },
   });
 
@@ -376,6 +377,27 @@ const parityPrograms = [
     ].join("\n"),
   },
   {
+    name: "exclusive and inclusive ranges",
+    edition: "0.2",
+    source: [
+      "pub fn main() -> i32 {",
+      "    let mut total = 0",
+      "    for value in 0..3 {",
+      "        total = total + value",
+      "    }",
+      "    for value in 0..=3 {",
+      "        total = total + value",
+      "    }",
+      "    let values = [10, 20, 30, 40]",
+      "    println(values[0..2].len())",
+      "    println(values[1..=2].len())",
+      "    println(total)",
+      "    return total",
+      "}",
+      "",
+    ].join("\n"),
+  },
+  {
     name: "struct field mutation",
     source: [
       "struct User {",
@@ -404,6 +426,7 @@ test("emitted TypeScript passes tsc --strict, runs, and matches the JavaScript b
   for (const program of parityPrograms) {
     const options = {
       ...(program.integerPolicy === undefined ? {} : { integerPolicy: program.integerPolicy }),
+      ...(program.edition === undefined ? {} : { edition: program.edition }),
     };
     const tsGenerated = generateFor("ts", program.source, options);
     const jsGenerated = generateFor("js", program.source, options);

@@ -185,6 +185,7 @@ const HELPER_ORDER = [
   "strSlice",
   "bytesNew",
   "byteSlice",
+  "arraySlice",
   "index",
   "indexSet",
   "getArray",
@@ -247,6 +248,7 @@ const HELPER_DEPENDENCIES: Partial<Record<HelperName, readonly HelperName[]>> = 
   charAt: ["some", "none"],
   strSlice: ["ok", "err"],
   byteSlice: ["panic"],
+  arraySlice: ["panic"],
   indexSet: ["panic"],
   channel: ["ok", "err", "panic"],
   lenBig: ["panic"],
@@ -600,6 +602,14 @@ const HELPERS: Record<HelperName, readonly string[]> = {
     "  const from = Number(start);",
     "  const to = Number(end);",
     "  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > value.length) $panic(`bytes slice ${from}..${to} is out of bounds`);",
+    "  return value.slice(from, to);",
+    "}",
+  ],
+  arraySlice: [
+    "function $arraySlice(value, start, end) {",
+    "  const from = Number(start);",
+    "  const to = Number(end);",
+    "  if (!Number.isInteger(from) || !Number.isInteger(to) || from < 0 || to < from || to > value.length) $panic(`array slice ${from}..${to} is out of bounds`);",
     "  return value.slice(from, to);",
     "}",
   ],
@@ -1035,6 +1045,7 @@ const TS_HELPER_SIGNATURES: Partial<Record<HelperName, string>> = {
   strSlice: "function $strSlice(value: string, start: number | bigint, end: number | bigint): { readonly $result: true; readonly ok: true; readonly value: string } | { readonly $result: true; readonly ok: false; readonly error: SliceError } {",
   bytesNew: "function $bytesNew(length: number | bigint): Uint8Array {",
   byteSlice: "function $byteSlice(value: Uint8Array, start: number | bigint, end: number | bigint): Uint8Array {",
+  arraySlice: "function $arraySlice<T>(value: readonly T[], start: number | bigint, end: number | bigint): T[] {",
   index: "function $index<T>(value: readonly T[] | ArrayLike<T>, index: number | bigint): T {",
   indexSet: "function $indexSet<T>(value: T[] | { length: number; [n: number]: T }, index: number | bigint, item: T): T {",
   getArray: "function $getArray<T>(value: readonly T[], index: number | bigint): { readonly $option: true; readonly value: T } | { readonly $option: false } {",
@@ -2736,6 +2747,25 @@ class JavaScriptGenerator {
           iterable: Expr;
           body: Block;
         }>(kind, "For");
+        if (variantOf(data.iterable.kind) === "Range") {
+          const range = structPayload<{
+            start: Expr;
+            end: Expr;
+            inclusive: boolean;
+          }>(data.iterable.kind, "Range");
+          const start = this.emitExpr(range.start);
+          const end = this.emitExpr(range.end);
+          const counter = this.temporary("range");
+          const limit = this.temporary("rangeEnd");
+          const comparison = range.inclusive ? "<=" : "<";
+          const body = this.emitLoopBody(data.body);
+          const binding = jsName(data.binding);
+          const boundBody = body.replace(
+            /^\{\n?/,
+            (opening) => `${opening}    const ${binding} = ${counter};\n`,
+          );
+          return `{\n  const ${limit} = ${end};\n  for (let ${counter} = ${start}; ${counter} ${comparison} ${limit}; ${counter} += 1) ${boundBody}\n}`;
+        }
         const iterable = this.emitIterable(data.iterable);
         const body = this.emitLoopBody(data.body);
         return `for (const ${jsName(data.binding)} of ${iterable}) ${body}`;
@@ -2845,6 +2875,12 @@ class JavaScriptGenerator {
         const data = structPayload<{ target: Expr; index: Expr }>(kind, "Index");
         return this.emitIndex(data.target, data.index);
       }
+      case "Range":
+        this.unsupported(
+          expression.span,
+          "range values are only supported as a for-loop iterable",
+        );
+        return "0";
       case "Member": {
         const data = structPayload<{ target: Expr; member: string }>(kind, "Member");
         return this.emitMember(data.target, data.member);
@@ -3491,6 +3527,12 @@ class JavaScriptGenerator {
       // instead of clamping like the native Uint8Array.slice would.
       this.useHelper("byteSlice");
       return `$byteSlice(${target}, ${args[0] ?? "0"}, ${args[1] ?? "0"})`;
+    }
+    if ((tag === "Array" || tag === "Slice") && method === "slice") {
+      // Bounds-checked array offsets: out-of-range or reversed ranges panic
+      // instead of clamping like the native Array.prototype.slice would.
+      this.useHelper("arraySlice");
+      return `$arraySlice(${target}, ${args[0] ?? "0"}, ${args[1] ?? "0"})`;
     }
     if (tag === "Str") {
       switch (method) {
@@ -4498,6 +4540,10 @@ function semanticTypeToTs(
     case "Array":
     case "Slice":
       return `${semanticTypeToTs(payload as SemanticType, policy, optionStyle)}[]`;
+    case "Range": {
+      const element = semanticTypeToTs(payload as SemanticType, policy, optionStyle);
+      return `readonly [${element}, ${element}]`;
+    }
     case "FixedArray": {
       const [element] = payload as readonly [SemanticType, number];
       return `${semanticTypeToTs(element ?? "Unknown", policy, optionStyle)}[]`;

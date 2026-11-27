@@ -1397,6 +1397,10 @@ impl<'a> Emitter<'a> {
                 self.count_expr_slots(target, total);
                 self.count_expr_slots(value, total);
             }
+            ExprKind::Range { start, end, .. } => {
+                self.count_expr_slots(start, total);
+                self.count_expr_slots(end, total);
+            }
             ExprKind::Call { callee, arguments } => {
                 self.count_expr_slots(callee, total);
                 for argument in arguments {
@@ -1601,6 +1605,10 @@ impl<'a> Emitter<'a> {
                 }
                 self.mutation_bases(target, out);
                 self.mutation_bases(value, out);
+            }
+            ExprKind::Range { start, end, .. } => {
+                self.mutation_bases(start, out);
+                self.mutation_bases(end, out);
             }
             ExprKind::Call { callee, arguments } => {
                 if let ExprKind::Member { target, .. } = &callee.kind
@@ -2237,6 +2245,41 @@ impl<'a> Emitter<'a> {
     }
 
     fn emit_for(&mut self, binding: &str, iterable: &Expr, body: &ast::Block) {
+        if let ExprKind::Range {
+            start,
+            end,
+            inclusive,
+        } = &iterable.kind
+        {
+            let elem_ty = match self.type_of(iterable).cloned() {
+                Some(Type::Range(inner)) => *inner,
+                _ => self.type_of(start).cloned().unwrap_or(Type::I32),
+            };
+            let elem_c = self.tcx.c_type(&elem_ty);
+            self.pre.clear();
+            let start_c = self.expr(start);
+            let end_c = self.expr(end);
+            self.flush_pre();
+            let idx = self.fresh_id("r");
+            let limit = self.fresh_id("re");
+            let _ = writeln!(self.out, "    {elem_c} {limit} = {end_c};");
+            let comparison = if *inclusive { "<=" } else { "<" };
+            let _ = writeln!(
+                self.out,
+                "    for ({elem_c} {idx} = {start_c}; {idx} {comparison} {limit}; ++{idx}) {{"
+            );
+            let binding_c = format!("v_{}", sanitize(binding));
+            let _ = writeln!(self.out, "        {elem_c} {binding_c} = {idx};");
+            let first = self.roots.as_ref().map_or(0, |frame| frame.used);
+            let slots = self.publish_local(&binding_c, &elem_ty, first);
+            self.push_capture_scope();
+            self.record_local(binding_c, elem_ty, first, slots);
+            self.emit_block_body(body, false, false);
+            self.writeln_s("        astra_gc_maybe_collect();");
+            self.writeln_s("    }");
+            self.pop_capture_scope();
+            return;
+        }
         let iter_ty = self.type_of(iterable).cloned().unwrap_or(Type::Unit);
         enum IterKind {
             Array,
@@ -2481,6 +2524,13 @@ impl<'a> Emitter<'a> {
             ExprKind::Assign { target, value } => self.assign_c(target, value),
             ExprKind::Call { callee, arguments } => self.call_c(callee, arguments, e),
             ExprKind::Index { target, index } => self.index_c(target, index, e),
+            ExprKind::Range { .. } => {
+                self.tcx.rejects.push(reject(
+                    "NS8021",
+                    "range values are only supported as a for-loop iterable in the C backend",
+                ));
+                "(NS_Unit){0}".into()
+            }
             ExprKind::Member { target, member } => self.member_c(target, member, e),
             ExprKind::TypeArguments { target, .. } => self.expr(target),
             ExprKind::Propagate(inner) => self.propagate_c(inner),
@@ -3429,6 +3479,23 @@ impl<'a> Emitter<'a> {
                     .unwrap_or_else(|| "0".into());
                 format!(
                     "astra_array_push(&({r}), sizeof({elem_c}), &({elem_c}){{ {val} }}, {shape})"
+                )
+            }
+            (Some(Type::Array(_) | Type::Slice(_)), "slice") => {
+                let elem_ty = self.elem_type_of(receiver);
+                let elem_c = self.tcx.c_type(&elem_ty);
+                let shape = self.tcx.block_shape_ref(&elem_ty);
+                let array = self.expr(receiver);
+                let start = args
+                    .first()
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                let end = args
+                    .get(1)
+                    .map(|a| self.expr(a))
+                    .unwrap_or_else(|| "0".into());
+                format!(
+                    "astra_array_slice({array}, (size_t)({start}), (size_t)({end}), sizeof({elem_c}), {shape})"
                 )
             }
             (Some(Type::Array(_) | Type::Slice(_)), "get") => {

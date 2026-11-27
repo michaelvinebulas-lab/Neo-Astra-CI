@@ -1830,9 +1830,10 @@ impl<'a> Checker<'a> {
             | Type::Bytes
             | Type::Unit => true,
             Type::Option(inner) => self.is_boundary_safe(inner),
-            Type::Array(inner) | Type::Slice(inner) | Type::FixedArray(inner, _) => {
-                self.is_boundary_safe(inner)
-            }
+            Type::Array(inner)
+            | Type::Slice(inner)
+            | Type::Range(inner)
+            | Type::FixedArray(inner, _) => self.is_boundary_safe(inner),
             Type::Named(name, args) => {
                 if let Some(def) = self.resolve_struct(name) {
                     def.fields.iter().all(|f| self.is_boundary_safe(&f.ty))
@@ -2305,7 +2306,10 @@ impl<'a> Checker<'a> {
             } => {
                 let iterable = self.check_expr(iterable, None);
                 self.report_effects(&iterable.errors);
-                let element = self.iterable_element(&iterable.ty, statement.span);
+                let element = match &iterable.ty {
+                    Type::Range(inner) => (**inner).clone(),
+                    _ => self.iterable_element(&iterable.ty, statement.span),
+                };
                 self.push_scope();
                 self.insert_local(
                     binding.clone(),
@@ -2477,6 +2481,11 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Index { target, index } => {
                 self.check_index(target, index, expression.span)
             }
+            ast::ExprKind::Range {
+                start,
+                end,
+                inclusive: _,
+            } => self.check_range(start, end, expected),
             ast::ExprKind::Member { target, member } => {
                 self.check_member(target, member, expression.span, expected)
             }
@@ -3058,6 +3067,39 @@ impl<'a> Checker<'a> {
         }
 
         (self.check_expr(callee, None), None)
+    }
+
+    /// A range is a typed iterable boundary pair. It is currently consumed by
+    /// `for` loops; index-position ranges are lowered to `.slice(...)` by the
+    /// parser before they reach the checker.
+    fn check_range(
+        &mut self,
+        start: &ast::Expr,
+        end: &ast::Expr,
+        expected: Option<&Type>,
+    ) -> ExprInfo {
+        let start_info = self.check_expr(start, expected);
+        let end_info = self.check_expr(end, Some(&start_info.ty));
+        let element = if start_info.ty.accepts(&end_info.ty) {
+            start_info.ty.clone()
+        } else if end_info.ty.accepts(&start_info.ty) {
+            end_info.ty.clone()
+        } else {
+            self.type_mismatch(&start_info.ty, &end_info.ty, end.span);
+            Type::Error
+        };
+        if !element.is_integer() && !matches!(element, Type::Error | Type::Unknown) {
+            self.error(
+                INVALID_OPERANDS,
+                format!("Range bounds must be integers, found '{element}'."),
+                end.span,
+                "Use integer bounds such as 0..10 or 0u8..=8u8.",
+            );
+        }
+        ExprInfo {
+            ty: Type::Range(Box::new(element)),
+            errors: merge_effects(&start_info.errors, &end_info.errors),
+        }
     }
 
     fn check_index(&mut self, target: &ast::Expr, index: &ast::Expr, span: Span) -> ExprInfo {
@@ -5292,6 +5334,12 @@ fn builtin_method(ty: &Type, member: &str) -> Option<Type> {
                     return_type: Box::new(Type::Option(element.clone())),
                     errors: Vec::new(),
                 },
+                "slice" => FunctionType {
+                    type_parameters: Vec::new(),
+                    parameters: vec![Type::Usize, Type::Usize],
+                    return_type: Box::new(Type::Array(element.clone())),
+                    errors: Vec::new(),
+                },
                 _ => return None,
             }
         }
@@ -5825,6 +5873,7 @@ fn expr_has_call(expression: &ast::Expr) -> bool {
         ast::ExprKind::Binary { left, right, .. } => expr_has_call(left) || expr_has_call(right),
         ast::ExprKind::Assign { target, value } => expr_has_call(target) || expr_has_call(value),
         ast::ExprKind::Index { target, index } => expr_has_call(target) || expr_has_call(index),
+        ast::ExprKind::Range { start, end, .. } => expr_has_call(start) || expr_has_call(end),
         ast::ExprKind::Member { target, .. } => expr_has_call(target),
         ast::ExprKind::TypeArguments { target, .. } => expr_has_call(target),
         ast::ExprKind::Propagate(inner) => expr_has_call(inner),

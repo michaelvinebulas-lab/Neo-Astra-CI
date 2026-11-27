@@ -828,6 +828,15 @@ impl<'a> Formatter<'a> {
                 self.write_expr(index, 0);
                 self.output.push(']');
             }
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                self.write_expr(start, 0);
+                self.output.push_str(if *inclusive { "..=" } else { ".." });
+                self.write_expr(end, 0);
+            }
             ExprKind::Member { target, member } => {
                 self.write_expr(target, precedence);
                 self.output.push('.');
@@ -1384,6 +1393,42 @@ public function add(a: i32, b: i32) -> i32 {
         assert!(formatted.contains("total = a + b"));
         assert!(!formatted.contains("public"));
         assert!(!formatted.contains("var"));
+    }
+
+    #[test]
+    fn v0_2_preserves_range_spelling_in_for_headers() {
+        let source = r#"
+module app.main
+
+pub fn main() -> i32 {
+    let mut total = 0
+    for value in 0..3 {
+        total = total + value
+    }
+    for value in 0..=3 {
+        total = total + value
+    }
+    return total
+}
+"#;
+        let formatted = format_v02(source);
+        assert!(formatted.contains("for value in 0..3 {"), "{formatted}");
+        assert!(formatted.contains("for value in 0..=3 {"), "{formatted}");
+        assert_eq!(format_v02(&formatted), formatted);
+    }
+
+    #[test]
+    fn v0_2_canonicalizes_index_ranges_to_slice_calls() {
+        let source = r#"
+module app.main
+
+fn part(text: str) -> str ! SliceError {
+    return text[0..2]?
+}
+"#;
+        let formatted = format_v02(source);
+        assert!(formatted.contains("text.slice(0, 2)?"), "{formatted}");
+        assert_eq!(format_v02(&formatted), formatted);
     }
 
     #[test]

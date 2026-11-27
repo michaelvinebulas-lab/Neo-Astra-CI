@@ -31,6 +31,9 @@ pub enum Type {
     Array(Box<Type>),
     FixedArray(Box<Type>, usize),
     Slice(Box<Type>),
+    /// A typed range boundary pair (`start..end`), currently consumed by
+    /// `for` loops and slicing sugar.
+    Range(Box<Type>),
     Map(Box<Type>, Box<Type>),
     Tuple(Vec<Type>),
     Function(FunctionType),
@@ -114,6 +117,7 @@ impl Type {
                 Self::FixedArray(Box::new(inner.substitute(substitutions)), *length)
             }
             Self::Slice(inner) => Self::Slice(Box::new(inner.substitute(substitutions))),
+            Self::Range(inner) => Self::Range(Box::new(inner.substitute(substitutions))),
             Self::Map(key, value) => Self::Map(
                 Box::new(key.substitute(substitutions)),
                 Box::new(value.substitute(substitutions)),
@@ -169,6 +173,7 @@ impl Type {
             | (Self::Slice(expected), Self::Array(actual))
             | (Self::Slice(expected), Self::Slice(actual))
             | (Self::Array(expected), Self::Slice(actual)) => expected.accepts(actual),
+            (Self::Range(expected), Self::Range(actual)) => expected.accepts(actual),
             (
                 Self::FixedArray(expected, expected_length),
                 Self::FixedArray(actual, actual_length),
@@ -235,6 +240,7 @@ impl fmt::Display for Type {
             Self::Array(inner) => write!(formatter, "[{inner}]"),
             Self::FixedArray(inner, length) => write!(formatter, "[{inner}; {length}]"),
             Self::Slice(inner) => write!(formatter, "[{inner}]"),
+            Self::Range(inner) => write!(formatter, "range<{inner}>"),
             Self::Map(key, value) => write!(formatter, "{{{key}: {value}}}"),
             Self::Tuple(elements) => {
                 formatter.write_str("(")?;

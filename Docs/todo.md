@@ -245,7 +245,8 @@ language is frozen.
 
 - [x] `if let` / `while let` (edition `0.2`; desugars to `match`/`while`, see
       `Docs/Report/Phase7-if-let.md`).
-- [ ] Ranges with `for`, iterator, and slice semantics.
+- [x] Ranges with `for`, iterator, and slice semantics (edition `0.2`; see
+      `Docs/Report/Phase7-ranges.md`).
 - [ ] Bitwise `& | ^ << >>`, documenting expression `|` vs error-set `|`.
 - [ ] Add `char` plus scalar literals.
 - [ ] Add lambda syntax (`fn(x) => expr`) with parameter inference and capture
@@ -285,8 +286,8 @@ language is frozen.
 Each item needs a decision record covering AST nodes, runtime semantics, and
 all three backends before implementation starts.
 
-- [ ] Write a design note per feature in `Docs/Report/`: `if let` / `while let`,
-      ranges (`a..b`, `a..=b`) with `for`/iterators/slicing, bitwise operators
+- [x] Write design notes for landed slices in `Docs/Report/`:
+      `Phase7-if-let.md` and `Phase7-ranges.md`. Still owed: bitwise operators
       (`& | ^ << >>`) with `|` in expression vs error-set positions, `char` and
       scalar literals, lambdas (`fn(x) => expr`) with inference and capture
       rules, and the complete integer/float suffix table.

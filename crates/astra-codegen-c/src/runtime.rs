@@ -202,6 +202,7 @@ extern size_t astra_gc_poison_count(void);
 extern NS_Array astra_array_new_lit(size_t n, size_t elem_size, const void* src, const NS_Gc_Shape* shape);
 extern void astra_array_push(NS_Array* arr, size_t elem_size, const void* value, const NS_Gc_Shape* shape);
 extern void* astra_array_index(NS_Array* arr, size_t i, size_t elem_size);
+extern NS_Array astra_array_slice(NS_Array arr, size_t start, size_t end, size_t elem_size, const NS_Gc_Shape* shape);
 
 /* String helpers. */
 extern size_t astra_str_len(NS_Str s);
@@ -1363,6 +1364,19 @@ void astra_array_push(NS_Array* arr, size_t elem_size, const void* value, const 
 void* astra_array_index(NS_Array* arr, size_t i, size_t elem_size) {
     if (i >= arr->len) { astra_panic("array index out of bounds"); }
     return (char*)arr->data + i * elem_size;
+}
+
+NS_Array astra_array_slice(NS_Array arr, size_t start, size_t end, size_t elem_size, const NS_Gc_Shape* shape) {
+    if (start > end || end > arr.len) { astra_panic("array slice range out of bounds"); }
+    if (elem_size == 0) { elem_size = 1; }
+    NS_Array out;
+    out.len = end - start;
+    out.cap = out.len == 0 ? 1 : out.len;
+    out.data = astra_gc_alloc(shape, out.cap * elem_size);
+    if (out.len > 0) {
+        memcpy(out.data, (char*)arr.data + start * elem_size, out.len * elem_size);
+    }
+    return out;
 }
 
 size_t astra_str_len(NS_Str s) { return s.len; }

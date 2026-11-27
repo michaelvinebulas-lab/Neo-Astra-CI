@@ -19,7 +19,7 @@ use astra_capabilities::Mode;
 use astra_codegen_c::{CModule, EmitKind, IntegerPolicy, ProjectEntry, generate};
 use astra_core::checker::{CheckOptions, check_resolved};
 use astra_core::edition::Edition;
-use astra_core::parser::parse;
+use astra_core::parser::{ParseOptions, parse, parse_with_options};
 use astra_core::resolver::resolve_module;
 use astra_core::type_surface::{ProjectModule, check_module_graph};
 
@@ -44,6 +44,32 @@ fn compile_and_emit_mode(source: &str, mode: Mode) -> String {
     };
     let generated = generate(&c_module).expect("C generation failed");
     generated.source
+}
+
+fn compile_and_emit_v02(source: &str) -> String {
+    let module = parse_with_options(
+        source,
+        ParseOptions {
+            edition: Edition::V0_2,
+        },
+    )
+    .expect("parse failed");
+    let resolved = resolve_module(&module).expect("resolve failed");
+    let checked = check_resolved(
+        &module,
+        &resolved,
+        CheckOptions::new(Mode::Core).with_edition(Edition::V0_2),
+    )
+    .expect("type check failed");
+    let c_module = CModule {
+        name: checked.module.name.clone(),
+        ast: module,
+        hir: checked.module,
+        annotations: checked.annotations,
+        manual_memory_scopes: checked.manual_memory_scopes,
+        integer_policy: IntegerPolicy::Wrapping,
+    };
+    generate(&c_module).expect("C generation failed").source
 }
 
 /// Returns the path to clang if available, or None.
@@ -4187,4 +4213,57 @@ pub fn main() -> i32 {
         stderr.contains("map key is not present"),
         "expected the map index panic, got:\n{stderr}"
     );
+}
+
+#[test]
+fn exclusive_range_for_lowers_to_c_loop() {
+    let src = r#"
+pub fn main() -> i32 {
+    let mut total = 0
+    for value in 0..3 {
+        total = total + value
+    }
+    return total
+}
+"#;
+    let out = compile_and_emit_v02(src);
+    assert!(out.contains("for (int32_t"), "{out}");
+    assert!(out.contains("<"), "{out}");
+    assert_clang_ok(&out);
+}
+
+#[test]
+fn array_range_slice_runs() {
+    let src = r#"
+pub fn main() -> i32 {
+    let values = [10, 20, 30, 40]
+    println(values[0..2].len())
+    println(values[1..=2].len())
+    return 0
+}
+"#;
+    let out = compile_and_emit_v02(src);
+    assert!(out.contains("astra_array_slice"), "{out}");
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "array slice failed: {stderr}");
+    assert_eq!(stdout.replace("\r\n", "\n"), "2\n2\n");
+}
+
+#[test]
+fn inclusive_range_for_lowers_to_less_equal_loop() {
+    let src = r#"
+pub fn main() -> i32 {
+    let mut total = 0
+    for value in 0..=3 {
+        total = total + value
+    }
+    return total
+}
+"#;
+    let out = compile_and_emit_v02(src);
+    assert!(out.contains("<="), "{out}");
+    assert_clang_ok(&out);
 }

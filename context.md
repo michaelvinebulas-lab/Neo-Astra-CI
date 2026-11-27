@@ -1,11 +1,11 @@
 # Neo Astra context handoff
 
-**Snapshot:** 2026-11-23
+**Snapshot:** 2026-11-27
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** `master` through `d0f0a93` plus the status docs (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`)
-**Published release:** `1.0.1` (tag `v1.0.1` -> `3093343`)
-**Next release:** `1.1.0` - language v0.2 syntax cleanup (edition 0.2)
-**Current order:** `Docs/Report/Task.md` says `DONE - lead`; slice 4 accepted
+**Branch:** private `master` at the Phase 7 ranges commit (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized `1.1.1` tree
+**Published release:** `1.1.1` (tag `v1.1.1` -> public `868007e`)
+**Next release:** `1.1.2` - Phase 7 feature gaps behind the edition-`0.2` boundary
+**Current state:** `if let` / `while let` and ranges implemented; bitwise, `char`, lambdas, and suffix table queued
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.
@@ -251,13 +251,16 @@ lead/user-owned leftover remains:
 
 1. `if let` / `while let` are done for edition `0.2` via desugaring to `match` /
    `while` (see `Docs/Report/Phase7-if-let.md`); no AST or backend changes.
-2. Write design notes for ranges, bitwise operators, `char`, lambdas, and the
-   suffix table, then implement them with parser, checker, formatter, and all
-   three backends.
-3. Add conformance and serialization-contract tests for each new construct.
-4. Re-create npm trusted publishers immediately before the `1.1.2` release;
+2. Ranges (`a..b`, `a..=b`) are done for edition `0.2` with `for`-loop iteration,
+   `str`/`bytes`/array slicing, and all three backends (see
+   `Docs/Report/Phase7-ranges.md`). Index-position ranges lower to `.slice(...)`;
+   the formatter preserves range spelling in `for` headers.
+3. Next: bitwise operators (`& | ^ << >>`), then `char`, lambdas, and the
+   complete suffix table, each with a design note before implementation.
+4. Add conformance and serialization-contract tests for each new construct.
+5. Re-create npm trusted publishers immediately before the `1.1.2` release;
    the `1.1.1` configs are validated already but expire after two days.
-5. The V2 C++20 orchestrator rewrite is a later track; see
+6. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
    isolated JS/TS bridge until C++ parity is proven.
 
@@ -329,5 +332,5 @@ Last known results at this snapshot:
   tree, revoke tokens, or delete `NPM_TOKEN` without principal approval.
 - Do not commit Kilo's uncommitted code, the pre-existing untracked files, or
   the active `Docs/Report/Task.md` log without review.
-- Do not describe Phase 7 feature gaps as shipped; `1.1.1` contains the v0.2
-  cleanup only.
+- `1.1.1` contains the v0.2 cleanup only. The `1.1.2` tree adds `if let` /
+  `while let` and ranges; the remaining Phase 7 gaps are not shipped.

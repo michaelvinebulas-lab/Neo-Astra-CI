@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Edition-`0.2` syntax `if let` / `while let`, desugared to `match` / `while`
   so all backends inherit existing pattern semantics.
+- Edition-`0.2` ranges (`a..b`, `a..=b`) in `for` loops, plus index-position
+  range slicing sugar (`target[start..end]` → `target.slice(start, end)`).
+  Arrays and slices now have an infallible `slice(start, end)` method.
 - Generic struct initializers infer type arguments from field values.
 - Planning section for the `1.1.2` Phase 7 feature gaps: `if let`, ranges,
   bitwise operators, `char`, lambdas, and the complete suffix table.
