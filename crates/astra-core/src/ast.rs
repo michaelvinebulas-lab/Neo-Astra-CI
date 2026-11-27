@@ -538,6 +538,7 @@ pub enum Literal {
     Float(String),
     String(String),
     Bytes(Vec<u8>),
+    Character(char),
     Bool(bool),
     Unit,
 }

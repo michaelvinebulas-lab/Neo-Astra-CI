@@ -2497,7 +2497,8 @@ impl<'a> Emitter<'a> {
             | Type::U32
             | Type::U64
             | Type::Usize
-            | Type::Isize => "0".into(),
+            | Type::Isize
+            | Type::Char => "0".into(),
             Type::Unit => "(NS_Unit){0}".into(),
             Type::Str => "(NS_Str){0}".into(),
             Type::Bytes => "(NS_Bytes){0}".into(),
@@ -2567,6 +2568,7 @@ impl<'a> Emitter<'a> {
             Literal::Float(raw) => raw.chars().filter(|c| *c != '_').collect::<String>(),
             Literal::String(value) => self.c_string_literal(value),
             Literal::Bytes(bytes) => self.c_bytes_literal(bytes),
+            Literal::Character(value) => format!("((uint32_t)0x{:X})", u32::from(*value)),
             Literal::Bool(b) => {
                 if *b {
                     "true".into()
@@ -3875,6 +3877,7 @@ impl<'a> Emitter<'a> {
             Type::F32 => "f32",
             Type::F64 => "f64",
             Type::Bool => "bool",
+            Type::Char => "char",
             Type::Str => "str",
             Type::Bytes => "bytes",
             Type::Unit => "unit",
@@ -4668,7 +4671,9 @@ impl<'a> Emitter<'a> {
                 self.match_struct(scrut, name, arms, target, result_ty)
             }
             Type::Tuple(_) => self.match_tuple(scrut, scrut_ty, arms, target, result_ty),
-            ty if ty.is_numeric() || matches!(ty, Type::Bool | Type::Str | Type::Bytes) => {
+            ty if ty.is_numeric()
+                || matches!(ty, Type::Bool | Type::Char | Type::Str | Type::Bytes) =>
+            {
                 self.match_literal(scrut, scrut_ty, arms, target, result_ty)
             }
             _ => {

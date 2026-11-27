@@ -3083,6 +3083,8 @@ class JavaScriptGenerator {
         const bytes = payloadOf(literal) as readonly number[];
         return `new Uint8Array([${bytes.join(", ")}])`;
       }
+      case "Character":
+        return JSON.stringify(String(payloadOf(literal)));
       case "Bool":
         return payloadOf(literal) === true ? "true" : "false";
       case "Unit":
@@ -4466,6 +4468,7 @@ function astTypeToTs(
         case "bool":
           return "boolean";
         case "str":
+        case "char":
           return "string";
         case "bytes":
           return "Uint8Array";
@@ -4529,6 +4532,7 @@ function semanticTypeToTs(
       case "Bool":
         return "boolean";
       case "Str":
+      case "Char":
         return "string";
       case "Bytes":
         return "Uint8Array";

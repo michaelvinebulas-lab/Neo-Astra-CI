@@ -103,6 +103,7 @@ extern void astra_print_isize(intptr_t x);
 extern void astra_print_f32(float x);
 extern void astra_print_f64(double x);
 extern void astra_print_bool(bool x);
+extern void astra_print_char(uint32_t code_point);
 extern void astra_print_str(NS_Str x);
 extern void astra_print_bytes(NS_Bytes x);
 extern void astra_print_unit(void);
@@ -120,6 +121,7 @@ extern void astra_println_isize(intptr_t x);
 extern void astra_println_f32(float x);
 extern void astra_println_f64(double x);
 extern void astra_println_bool(bool x);
+extern void astra_println_char(uint32_t code_point);
 extern void astra_println_str(NS_Str x);
 extern void astra_println_bytes(NS_Bytes x);
 extern void astra_println_unit(void);
@@ -395,6 +397,33 @@ void astra_print_isize(intptr_t x) { printf("%td", x); }
 void astra_print_f32(float x) { astra_write_f32(x); }
 void astra_print_f64(double x) { astra_write_f64(x); }
 void astra_print_bool(bool x) { fputs(x ? "true" : "false", stdout); }
+void astra_print_char(uint32_t code_point) {
+    unsigned char bytes[4];
+    size_t length = 0;
+    if (code_point <= 0x7F) {
+        bytes[0] = (unsigned char)code_point;
+        length = 1;
+    } else if (code_point <= 0x7FF) {
+        bytes[0] = (unsigned char)(0xC0 | (code_point >> 6));
+        bytes[1] = (unsigned char)(0x80 | (code_point & 0x3F));
+        length = 2;
+    } else if (code_point <= 0xFFFF && !(code_point >= 0xD800 && code_point <= 0xDFFF)) {
+        bytes[0] = (unsigned char)(0xE0 | (code_point >> 12));
+        bytes[1] = (unsigned char)(0x80 | ((code_point >> 6) & 0x3F));
+        bytes[2] = (unsigned char)(0x80 | (code_point & 0x3F));
+        length = 3;
+    } else if (code_point <= 0x10FFFF) {
+        bytes[0] = (unsigned char)(0xF0 | (code_point >> 18));
+        bytes[1] = (unsigned char)(0x80 | ((code_point >> 12) & 0x3F));
+        bytes[2] = (unsigned char)(0x80 | ((code_point >> 6) & 0x3F));
+        bytes[3] = (unsigned char)(0x80 | (code_point & 0x3F));
+        length = 4;
+    } else {
+        fputs("\xEF\xBF\xBD", stdout);
+        return;
+    }
+    fwrite(bytes, 1, length, stdout);
+}
 void astra_print_str(NS_Str x) { astra_write_str(x); }
 void astra_print_bytes(NS_Bytes x) {
     for (size_t i = 0; i < x.len; i++) { printf("%02x", x.data[i]); }
@@ -414,6 +443,7 @@ void astra_println_isize(intptr_t x) { astra_print_isize(x); putchar('\n'); }
 void astra_println_f32(float x) { astra_print_f32(x); putchar('\n'); }
 void astra_println_f64(double x) { astra_print_f64(x); putchar('\n'); }
 void astra_println_bool(bool x) { astra_print_bool(x); putchar('\n'); }
+void astra_println_char(uint32_t code_point) { astra_print_char(code_point); putchar('\n'); }
 void astra_println_str(NS_Str x) { astra_print_str(x); putchar('\n'); }
 void astra_println_bytes(NS_Bytes x) { astra_print_bytes(x); putchar('\n'); }
 void astra_println_unit(void) { astra_print_unit(); putchar('\n'); }

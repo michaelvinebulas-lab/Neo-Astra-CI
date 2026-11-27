@@ -16,6 +16,7 @@ pub enum Keyword {
     Abort,
     As,
     Break,
+    Char,
     Const,
     Continue,
     Default,
@@ -56,6 +57,7 @@ impl Keyword {
             Self::Abort => "abort",
             Self::As => "as",
             Self::Break => "break",
+            Self::Char => "char",
             Self::Const => "const",
             Self::Continue => "continue",
             Self::Default => "default",
@@ -143,6 +145,7 @@ pub enum TokenKind {
     Float,
     String,
     ByteString,
+    Character,
     RawSource,
     Keyword(Keyword),
     Punct(Punctuation),
@@ -257,6 +260,7 @@ impl<'a> Lexer<'a> {
                 '#' => self.invalid_line_comment(start),
                 '-' if self.starts_with("--") => self.invalid_line_comment(start),
                 '"' => self.string(start, false),
+                '\'' if self.edition == Edition::V0_2 => self.character(start),
                 'b' if self.starts_with("b\"") => self.string(start, true),
                 '0'..='9' => self.number(start),
                 character if is_identifier_start(character) => self.identifier(start),
@@ -451,6 +455,70 @@ impl<'a> Lexer<'a> {
         );
     }
 
+    fn character(&mut self, start: usize) {
+        self.bump();
+        let mut scalars = 0_usize;
+        let mut closed = false;
+
+        while let Some(character) = self.peek() {
+            match character {
+                '\'' => {
+                    self.bump();
+                    closed = true;
+                    break;
+                }
+                '\n' | '\r' => {
+                    self.diagnostic(
+                        "NS1003",
+                        "Unterminated character literal.",
+                        "Close the literal before the end of the line.",
+                        start,
+                        self.offset,
+                    );
+                    self.skip_to_newline();
+                    return;
+                }
+                '\\' => match self.escape(false) {
+                    EscapeOutcome::Continue => scalars += 1,
+                    EscapeOutcome::Unterminated => {
+                        self.diagnostic(
+                            "NS1003",
+                            "Unterminated character literal.",
+                            "Close the literal before the end of the line.",
+                            start,
+                            self.offset,
+                        );
+                        self.skip_to_newline();
+                        return;
+                    }
+                },
+                _ => {
+                    self.bump();
+                    scalars += 1;
+                }
+            }
+        }
+
+        if !closed {
+            self.diagnostic(
+                "NS1003",
+                "Unterminated character literal.",
+                "Add a closing quote.",
+                start,
+                self.offset,
+            );
+        } else if scalars != 1 {
+            self.diagnostic(
+                "NS1002",
+                "Character literal must contain exactly one Unicode scalar value.",
+                "Use one character or one escape, such as 'a' or '\\u{1F600}'.",
+                start,
+                self.offset,
+            );
+        }
+        self.push(TokenKind::Character, start);
+    }
+
     fn escape(&mut self, is_byte: bool) -> EscapeOutcome {
         let start = self.offset;
         self.bump();
@@ -460,7 +528,7 @@ impl<'a> Lexer<'a> {
         };
 
         match escaped {
-            '\\' | '"' | 'n' | 'r' | 't' | '0' => {
+            '\\' | '"' | '\'' | 'n' | 'r' | 't' | '0' => {
                 self.bump();
                 EscapeOutcome::Continue
             }
@@ -676,7 +744,9 @@ impl<'a> Lexer<'a> {
         let kind = if text == "_" {
             TokenKind::Punct(Punctuation::Underscore)
         } else if let Some(keyword) = keyword(text) {
-            if keyword == Keyword::Fail && self.edition != Edition::V0_2 {
+            if (keyword == Keyword::Fail || keyword == Keyword::Char)
+                && self.edition != Edition::V0_2
+            {
                 TokenKind::Identifier
             } else {
                 TokenKind::Keyword(keyword)
@@ -979,6 +1049,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "abort" => Keyword::Abort,
         "as" => Keyword::As,
         "break" => Keyword::Break,
+        "char" => Keyword::Char,
         "const" | "constant" => Keyword::Const,
         "continue" => Keyword::Continue,
         "default" => Keyword::Default,

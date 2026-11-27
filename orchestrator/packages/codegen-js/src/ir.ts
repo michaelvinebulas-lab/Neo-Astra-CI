@@ -52,6 +52,7 @@ export type SemanticType =
   | "Bool"
   | "Str"
   | "Bytes"
+  | "Char"
   | "Unit"
   | "Never"
   | "Error"
@@ -496,6 +497,7 @@ export type Literal =
   | { readonly Float: string }
   | { readonly String: string }
   | { readonly Bytes: readonly number[] }
+  | { readonly Character: string }
   | { readonly Bool: boolean }
   | "Unit";
 

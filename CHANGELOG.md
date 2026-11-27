@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Arrays and slices now have an infallible `slice(start, end)` method.
 - Edition-`0.2` integer bitwise operators `& | ^ << >>`, with `|` in expression
   position disambiguated from error-set unions.
+- Edition-`0.2` `char` type and single-scalar literals (`'a'`, `'\u{1F600}'`),
+  with equality and literal patterns in all three backends.
 - Generic struct initializers infer type arguments from field values.
 - Planning section for the `1.1.2` Phase 7 feature gaps: `if let`, ranges,
   bitwise operators, `char`, lambdas, and the complete suffix table.

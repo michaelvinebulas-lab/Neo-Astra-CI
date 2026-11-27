@@ -1828,6 +1828,7 @@ impl<'a> Checker<'a> {
             | Type::Bool
             | Type::Str
             | Type::Bytes
+            | Type::Char
             | Type::Unit => true,
             Type::Option(inner) => self.is_boundary_safe(inner),
             Type::Array(inner)
@@ -1960,6 +1961,9 @@ impl<'a> Checker<'a> {
             "bool" => return primitive_type(&arguments, Type::Bool, path.span, self),
             "str" => return primitive_type(&arguments, Type::Str, path.span, self),
             "bytes" => return primitive_type(&arguments, Type::Bytes, path.span, self),
+            "char" if self.options.edition == Edition::V0_2 => {
+                return primitive_type(&arguments, Type::Char, path.span, self);
+            }
             "Never" => return primitive_type(&arguments, Type::Never, path.span, self),
             "()" => return Type::Unit,
             "Option" => {
@@ -4025,7 +4029,9 @@ impl<'a> Checker<'a> {
         let shape = self.match_shape(&scrutinee.ty, &effect_types);
 
         let mut coverage = Coverage::default();
-        let mut result_type: Option<Type> = expected.cloned();
+        // Opaque expectations (notably `println`'s `Unknown` parameter) must not
+        // become the match result type; infer from the arms instead.
+        let mut result_type: Option<Type> = expected.filter(|ty| !ty.is_opaque()).cloned();
         let mut diverges = !arms.is_empty();
         let mut errors = Vec::new();
 
@@ -5018,6 +5024,7 @@ impl<'a> Checker<'a> {
             }
             ast::Literal::String(_) => Type::Str,
             ast::Literal::Bytes(_) => Type::Bytes,
+            ast::Literal::Character(_) => Type::Char,
             ast::Literal::Bool(_) => Type::Bool,
             ast::Literal::Unit => Type::Unit,
         }

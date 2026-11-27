@@ -24,6 +24,8 @@ pub enum Type {
     Bool,
     Str,
     Bytes,
+    /// A single Unicode scalar value (edition `0.2`).
+    Char,
     Unit,
     Never,
     Option(Box<Type>),
@@ -233,6 +235,7 @@ impl fmt::Display for Type {
             Self::Bool => formatter.write_str("bool"),
             Self::Str => formatter.write_str("str"),
             Self::Bytes => formatter.write_str("bytes"),
+            Self::Char => formatter.write_str("char"),
             Self::Unit => formatter.write_str("()"),
             Self::Never => formatter.write_str("Never"),
             Self::Option(inner) => write!(formatter, "Option<{inner}>"),

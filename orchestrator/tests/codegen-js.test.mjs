@@ -2815,3 +2815,24 @@ test("javascript backend runs bitwise operators", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "8\n10\n5\n16\n16\nRETURN=0");
 });
+
+test("javascript backend runs char literals", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let letter = 'a'",
+      "    println(letter)",
+      "    println('\\u{1F600}')",
+      '    println(match letter { \'a\' => "first", _ => "other" })',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /😀/);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "a\n😀\nfirst\nRETURN=0");
+});

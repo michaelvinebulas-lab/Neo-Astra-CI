@@ -9,6 +9,7 @@ fn decode_escape(inner: &str, index: &mut usize, is_byte: bool) -> Result<Vec<u8
     match character {
         '\\' => Ok(vec![b'\\']),
         '"' => Ok(vec![b'"']),
+        '\'' => Ok(vec![b'\'']),
         'n' => Ok(vec![b'\n']),
         'r' => Ok(vec![b'\r']),
         't' => Ok(vec![b'\t']),
@@ -86,6 +87,19 @@ pub fn decode_string_literal(raw: &str) -> Result<String, String> {
     }
 
     Ok(output)
+}
+
+/// Decodes a validated character literal token such as `'a'` or `'\u{1F600}'`.
+pub fn decode_char_literal(raw: &str) -> Result<char, String> {
+    let decoded = decode_string_literal(&format!("\"{}\"", &raw[1..raw.len() - 1]))?;
+    let mut characters = decoded.chars();
+    let value = characters
+        .next()
+        .ok_or_else(|| "empty character literal".to_owned())?;
+    if characters.next().is_some() {
+        return Err("character literal contains more than one scalar value".to_owned());
+    }
+    Ok(value)
 }
 
 /// Decodes a validated byte-string literal token such as `b"abc"`.

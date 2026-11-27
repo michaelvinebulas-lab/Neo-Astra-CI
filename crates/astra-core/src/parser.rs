@@ -11,7 +11,7 @@ use crate::edition::Edition;
 use crate::lexer::{
     Comment, Keyword, LexOptions, LexResult, Punctuation, Token, TokenKind, lex_with_options,
 };
-use crate::literal::{decode_byte_literal, decode_string_literal};
+use crate::literal::{decode_byte_literal, decode_char_literal, decode_string_literal};
 use crate::span::Span;
 
 /// Result of a parser operation.
@@ -2394,6 +2394,20 @@ impl Parser {
                     span: token.span,
                 }
             }
+            TokenKind::Character => {
+                self.bump();
+                let value = match decode_char_literal(&token.text) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        self.error(INVALID, message, token.span, "Fix the character literal.");
+                        '\0'
+                    }
+                };
+                Expr {
+                    kind: ExprKind::Literal(Literal::Character(value)),
+                    span: token.span,
+                }
+            }
             TokenKind::Keyword(Keyword::True) => {
                 self.bump();
                 Expr {
@@ -3150,6 +3164,9 @@ impl Parser {
             TokenKind::Float => Some(Literal::Float(token.text.clone())),
             TokenKind::String => decode_string_literal(&token.text).ok().map(Literal::String),
             TokenKind::ByteString => decode_byte_literal(&token.text).ok().map(Literal::Bytes),
+            TokenKind::Character => decode_char_literal(&token.text)
+                .ok()
+                .map(Literal::Character),
             TokenKind::Keyword(Keyword::True) => Some(Literal::Bool(true)),
             TokenKind::Keyword(Keyword::False) => Some(Literal::Bool(false)),
             _ => None,
@@ -3270,6 +3287,17 @@ impl Parser {
                 kind: TypeKind::Path(self.parse_type_path()),
                 span: self.span_from(start),
             },
+            TokenKind::Keyword(Keyword::Char) if self.edition == Edition::V0_2 => {
+                self.bump();
+                Type {
+                    kind: TypeKind::Path(TypePath {
+                        segments: vec!["char".to_owned()],
+                        arguments: Vec::new(),
+                        span: token.span,
+                    }),
+                    span: token.span,
+                }
+            }
             _ => {
                 self.error(
                     INVALID_TYPE,

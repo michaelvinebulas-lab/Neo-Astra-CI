@@ -403,6 +403,20 @@ const parityPrograms = [
     ].join("\n"),
   },
   {
+    name: "char and scalar literals",
+    edition: "0.2",
+    source: [
+      "pub fn main() -> i32 {",
+      "    let letter = 'a'",
+      "    println(letter)",
+      "    println('\\u{1F600}')",
+      '    println(match letter { \'a\' => "first", _ => "other" })',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  },
+  {
     name: "struct field mutation",
     source: [
       "struct User {",

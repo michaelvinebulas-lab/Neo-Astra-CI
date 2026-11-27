@@ -482,6 +482,7 @@ impl TyCtxt {
             Type::Bool => "bool".into(),
             Type::Str => "Str".into(),
             Type::Bytes => "Bytes".into(),
+            Type::Char => "Char".into(),
             Type::Unit => "Unit".into(),
             Type::Never => "Never".into(),
             Type::Error => "Error".into(),
@@ -565,6 +566,7 @@ impl TyCtxt {
             Type::Bool => "bool".into(),
             Type::Str => "NS_Str".into(),
             Type::Bytes => "NS_Bytes".into(),
+            Type::Char => "uint32_t".into(),
             // Range values are consumed by `emit_for` and never stored.
             Type::Range(_) => "NS_Unit".into(),
             Type::Unit => "NS_Unit".into(),

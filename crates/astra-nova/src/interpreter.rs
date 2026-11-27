@@ -2076,6 +2076,7 @@ impl Interpreter {
             }
             ast::Literal::String(value) => Value::string(value.clone()),
             ast::Literal::Bytes(value) => Value::Bytes(Rc::new(RefCell::new(value.clone()))),
+            ast::Literal::Character(value) => Value::string(value.to_string()),
             ast::Literal::Bool(value) => Value::Bool(*value),
             ast::Literal::Unit => Value::Unit,
         }
@@ -2295,6 +2296,7 @@ impl Interpreter {
             }
             ast::Literal::String(value) => Value::string(value.clone()),
             ast::Literal::Bytes(value) => Value::Bytes(Rc::new(RefCell::new(value.clone()))),
+            ast::Literal::Character(value) => Value::string(value.to_string()),
             ast::Literal::Bool(value) => Value::Bool(*value),
             ast::Literal::Unit => Value::Unit,
         }

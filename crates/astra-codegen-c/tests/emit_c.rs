@@ -4216,6 +4216,27 @@ pub fn main() -> i32 {
 }
 
 #[test]
+fn char_literals_print_utf8() {
+    let src = r#"
+pub fn main() -> i32 {
+    println('a')
+    println('\u{1F600}')
+    let letter = 'a'
+    println(match letter { 'a' => "first", _ => "other" })
+    return 0
+}
+"#;
+    let out = compile_and_emit_v02(src);
+    assert!(out.contains("astra_println_char"), "{out}");
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "char run failed: {stderr}");
+    assert_eq!(stdout.replace("\r\n", "\n"), "a\n😀\nfirst\n");
+}
+
+#[test]
 fn bitwise_operators_run() {
     let src = r#"
 pub fn main() -> i32 {

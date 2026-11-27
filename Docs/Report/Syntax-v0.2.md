@@ -336,7 +336,8 @@ same time:
 3. bitwise `& | ^ << >>`, with `|` in expression position and error-set
    position documented as separate contexts — implemented for edition `0.2`
    in `1.1.2`; see [`Phase7-bitwise.md`](Phase7-bitwise.md).
-4. `char` and scalar literals
+4. `char` and scalar literals — implemented for edition `0.2` in `1.1.2`; see
+   [`Phase7-char.md`](Phase7-char.md).
 5. lambdas (`fn(x) => expr`), including parameter-type inference and capture
    rules; `spawn` blocks already capture, so define move/borrow and mutation
    permissions in the same RFC

@@ -1024,9 +1024,28 @@ impl<'a> Formatter<'a> {
             Literal::Integer(value) | Literal::Float(value) => self.output.push_str(value),
             Literal::String(value) => self.write_string(value),
             Literal::Bytes(value) => self.write_bytes(value),
+            Literal::Character(value) => self.write_char(*value),
             Literal::Bool(value) => self.output.push_str(if *value { "true" } else { "false" }),
             Literal::Unit => self.output.push_str("()"),
         }
+    }
+
+    fn write_char(&mut self, value: char) {
+        self.output.push('\'');
+        match value {
+            '\\' => self.output.push_str("\\\\"),
+            '\'' => self.output.push_str("\\'"),
+            '\n' => self.output.push_str("\\n"),
+            '\r' => self.output.push_str("\\r"),
+            '\t' => self.output.push_str("\\t"),
+            '\0' => self.output.push_str("\\0"),
+            character if character.is_control() => {
+                self.output
+                    .push_str(&format!("\\u{{{:X}}}", character as u32));
+            }
+            character => self.output.push(character),
+        }
+        self.output.push('\'');
     }
 
     fn write_string(&mut self, value: &str) {
