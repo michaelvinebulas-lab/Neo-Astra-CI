@@ -340,7 +340,8 @@ same time:
    [`Phase7-char.md`](Phase7-char.md).
 5. lambdas (`fn(x) => expr`), including parameter-type inference and capture
    rules; `spawn` blocks already capture, so define move/borrow and mutation
-   permissions in the same RFC
+   permissions in the same RFC — implemented for edition `0.2` in `1.1.2` as
+   immediate calls lowered to blocks; see [`Phase7-lambdas.md`](Phase7-lambdas.md).
 6. complete integer/float suffix table
 
 These features add AST nodes and backend work. They are **not** part of the

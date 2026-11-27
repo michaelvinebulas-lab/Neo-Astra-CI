@@ -4216,6 +4216,29 @@ pub fn main() -> i32 {
 }
 
 #[test]
+fn lambdas_lower_to_blocks() {
+    let src = r#"
+pub fn main() -> i32 {
+    let offset = 10
+    let mut total = 0
+    println((fn(value) => value * 2)(21))
+    println((fn(x: i32, y: i32) => x + y)(1, 2))
+    println((fn(value) => value + offset)(5))
+    println((fn(value) => { println(value); value + 1 })(8))
+    println((fn(value) => { total = total + value; total })(3))
+    return 0
+}
+"#;
+    let out = compile_and_emit_v02(src);
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "lambda run failed: {stderr}");
+    assert_eq!(stdout.replace("\r\n", "\n"), "42\n3\n15\n8\n9\n3\n");
+}
+
+#[test]
 fn char_literals_print_utf8() {
     let src = r#"
 pub fn main() -> i32 {

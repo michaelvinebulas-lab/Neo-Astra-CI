@@ -2836,3 +2836,26 @@ test("javascript backend runs char literals", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "a\n😀\nfirst\nRETURN=0");
 });
+
+test("javascript backend lowers immediate lambdas to blocks", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let offset = 10",
+      "    let mut total = 0",
+      "    println((fn(value) => value * 2)(21))",
+      "    println((fn(x: i32, y: i32) => x + y)(1, 2))",
+      "    println((fn(value) => value + offset)(5))",
+      "    println((fn(value) => { println(value); value + 1 })(8))",
+      "    println((fn(value) => { total = total + value; total })(3))",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "42\n3\n15\n8\n9\n3\nRETURN=0");
+});

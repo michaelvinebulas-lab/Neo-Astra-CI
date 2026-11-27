@@ -417,6 +417,23 @@ const parityPrograms = [
     ].join("\n"),
   },
   {
+    name: "immediate lambdas",
+    edition: "0.2",
+    source: [
+      "pub fn main() -> i32 {",
+      "    let offset = 10",
+      "    let mut total = 0",
+      "    println((fn(value) => value * 2)(21))",
+      "    println((fn(x: i32, y: i32) => x + y)(1, 2))",
+      "    println((fn(value) => value + offset)(5))",
+      "    println((fn(value) => { println(value); value + 1 })(8))",
+      "    println((fn(value) => { total = total + value; total })(3))",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  },
+  {
     name: "struct field mutation",
     source: [
       "struct User {",

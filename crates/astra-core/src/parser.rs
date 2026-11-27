@@ -80,6 +80,8 @@ pub fn parse_with_comments_with_options(
         tokens,
         index: 0,
         diagnostics,
+        pending_lambda: None,
+        lambda_depth: 0,
         edition: options.edition,
         depth: 0,
         depth_reported: false,
@@ -133,10 +135,28 @@ fn suppress_cascades(diagnostics: Vec<Diagnostic>, source: &str) -> Vec<Diagnost
         .collect()
 }
 
+struct PendingLambda {
+    parameters: Vec<LambdaParameter>,
+    body: Box<Expr>,
+    span: Span,
+}
+
+struct LambdaParameter {
+    name: String,
+    ty: Option<Type>,
+    span: Span,
+}
+
 struct Parser {
     tokens: Vec<Token>,
     index: usize,
     diagnostics: Vec<Diagnostic>,
+    /// A lambda parsed by `parse_primary`, consumed by the immediately
+    /// following call in `parse_postfix`.
+    pending_lambda: Option<PendingLambda>,
+    /// Nesting depth of `parse_expression` only, used to report an unconsumed
+    /// lambda at the outermost expression.
+    lambda_depth: usize,
     /// Selected language edition; consumed by the v0.2 parser rules in Phase 3.
     #[allow(dead_code)]
     edition: Edition,
@@ -1688,11 +1708,28 @@ impl Parser {
 
     fn parse_expression(&mut self) -> Expr {
         self.depth += 1;
+        self.lambda_depth += 1;
         if self.depth > MAX_NESTING_DEPTH {
+            self.lambda_depth -= 1;
             return self.nesting_limit_expression();
         }
+        let depth = self.lambda_depth;
         let expression = self.parse_assignment();
         self.depth -= 1;
+        self.lambda_depth -= 1;
+        if depth == 1 && self.pending_lambda.is_some() {
+            let lambda = self.pending_lambda.take().expect("pending lambda");
+            self.error(
+                EXPECTED,
+                "A lambda must be invoked immediately.",
+                lambda.span,
+                "Write (fn(x) => body)(argument).",
+            );
+            return Expr {
+                kind: ExprKind::Literal(Literal::Unit),
+                span: lambda.span,
+            };
+        }
         expression
     }
 
@@ -2110,6 +2147,18 @@ impl Parser {
     fn parse_postfix(&mut self) -> Expr {
         let mut expression = self.parse_primary();
 
+        if let Some(lambda) = self.pending_lambda.take() {
+            if self.eat_punct(Punctuation::LParen) {
+                let arguments = self.parse_expression_list_after_open();
+                let span = Span::new(lambda.span.start, self.last_end());
+                expression = self.lower_lambda_call(lambda, arguments, span);
+            } else {
+                // Keep the pending lambda: it may be wrapped in parentheses,
+                // with the call appearing after the closing parenthesis.
+                self.pending_lambda = Some(lambda);
+            }
+        }
+
         loop {
             if self.edition == Edition::V0_2
                 && self.at(TokenKind::Newline)
@@ -2347,6 +2396,104 @@ impl Parser {
         expression
     }
 
+    /// Parses `fn(x: T, y) => body` and records it for `parse_postfix`, which
+    /// requires an immediately following call and lowers the pair to a block.
+    fn parse_lambda(&mut self) -> Expr {
+        let start = self.bump().span.start;
+        self.expect_punct(Punctuation::LParen, "'('");
+        let mut parameters = Vec::new();
+        if !self.at_punct(Punctuation::RParen) {
+            loop {
+                let token = self.peek().clone();
+                let name = if self.at(TokenKind::Identifier) {
+                    self.bump().text
+                } else {
+                    self.error_current(
+                        EXPECTED,
+                        "Expected a lambda parameter name.",
+                        "Write fn(name) => expression.",
+                    );
+                    String::new()
+                };
+                let ty = if self.eat_punct(Punctuation::Colon) {
+                    Some(self.parse_type())
+                } else {
+                    None
+                };
+                parameters.push(LambdaParameter {
+                    name,
+                    ty,
+                    span: token.span,
+                });
+                if !self.eat_punct(Punctuation::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+            }
+        }
+        self.expect_punct(Punctuation::RParen, "')'");
+        self.expect_punct(Punctuation::FatArrow, "'=>'");
+        self.skip_continuation_newlines();
+        let body = Box::new(self.parse_assignment());
+        let span = Span::new(start, body.span.end);
+        self.pending_lambda = Some(PendingLambda {
+            parameters,
+            body,
+            span,
+        });
+        Expr {
+            kind: ExprKind::Identifier("__lambda".to_owned()),
+            span,
+        }
+    }
+
+    /// Lowers `(fn(x, y) => body)(a, b)` to `{ let x = a; let y = b; body }`.
+    fn lower_lambda_call(
+        &mut self,
+        lambda: PendingLambda,
+        arguments: Vec<Expr>,
+        span: Span,
+    ) -> Expr {
+        let mut statements = Vec::new();
+        let body = lambda.body;
+        let body_span = body.span;
+        let arity = lambda.parameters.len();
+        if arguments.len() != arity {
+            self.error(
+                EXPECTED,
+                format!(
+                    "Lambda expects {arity} argument(s), but {} were provided.",
+                    arguments.len()
+                ),
+                span,
+                "Match the lambda parameter list.",
+            );
+        }
+        for (index, parameter) in lambda.parameters.into_iter().enumerate() {
+            let value = arguments.get(index).cloned().unwrap_or(Expr {
+                kind: ExprKind::Literal(Literal::Unit),
+                span: parameter.span,
+            });
+            statements.push(Stmt {
+                kind: StmtKind::Let {
+                    mutable: false,
+                    name: parameter.name,
+                    ty: parameter.ty,
+                    value,
+                },
+                span: parameter.span,
+            });
+        }
+        statements.push(Stmt {
+            kind: StmtKind::Expr(*body),
+            span: body_span,
+        });
+        Expr {
+            kind: ExprKind::Block(Block { statements, span }),
+            span,
+        }
+    }
+
     fn parse_primary(&mut self) -> Expr {
         let token = self.peek().clone();
         let start = token.span.start;
@@ -2453,6 +2600,7 @@ impl Parser {
             TokenKind::Keyword(Keyword::Abort) => {
                 self.parse_message_expression(|message| ExprKind::Abort { message })
             }
+            TokenKind::Keyword(Keyword::Fn) if self.edition == Edition::V0_2 => self.parse_lambda(),
             _ => {
                 let (message, hint) =
                     if self.edition == Edition::V0_2 && is_binary_operator_token(&token.kind) {
@@ -2495,6 +2643,13 @@ impl Parser {
         }
 
         let first = self.parse_expression();
+        if matches!(&first.kind, ExprKind::Identifier(name) if name == "__lambda") {
+            // The call belongs to the parenthesized lambda, so extend its span
+            // to the opening parenthesis for the lowered block.
+            if let Some(lambda) = self.pending_lambda.as_mut() {
+                lambda.span = Span::new(start, lambda.span.end);
+            }
+        }
         self.skip_newlines();
 
         if self.eat_punct(Punctuation::Comma) {

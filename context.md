@@ -2,10 +2,10 @@
 
 **Snapshot:** 2026-11-27
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** private `master` at the Phase 7 `char` commit (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized `1.1.1` tree
+**Branch:** private `master` at the Phase 7 lambda commit (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized `1.1.1` tree
 **Published release:** `1.1.1` (tag `v1.1.1` -> public `868007e`)
 **Next release:** `1.1.2` - Phase 7 feature gaps behind the edition-`0.2` boundary
-**Current state:** `if let` / `while let`, ranges, bitwise operators, and `char` implemented; lambdas and suffix table queued
+**Current state:** `if let` / `while let`, ranges, bitwise operators, `char`, and lambdas implemented; suffix table queued
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.
@@ -260,12 +260,15 @@ lead/user-owned leftover remains:
    `Docs/Report/Phase7-bitwise.md`).
 4. `char` and scalar literals are done for edition `0.2` with equality, literal
    patterns, and all three backends (see `Docs/Report/Phase7-char.md`).
-5. Next: lambdas and the complete suffix table, each with a design note before
+5. Immediate lambdas are done for edition `0.2`, lowered to scoped blocks with
+   inferred/annotated parameters and lexical captures; stored closures remain
+   deferred (see `Docs/Report/Phase7-lambdas.md`).
+6. Next: the complete integer/float suffix table, with a design note before
    implementation.
-6. Add conformance and serialization-contract tests for each new construct.
-7. Re-create npm trusted publishers immediately before the `1.1.2` release;
+7. Add conformance and serialization-contract tests for each new construct.
+8. Re-create npm trusted publishers immediately before the `1.1.2` release;
    the `1.1.1` configs are validated already but expire after two days.
-8. The V2 C++20 orchestrator rewrite is a later track; see
+9. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
    isolated JS/TS bridge until C++ parity is proven.
 
@@ -338,5 +341,5 @@ Last known results at this snapshot:
 - Do not commit Kilo's uncommitted code, the pre-existing untracked files, or
   the active `Docs/Report/Task.md` log without review.
 - `1.1.1` contains the v0.2 cleanup only. The `1.1.2` tree adds `if let` /
-  `while let`, ranges, bitwise operators, and `char`; the remaining Phase 7 gaps
-  are not shipped.
+  `while let`, ranges, bitwise operators, `char`, and immediate lambdas; the
+  remaining Phase 7 gaps are not shipped.
