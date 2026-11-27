@@ -2792,3 +2792,26 @@ test("javascript backend runs exclusive and inclusive ranges", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "2\n2\nRETURN=9");
 });
+
+test("javascript backend runs bitwise operators", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    println(0b1100 & 0b1010)",
+      "    println(0b1000 | 0b0010)",
+      "    println(0b1010 ^ 0b1111)",
+      "    println(1 << 4)",
+      "    println(256 >> 4)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, / << /);
+  assert.match(generated.code, / >> /);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "8\n10\n5\n16\n16\nRETURN=0");
+});

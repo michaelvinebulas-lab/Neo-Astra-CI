@@ -2725,6 +2725,48 @@ impl<'a> Checker<'a> {
                 }
                 ExprInfo::value(left_info.ty).with_errors(errors)
             }
+            ast::BinaryOp::BitAnd
+            | ast::BinaryOp::BitOr
+            | ast::BinaryOp::BitXor
+            | ast::BinaryOp::Shl
+            | ast::BinaryOp::Shr => {
+                let integer_expected = expected.filter(|ty| ty.is_integer());
+                let (left_info, right_info) =
+                    if is_numeric_literal(left) && !is_numeric_literal(right) {
+                        let right_info = self.check_expr(right, integer_expected);
+                        let left_info = self.check_expr(left, Some(&right_info.ty));
+                        (left_info, right_info)
+                    } else {
+                        let left_info = self.check_expr(left, integer_expected);
+                        let right_info = self.check_expr(right, Some(&left_info.ty));
+                        (left_info, right_info)
+                    };
+                let errors = merge_effects(&left_info.errors, &right_info.errors);
+                if left_info.ty == Type::Never || right_info.ty == Type::Never {
+                    return ExprInfo {
+                        ty: Type::Never,
+                        errors,
+                    };
+                }
+                if !left_info.ty.is_integer() || !right_info.ty.is_integer() {
+                    if !left_info.ty.is_opaque() && !right_info.ty.is_opaque() {
+                        self.error(
+                            INVALID_OPERANDS,
+                            format!(
+                                "Bitwise operator requires integer operands, found '{}' and '{}'.",
+                                left_info.ty, right_info.ty
+                            ),
+                            span,
+                            "Bitwise operators are only defined for integers.",
+                        );
+                    }
+                    return ExprInfo::value(Type::Error).with_errors(errors);
+                }
+                if !left_info.ty.accepts(&right_info.ty) && !left_info.ty.is_opaque() {
+                    self.type_mismatch(&left_info.ty, &right_info.ty, span);
+                }
+                ExprInfo::value(left_info.ty).with_errors(errors)
+            }
             ast::BinaryOp::Equal | ast::BinaryOp::NotEqual => {
                 let left_info = self.check_expr(left, None);
                 let right_info = self.check_expr(right, Some(&left_info.ty));

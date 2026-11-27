@@ -1323,21 +1323,25 @@ fn expression_precedence(kind: &ExprKind) -> u8 {
             BinaryOp::And => 3,
             BinaryOp::Equal | BinaryOp::NotEqual => 4,
             BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 5,
-            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::AddWrap | BinaryOp::SubtractWrap => 6,
+            BinaryOp::BitOr => 6,
+            BinaryOp::BitXor => 7,
+            BinaryOp::BitAnd => 8,
+            BinaryOp::Shl | BinaryOp::Shr => 9,
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::AddWrap | BinaryOp::SubtractWrap => 10,
             BinaryOp::Multiply
             | BinaryOp::Divide
             | BinaryOp::Remainder
             | BinaryOp::MultiplyWrap
-            | BinaryOp::DivideWrap => 7,
+            | BinaryOp::DivideWrap => 11,
         },
-        ExprKind::Unary { .. } => 8,
+        ExprKind::Unary { .. } => 12,
         ExprKind::Call { .. }
         | ExprKind::Index { .. }
         | ExprKind::Member { .. }
         | ExprKind::TypeArguments { .. }
         | ExprKind::Propagate(_)
-        | ExprKind::StructInit { .. } => 9,
-        _ => 10,
+        | ExprKind::StructInit { .. } => 13,
+        _ => 14,
     }
 }
 
@@ -1360,6 +1364,11 @@ fn binary_operator(operator: BinaryOp) -> &'static str {
         BinaryOp::GreaterEqual => ">=",
         BinaryOp::And => "&&",
         BinaryOp::Or => "||",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+        BinaryOp::Shl => "<<",
+        BinaryOp::Shr => ">>",
     }
 }
 

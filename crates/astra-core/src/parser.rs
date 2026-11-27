@@ -1831,6 +1831,115 @@ impl Parser {
         expression
     }
 
+    /// `|` is bitwise-or here; error sets consume `|` in their own parser
+    /// before expression parsing begins.
+    fn parse_bit_or(&mut self) -> Expr {
+        let mut expression = self.parse_bit_xor();
+
+        while self.edition == Edition::V0_2 && self.eat_punct(Punctuation::Pipe) {
+            self.skip_continuation_newlines();
+            let right = self.parse_bit_xor();
+            let span = Span::new(expression.span.start, right.span.end);
+            expression = Expr {
+                kind: ExprKind::Binary {
+                    operator: BinaryOp::BitOr,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        expression
+    }
+
+    fn parse_bit_xor(&mut self) -> Expr {
+        let mut expression = self.parse_bit_and();
+
+        while self.edition == Edition::V0_2 && self.eat_punct(Punctuation::Caret) {
+            self.skip_continuation_newlines();
+            let right = self.parse_bit_and();
+            let span = Span::new(expression.span.start, right.span.end);
+            expression = Expr {
+                kind: ExprKind::Binary {
+                    operator: BinaryOp::BitXor,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        expression
+    }
+
+    fn parse_bit_and(&mut self) -> Expr {
+        let mut expression = self.parse_shift();
+
+        while self.edition == Edition::V0_2 && self.eat_punct(Punctuation::Amp) {
+            self.skip_continuation_newlines();
+            let right = self.parse_shift();
+            let span = Span::new(expression.span.start, right.span.end);
+            expression = Expr {
+                kind: ExprKind::Binary {
+                    operator: BinaryOp::BitAnd,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        expression
+    }
+
+    /// Shifts are recognized as two adjacent `<` / `>` tokens so closing
+    /// nested generic arguments (`Option<Result<i32, str>>`) still parse.
+    fn parse_shift(&mut self) -> Expr {
+        let mut expression = self.parse_additive();
+
+        loop {
+            let operator = if self.edition != Edition::V0_2 {
+                None
+            } else {
+                let current = self.peek();
+                let next = self.peek_at(1);
+                let adjacent = next.is_some_and(|token| token.span.start == current.span.end);
+                if adjacent
+                    && current.kind == TokenKind::Punct(Punctuation::Lt)
+                    && next.is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Lt))
+                {
+                    Some(BinaryOp::Shl)
+                } else if adjacent
+                    && current.kind == TokenKind::Punct(Punctuation::Gt)
+                    && next.is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Gt))
+                {
+                    Some(BinaryOp::Shr)
+                } else {
+                    None
+                }
+            };
+            let Some(operator) = operator else {
+                break;
+            };
+            self.bump();
+            self.bump();
+            self.skip_continuation_newlines();
+            let right = self.parse_additive();
+            let span = Span::new(expression.span.start, right.span.end);
+            expression = Expr {
+                kind: ExprKind::Binary {
+                    operator,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        expression
+    }
+
     fn parse_equality(&mut self) -> Expr {
         let mut expression = self.parse_comparison();
 
@@ -1864,7 +1973,7 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Expr {
-        let mut expression = self.parse_additive();
+        let mut expression = self.parse_bit_or();
 
         loop {
             let operator = if self.eat_punct(Punctuation::Lt) {
@@ -1884,7 +1993,7 @@ impl Parser {
             };
             self.skip_continuation_newlines();
 
-            let right = self.parse_additive();
+            let right = self.parse_bit_or();
             let span = Span::new(expression.span.start, right.span.end);
             expression = Expr {
                 kind: ExprKind::Binary {
@@ -3589,6 +3698,9 @@ fn is_binary_operator_token(kind: &TokenKind) -> bool {
                 | Punctuation::Gt
                 | Punctuation::GtEq
                 | Punctuation::AmpAmp
+                | Punctuation::Amp
+                | Punctuation::Pipe
+                | Punctuation::Caret
                 | Punctuation::PipePipe
                 | Punctuation::Eq
         )

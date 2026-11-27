@@ -3199,7 +3199,13 @@ class JavaScriptGenerator {
       (INTEGER_TAGS.has(tag) ||
         (this.ir.integerPolicy === "arbitrary" && USIZE_TAGS.has(tag)))
     ) {
-      const wrap = data.operator.endsWith("Wrap");
+      const wrap =
+        data.operator.endsWith("Wrap") ||
+        data.operator === "BitAnd" ||
+        data.operator === "BitOr" ||
+        data.operator === "BitXor" ||
+        data.operator === "Shl" ||
+        data.operator === "Shr";
       const operator = data.operator.replace(/Wrap$/, "");
       return this.emitIntegerBinary(tag, operator, left, right, wrap, span);
     }
@@ -3296,6 +3302,21 @@ class JavaScriptGenerator {
           this.useHelper("rem");
           raw = `$rem(${left}, ${right})`;
         }
+        break;
+      case "BitAnd":
+        raw = `(${left} & ${right})`;
+        break;
+      case "BitOr":
+        raw = `(${left} | ${right})`;
+        break;
+      case "BitXor":
+        raw = `(${left} ^ ${right})`;
+        break;
+      case "Shl":
+        raw = `(${left} << ${right})`;
+        break;
+      case "Shr":
+        raw = `(${left} >> ${right})`;
         break;
       default:
         this.unsupported(span, `Unsupported integer operator '${operator}'.`);

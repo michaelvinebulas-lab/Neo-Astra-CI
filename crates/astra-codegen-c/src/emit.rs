@@ -1,4 +1,4 @@
-﻿//! The C17 emitter.
+//! The C17 emitter.
 //!
 //! Lowers a checked module (AST + HIR + annotations) to a single self-contained
 //! C17 translation unit. The emitter is a typed source-to-source backend over
@@ -2743,6 +2743,21 @@ impl<'a> Emitter<'a> {
                 } else {
                     format!("({l} {sym} {r})")
                 }
+            }
+            BinaryOp::BitAnd
+            | BinaryOp::BitOr
+            | BinaryOp::BitXor
+            | BinaryOp::Shl
+            | BinaryOp::Shr => {
+                let symbol = match op {
+                    BinaryOp::BitAnd => "&",
+                    BinaryOp::BitOr => "|",
+                    BinaryOp::BitXor => "^",
+                    BinaryOp::Shl => "<<",
+                    BinaryOp::Shr => ">>",
+                    _ => unreachable!("bitwise arm"),
+                };
+                format!("({l} {symbol} {r})")
             }
             BinaryOp::Add
             | BinaryOp::Subtract

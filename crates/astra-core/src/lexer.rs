@@ -109,6 +109,7 @@ pub enum Punctuation {
     Gt,
     GtEq,
     AmpAmp,
+    Amp,
     PipePipe,
     Bang,
     Eq,
@@ -129,6 +130,7 @@ pub enum Punctuation {
     RBrace,
     At,
     Pipe,
+    Caret,
     Question,
     Underscore,
 }
@@ -854,11 +856,26 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('&') {
                     self.bump();
                     one(self, Punctuation::AmpAmp);
+                } else if self.edition == Edition::V0_2 {
+                    one(self, Punctuation::Amp);
                 } else {
                     self.diagnostic(
                         "NS1005",
                         "Unexpected character '&'.",
                         "Use && for logical and.",
+                        start,
+                        self.offset,
+                    );
+                }
+            }
+            '^' => {
+                if self.edition == Edition::V0_2 {
+                    one(self, Punctuation::Caret);
+                } else {
+                    self.diagnostic(
+                        "NS1005",
+                        "Unexpected character '^'.",
+                        "Bitwise xor is available in edition 0.2.",
                         start,
                         self.offset,
                     );

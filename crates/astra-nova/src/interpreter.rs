@@ -822,7 +822,12 @@ impl Interpreter {
             | ast::BinaryOp::AddWrap
             | ast::BinaryOp::SubtractWrap
             | ast::BinaryOp::MultiplyWrap
-            | ast::BinaryOp::DivideWrap => self.numeric_binary(operator, left, right, span)?,
+            | ast::BinaryOp::DivideWrap
+            | ast::BinaryOp::BitAnd
+            | ast::BinaryOp::BitOr
+            | ast::BinaryOp::BitXor
+            | ast::BinaryOp::Shl
+            | ast::BinaryOp::Shr => self.numeric_binary(operator, left, right, span)?,
             ast::BinaryOp::And | ast::BinaryOp::Or => unreachable!("handled above"),
         };
         Ok(Flow::Value(value))
@@ -2357,6 +2362,38 @@ impl Interpreter {
     ) -> Result<Value, Fault> {
         match (left, right) {
             (Value::Integer(left), Value::Integer(right)) => {
+                if matches!(
+                    operator,
+                    ast::BinaryOp::BitAnd
+                        | ast::BinaryOp::BitOr
+                        | ast::BinaryOp::BitXor
+                        | ast::BinaryOp::Shl
+                        | ast::BinaryOp::Shr
+                ) {
+                    let value = match operator {
+                        ast::BinaryOp::BitAnd => left.value & right.value,
+                        ast::BinaryOp::BitOr => left.value | right.value,
+                        ast::BinaryOp::BitXor => left.value ^ right.value,
+                        ast::BinaryOp::Shl | ast::BinaryOp::Shr => {
+                            let shift = u32::try_from(right.value).map_err(|_| {
+                                self.panic("shift count must be non-negative", span)
+                            })?;
+                            let bits = integer_bits(&left.ty).unwrap_or(128);
+                            if shift >= bits {
+                                0
+                            } else if operator == ast::BinaryOp::Shl {
+                                left.value << shift
+                            } else {
+                                left.value >> shift
+                            }
+                        }
+                        _ => unreachable!("bitwise arm"),
+                    };
+                    return Ok(Value::Integer(Integer::new(
+                        normalize_integer(value, &left.ty),
+                        left.ty,
+                    )));
+                }
                 let mode = if matches!(
                     operator,
                     ast::BinaryOp::AddWrap

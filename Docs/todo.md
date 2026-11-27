@@ -247,7 +247,8 @@ language is frozen.
       `Docs/Report/Phase7-if-let.md`).
 - [x] Ranges with `for`, iterator, and slice semantics (edition `0.2`; see
       `Docs/Report/Phase7-ranges.md`).
-- [ ] Bitwise `& | ^ << >>`, documenting expression `|` vs error-set `|`.
+- [x] Bitwise `& | ^ << >>`, documenting expression `|` vs error-set `|` (see
+      `Docs/Report/Phase7-bitwise.md`).
 - [ ] Add `char` plus scalar literals.
 - [ ] Add lambda syntax (`fn(x) => expr`) with parameter inference and capture
       rules for `spawn` and lambdas.
@@ -287,10 +288,9 @@ Each item needs a decision record covering AST nodes, runtime semantics, and
 all three backends before implementation starts.
 
 - [x] Write design notes for landed slices in `Docs/Report/`:
-      `Phase7-if-let.md` and `Phase7-ranges.md`. Still owed: bitwise operators
-      (`& | ^ << >>`) with `|` in expression vs error-set positions, `char` and
-      scalar literals, lambdas (`fn(x) => expr`) with inference and capture
-      rules, and the complete integer/float suffix table.
+      `Phase7-if-let.md`, `Phase7-ranges.md`, and `Phase7-bitwise.md`. Still
+      owed: `char` and scalar literals, lambdas (`fn(x) => expr`) with inference
+      and capture rules, and the complete integer/float suffix table.
 - [ ] Decide the edition gate: each feature must be additive under `0.2` or
       land behind a new edition marker; never silently change the frozen grammar.
 - [ ] Add parser/lexer tests and conformance cases for every new spelling,

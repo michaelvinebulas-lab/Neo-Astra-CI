@@ -434,7 +434,12 @@ export type BinaryOp =
   | "Greater"
   | "GreaterEqual"
   | "And"
-  | "Or";
+  | "Or"
+  | "BitAnd"
+  | "BitOr"
+  | "BitXor"
+  | "Shl"
+  | "Shr";
 
 export interface MapEntry {
   readonly key: Expr;

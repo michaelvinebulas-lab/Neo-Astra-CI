@@ -334,7 +334,8 @@ same time:
    desugaring to `match` / `while`; see [`Phase7-if-let.md`](Phase7-if-let.md).
 2. ranges (`a..b`, `a..=b`) with `for`, iterators, and slicing
 3. bitwise `& | ^ << >>`, with `|` in expression position and error-set
-   position documented as separate contexts
+   position documented as separate contexts — implemented for edition `0.2`
+   in `1.1.2`; see [`Phase7-bitwise.md`](Phase7-bitwise.md).
 4. `char` and scalar literals
 5. lambdas (`fn(x) => expr`), including parameter-type inference and capture
    rules; `spawn` blocks already capture, so define move/borrow and mutation

@@ -4216,6 +4216,28 @@ pub fn main() -> i32 {
 }
 
 #[test]
+fn bitwise_operators_run() {
+    let src = r#"
+pub fn main() -> i32 {
+    println(0b1100 & 0b1010)
+    println(0b1000 | 0b0010)
+    println(0b1010 ^ 0b1111)
+    println(1 << 4)
+    println(256 >> 4)
+    return 0
+}
+"#;
+    let out = compile_and_emit_v02(src);
+    assert!(out.contains(" << ") && out.contains(" >> "), "{out}");
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "bitwise run failed: {stderr}");
+    assert_eq!(stdout.replace("\r\n", "\n"), "8\n10\n5\n16\n16\n");
+}
+
+#[test]
 fn exclusive_range_for_lowers_to_c_loop() {
     let src = r#"
 pub fn main() -> i32 {
