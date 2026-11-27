@@ -2,10 +2,10 @@
 
 **Snapshot:** 2026-11-27
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** private `master` at the Phase 7 suffix-table commit (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized `1.1.1` tree
+**Branch:** private `master` at the pending `1.1.2` bump (not yet pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized `1.1.1` tree
 **Published release:** `1.1.1` (tag `v1.1.1` -> public `868007e`)
-**Next release:** `1.1.2` - Phase 7 feature gaps behind the edition-`0.2` boundary
-**Current state:** all six Phase 7 slices implemented; `1.1.2` release prep is next
+**Pending release:** `1.1.2` - all six Phase 7 slices behind the edition-`0.2` boundary
+**Current state:** all six slices implemented; local lockstep version bump to `1.1.2` applied and gates green; publish steps remain
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.
@@ -220,7 +220,10 @@ cases (`scopes.ns`, `turbofish.ns`) and the principal-owned release steps.
   publish. `v1.1.0` is a failed immutable tag with no published artifacts —
   its release stopped at a packaging smoke fixture that used edition `2026`.
 - The npm token exposed during `1.0.0` has been revoked; the next principal
-  action is only to re-create trusted publishers before a future release.
+  action is to re-create trusted publishers before the `1.1.2` publish using
+  `npx -y npm@latest trust github <pkg> --file release.yml --repository luminousvalentine-cell/Neo-Astra --allow-publish --yes`.
+  The local lockstep bump to `1.1.2` is applied but nothing is tagged, pushed to
+  `origin`, or published.
 
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.
   npm has all four `1.0.1` packages with SLSA provenance. The old CI repo and
@@ -265,9 +268,9 @@ lead/user-owned leftover remains:
    deferred (see `Docs/Report/Phase7-lambdas.md`).
 6. The complete integer/float suffix table is done for edition `0.2`; edition
    `0.1` keeps `u8` only (see `Docs/Report/Phase7-suffixes.md`).
-7. Release prep: bump to `1.1.2`, refresh the sanitized public `source` tree,
-   re-create npm trusted publishers, and cut the release. Do not push the
-   private tree to `origin`.
+7. Release prep: the `1.1.2` bump is applied locally; push to `ci`, refresh the
+   sanitized public `source` tree, re-create npm trusted publishers, then tag
+   and cut the release. Do not push the private tree to `origin`.
 8. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
    isolated JS/TS bridge until C++ parity is proven.
@@ -340,6 +343,6 @@ Last known results at this snapshot:
   tree, revoke tokens, or delete `NPM_TOKEN` without principal approval.
 - Do not commit Kilo's uncommitted code, the pre-existing untracked files, or
   the active `Docs/Report/Task.md` log without review.
-- `1.1.1` contains the v0.2 cleanup only. The `1.1.2` tree adds all six Phase 7
-  slices: `if let` / `while let`, ranges, bitwise operators, `char`, immediate
-  lambdas, and the numeric suffix table. It is not published yet.
+- `1.1.1` contains the v0.2 cleanup only. The pending `1.1.2` tree adds all six
+  Phase 7 slices: `if let` / `while let`, ranges, bitwise operators, `char`,
+  immediate lambdas, and the numeric suffix table. It is not published yet.

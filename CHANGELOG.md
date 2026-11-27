@@ -6,6 +6,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-11-27
+
 ### Added
 - Edition-`0.2` syntax `if let` / `while let`, desugared to `match` / `while`
   so all backends inherit existing pattern semantics.
