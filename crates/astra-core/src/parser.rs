@@ -2643,12 +2643,12 @@ impl Parser {
         }
 
         let first = self.parse_expression();
-        if matches!(&first.kind, ExprKind::Identifier(name) if name == "__lambda") {
+        if matches!(&first.kind, ExprKind::Identifier(name) if name == "__lambda")
+            && let Some(lambda) = self.pending_lambda.as_mut()
+        {
             // The call belongs to the parenthesized lambda, so extend its span
             // to the opening parenthesis for the lowered block.
-            if let Some(lambda) = self.pending_lambda.as_mut() {
-                lambda.span = Span::new(start, lambda.span.end);
-            }
+            lambda.span = Span::new(start, lambda.span.end);
         }
         self.skip_newlines();
 
