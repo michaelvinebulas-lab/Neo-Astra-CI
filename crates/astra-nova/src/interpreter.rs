@@ -7,6 +7,7 @@ use std::rc::Rc;
 use astra_core::ast;
 use astra_core::checker::CheckResult;
 use astra_core::hir;
+use astra_core::literal::{float_suffix, integer_suffix};
 use astra_core::mode::Mode;
 use astra_core::span::Span;
 use astra_core::types::Type;
@@ -2055,11 +2056,10 @@ impl Interpreter {
     fn pattern_literal(&self, literal: &ast::Literal, expected: &Value) -> Value {
         match literal {
             ast::Literal::Integer(text) => {
-                let (raw, suffix_u8) = strip_u8_suffix(text);
+                let (raw, suffix) = integer_suffix(text);
                 let ty = match expected {
                     Value::Integer(integer) => integer.ty.clone(),
-                    _ if suffix_u8 => Type::U8,
-                    _ => Type::I32,
+                    _ => suffix.unwrap_or(Type::I32),
                 };
                 let value = parse_integer(raw)
                     .and_then(|value| i128::try_from(value).ok())
@@ -2067,11 +2067,12 @@ impl Interpreter {
                 Value::Integer(Integer::new(value, ty))
             }
             ast::Literal::Float(text) => {
+                let (raw, suffix) = float_suffix(text);
                 let ty = match expected {
                     Value::Float(float) => float.ty.clone(),
-                    _ => Type::F64,
+                    _ => suffix.unwrap_or(Type::F64),
                 };
-                let value = text.replace('_', "").parse::<f64>().unwrap_or(0.0);
+                let value = raw.replace('_', "").parse::<f64>().unwrap_or(0.0);
                 Value::Float(Float::new(value, ty))
             }
             ast::Literal::String(value) => Value::string(value.clone()),
@@ -2270,28 +2271,31 @@ impl Interpreter {
     fn literal(&self, literal: &ast::Literal, span: Span) -> Value {
         match literal {
             ast::Literal::Integer(text) => {
-                let (raw, suffix_u8) = strip_u8_suffix(text);
+                let (raw, suffix) = integer_suffix(text);
                 let ty = self
                     .current()
                     .annotations
                     .get(&span)
                     .filter(|ty| ty.is_integer())
                     .cloned()
-                    .unwrap_or(if suffix_u8 { Type::U8 } else { Type::I32 });
+                    .or(suffix)
+                    .unwrap_or(Type::I32);
                 let value = parse_integer(raw)
                     .and_then(|value| i128::try_from(value).ok())
                     .unwrap_or(0);
                 Value::Integer(Integer::new(value, ty))
             }
             ast::Literal::Float(text) => {
+                let (raw, suffix) = float_suffix(text);
                 let ty = self
                     .current()
                     .annotations
                     .get(&span)
                     .filter(|ty| ty.is_float())
                     .cloned()
+                    .or(suffix)
                     .unwrap_or(Type::F64);
-                let value = text.replace('_', "").parse::<f64>().unwrap_or(0.0);
+                let value = raw.replace('_', "").parse::<f64>().unwrap_or(0.0);
                 Value::Float(Float::new(value, ty))
             }
             ast::Literal::String(value) => Value::string(value.clone()),
@@ -2627,14 +2631,6 @@ fn builtin_function(name: &str) -> Option<BuiltinFunction> {
         "dbg" => Some(BuiltinFunction::Dbg),
         "assert" => Some(BuiltinFunction::Assert),
         _ => None,
-    }
-}
-
-fn strip_u8_suffix(text: &str) -> (&str, bool) {
-    if let Some(raw) = text.strip_suffix("u8") {
-        (raw, true)
-    } else {
-        (text, false)
     }
 }
 

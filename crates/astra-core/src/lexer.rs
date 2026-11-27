@@ -622,7 +622,7 @@ impl<'a> Lexer<'a> {
                     self.offset,
                 );
             }
-            self.byte_suffix();
+            self.integer_suffix();
             self.push(TokenKind::Integer, start);
             return;
         }
@@ -647,7 +647,7 @@ impl<'a> Lexer<'a> {
                     self.offset,
                 );
             }
-            self.byte_suffix();
+            self.integer_suffix();
             self.push(TokenKind::Integer, start);
             return;
         }
@@ -709,23 +709,59 @@ impl<'a> Lexer<'a> {
         }
 
         if is_float {
+            if !tuple_index {
+                self.float_suffix();
+            }
             self.push(TokenKind::Float, start);
         } else {
             if !tuple_index {
-                self.byte_suffix();
+                self.integer_suffix();
             }
             self.push(TokenKind::Integer, start);
         }
     }
 
-    fn byte_suffix(&mut self) {
-        if self.starts_with("u8")
-            && self
-                .peek_n(2)
-                .is_none_or(|character| !is_identifier_continue(character))
-        {
-            self.bump();
-            self.bump();
+    fn integer_suffix(&mut self) {
+        const V02: &[&str] = &[
+            "usize", "isize", "i16", "i32", "i64", "u16", "u32", "u64", "i8", "u8",
+        ];
+        const V01: &[&str] = &["u8"];
+        let suffixes = if self.edition == Edition::V0_2 {
+            V02
+        } else {
+            V01
+        };
+        for suffix in suffixes {
+            let length = suffix.len();
+            if self.starts_with(suffix)
+                && self
+                    .peek_n(length)
+                    .is_none_or(|character| !is_identifier_continue(character))
+            {
+                for _ in 0..length {
+                    self.bump();
+                }
+                return;
+            }
+        }
+    }
+
+    fn float_suffix(&mut self) {
+        if self.edition != Edition::V0_2 {
+            return;
+        }
+        for suffix in ["f32", "f64"] {
+            let length = suffix.len();
+            if self.starts_with(suffix)
+                && self
+                    .peek_n(length)
+                    .is_none_or(|character| !is_identifier_continue(character))
+            {
+                for _ in 0..length {
+                    self.bump();
+                }
+                return;
+            }
         }
     }
 

@@ -4216,6 +4216,38 @@ pub fn main() -> i32 {
 }
 
 #[test]
+fn numeric_suffixes_run() {
+    let src = r#"
+pub fn main() -> i32 {
+    println(1i8)
+    println(2i16)
+    println(3i32)
+    println(4i64)
+    println(5isize)
+    println(6u8)
+    println(7u16)
+    println(8u32)
+    println(9u64)
+    println(10usize)
+    println(1.5f32)
+    println(2.5f64)
+    return 0
+}
+"#;
+    let out = compile_and_emit_v02(src);
+    assert!(!out.contains("10usize"), "{out}");
+    assert_clang_ok(&out);
+    let Some((ok, stdout, stderr)) = hosted_build_and_run(&out) else {
+        return;
+    };
+    assert!(ok, "suffix run failed: {stderr}");
+    assert_eq!(
+        stdout.replace("\r\n", "\n"),
+        "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n1.5\n2.5\n"
+    );
+}
+
+#[test]
 fn lambdas_lower_to_blocks() {
     let src = r#"
 pub fn main() -> i32 {

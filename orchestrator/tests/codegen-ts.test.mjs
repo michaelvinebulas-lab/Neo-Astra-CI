@@ -434,6 +434,28 @@ const parityPrograms = [
     ].join("\n"),
   },
   {
+    name: "numeric suffixes",
+    edition: "0.2",
+    source: [
+      "pub fn main() -> i32 {",
+      "    println(1i8)",
+      "    println(2i16)",
+      "    println(3i32)",
+      "    println(4i64)",
+      "    println(5isize)",
+      "    println(6u8)",
+      "    println(7u16)",
+      "    println(8u32)",
+      "    println(9u64)",
+      "    println(10usize)",
+      "    println(1.5f32)",
+      "    println(2.5f64)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  },
+  {
     name: "struct field mutation",
     source: [
       "struct User {",

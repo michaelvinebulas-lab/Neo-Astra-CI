@@ -2556,16 +2556,35 @@ impl<'a> Emitter<'a> {
     fn literal_c(&mut self, lit: &Literal) -> String {
         match lit {
             Literal::Integer(raw) => {
+                const SUFFIXES: &[&str] = &[
+                    "usize", "isize", "i16", "i32", "i64", "u16", "u32", "u64", "i8", "u8",
+                ];
                 let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
-                // Strip a trailing `u8` byte-literal suffix if present.
-
-                cleaned
-                    .strip_suffix("u8")
-                    .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
-                    .unwrap_or(&cleaned)
-                    .to_string()
+                let mut digits = cleaned.as_str();
+                for suffix in SUFFIXES {
+                    if let Some(stripped) = digits.strip_suffix(suffix)
+                        && !stripped.is_empty()
+                    {
+                        digits = stripped;
+                        break;
+                    }
+                }
+                digits.to_string()
             }
-            Literal::Float(raw) => raw.chars().filter(|c| *c != '_').collect::<String>(),
+            Literal::Float(raw) => {
+                const SUFFIXES: &[&str] = &["f32", "f64"];
+                let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
+                let mut digits = cleaned.as_str();
+                for suffix in SUFFIXES {
+                    if let Some(stripped) = digits.strip_suffix(suffix)
+                        && !stripped.is_empty()
+                    {
+                        digits = stripped;
+                        break;
+                    }
+                }
+                digits.to_string()
+            }
             Literal::String(value) => self.c_string_literal(value),
             Literal::Bytes(bytes) => self.c_bytes_literal(bytes),
             Literal::Character(value) => format!("((uint32_t)0x{:X})", u32::from(*value)),

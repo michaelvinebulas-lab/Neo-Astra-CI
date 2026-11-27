@@ -2859,3 +2859,34 @@ test("javascript backend lowers immediate lambdas to blocks", () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, "42\n3\n15\n8\n9\n3\nRETURN=0");
 });
+
+test("javascript backend runs numeric suffixes", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    println(1i8)",
+      "    println(2i16)",
+      "    println(3i32)",
+      "    println(4i64)",
+      "    println(5isize)",
+      "    println(6u8)",
+      "    println(7u16)",
+      "    println(8u32)",
+      "    println(9u64)",
+      "    println(10usize)",
+      "    println(1.5f32)",
+      "    println(2.5f64)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n1.5\n2.5\nRETURN=0",
+  );
+});

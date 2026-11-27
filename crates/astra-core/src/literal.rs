@@ -1,4 +1,41 @@
-//! Decoding of validated string and byte-string tokens.
+//! Decoding of validated literals and numeric suffixes.
+
+use crate::types::Type;
+
+const INTEGER_SUFFIXES: &[(&str, Type)] = &[
+    ("usize", Type::Usize),
+    ("isize", Type::Isize),
+    ("i16", Type::I16),
+    ("i32", Type::I32),
+    ("i64", Type::I64),
+    ("u16", Type::U16),
+    ("u32", Type::U32),
+    ("u64", Type::U64),
+    ("i8", Type::I8),
+    ("u8", Type::U8),
+];
+
+const FLOAT_SUFFIXES: &[(&str, Type)] = &[("f32", Type::F32), ("f64", Type::F64)];
+
+/// Splits a suffixed integer literal into its digits and resolved type.
+pub fn integer_suffix(text: &str) -> (&str, Option<Type>) {
+    for (suffix, ty) in INTEGER_SUFFIXES {
+        if let Some(raw) = text.strip_suffix(suffix) {
+            return (raw, Some(ty.clone()));
+        }
+    }
+    (text, None)
+}
+
+/// Splits a suffixed float literal into its digits and resolved type.
+pub fn float_suffix(text: &str) -> (&str, Option<Type>) {
+    for (suffix, ty) in FLOAT_SUFFIXES {
+        if let Some(raw) = text.strip_suffix(suffix) {
+            return (raw, Some(ty.clone()));
+        }
+    }
+    (text, None)
+}
 
 fn decode_escape(inner: &str, index: &mut usize, is_byte: bool) -> Result<Vec<u8>, String> {
     let Some(character) = inner[*index..].chars().next() else {

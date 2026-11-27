@@ -254,7 +254,8 @@ language is frozen.
 - [x] Add lambda syntax (`fn(x) => expr`) with parameter inference and capture
       rules for `spawn` and lambdas (edition `0.2`; immediate calls lowered to
       blocks; see `Docs/Report/Phase7-lambdas.md`).
-- [ ] Complete integer/float suffix table.
+- [x] Complete integer/float suffix table (edition `0.2`; see
+      `Docs/Report/Phase7-suffixes.md`).
 
 ### Migration and freeze
 
@@ -289,10 +290,9 @@ language is frozen.
 Each item needs a decision record covering AST nodes, runtime semantics, and
 all three backends before implementation starts.
 
-- [x] Write design notes for landed slices in `Docs/Report/`:
+- [x] Write design notes for all landed Phase 7 slices in `Docs/Report/`:
       `Phase7-if-let.md`, `Phase7-ranges.md`, `Phase7-bitwise.md`,
-      `Phase7-char.md`, and `Phase7-lambdas.md`. Still owed: the complete
-      integer/float suffix table.
+      `Phase7-char.md`, `Phase7-lambdas.md`, and `Phase7-suffixes.md`.
 - [ ] Decide the edition gate: each feature must be additive under `0.2` or
       land behind a new edition marker; never silently change the frozen grammar.
 - [ ] Add parser/lexer tests and conformance cases for every new spelling,

@@ -1,0 +1,21 @@
+// edition: 0.2
+// purpose: complete integer and float numeric suffix table
+
+pub fn main() -> i32 {
+    println(1i8)
+    println(2i16)
+    println(3i32)
+    println(4i64)
+    println(5isize)
+    println(6u8)
+    println(7u16)
+    println(8u32)
+    println(9u64)
+    println(10usize)
+    println(1.5f32)
+    println(2.5f64)
+    println(0xFFu16)
+    println(0b1010i8)
+    println(1e3f64)
+    return 0
+}

@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with equality and literal patterns in all three backends.
 - Edition-`0.2` immediate lambdas (`fn(x) => expr`), lowered to scoped blocks
   with inferred or annotated parameters and lexical captures.
+- Complete edition-`0.2` numeric suffix table: `i8/i16/i32/i64/isize`,
+  `u8/u16/u32/u64/usize`, and `f32/f64` on decimal, hex, binary, and exponent
+  literals.
 - Generic struct initializers infer type arguments from field values.
 - Planning section for the `1.1.2` Phase 7 feature gaps: `if let`, ranges,
   bitwise operators, `char`, lambdas, and the complete suffix table.

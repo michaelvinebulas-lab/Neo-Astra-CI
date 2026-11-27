@@ -11,6 +11,7 @@ use crate::ast;
 use crate::diagnostic::Diagnostic;
 use crate::edition::Edition;
 use crate::hir;
+use crate::literal::{float_suffix, integer_suffix};
 use crate::mode::Mode;
 use crate::parser::{ParseOptions, parse_with_options};
 use crate::resolver::resolve_module;
@@ -4980,14 +4981,10 @@ impl<'a> Checker<'a> {
     ) -> Type {
         match literal {
             ast::Literal::Integer(text) => {
-                let (raw, suffix_u8) = strip_u8_suffix(text);
-                let actual = if suffix_u8 {
-                    Type::U8
-                } else if expected.is_some_and(Type::is_integer) {
-                    expected.cloned().unwrap_or(Type::I32)
-                } else {
-                    Type::I32
-                };
+                let (raw, suffix) = integer_suffix(text);
+                let actual = suffix
+                    .or_else(|| expected.filter(|ty| ty.is_integer()).cloned())
+                    .unwrap_or(Type::I32);
 
                 if let Some(value) = parse_integer(raw)
                     && !integer_fits(value, &actual)
@@ -5002,12 +4999,11 @@ impl<'a> Checker<'a> {
                 actual
             }
             ast::Literal::Float(text) => {
-                let actual = if expected.is_some_and(|ty| ty.is_float()) {
-                    expected.cloned().unwrap_or(Type::F64)
-                } else {
-                    Type::F64
-                };
-                let raw = text.replace('_', "");
+                let (suffixed, suffix) = float_suffix(text);
+                let actual = suffix
+                    .or_else(|| expected.filter(|ty| ty.is_float()).cloned())
+                    .unwrap_or(Type::F64);
+                let raw = suffixed.replace('_', "");
                 if let Ok(value) = raw.parse::<f64>()
                     && actual == Type::F32
                     && (value as f32).is_infinite()
@@ -5867,16 +5863,8 @@ fn integer_literal_value(expression: &ast::Expr) -> Option<usize> {
     let ast::ExprKind::Literal(ast::Literal::Integer(text)) = &expression.kind else {
         return None;
     };
-    let (raw, _) = strip_u8_suffix(text);
+    let (raw, _) = integer_suffix(text);
     usize::try_from(parse_integer(raw)?).ok()
-}
-
-fn strip_u8_suffix(text: &str) -> (&str, bool) {
-    if let Some(raw) = text.strip_suffix("u8") {
-        (raw, true)
-    } else {
-        (text, false)
-    }
 }
 
 fn parse_integer(text: &str) -> Option<u128> {

@@ -3069,7 +3069,7 @@ class JavaScriptGenerator {
         return value;
       }
       case "Float": {
-        const raw = stripUnderscores(String(payloadOf(literal)));
+        const raw = stripFloatSuffix(String(payloadOf(literal)));
         const type = this.typeAt(span);
         this.useHelper("float");
         if (type !== undefined && typeTag(type) === "F32") {
@@ -5012,9 +5012,36 @@ function stripUnderscores(value: string): string {
   return value.replaceAll("_", "");
 }
 
+const INTEGER_SUFFIXES = [
+  "usize",
+  "isize",
+  "i16",
+  "i32",
+  "i64",
+  "u16",
+  "u32",
+  "u64",
+  "i8",
+  "u8",
+] as const;
+
+const FLOAT_SUFFIXES = ["f32", "f64"] as const;
+
+function stripSuffix(value: string, suffixes: readonly string[]): string {
+  for (const suffix of suffixes) {
+    if (value.endsWith(suffix) && value.length > suffix.length) {
+      return value.slice(0, -suffix.length);
+    }
+  }
+  return value;
+}
+
 function stripIntegerSuffix(value: string): string {
-  const withoutSuffix = value.endsWith("u8") ? value.slice(0, -2) : value;
-  return stripUnderscores(withoutSuffix);
+  return stripUnderscores(stripSuffix(value, INTEGER_SUFFIXES));
+}
+
+function stripFloatSuffix(value: string): string {
+  return stripUnderscores(stripSuffix(value, FLOAT_SUFFIXES));
 }
 
 function jsName(name: string): string {

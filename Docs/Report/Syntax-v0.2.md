@@ -342,7 +342,8 @@ same time:
    rules; `spawn` blocks already capture, so define move/borrow and mutation
    permissions in the same RFC — implemented for edition `0.2` in `1.1.2` as
    immediate calls lowered to blocks; see [`Phase7-lambdas.md`](Phase7-lambdas.md).
-6. complete integer/float suffix table
+6. complete integer/float suffix table — implemented for edition `0.2` in
+   `1.1.2`; see [`Phase7-suffixes.md`](Phase7-suffixes.md).
 
 These features add AST nodes and backend work. They are **not** part of the
 v0.2 cleanup freeze, which shipped as `1.1.1`. They are queued for `1.1.2` and
