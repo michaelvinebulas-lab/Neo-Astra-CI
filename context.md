@@ -4,8 +4,8 @@
 **Working copy:** `C:\Projects\Neo Astra`
 **Branch:** private `master` at the 1.1.2 docs refresh (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized docs merge at `5208181`
 **Published release:** `1.1.2` (tag `v1.1.2` -> public `76d2d7d`)
-**Next release:** no release queued; Phase 7 is complete
-**Current state:** `1.1.2` is published on GitHub and npm; public docs were refreshed by PR #11 and merged
+**Next release:** `1.2.0` - browser playground (planned, not started)
+**Current state:** `1.1.2` is published on GitHub and npm; public docs were refreshed by PR #11 and merged; `1.2.0` plan drafted in `Docs/Report/Playground-v1.2.md` and awaiting principal approval
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.
@@ -15,13 +15,15 @@ for detail. Update this file when the working state changes materially.
 1. [`Docs/Report/Task.md`](Docs/Report/Task.md) - active lead/Kilo order, status,
    and the slice-4 acceptance review.
 2. [`Docs/state.md`](Docs/state.md) - project status, decisions, and recent log.
-3. [`Docs/Report/Syntax-v0.2.md`](Docs/Report/Syntax-v0.2.md) - accepted v0.2
+3. [`Docs/Report/Playground-v1.2.md`](Docs/Report/Playground-v1.2.md) - accepted
+   shape of the next release; do not start S1 before approval.
+4. [`Docs/Report/Syntax-v0.2.md`](Docs/Report/Syntax-v0.2.md) - accepted v0.2
    cleanup plan and Phase 0 boundary.
-4. [`Docs/spec-v0.1.md`](Docs/spec-v0.1.md) - the only normative language
+5. [`Docs/spec-v0.1.md`](Docs/spec-v0.1.md) - the only normative language
    contract today.
-5. [`Docs/todo.md`](Docs/todo.md) - the queue, including the new `1.0.1`
+6. [`Docs/todo.md`](Docs/todo.md) - the queue, including the new `1.0.1`
    section.
-6. [`Docs/release-checklist.md`](Docs/release-checklist.md) - release gates.
+7. [`Docs/release-checklist.md`](Docs/release-checklist.md) - release gates.
 
 ## Hard constraints
 

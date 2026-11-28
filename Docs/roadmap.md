@@ -117,9 +117,17 @@ new edition gate or an additive release.
 
 ### 1.2.0 - Browser playground
 
-- A static, browser-hosted playground: edit source and manifest, check, format,
-  view the AST and mode explanation, generate JavaScript, and run simple
-  programs in a sandboxed frame - no server required.
+- A static, browser-hosted playground in its own public repo
+  (`Neo-Astra-Playground`), deployed with GitHub Actions Pages on merge and on
+  `v1.2.0`. No server.
+- Full virtual project: multi-file tree, JSON and TOML manifests, compiler
+  panels (check, format, AST, explain), edition/canonical/migration controls,
+  per-module JS/TS generation, and a core-only sandboxed runner.
+- Browser-safe NoPM: local and virtual path packages, npm/Cargo live fetch with
+  integrity, and declared-only adapters for Git/PyPI/NuGet/OCI/sys.
+- This release is the first vision proof: playground diagnostics and generated
+  output must match the native CLI for the fixture set.
+- Plan: [`Report/Playground-v1.2.md`](Report/Playground-v1.2.md).
 
 ### 1.3.0 - High-level mode
 
