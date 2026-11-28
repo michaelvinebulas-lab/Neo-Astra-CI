@@ -60,6 +60,17 @@ Manifest mapping:
 2. Pin ownership and string encoding at the boundary with a second fixture.
 3. Keep `@script` as a separate, narrower proof — it is an escape hatch, not the FFI contract.
 
+## Task list
+
+- [ ] Verify the manifest `ffi` mapping is wired into the native backend.
+- [ ] Verify the manifest `ffi` mapping is wired into the TS backend.
+- [ ] Add the foreign-module fixture and native C ABI binding.
+- [ ] Add the TS ESM binding and compare stdout with native.
+- [ ] Add a missing-mapping rejection test for `NS7001`-range diagnostics.
+- [ ] Add a fallible foreign function to pin error mapping at the boundary.
+- [ ] Keep `@script` interop as a separate, narrower proof.
+- [ ] Record evidence and change status to `Proven`.
+
 ## Release code
 
 `PV-06`. Release target: TBD.

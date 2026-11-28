@@ -49,6 +49,18 @@ A test LSP client opens the same file and requests diagnostics and formatting.
 2. Add JSON snapshot tests for the compiler API.
 3. Wire the `1.2` playground panels to this proof so browser output is checked too.
 
+## Task list
+
+- [ ] Add JSON snapshot tests for `check --json`, `ast --json`, and `explain`.
+- [ ] Verify deterministic AST output across native and Wasm cores.
+- [ ] Verify `explain` names the exact source lines that forced the inferred mode.
+- [ ] Verify `fmt --check` is stable and idempotent.
+- [ ] Verify `canonical` and `migrate` agree on deprecated spellings.
+- [ ] Package the LSP into the release artifact.
+- [ ] Add an LSP client parity test against CLI diagnostics and formatting.
+- [ ] Wire the playground panels into this proof.
+- [ ] Record evidence and change status to `Proven`.
+
 ## Release code
 
 `PV-09`. Release target: TBD. `1.2` covers the tooling subset only.

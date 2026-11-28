@@ -70,6 +70,16 @@ A third file attempts a silent widening: a `@requires(core)` module that imports
 2. Verify that `app` and `web`/`system` claims in public docs match the checker, or narrow the claims.
 3. Record any capability that is accepted but not enforced as a gap under this code.
 
+## Task list
+
+- [ ] Add the core library, web consumer, system consumer, and widening fixture.
+- [ ] Run `check_project` and confirm the same library resolves under both modes.
+- [ ] Snapshot `astra explain` reason trees for web and system.
+- [ ] Verify the widening case fails with the documented `NS5001`/`NS5006` diagnostic.
+- [ ] Verify generated JS for the web consumer contains no system capability imports.
+- [ ] Reconcile the public mode matrix with what the checker actually enforces.
+- [ ] Record evidence and change status to `Proven`.
+
 ## Release code
 
 `PV-02`. Release target: TBD.

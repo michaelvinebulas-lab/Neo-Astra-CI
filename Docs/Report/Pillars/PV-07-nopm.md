@@ -50,6 +50,17 @@
 2. Add a target-scoped dependency fixture to conformance.
 3. Keep the optional gateway optional — no test may require it.
 
+## Task list
+
+- [ ] Implement or explicitly narrow the public claim for `nopm publish`.
+- [ ] Add the target-scoped dependency fixture with path, npm, and Cargo sources.
+- [ ] Verify `nopm install --locked` twice from a clean cache produces an identical lockfile.
+- [ ] Verify web includes only the npm dependency and native only the Cargo dependency.
+- [ ] Verify integrity hashes and lifecycle-script policy.
+- [ ] Verify no proof requires the optional gateway.
+- [ ] Add a publish/install/lock round-trip with a second project.
+- [ ] Record evidence and change status to `Proven`.
+
 ## Release code
 
 `PV-07`. Release target: TBD.

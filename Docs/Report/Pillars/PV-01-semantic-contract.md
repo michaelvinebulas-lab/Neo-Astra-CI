@@ -74,6 +74,16 @@ A fifth check runs the same source through the browser playground worker and dif
 2. Where outputs differ, classify: backend bug, missing policy plumbing, or spec ambiguity.
 3. Do not “fix” drift by weakening the assertion; fix the backend or record a spec change explicitly.
 
+## Task list
+
+- [ ] Add `conformance/vision/pv01-contract.ns` with integer overflow, UTF-8 length, and error-effect cases.
+- [ ] Add the wrapping/utf8 build manifests and freeze their expected values.
+- [ ] Capture stdout from JS, TS, native, and Nova into one diff report.
+- [ ] Classify every divergence as backend bug, missing policy plumbing, or spec ambiguity.
+- [ ] Add a playground-worker parity check against the native CLI output.
+- [ ] Record evidence in this file and change status to `Proven`.
+- [ ] Move any uncovered gaps into `Docs/todo.md` under `PV-01`.
+
 ## Release code
 
 `PV-01`. Release target: TBD.

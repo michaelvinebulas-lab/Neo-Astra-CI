@@ -1,8 +1,77 @@
 # Playground v1.2 — Plan
 
 **Status:** Draft for principal review
-**Progress:** S0 complete (2026-11-28): `canonical` JSON-RPC command and Worker protocol types landed. S1 (public repo) not started.
+**Progress:** S0 and S1 complete (2026-11-28): `canonical` command, Worker protocol types, public `Neo-Astra-Playground` repo, sanitized export script, Pages CI, and a live placeholder page. S2 (virtual project) not started.
 **Date:** 2026-11-28
+
+## Task list
+
+Mark items `[x]` only when the stated evidence exists. Do not mark a slice done from intent.
+
+### S0 - Protocol
+- [x] Add `canonical` request/response types to `astra-compiler-api`.
+- [x] Wire `canonical` into `process_json` and `initialize`.
+- [x] Add edition-gating tests for the canonical command.
+- [x] Add `orchestrator/packages/playground/src/protocol.ts` with Worker message shapes.
+- [x] Export `./protocol` from the playground package.
+- [x] Verify: `cargo test -p astra-compiler-api`, `cargo fmt --all --check`, `cargo clippy -p astra-compiler-api --all-targets -D warnings`, `npx tsc -b orchestrator/packages/playground`.
+
+### S1 - Repo skeleton
+- [x] Create `luminousvalentine-cell/Neo-Astra-Playground` as a public repo.
+- [x] Add `scripts/public-playground.mjs` that emits a sanitized standalone tree.
+- [x] Verify the export contains no private docs, tests, `.vscode/`, or `test_comparison/`.
+- [x] Use a dedicated local clone pinned to the playground remote; the private tree was never pushed to `origin`. (A Windows-executable pre-push hook was not portable, so the dedicated clone and branch protection carry this guard.)
+- [x] Add `playground.yml` CI: install `wasm32-unknown-unknown`, build `astra-wasm`, build the app.
+- [x] Add Pages deployment on `main` and `v*` tags.
+- [x] Deploy a placeholder page and verify it returns HTTP 200.
+- [x] Verify the served JS uses a relative import and `protocol.js` is present.
+
+### S2 - Virtual project
+- [ ] Implement the in-memory file tree with add/rename/delete.
+- [ ] Add JSON and TOML manifest parsing with strict key validation.
+- [ ] Add duplicate-JSON-key detection and wrong-manifest-key diagnostics.
+- [ ] Add the `core.lock.json` panel.
+- [ ] Verify the 10 manifest validation cases.
+
+### S3 - Compiler panels
+- [ ] Implement the Worker transport with timeout and termination.
+- [ ] Wire `check_project` and render per-module diagnostics with codes/spans/hints.
+- [ ] Wire per-file `format`, `ast`, and `explain`.
+- [ ] Verify diagnostics byte-match the native CLI fixture set.
+
+### S4 - Edition controls
+- [ ] Add the `0.1`/`0.2` edition toggle.
+- [ ] Wire the `canonical` command into a diagnostics panel.
+- [ ] Add `migrate` preview with a diff.
+- [ ] Add `migrate` apply with `changeEdition`.
+- [ ] Verify all `conformance/v0.2` migration pairs.
+
+### S5 - Codegen
+- [ ] Generate JS and TS per module from `ModuleIr`.
+- [ ] Compute relative `moduleSpecifiers` from virtual paths.
+- [ ] Verify generated ESM is byte-identical to CLI output for the fixture set.
+
+### S6 - Runner
+- [ ] Add the sandboxed iframe with a stdout/stderr `runtime` shim.
+- [ ] Enforce a hard wall-clock timeout by terminating the iframe/Worker.
+- [ ] Block DOM, network, storage, and filesystem access.
+- [ ] Verify runaway loops are killed and sample programs print correctly.
+
+### S7 - NoPM
+- [ ] Extract a browser-safe resolver core with no Node imports.
+- [ ] Implement virtual path packages and Git declaration/injection.
+- [ ] Implement explicit npm and Cargo fetch with Web Crypto integrity.
+- [ ] Add declare-only adapters for PyPI, NuGet, OCI, and `sys`.
+- [ ] Add honest CORS/upload fallback diagnostics.
+- [ ] Verify lockfile parity with native `nopm` fixtures.
+
+### S8 - Release
+- [ ] Lockstep bump all versions to `1.2.0`.
+- [ ] Update root docs, public overlay docs, and CHANGELOG.
+- [ ] Regenerate the sanitized source tree and open a public PR.
+- [ ] Complete the release checklist and publish `v1.2.0` artifacts.
+- [ ] Tag the playground repo `v1.2.0` and verify Pages serves it.
+- [ ] Mark this plan `Released` and check off every item above.
 **Release:** `1.2.0` (lockstep with the compiler)
 **Public repo:** `luminousvalentine-cell/Neo-Astra-Playground` (to be created after this plan is approved)
 

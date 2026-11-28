@@ -38,6 +38,16 @@ Reuse the `PV-01` contract program and add three deliberately broken files:
 2. Record existing divergences as gaps under this code; do not paper over them in the runner.
 3. Keep Nova out of release artifacts — this proof is about parity, not distribution.
 
+## Task list
+
+- [ ] Reuse the `PV-01` program and diff Nova stdout against native/JS.
+- [ ] Add parse-error, type-error, and mode-violation fixtures.
+- [ ] Diff Nova and `astra check` diagnostic codes, spans, severity, and hints.
+- [ ] Diff Nova and `astra explain` mode reasons.
+- [ ] Record every divergence as a gap under `PV-08`.
+- [ ] Add a conformance driver that captures both outputs automatically.
+- [ ] Record evidence and change status to `Proven`.
+
 ## Release code
 
 `PV-08`. Release target: TBD.

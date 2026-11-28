@@ -50,6 +50,16 @@ pub fn main() {
 2. Document the Web Worker mapping in the spec if it is currently implicit.
 3. Record any capability that exists only on native as a preview, not portable.
 
+## Task list
+
+- [ ] Add the tasks/channels fixture and the detached-task rejection fixture.
+- [ ] Compare native and JS/TS stdout for the passing fixture.
+- [ ] Add a browser runner that observes Web Worker creation.
+- [ ] Verify scope-exit cancellation is deterministic on both targets.
+- [ ] Document the Web Worker mapping in the spec if it is currently implicit.
+- [ ] Mark native-only concurrency capabilities as preview in public docs.
+- [ ] Record evidence and change status to `Proven`.
+
 ## Release code
 
 `PV-05`. Release target: TBD.

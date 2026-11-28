@@ -5,7 +5,7 @@
 **Branch:** private `master` at the 1.1.2 docs refresh (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized docs merge at `5208181`
 **Published release:** `1.1.2` (tag `v1.1.2` -> public `76d2d7d`)
 **Next release:** `1.2.0` - browser playground (planned, not started)
-**Current state:** `1.1.2` is published on GitHub and npm; public docs were refreshed by PR #11 and merged; `1.2.0` plan drafted in `Docs/Report/Playground-v1.2.md`; S0 (`canonical` command + Worker protocol) landed, S1 (public repo) not started
+**Current state:** `1.1.2` is published on GitHub and npm; public docs were refreshed by PR #11 and merged; `1.2.0` S0 and S1 are complete. Public playground repo: `luminousvalentine-cell/Neo-Astra-Playground`, Pages live at `https://luminousvalentine-cell.github.io/Neo-Astra-Playground/`. Next slice: S2 (virtual project).
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.

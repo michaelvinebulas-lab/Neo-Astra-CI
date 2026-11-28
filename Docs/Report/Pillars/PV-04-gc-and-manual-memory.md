@@ -61,6 +61,16 @@ pub fn main() {
 2. Add a memory behavior matrix to conformance: managed/manual × native/Wasm/JS × stress.
 3. Verify that `ASTRA_GC_STRESS=1` is part of CI for this proof.
 
+## Task list
+
+- [ ] Pin the illustrative manual-memory syntax against `spec-v0.1.md` §8.
+- [ ] Add the managed and manual fixtures with matching observable output.
+- [ ] Add the JS/TS manual-memory rejection fixture.
+- [ ] Run the GC stress variant and diff against the normal run.
+- [ ] Verify the managed/manual boundary rule (`NS6002` family) with a fixture.
+- [ ] Add a memory behavior matrix to conformance: managed/manual x target x stress.
+- [ ] Record evidence and change status to `Proven`.
+
 ## Release code
 
 `PV-04`. Release target: TBD.

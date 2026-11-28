@@ -52,6 +52,17 @@ Manifests:
 2. Add the missing API field and pin it with a compiler test.
 3. Add the three fixtures to conformance with expected stdout/metadata snapshots.
 
+## Task list
+
+- [ ] Audit every backend for `math.integers` and record a coverage table.
+- [ ] Audit every backend for `strings.model` and record a coverage table.
+- [ ] Add `stringsModel` to `CompileRequest`, `ProjectCheckRequest`, and `compiler-client` types if missing.
+- [ ] Add fixtures A (wrapping/utf8), B (safe-checked/utf8), and C (wrapping/native).
+- [ ] Verify `astra explain` reports the same mode for all three manifests.
+- [ ] Verify build metadata records the selected policy in all three runs.
+- [ ] Verify unsupported policy/target combinations reject explicitly.
+- [ ] Record evidence and change status to `Proven`.
+
 ## Release code
 
 `PV-03`. Release target: TBD.
