@@ -63,6 +63,14 @@ function setStatus(message: string, isError = false): void {
   shell.status.classList.toggle("error", isError);
 }
 
+window.addEventListener("error", (event) => {
+  setStatus(`Unexpected error: ${event.message}`, true);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  const reason = event.reason;
+  setStatus(`Unhandled failure: ${reason instanceof Error ? reason.message : String(reason)}`, true);
+});
+
 function guard(action: () => void): void {
   try {
     action();
@@ -182,7 +190,7 @@ shell.fileActions.append(
   button("+ build.toml", () => addFile("build.toml", "")),
 );
 
-shell.dataActions.append(
+shell.projectActions.append(
   button("Generate lockfile", () => {
     void generateLockfile(project.getFiles())
       .then((text) => {
@@ -206,17 +214,19 @@ shell.dataActions.append(
 
 // ── Panel tabs ───────────────────────────────────────────────────────────────
 
-type TabName = "diagnostics" | "compiler" | "output" | "lockfile";
-let activeTab: TabName = "diagnostics";
+type TabName = "guide" | "diagnostics" | "compiler" | "output" | "lockfile";
+let activeTab: TabName = "guide";
 
 const tabDefinitions: readonly { readonly key: TabName; readonly label: string }[] = [
+  { key: "guide", label: "Start here" },
   { key: "diagnostics", label: "Manifest" },
-  { key: "compiler", label: "Compiler" },
+  { key: "compiler", label: "Core" },
   { key: "output", label: "Output" },
   { key: "lockfile", label: "Lockfile" },
 ];
 
 const panels: Record<TabName, HTMLElement> = {
+  guide: shell.guide,
   diagnostics: element("div", "panel-body"),
   compiler: element("div", "panel-body"),
   output: element("div", "panel-body"),
@@ -226,7 +236,35 @@ panels.diagnostics.append(shell.diagnostics);
 panels.compiler.append(shell.compilerDiagnostics);
 panels.output.append(shell.expected, shell.output);
 panels.lockfile.append(shell.lockfile);
-shell.panels.append(panels.diagnostics, panels.compiler, panels.output, panels.lockfile);
+shell.panels.append(
+  panels.guide,
+  panels.diagnostics,
+  panels.compiler,
+  panels.output,
+  panels.lockfile,
+);
+
+shell.guide.append(
+  element("h3", undefined, "How to use this playground"),
+  element("p", undefined, "1. Pick a file on the left. Edit it in the editor."),
+  element("p", undefined, "2. Set edition and target in the strip above."),
+  element("p", undefined, "3. Press Check to validate, Compile to generate code, Run to execute JS."),
+  element("p", undefined, "4. Add expected stdout, then Run again to get pass/fail."),
+  element("p", undefined, "Advanced tools are under 'More tools' below the editor."),
+  button("Self-test compiler core", () => void selfTest()),
+);
+
+async function selfTest(): Promise<void> {
+  setStatus("Testing compiler core...");
+  try {
+    const info = await compiler.request<unknown>("initialize", {});
+    shell.output.textContent = JSON.stringify(info, null, 2);
+    showTab("output");
+    setStatus("Compiler core reachable.");
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
 
 function showTab(name: TabName): void {
   activeTab = name;
@@ -373,10 +411,8 @@ async function runCurrent(): Promise<void> {
   }
 }
 
-shell.actions.append(
-  button("Compile", () => void compileCurrent()),
-  button("Run", () => void runCurrent()),
-  button("Check project", () => {
+shell.primaryActions.append(
+  button("Check", () => {
     void perform<ProjectCheckResult>(
       "Check project",
       "check_project",
@@ -386,7 +422,12 @@ shell.actions.append(
         showTab("output");
       },
     );
-  }),
+  }, "Validate the whole project"),
+  button("Compile", () => void compileCurrent(), "Generate JS or TS for the selected target"),
+  button("Run", () => void runCurrent(), "Run generated JS in the sandbox"),
+);
+
+shell.advancedActions.append(
   button("Format", () => {
     const source = activeSource();
     if (source === undefined) return;

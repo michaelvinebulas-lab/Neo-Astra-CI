@@ -46,15 +46,17 @@ export interface Shell {
   readonly settings: HTMLDivElement;
   readonly fileList: HTMLUListElement;
   readonly fileActions: HTMLDivElement;
-  readonly dataActions: HTMLDivElement;
+  readonly projectActions: HTMLDivElement;
   readonly activePath: HTMLSpanElement;
+  readonly editorMeta: HTMLSpanElement;
+  readonly primaryActions: HTMLDivElement;
   readonly editor: HTMLTextAreaElement;
   readonly gutter: HTMLDivElement;
   readonly highlight: HTMLPreElement;
-  readonly editorMeta: HTMLSpanElement;
-  readonly actions: HTMLDivElement;
+  readonly advancedActions: HTMLDivElement;
   readonly tabs: HTMLDivElement;
   readonly panels: HTMLDivElement;
+  readonly guide: HTMLDivElement;
   readonly diagnostics: HTMLUListElement;
   readonly compilerDiagnostics: HTMLUListElement;
   readonly output: HTMLPreElement;
@@ -76,18 +78,21 @@ export function buildShell(root: HTMLElement): Shell {
   const layout = element("div", "layout");
 
   const sidebar = element("aside", "panel sidebar");
-  sidebar.append(element("h2", undefined, "Project files"));
+  sidebar.append(element("h2", undefined, "1. Project files"));
   const fileList = element("ul", "file-list");
   const fileActions = element("div", "button-row");
-  sidebar.append(fileList, element("h2", undefined, "Add file"), fileActions);
-  const dataActions = element("div", "button-row");
-  sidebar.append(element("h2", undefined, "Project"), dataActions);
+  sidebar.append(fileList, fileActions);
+  sidebar.append(element("h2", undefined, "Project actions"));
+  const projectActions = element("div", "button-row");
+  sidebar.append(projectActions);
 
   const editorPane = element("section", "panel editor-pane");
   const editorHeader = element("div", "editor-header");
   const activePath = element("span", "active-path");
+  const primaryActions = element("div", "button-row primary");
   const editorMeta = element("span", "editor-meta");
-  editorHeader.append(activePath, editorMeta);
+  editorHeader.append(activePath, primaryActions, editorMeta);
+
   const editorShell = element("div", "editor-shell");
   const gutter = element("div", "gutter");
   const highlight = element("pre", "highlight");
@@ -95,43 +100,47 @@ export function buildShell(root: HTMLElement): Shell {
   editor.spellcheck = false;
   editor.wrap = "off";
   editorShell.append(gutter, highlight, editor);
-  editorPane.append(editorHeader, editorShell);
+
+  const advanced = element("details", "advanced");
+  advanced.append(element("summary", undefined, "More tools"));
+  const advancedActions = element("div", "button-row");
+  advanced.append(advancedActions);
+  editorPane.append(editorHeader, editorShell, advanced);
 
   const infoPane = element("aside", "panel info-pane");
   const tabs = element("div", "tabs");
   const panels = element("div", "panels");
+  const guide = element("div", "panel-body guide");
   const diagnostics = element("ul", "diagnostics");
   const compilerDiagnostics = element("ul", "diagnostics");
   const output = element("pre", "panel-output", "Run an action to see output.");
   const expected = element("textarea", "expected", "");
-  expected.placeholder = "Expected stdout (optional). Run shows pass/fail when set.";
+  expected.placeholder = "Expected stdout (optional). Run reports pass/fail when set.";
   const lockfile = element("pre", "panel-output", "No lockfile generated yet.");
   infoPane.append(tabs, panels);
 
   layout.append(sidebar, editorPane, infoPane);
   root.append(layout);
 
-  const actionBar = element("div", "action-bar");
-  const actions = element("div", "button-row");
-  actionBar.append(actions);
-
   const status = element("div", "status");
-  root.append(actionBar, status);
+  root.append(status);
 
   return {
     badge,
     settings,
     fileList,
     fileActions,
-    dataActions,
+    projectActions,
     activePath,
+    editorMeta,
+    primaryActions,
     editor,
     gutter,
     highlight,
-    editorMeta,
-    actions,
+    advancedActions,
     tabs,
     panels,
+    guide,
     diagnostics,
     compilerDiagnostics,
     output,
