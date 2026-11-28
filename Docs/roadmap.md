@@ -125,8 +125,10 @@ new edition gate or an additive release.
   per-module JS/TS generation, and a core-only sandboxed runner.
 - Browser-safe NoPM: local and virtual path packages, npm/Cargo live fetch with
   integrity, and declared-only adapters for Git/PyPI/NuGet/OCI/sys.
-- This release is the first vision proof: playground diagnostics and generated
-  output must match the native CLI for the fixture set.
+- This release is the first **frontend/tooling proof**: playground diagnostics
+  and generated output must match the native CLI for the fixture set. It does
+  not close the semantic-contract pillars, which are tracked one per file in
+  [`Report/Pillars/`](Report/Pillars/README.md).
 - Plan: [`Report/Playground-v1.2.md`](Report/Playground-v1.2.md).
 
 ### 1.3.0 - High-level mode

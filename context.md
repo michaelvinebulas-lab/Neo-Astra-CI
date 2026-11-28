@@ -17,13 +17,15 @@ for detail. Update this file when the working state changes materially.
 2. [`Docs/state.md`](Docs/state.md) - project status, decisions, and recent log.
 3. [`Docs/Report/Playground-v1.2.md`](Docs/Report/Playground-v1.2.md) - accepted
    shape of the next release; do not start S1 before approval.
-4. [`Docs/Report/Syntax-v0.2.md`](Docs/Report/Syntax-v0.2.md) - accepted v0.2
+4. [`Docs/Report/Pillars/README.md`](Docs/Report/Pillars/README.md) - one proof
+   file per founding pillar (`PV-01`..`PV-09`); work these one at a time.
+5. [`Docs/Report/Syntax-v0.2.md`](Docs/Report/Syntax-v0.2.md) - accepted v0.2
    cleanup plan and Phase 0 boundary.
-5. [`Docs/spec-v0.1.md`](Docs/spec-v0.1.md) - the only normative language
+6. [`Docs/spec-v0.1.md`](Docs/spec-v0.1.md) - the only normative language
    contract today.
-6. [`Docs/todo.md`](Docs/todo.md) - the queue, including the new `1.0.1`
+7. [`Docs/todo.md`](Docs/todo.md) - the queue, including the new `1.0.1`
    section.
-7. [`Docs/release-checklist.md`](Docs/release-checklist.md) - release gates.
+8. [`Docs/release-checklist.md`](Docs/release-checklist.md) - release gates.
 
 ## Hard constraints
 

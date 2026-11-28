@@ -9,7 +9,7 @@
 
 ## 1. Why this release
 
-The browser playground is the first release that **demonstrates the original Neo Astra thesis** rather than extending the language surface. It proves, in public and without a server:
+The browser playground is the first release that **demonstrates the frontend and tooling half of the original Neo Astra thesis** rather than extending the language surface. It proves, in public and without a server:
 
 - one parser and one semantic contract — the Rust core runs in Wasm, nothing re-parses `.ns` in TypeScript;
 - capability modes and semantic policies are explainable — `check_project` metadata carries the mode tree, and `canonical`/`migrate` make edition choices visible;
@@ -18,6 +18,8 @@ The browser playground is the first release that **demonstrates the original Neo
 - NoPM is one graph and one lockfile across every ecosystem, even when the browser can only fetch from some registries.
 
 Recent syntax and diagnostics work becomes visible here instead of being another round of language churn.
+
+This release does **not** close the semantic-contract pillars. `PV-01` through `PV-08` remain open in [`Pillars/README.md`](Pillars/README.md); `1.2` advances part of `PV-09` and `PV-07` only.
 
 ---
 
@@ -196,6 +198,7 @@ Order is fixed. Do not move S5 ahead of S3, or codegen will be generated from un
 - Generated output and diagnostics match the native CLI for the fixture set — this is the vision proof.
 - NoPM produces the same `core.lock.json` shape as native `nopm`; live fetch is explicit, integrity-checked, and falls back honestly.
 - The compiler `1.2.0` and playground `v1.2.0` tags are in sync.
+- The plan explicitly states that `1.2` is a frontend/tooling proof, not a semantic-contract proof; the remaining pillars stay in [`Pillars/`](Pillars/README.md).
 
 ---
 
@@ -220,6 +223,7 @@ Order is fixed. Do not move S5 ahead of S3, or codegen will be generated from un
 - A hosted registry or user accounts.
 - Running `spawn`/channels in the playground sandbox.
 - Any change to `spec-v0.1.md` or `spec-v0.2.md`.
+- The semantic-contract pillars `PV-01` through `PV-08` except for the tooling subset described above. They are tracked in [`Pillars/`](Pillars/README.md) and worked one at a time.
 
 ---
 

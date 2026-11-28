@@ -21,6 +21,7 @@ or frozen history (`Docs/archive/`).
 | `Docs/roadmap.md` | What is built, what comes next, and the versioning scheme. |
 | `Docs/todo.md` | Open tasks only, grouped by version. |
 | `Docs/Report/Task.md` | Active work order (lead to Kilo). Pruned each round. |
+| `Docs/Report/Pillars/` | One file per founding pillar (`PV-01`..`PV-09`) with an executable proof and gate. Worked one at a time. |
 | `Docs/release-checklist.md` | Steps for a release. |
 | `Docs/syntax-legend.md` | Plain-language syntax reference. |
 | `CHANGELOG.md` | User-visible changes, one section per release. |
@@ -170,6 +171,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-28 | Created `Docs/Report/Pillars/` with one proof file per founding pillar (`PV-01` semantic contract, `PV-02` modes, `PV-03` semantic policies, `PV-04` GC/manual memory, `PV-05` concurrency, `PV-06` FFI, `PV-07` NoPM, `PV-08` Nova parity, `PV-09` explainability), each with original promise, current evidence, a concrete proof program, and an explicit gate. Amended the `1.2` plan and roadmap to state that the playground is a frontend/tooling proof only. | `Docs/Report/Pillars/README.md`, `Docs/Report/Playground-v1.2.md`, `Docs/roadmap.md` |
 | 2026-11-28 | Drafted the `1.2.0` browser-playground plan after a vision re-anchoring review. Locked decisions: full virtual project, JSON + TOML manifests, full NoPM adapter vocabulary with npm/Cargo live fetch, first-class edition/canonical/migration controls via a new `canonical` JSON-RPC command, core-only sandbox, separate `Neo-Astra-Playground` repo with Pages, and `v1.2.0` tag aligned with the compiler. Plan in `Docs/Report/Playground-v1.2.md`; public repo not created yet. | `Docs/archive/architecture.md`, `Docs/Agent/project-context-glossary.md`, `Docs/Report/Playground-v1.2.md` |
 | 2026-11-28 | Published `1.1.2`: cleared the stale revoked npm token, refreshed credentials with web/passkey login, added a permanent npm-auth runbook, pushed tag `v1.1.2` from public `master` `76d2d7d`, and completed release run `46114596390` on all three Tier-1 hosts. Four npm packages at `1.1.2` with SLSA provenance; three archives plus `.sha256` sidecars on the GitHub release. A short registry propagation delay resolved, and `npm install --global neo-astra` then reported `nova 1.1.2`. | `npm config delete`, `npm login --auth-type=web`, `npx npm@latest trust list`, `gh run watch 46114596390`, `gh release view v1.1.2`, `npm view` |
 | 2026-11-28 | Refreshed public onboarding docs for `1.1.2` (README, INSTALL, SECURITY, CHANGELOG) and squash-merged docs PR #11 into public `master` at `5208181`. | `node scripts/public-source.mjs --keep-git`, `gh pr create`, `gh pr checks --watch`, `gh pr merge --squash` |
