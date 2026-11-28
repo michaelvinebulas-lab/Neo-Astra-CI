@@ -103,6 +103,57 @@ export interface ProjectCheckParams {
   readonly integerPolicy?: IntegerPolicy;
 }
 
+/** One module result inside `check_project`. */
+export interface ModuleCheckResult {
+  readonly key: string;
+  readonly path: string;
+  readonly ok: boolean;
+  readonly diagnostics: readonly StructuredDiagnostic[];
+  readonly ir?: unknown;
+}
+
+/** Result of `check_project`. */
+export interface ProjectCheckResult {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly program: { readonly name: string } | null;
+  readonly metadata: Readonly<Record<string, unknown>>;
+  readonly modules: readonly ModuleCheckResult[];
+}
+
+/** Result of `format`. */
+export interface FormatResult {
+  readonly apiVersion: string;
+  readonly source: string | null;
+  readonly diagnostics: readonly StructuredDiagnostic[];
+}
+
+/** Result of `ast`. */
+export interface AstResult {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly ast?: unknown;
+  readonly diagnostics: readonly StructuredDiagnostic[];
+}
+
+/** Result of `explain`. */
+export interface ExplainResult {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly inference?: unknown;
+  readonly explanation?: string;
+  readonly diagnostics: readonly StructuredDiagnostic[];
+}
+
+/** Every result type the Worker can return. */
+export type WorkerResult =
+  | ProjectCheckResult
+  | FormatResult
+  | AstResult
+  | ExplainResult
+  | CanonicalResult
+  | null;
+
 /** A request from the UI to the Worker. */
 export interface WorkerRequest<Params = unknown> {
   readonly id: number;

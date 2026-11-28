@@ -381,8 +381,17 @@ function copyApp(source, destination, relativePath = "") {
   for (const entry of readdirSync(source, { withFileTypes: true })) {
     if (entry.name === "node_modules" || entry.name === "dist") continue;
     const childRelative = relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
+    const isAppBridge =
+      childRelative === "src/bridge.ts" || childRelative === "src/protocol.ts";
+    const isPrivateConfig = childRelative === "tsconfig.json" || childRelative === "package.json";
+    if (isAppBridge || isPrivateConfig) continue;
+
+    let destinationName = entry.name;
+    if (childRelative === "tsconfig.public.json") destinationName = "tsconfig.json";
+    if (childRelative === "package.public.json") destinationName = "package.json";
     const childSource = join(source, entry.name);
-    const childDestination = join(destination, entry.name);
+    const childDestination = join(destination, destinationName);
+
     if (entry.isDirectory()) {
       mkdirSync(childDestination, { recursive: true });
       copyApp(childSource, childDestination, childRelative);
@@ -543,6 +552,14 @@ jobs:
       - name: Test playground app
         run: npm test --workspace @neo-astra/playground-app
 
+      - name: Stage browser bridge modules
+        run: |
+          cp orchestrator/packages/playground/dist/bridge.js apps/playground/dist/bridge.js
+          cp orchestrator/packages/playground/dist/protocol.js apps/playground/dist/protocol.js
+
+      - name: Rewrite worker imports
+        run: node scripts/rewrite-worker-imports.mjs
+
       - name: Stage wasm artifact
         run: |
           mkdir -p apps/playground/dist
@@ -566,6 +583,22 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+`,
+  "utf8",
+);
+
+mkdirSync(join(out, "scripts"), { recursive: true });
+writeFileSync(
+  join(out, "scripts", "rewrite-worker-imports.mjs"),
+  `import { readFileSync, writeFileSync } from "node:fs";
+
+const path = "apps/playground/dist/compiler-worker.js";
+let source = readFileSync(path, "utf8");
+source = source
+  .replaceAll('"@neo-astra/playground/protocol"', '"./protocol.js"')
+  .replaceAll('"@neo-astra/playground"', '"./bridge.js"');
+writeFileSync(path, source);
+process.stdout.write("[rewrite-worker-imports] compiler-worker.js uses relative module imports\\n");
 `,
   "utf8",
 );

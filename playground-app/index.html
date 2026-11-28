@@ -114,6 +114,14 @@
     </style>
   </head>
   <body>
+    <script type="importmap">
+      {
+        "imports": {
+          "@neo-astra/playground": "./dist/bridge.js",
+          "@neo-astra/playground/protocol": "./dist/protocol.js"
+        }
+      }
+    </script>
     <div id="app"></div>
     <script type="module" src="./dist/main.js"></script>
   </body>

@@ -1,7 +1,7 @@
 # Playground v1.2 — Plan
 
 **Status:** Draft for principal review
-**Progress:** S0, S1, and S2 complete (2026-11-28): `canonical` command, Worker protocol types, public repo and Pages CI, plus the virtual project editor with JSON/TOML manifest validation and lockfile preview. S3 (compiler panels) not started.
+**Progress:** S0, S1, and S2 complete; S3 panels landed with native-diagnostic parity verification still open (2026-11-28). `canonical` command, Worker protocol types, public repo and Pages CI, virtual project editor, and compiler Worker panels are live.
 **Date:** 2026-11-28
 
 ## Task list
@@ -36,9 +36,12 @@ Mark items `[x]` only when the stated evidence exists. Do not mark a slice done 
 - [x] Merge PR #1 in the playground repo and verify the live page.
 
 ### S3 - Compiler panels
-- [ ] Implement the Worker transport with timeout and termination.
-- [ ] Wire `check_project` and render per-module diagnostics with codes/spans/hints.
-- [ ] Wire per-file `format`, `ast`, and `explain`.
+- [x] Implement the Worker transport with timeout and termination.
+- [x] Wire `check_project` and render per-module diagnostics with codes/spans/hints.
+- [x] Wire per-file `format`, `ast`, and `explain`.
+- [x] Derive edition/target/mode/integer policy from the virtual manifests.
+- [x] Remove duplicated bridge/protocol source from the public app; share the package via import map and rewrite Worker imports at build time.
+- [x] Merge PR #2 and verify the live Worker script and panels.
 - [ ] Verify diagnostics byte-match the native CLI fixture set.
 
 ### S4 - Edition controls

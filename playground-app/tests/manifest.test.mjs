@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { validateManifestFiles } from "../dist/manifest.js";
+import { projectSettings, validateManifestFiles } from "../dist/manifest.js";
 
 function validate(files) {
   return validateManifestFiles(new Map(Object.entries(files)));
@@ -49,3 +49,21 @@ test("11. missing core manifest is reported", () =>
   expectIssue({ "src/main.ns": "pub fn main() {}" }, "NS9001"));
 test("12. invalid lockfile is reported", () =>
   expectIssue({ "core.json": coreJson, "core.lock.json": '{"version":1}' }, "NS9002"));
+
+function settingsFor(files) {
+  return projectSettings(validateManifestFiles(new Map(Object.entries(files))));
+}
+
+test("13. project settings default to js and core", () => {
+  const settings = settingsFor({ "core.json": coreJson });
+  assert.equal(settings.edition, "0.1");
+  assert.equal(settings.target, "js");
+  assert.equal(settings.mode, undefined);
+  assert.equal(settings.integerPolicy, undefined);
+});
+
+test("14. project settings read the manifests", () => {
+  const settings = settingsFor({ "core.json": coreJson, "build.json": buildJson });
+  assert.equal(settings.target, "js");
+  assert.equal(settings.integerPolicy, "wrapping");
+});

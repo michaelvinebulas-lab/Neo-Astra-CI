@@ -1,7 +1,21 @@
-import { validateManifestFiles, type ManifestIssue } from "./manifest.js";
+import {
+  projectSettings,
+  validateManifestFiles,
+  type ManifestIssue,
+} from "./manifest.js";
 import { ProjectStore, loadProject, saveProject, type ProjectFile } from "./project.js";
 import { generateLockfile } from "./lockfile.js";
-import { PLAYGROUND_PROTOCOL_VERSION } from "./protocol.js";
+import { PlaygroundCompiler } from "./compiler-client.js";
+import {
+  COMPILER_API_VERSION,
+  PLAYGROUND_PROTOCOL_VERSION,
+  type AstResult,
+  type ExplainResult,
+  type FormatResult,
+  type ProjectCheckResult,
+  type ProjectSource,
+  type StructuredDiagnostic,
+} from "@neo-astra/playground/protocol";
 
 function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -43,6 +57,7 @@ const project = new ProjectStore(
   () => render(),
   loadProject() ?? [],
 );
+const compiler = new PlaygroundCompiler();
 
 const fileHeading = element("h2", undefined, "Files");
 const fileList = element("ul", "file-list");
@@ -143,18 +158,178 @@ lockButton.addEventListener("click", () => {
     });
 });
 
-function renderDiagnostics(issues: readonly ManifestIssue[]): void {
-  diagnosticList.replaceChildren();
+const compilerHeading = element("h2", undefined, "Compiler");
+const compilerRow = element("div", "button-row");
+const checkButton = element("button", undefined, "Check project");
+const formatButton = element("button", undefined, "Format");
+const astButton = element("button", undefined, "AST");
+const explainButton = element("button", undefined, "Explain");
+compilerRow.append(checkButton, formatButton, astButton, explainButton);
+
+const compilerDiagnosticsHeading = element("h2", undefined, "Compiler diagnostics");
+const compilerDiagnosticList = element("ul", "diagnostics");
+const compilerOutputHeading = element("h2", undefined, "Compiler output");
+const compilerOutput = element("pre", "lock-output", "Run a compiler action.");
+infoPane.append(
+  compilerHeading,
+  compilerRow,
+  compilerDiagnosticsHeading,
+  compilerDiagnosticList,
+  compilerOutputHeading,
+  compilerOutput,
+);
+
+interface CompilerParams {
+  readonly apiVersion: typeof COMPILER_API_VERSION;
+  readonly target: string;
+  readonly edition: "0.1" | "0.2";
+  readonly mode?: "core" | "app" | "web" | "system";
+  readonly integerPolicy?: "wrapping" | "safe-checked" | "arbitrary";
+}
+
+function baseParams(): CompilerParams {
+  const settings = projectSettings(validateManifestFiles(project.snapshot()));
+  return {
+    apiVersion: COMPILER_API_VERSION,
+    target: settings.target,
+    edition: settings.edition,
+    ...(settings.mode === undefined ? {} : { mode: settings.mode }),
+    ...(settings.integerPolicy === undefined ? {} : { integerPolicy: settings.integerPolicy }),
+  };
+}
+
+function sourceUnits(): readonly ProjectSource[] {
+  return project
+    .getFiles()
+    .filter((file) => file.path.endsWith(".ns"))
+    .sort((a, b) => {
+      const aEntry = a.path.includes("main") ? 1 : 0;
+      const bEntry = b.path.includes("main") ? 1 : 0;
+      return aEntry - bEntry || a.path.localeCompare(b.path);
+    })
+    .map((file) => ({ key: file.path, path: file.path, text: file.text }));
+}
+
+function showOutput(value: unknown): void {
+  compilerOutput.textContent = JSON.stringify(value, null, 2);
+}
+
+async function runAction<Result>(label: string, action: () => Promise<Result>): Promise<Result | undefined> {
+  setStatus(`${label}...`);
+  try {
+    const result = await action();
+    setStatus(`${label} complete.`);
+    return result;
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+    return undefined;
+  }
+}
+
+checkButton.addEventListener("click", () => {
+  void runAction("Check project", async () => {
+    const result = await compiler.request<ProjectCheckResult>("check_project", {
+      ...baseParams(),
+      sources: sourceUnits(),
+    });
+    renderCompilerDiagnostics(result.modules.flatMap((module) => module.diagnostics));
+    showOutput(result);
+    return result;
+  });
+});
+
+function activeSource(): { readonly path: string; readonly text: string } | undefined {
+  const path = project.activePath;
+  if (!path.endsWith(".ns")) {
+    setStatus("Select a .ns file first.", true);
+    return undefined;
+  }
+  return { path, text: project.read(path) ?? "" };
+}
+
+formatButton.addEventListener("click", () => {
+  const source = activeSource();
+  if (source === undefined) return;
+  void runAction("Format", async () => {
+    const result = await compiler.request<FormatResult>("format", { ...baseParams(), source });
+    renderCompilerDiagnostics(result.diagnostics);
+    if (result.source !== null) {
+      project.write(source.path, result.source);
+    }
+    showOutput(result);
+    return result;
+  });
+});
+
+astButton.addEventListener("click", () => {
+  const source = activeSource();
+  if (source === undefined) return;
+  void runAction("AST", async () => {
+    const result = await compiler.request<AstResult>("ast", { ...baseParams(), source });
+    renderCompilerDiagnostics(result.diagnostics);
+    showOutput(result);
+    return result;
+  });
+});
+
+explainButton.addEventListener("click", () => {
+  const source = activeSource();
+  if (source === undefined) return;
+  void runAction("Explain", async () => {
+    const result = await compiler.request<ExplainResult>("explain", { ...baseParams(), source });
+    renderCompilerDiagnostics(result.diagnostics);
+    showOutput(result.explanation ?? result);
+    return result;
+  });
+});
+
+interface DisplayIssue {
+  readonly code: string;
+  readonly message: string;
+  readonly hint: string | null;
+}
+
+function renderIssueList(list: HTMLUListElement, issues: readonly DisplayIssue[], empty: string): void {
+  list.replaceChildren();
   if (issues.length === 0) {
-    diagnosticList.append(element("li", "ok", "No manifest issues."));
+    list.append(element("li", "ok", empty));
     return;
   }
-  for (const issue of issues) {
-    const item = element("li", "issue");
-    item.append(element("code", undefined, issue.code));
-    item.append(document.createTextNode(` ${issue.file}: ${issue.message}`));
-    diagnosticList.append(item);
+  for (const item of issues) {
+    const node = element("li", "issue");
+    node.append(element("code", undefined, item.code));
+    node.append(document.createTextNode(` ${item.message}`));
+    if (item.hint !== null && item.hint !== "") {
+      node.append(document.createTextNode(` Hint: ${item.hint}`));
+    }
+    list.append(node);
   }
+}
+
+function renderCompilerDiagnostics(diagnostics: readonly StructuredDiagnostic[]): void {
+  renderIssueList(
+    compilerDiagnosticList,
+    diagnostics.map((diagnostic) => ({
+      code: diagnostic.code,
+      message: diagnostic.span === null
+        ? diagnostic.message
+        : `${diagnostic.span.start}-${diagnostic.span.end}: ${diagnostic.message}`,
+      hint: diagnostic.hint,
+    })),
+    "No compiler diagnostics.",
+  );
+}
+
+function renderDiagnostics(issues: readonly ManifestIssue[]): void {
+  renderIssueList(
+    diagnosticList,
+    issues.map((issue) => ({
+      code: issue.code,
+      message: `${issue.file}: ${issue.message}`,
+      hint: null,
+    })),
+    "No manifest issues.",
+  );
 }
 
 function renderFileList(): void {

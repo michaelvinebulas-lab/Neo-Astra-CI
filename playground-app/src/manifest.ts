@@ -52,6 +52,46 @@ export interface ManifestValidation {
   readonly documents: readonly ManifestDocument[];
 }
 
+export interface ProjectSettings {
+  readonly edition: "0.1" | "0.2";
+  readonly target: string;
+  readonly mode: "core" | "app" | "web" | "system" | undefined;
+  readonly integerPolicy: "wrapping" | "safe-checked" | "arbitrary" | undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function readTable(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined;
+}
+
+export function projectSettings(validation: ManifestValidation): ProjectSettings {
+  const core = validation.documents.find((document) => document.kind === "core");
+  const build = validation.documents.find((document) => document.kind === "build");
+  const packageData = readTable(core?.data["package"]);
+  const buildData = readTable(build?.data["build"]);
+  const mathData = readTable(build?.data["math"]);
+  const edition = readString(packageData?.["edition"]);
+  const target = readString(buildData?.["defaultTarget"]);
+  const mode = readString(buildData?.["defaultMode"]);
+  const integerPolicy = readString(mathData?.["integers"]);
+
+  return {
+    edition: edition === "0.2" ? "0.2" : "0.1",
+    target: target ?? "js",
+    mode:
+      mode === "core" || mode === "app" || mode === "web" || mode === "system" ? mode : undefined,
+    integerPolicy:
+      integerPolicy === "wrapping" ||
+      integerPolicy === "safe-checked" ||
+      integerPolicy === "arbitrary"
+        ? integerPolicy
+        : undefined,
+  };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
