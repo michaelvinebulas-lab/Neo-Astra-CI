@@ -50,7 +50,10 @@ globalThis.process = {
 <script type="importmap">${JSON.stringify({ imports })}</script>
 <script type="module">
 import(${JSON.stringify(specifier(entry))})
-  .then(function () { globalThis.__pgSend("done", ""); })
+  .then(function (module) {
+    if (typeof module.main === "function") module.main();
+    globalThis.__pgSend("done", "");
+  })
   .catch(function (error) { globalThis.__pgSend("error", error && error.stack ? error.stack : String(error)); });
 </script>
 </body></html>`;
