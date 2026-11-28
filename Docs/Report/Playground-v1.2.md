@@ -1,6 +1,7 @@
 # Playground v1.2 — Plan
 
 **Status:** Draft for principal review
+**Progress:** S0 complete (2026-11-28): `canonical` JSON-RPC command and Worker protocol types landed. S1 (public repo) not started.
 **Date:** 2026-11-28
 **Release:** `1.2.0` (lockstep with the compiler)
 **Public repo:** `luminousvalentine-cell/Neo-Astra-Playground` (to be created after this plan is approved)

@@ -228,6 +228,53 @@ impl FormatResponse {
     }
 }
 
+/// Parameters for the `canonical` command.
+///
+/// The lint is source-aware and edition-gated: edition `0.1` never reports
+/// deprecated spellings, while edition `0.2` reports them without rewriting
+/// source. It is deliberately separate from `check` so existing response
+/// shapes stay stable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalRequest {
+    pub api_version: String,
+    pub source: SourceUnit,
+    /// Language edition. Defaults to `0.1` for old callers.
+    #[serde(default)]
+    pub edition: Edition,
+    /// Target is accepted for symmetry with other commands but does not affect
+    /// canonical spelling rules.
+    #[serde(default)]
+    pub target: String,
+}
+
+/// Result of the `canonical` command.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanonicalResponse {
+    pub api_version: String,
+    pub ok: bool,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl CanonicalResponse {
+    /// Creates a response from a canonical lint pass.
+    #[must_use]
+    pub fn from_diagnostics(diagnostics: Vec<Diagnostic>) -> Self {
+        Self {
+            api_version: API_VERSION.to_owned(),
+            ok: diagnostics.is_empty(),
+            diagnostics,
+        }
+    }
+}
+
+/// Runs the canonical-syntax lint for one request.
+#[must_use]
+pub fn canonical(request: &CanonicalRequest) -> CanonicalResponse {
+    CanonicalResponse::from_diagnostics(check_canonical(&request.source.text, request.edition))
+}
+
 /// A parsed surface-AST result returned inside a JSON-RPC response.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1163,7 +1210,7 @@ pub fn process_json(input: &str) -> String {
             json!({
                 "apiVersion": API_VERSION,
                 "coreVersion": env!("CARGO_PKG_VERSION"),
-                "commands": ["initialize", "check", "check_project", "compile", "compile_project", "ast", "format", "explain", "migrate", "shutdown"],
+                "commands": ["initialize", "check", "check_project", "compile", "compile_project", "ast", "format", "canonical", "explain", "migrate", "shutdown"],
                 "features": ["resolver", "type-checker", "project-checker", "typed-ir", "project-compile-c"],
                 "targets": ["js", "ts", "native", "wasm-web", "wasm-wasi"],
             }),
@@ -1221,6 +1268,13 @@ pub fn process_json(input: &str) -> String {
             Ok(compile_request) => JsonRpcResponse::success(
                 request.id,
                 serde_json::to_value(ast_for_request(&compile_request)).unwrap_or(Value::Null),
+            ),
+            Err(message) => JsonRpcResponse::error(request.id, -32602, message),
+        },
+        "canonical" => match parse_canonical_request(request.params) {
+            Ok(canonical_request) => JsonRpcResponse::success(
+                request.id,
+                serde_json::to_value(canonical(&canonical_request)).unwrap_or(Value::Null),
             ),
             Err(message) => JsonRpcResponse::error(request.id, -32602, message),
         },
@@ -1301,6 +1355,21 @@ fn migrate_for_request(request: &MigrateRequest) -> MigrateResponse {
 fn parse_compile_request(params: Option<Value>) -> Result<CompileRequest, String> {
     let params = params.ok_or_else(|| "Missing params.".to_owned())?;
     let request: CompileRequest =
+        serde_json::from_value(params).map_err(|error| format!("Invalid params: {error}"))?;
+
+    if request.api_version != API_VERSION {
+        return Err(format!(
+            "Unsupported apiVersion '{}'; expected '{}'.",
+            request.api_version, API_VERSION
+        ));
+    }
+
+    Ok(request)
+}
+
+fn parse_canonical_request(params: Option<Value>) -> Result<CanonicalRequest, String> {
+    let params = params.ok_or_else(|| "Missing params.".to_owned())?;
+    let request: CanonicalRequest =
         serde_json::from_value(params).map_err(|error| format!("Invalid params: {error}"))?;
 
     if request.api_version != API_VERSION {
@@ -1625,6 +1694,29 @@ mod tests {
         let explicit_output = process_json(&format!("{base},\"edition\":\"0.2\"}}}}"));
         assert_eq!(default_output, explicit_output);
         assert!(default_output.contains("pub fn f()"));
+    }
+
+    #[test]
+    fn canonical_is_edition_gated_and_separate_from_check() {
+        let base = r#"{"jsonrpc":"2.0","id":"canon","method":"canonical","params":{"apiVersion":"1.0","source":{"path":"src/main.ns","text":"public function f() { var x = 1 /% 2 }"},"target":"js""#;
+        let default_output = process_json(&format!("{base}}}}}"));
+        let edition_02_output = process_json(&format!("{base},\"edition\":\"0.2\"}}}}"));
+
+        assert!(default_output.contains(r#""ok":true"#), "{default_output}");
+        assert!(!default_output.contains("NS2009"));
+
+        assert!(edition_02_output.contains(r#""ok":false"#));
+        assert!(edition_02_output.contains("NS2009"));
+        assert!(edition_02_output.contains("NS2013"));
+    }
+
+    #[test]
+    fn initialize_reports_canonical_command() {
+        let output = process_json(r#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#);
+        assert!(
+            output.contains("canonical"),
+            "initialize should list canonical"
+        );
     }
 
     #[test]
