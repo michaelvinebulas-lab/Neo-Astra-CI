@@ -5,7 +5,7 @@
 **Branch:** private `master` at the 1.1.2 docs refresh (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized docs merge at `5208181`
 **Published release:** `1.1.2` (tag `v1.1.2` -> public `76d2d7d`)
 **Next release:** `1.2.0` - browser playground (planned, not started)
-**Current state:** `1.1.2` is published on GitHub and npm; public docs were refreshed by PR #11 and merged. Playground repo `luminousvalentine-cell/Neo-Astra-Playground` is at `fa5e1d4` with S0-S3 panels live: virtual project, manifest validation, Worker transport, check/format/AST/explain. Pages: `https://luminousvalentine-cell.github.io/Neo-Astra-Playground/`. S3 native-diagnostic parity fixture is still open; next slices: S4 edition controls, then S5 codegen.
+**Current state:** `1.1.2` is published on GitHub and npm; public docs were refreshed by PR #11 and merged. Playground repo `luminousvalentine-cell/Neo-Astra-Playground` is at `285f4a6` with S0-S4 landed: virtual project, manifest validation, Worker transport, check/format/AST/explain, edition/target/mode/policy controls, canonical lint, migrate preview/apply, and a redesigned UI. Pages: `https://luminousvalentine-cell.github.io/Neo-Astra-Playground/`. Open verification: S3 native-diagnostic parity and S4 conformance migration pairs. Next slice: S5 codegen.
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.

@@ -1,7 +1,7 @@
 # Playground v1.2 — Plan
 
 **Status:** Draft for principal review
-**Progress:** S0, S1, and S2 complete; S3 panels landed with native-diagnostic parity verification still open (2026-11-28). `canonical` command, Worker protocol types, public repo and Pages CI, virtual project editor, and compiler Worker panels are live.
+**Progress:** S0-S4 features landed (2026-11-28): compiler core command, Worker protocol, public repo + Pages CI, virtual project editor, compiler panels, edition controls, and a heavy UI rework. Native-diagnostic parity (S3) and the conformance migration-pair sweep (S4) remain open.
 **Date:** 2026-11-28
 
 ## Task list
@@ -45,10 +45,13 @@ Mark items `[x]` only when the stated evidence exists. Do not mark a slice done 
 - [ ] Verify diagnostics byte-match the native CLI fixture set.
 
 ### S4 - Edition controls
-- [ ] Add the `0.1`/`0.2` edition toggle.
-- [ ] Wire the `canonical` command into a diagnostics panel.
-- [ ] Add `migrate` preview with a diff.
-- [ ] Add `migrate` apply with `changeEdition`.
+- [x] Add the `0.1`/`0.2` edition toggle with auto fallback to the manifest.
+- [x] Add target, mode, and integer-policy overrides with auto fallback.
+- [x] Wire the `canonical` command into the compiler panel.
+- [x] Add `migrate` preview with a line diff.
+- [x] Add `migrate` apply with `changeEdition` and manifest edition promotion.
+- [x] Heavy UI rework: settings bar, grouped file/project actions, editor metadata, tabbed result panels, dedicated compiler action bar, extracted `ui.ts` and `settings.ts`.
+- [x] Merge PR #3 and verify the live page.
 - [ ] Verify all `conformance/v0.2` migration pairs.
 
 ### S5 - Codegen

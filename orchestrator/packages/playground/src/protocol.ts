@@ -145,6 +145,26 @@ export interface ExplainResult {
   readonly diagnostics: readonly StructuredDiagnostic[];
 }
 
+/** Parameters for the `migrate` JSON-RPC command. */
+export interface MigrateParams {
+  readonly apiVersion: typeof COMPILER_API_VERSION;
+  readonly source: {
+    readonly path: string;
+    readonly text: string;
+  };
+  readonly edition?: Edition;
+  readonly changeEdition?: boolean;
+}
+
+/** Result of the `migrate` JSON-RPC command. */
+export interface MigrateResult {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly changed: boolean;
+  readonly source: string;
+  readonly diagnostics: readonly StructuredDiagnostic[];
+}
+
 /** Every result type the Worker can return. */
 export type WorkerResult =
   | ProjectCheckResult
@@ -152,6 +172,7 @@ export type WorkerResult =
   | AstResult
   | ExplainResult
   | CanonicalResult
+  | MigrateResult
   | null;
 
 /** A request from the UI to the Worker. */

@@ -3,199 +3,247 @@ import {
   validateManifestFiles,
   type ManifestIssue,
 } from "./manifest.js";
-import { ProjectStore, loadProject, saveProject, type ProjectFile } from "./project.js";
+import {
+  ProjectStore,
+  loadProject,
+  saveProject,
+  DEFAULT_FILES,
+  type ProjectFile,
+} from "./project.js";
 import { generateLockfile } from "./lockfile.js";
 import { PlaygroundCompiler } from "./compiler-client.js";
 import {
   COMPILER_API_VERSION,
   PLAYGROUND_PROTOCOL_VERSION,
   type AstResult,
+  type CanonicalResult,
   type ExplainResult,
   type FormatResult,
+  type MigrateResult,
   type ProjectCheckResult,
   type ProjectSource,
   type StructuredDiagnostic,
 } from "@neo-astra/playground/protocol";
+import {
+  DEFAULT_OVERRIDES,
+  resolveSettings,
+  withOptionalFields,
+  type EditionOverride,
+  type IntegerPolicyOverride,
+  type ModeOverride,
+  type UiOverrides,
+} from "./settings.js";
+import {
+  buildShell,
+  button,
+  element,
+  renderIssues,
+  select,
+  type DisplayIssue,
+  type SelectOption,
+} from "./ui.js";
 
-function element<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (className !== undefined) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
+const host = document.getElementById("app");
+if (host === null) throw new Error("Missing #app element");
 
-const root = document.getElementById("app");
-if (root === null) throw new Error("Missing #app element");
+const shell = buildShell(host);
+shell.badge.textContent = `protocol ${String(PLAYGROUND_PROTOCOL_VERSION)}`;
 
-const header = element("header", "header");
-header.append(element("h1", undefined, "Neo Astra Playground"));
-header.append(
-  element("span", "badge", `protocol ${String(PLAYGROUND_PROTOCOL_VERSION)}`),
-);
-root.append(header);
-
-const layout = element("div", "layout");
-const sidebar = element("aside", "panel sidebar");
-const editorPane = element("section", "panel editor-pane");
-const infoPane = element("aside", "panel info-pane");
-layout.append(sidebar, editorPane, infoPane);
-root.append(layout);
-
-const status = element("div", "status");
-root.append(status);
+const project = new ProjectStore(() => render(), loadProject() ?? DEFAULT_FILES);
+const compiler = new PlaygroundCompiler();
+let overrides: UiOverrides = DEFAULT_OVERRIDES;
+let compilerIssues: readonly DisplayIssue[] = [];
 
 function setStatus(message: string, isError = false): void {
-  status.textContent = message;
-  status.classList.toggle("error", isError);
+  shell.status.textContent = message;
+  shell.status.classList.toggle("error", isError);
 }
 
-const project = new ProjectStore(
-  () => render(),
-  loadProject() ?? [],
-);
-const compiler = new PlaygroundCompiler();
-
-const fileHeading = element("h2", undefined, "Files");
-const fileList = element("ul", "file-list");
-sidebar.append(fileHeading, fileList);
-
-const addRow = element("div", "button-row");
-const addSourceButton = element("button", undefined, "Add .ns file");
-const addCoreJsonButton = element("button", undefined, "core.json");
-const addCoreTomlButton = element("button", undefined, "core.toml");
-const addBuildJsonButton = element("button", undefined, "build.json");
-const addBuildTomlButton = element("button", undefined, "build.toml");
-addRow.append(
-  addSourceButton,
-  addCoreJsonButton,
-  addCoreTomlButton,
-  addBuildJsonButton,
-  addBuildTomlButton,
-);
-sidebar.append(addRow);
-
-addSourceButton.addEventListener("click", () => {
-  const path = window.prompt("New source path", "src/new_file.ns");
-  if (path === null) return;
+function guard(action: () => void): void {
   try {
-    project.add(path, "module app.main\n\npub fn main() {\n}\n");
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
-  }
-});
-
-function addManifest(name: string): void {
-  try {
-    project.add(name, name.endsWith(".json") ? "{\n}\n" : "");
+    action();
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   }
 }
-addCoreJsonButton.addEventListener("click", () => addManifest("core.json"));
-addCoreTomlButton.addEventListener("click", () => addManifest("core.toml"));
-addBuildJsonButton.addEventListener("click", () => addManifest("build.json"));
-addBuildTomlButton.addEventListener("click", () => addManifest("build.toml"));
 
-const editorHeader = element("div", "editor-header");
-const activePathLabel = element("span", "active-path");
-const renameButton = element("button", undefined, "Rename");
-const deleteButton = element("button", undefined, "Delete");
-editorHeader.append(activePathLabel, renameButton, deleteButton);
-
-const editor = element("textarea", "editor");
-editor.spellcheck = false;
-editorPane.append(editorHeader, editor);
-
-renameButton.addEventListener("click", () => {
-  const next = window.prompt("Rename file to", project.activePath);
-  if (next === null) return;
-  try {
-    project.rename(project.activePath, next);
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
-  }
-});
-
-deleteButton.addEventListener("click", () => {
-  if (!window.confirm(`Delete '${project.activePath}'?`)) return;
-  try {
-    project.remove(project.activePath);
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
-  }
-});
-
-editor.addEventListener("input", () => {
-  try {
-    project.write(project.activePath, editor.value);
-    saveProject(project.getFiles());
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
-  }
-});
-
-const diagnosticsHeading = element("h2", undefined, "Manifest diagnostics");
-const diagnosticList = element("ul", "diagnostics");
-infoPane.append(diagnosticsHeading, diagnosticList);
-
-const lockHeading = element("h2", undefined, "core.lock.json");
-const lockButton = element("button", undefined, "Generate from files");
-const lockOutput = element("pre", "lock-output", "No lockfile generated yet.");
-infoPane.append(lockHeading, lockButton, lockOutput);
-
-lockButton.addEventListener("click", () => {
-  void generateLockfile(project.getFiles())
-    .then((text) => {
-      lockOutput.textContent = text;
-      setStatus("Generated core.lock.json preview.");
-    })
-    .catch((error: unknown) => {
-      setStatus(error instanceof Error ? error.message : String(error), true);
-    });
-});
-
-const compilerHeading = element("h2", undefined, "Compiler");
-const compilerRow = element("div", "button-row");
-const checkButton = element("button", undefined, "Check project");
-const formatButton = element("button", undefined, "Format");
-const astButton = element("button", undefined, "AST");
-const explainButton = element("button", undefined, "Explain");
-compilerRow.append(checkButton, formatButton, astButton, explainButton);
-
-const compilerDiagnosticsHeading = element("h2", undefined, "Compiler diagnostics");
-const compilerDiagnosticList = element("ul", "diagnostics");
-const compilerOutputHeading = element("h2", undefined, "Compiler output");
-const compilerOutput = element("pre", "lock-output", "Run a compiler action.");
-infoPane.append(
-  compilerHeading,
-  compilerRow,
-  compilerDiagnosticsHeading,
-  compilerDiagnosticList,
-  compilerOutputHeading,
-  compilerOutput,
-);
-
-interface CompilerParams {
-  readonly apiVersion: typeof COMPILER_API_VERSION;
-  readonly target: string;
-  readonly edition: "0.1" | "0.2";
-  readonly mode?: "core" | "app" | "web" | "system";
-  readonly integerPolicy?: "wrapping" | "safe-checked" | "arbitrary";
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function baseParams(): CompilerParams {
-  const settings = projectSettings(validateManifestFiles(project.snapshot()));
-  return {
-    apiVersion: COMPILER_API_VERSION,
-    target: settings.target,
-    edition: settings.edition,
-    ...(settings.mode === undefined ? {} : { mode: settings.mode }),
-    ...(settings.integerPolicy === undefined ? {} : { integerPolicy: settings.integerPolicy }),
-  };
+function asDiagnostics(value: unknown): readonly StructuredDiagnostic[] {
+  if (!isRecord(value)) return [];
+  const direct = value["diagnostics"];
+  if (Array.isArray(direct)) return direct as readonly StructuredDiagnostic[];
+  const modules = value["modules"];
+  if (!Array.isArray(modules)) return [];
+  return modules.flatMap((module) =>
+    isRecord(module) && Array.isArray(module["diagnostics"])
+      ? (module["diagnostics"] as readonly StructuredDiagnostic[])
+      : [],
+  );
+}
+
+function setCompilerDiagnostics(diagnostics: readonly StructuredDiagnostic[]): void {
+  compilerIssues = diagnostics.map((diagnostic) => ({
+    code: diagnostic.code,
+    message:
+      diagnostic.span === null
+        ? diagnostic.message
+        : `${diagnostic.span.start}-${diagnostic.span.end}: ${diagnostic.message}`,
+    hint: diagnostic.hint,
+  }));
+  renderIssues(shell.compilerDiagnostics, compilerIssues, "No compiler diagnostics.");
+}
+
+// ── Settings controls ────────────────────────────────────────────────────────
+
+function addSetting(label: string, control: HTMLElement): void {
+  const wrapper = element("label", "setting");
+  wrapper.append(element("span", undefined, label), control);
+  shell.settings.append(wrapper);
+}
+
+const editionOptions: readonly SelectOption[] = [
+  { value: "auto", label: "edition: auto" },
+  { value: "0.1", label: "edition: 0.1" },
+  { value: "0.2", label: "edition: 0.2" },
+];
+const targetOptions: readonly SelectOption[] = [
+  { value: "", label: "target: auto" },
+  { value: "js", label: "js" },
+  { value: "ts", label: "ts" },
+  { value: "native", label: "native" },
+  { value: "wasm-web", label: "wasm-web" },
+  { value: "wasm-wasi", label: "wasm-wasi" },
+];
+const modeOptions: readonly SelectOption[] = [
+  { value: "auto", label: "mode: auto" },
+  { value: "core", label: "core" },
+  { value: "app", label: "app" },
+  { value: "web", label: "web" },
+  { value: "system", label: "system" },
+];
+const policyOptions: readonly SelectOption[] = [
+  { value: "auto", label: "integers: auto" },
+  { value: "wrapping", label: "wrapping" },
+  { value: "safe-checked", label: "safe-checked" },
+  { value: "arbitrary", label: "arbitrary" },
+];
+
+addSetting(
+  "Language",
+  select(editionOptions, overrides.edition, (value) => {
+    overrides = { ...overrides, edition: value as EditionOverride };
+    render();
+  }),
+);
+addSetting(
+  "Target",
+  select(targetOptions, overrides.target, (value) => {
+    overrides = { ...overrides, target: value };
+    render();
+  }),
+);
+addSetting(
+  "Mode",
+  select(modeOptions, overrides.mode, (value) => {
+    overrides = { ...overrides, mode: value as ModeOverride };
+    render();
+  }),
+);
+addSetting(
+  "Integers",
+  select(policyOptions, overrides.integerPolicy, (value) => {
+    overrides = { ...overrides, integerPolicy: value as IntegerPolicyOverride };
+    render();
+  }),
+);
+
+// ── File and project actions ─────────────────────────────────────────────────
+
+function addFile(name: string, template: string): void {
+  guard(() => {
+    const path = name === "source" ? window.prompt("New source path", "src/new_file.ns") : name;
+    if (path === null) return;
+    project.add(path, template);
+  });
+}
+
+shell.fileActions.append(
+  button("+ source", () => addFile("source", "module app.main\n\npub fn main() {\n}\n")),
+  button("+ core.json", () => addFile("core.json", "{\n}\n")),
+  button("+ core.toml", () => addFile("core.toml", "")),
+  button("+ build.json", () => addFile("build.json", "{\n}\n")),
+  button("+ build.toml", () => addFile("build.toml", "")),
+);
+
+shell.dataActions.append(
+  button("Generate lockfile", () => {
+    void generateLockfile(project.getFiles())
+      .then((text) => {
+        shell.lockfile.textContent = text;
+        showTab("lockfile");
+        setStatus("Generated core.lock.json preview.");
+      })
+      .catch((error: unknown) => setStatus(String(error), true));
+  }),
+  button("Load example", () => guard(() => project.load(DEFAULT_FILES))),
+  button("Download", () => {
+    const body = JSON.stringify(project.getFiles(), null, 2);
+    const url = URL.createObjectURL(new Blob([body], { type: "application/json" }));
+    const link = element("a");
+    link.href = url;
+    link.download = "neo-astra-project.json";
+    link.click();
+    URL.revokeObjectURL(url);
+  }),
+);
+
+// ── Panel tabs ───────────────────────────────────────────────────────────────
+
+type TabName = "diagnostics" | "compiler" | "output" | "lockfile";
+let activeTab: TabName = "diagnostics";
+
+const tabDefinitions: readonly { readonly key: TabName; readonly label: string }[] = [
+  { key: "diagnostics", label: "Manifest" },
+  { key: "compiler", label: "Compiler" },
+  { key: "output", label: "Output" },
+  { key: "lockfile", label: "Lockfile" },
+];
+
+const panels: Record<TabName, HTMLElement> = {
+  diagnostics: element("div", "panel-body"),
+  compiler: element("div", "panel-body"),
+  output: element("div", "panel-body"),
+  lockfile: element("div", "panel-body"),
+};
+panels.diagnostics.append(shell.diagnostics);
+panels.compiler.append(shell.compilerDiagnostics);
+panels.output.append(shell.output);
+panels.lockfile.append(shell.lockfile);
+shell.panels.append(panels.diagnostics, panels.compiler, panels.output, panels.lockfile);
+
+function showTab(name: TabName): void {
+  activeTab = name;
+  for (const definition of tabDefinitions) {
+    const isActive = definition.key === activeTab;
+    panels[definition.key].classList.toggle("hidden", !isActive);
+    const tab = shell.tabs.querySelector<HTMLButtonElement>(`[data-tab="${definition.key}"]`);
+    tab?.classList.toggle("active", isActive);
+  }
+}
+
+for (const definition of tabDefinitions) {
+  const tab = button(definition.label, () => showTab(definition.key));
+  tab.dataset["tab"] = definition.key;
+  shell.tabs.append(tab);
+}
+
+// ── Compiler actions ─────────────────────────────────────────────────────────
+
+function effective() {
+  return resolveSettings(projectSettings(validateManifestFiles(project.snapshot())), overrides);
 }
 
 function sourceUnits(): readonly ProjectSource[] {
@@ -210,34 +258,6 @@ function sourceUnits(): readonly ProjectSource[] {
     .map((file) => ({ key: file.path, path: file.path, text: file.text }));
 }
 
-function showOutput(value: unknown): void {
-  compilerOutput.textContent = JSON.stringify(value, null, 2);
-}
-
-async function runAction<Result>(label: string, action: () => Promise<Result>): Promise<Result | undefined> {
-  setStatus(`${label}...`);
-  try {
-    const result = await action();
-    setStatus(`${label} complete.`);
-    return result;
-  } catch (error) {
-    setStatus(error instanceof Error ? error.message : String(error), true);
-    return undefined;
-  }
-}
-
-checkButton.addEventListener("click", () => {
-  void runAction("Check project", async () => {
-    const result = await compiler.request<ProjectCheckResult>("check_project", {
-      ...baseParams(),
-      sources: sourceUnits(),
-    });
-    renderCompilerDiagnostics(result.modules.flatMap((module) => module.diagnostics));
-    showOutput(result);
-    return result;
-  });
-});
-
 function activeSource(): { readonly path: string; readonly text: string } | undefined {
   const path = project.activePath;
   if (!path.endsWith(".ns")) {
@@ -247,120 +267,182 @@ function activeSource(): { readonly path: string; readonly text: string } | unde
   return { path, text: project.read(path) ?? "" };
 }
 
-formatButton.addEventListener("click", () => {
-  const source = activeSource();
-  if (source === undefined) return;
-  void runAction("Format", async () => {
-    const result = await compiler.request<FormatResult>("format", { ...baseParams(), source });
-    renderCompilerDiagnostics(result.diagnostics);
-    if (result.source !== null) {
-      project.write(source.path, result.source);
-    }
-    showOutput(result);
-    return result;
-  });
-});
-
-astButton.addEventListener("click", () => {
-  const source = activeSource();
-  if (source === undefined) return;
-  void runAction("AST", async () => {
-    const result = await compiler.request<AstResult>("ast", { ...baseParams(), source });
-    renderCompilerDiagnostics(result.diagnostics);
-    showOutput(result);
-    return result;
-  });
-});
-
-explainButton.addEventListener("click", () => {
-  const source = activeSource();
-  if (source === undefined) return;
-  void runAction("Explain", async () => {
-    const result = await compiler.request<ExplainResult>("explain", { ...baseParams(), source });
-    renderCompilerDiagnostics(result.diagnostics);
-    showOutput(result.explanation ?? result);
-    return result;
-  });
-});
-
-interface DisplayIssue {
-  readonly code: string;
-  readonly message: string;
-  readonly hint: string | null;
+function sourceParams(source: { readonly path: string; readonly text: string }) {
+  return { ...withOptionalFields(effective()), source };
 }
 
-function renderIssueList(list: HTMLUListElement, issues: readonly DisplayIssue[], empty: string): void {
-  list.replaceChildren();
-  if (issues.length === 0) {
-    list.append(element("li", "ok", empty));
-    return;
-  }
-  for (const item of issues) {
-    const node = element("li", "issue");
-    node.append(element("code", undefined, item.code));
-    node.append(document.createTextNode(` ${item.message}`));
-    if (item.hint !== null && item.hint !== "") {
-      node.append(document.createTextNode(` Hint: ${item.hint}`));
-    }
-    list.append(node);
+async function perform<Result>(
+  label: string,
+  method: "check_project" | "format" | "ast" | "explain" | "canonical" | "migrate",
+  params: unknown,
+  onResult: (result: Result) => void,
+): Promise<void> {
+  setStatus(`${label}...`);
+  try {
+    const result = await compiler.request<Result>(method, params);
+    setCompilerDiagnostics(asDiagnostics(result));
+    onResult(result);
+    setStatus(`${label} complete.`);
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
   }
 }
 
-function renderCompilerDiagnostics(diagnostics: readonly StructuredDiagnostic[]): void {
-  renderIssueList(
-    compilerDiagnosticList,
-    diagnostics.map((diagnostic) => ({
-      code: diagnostic.code,
-      message: diagnostic.span === null
-        ? diagnostic.message
-        : `${diagnostic.span.start}-${diagnostic.span.end}: ${diagnostic.message}`,
-      hint: diagnostic.hint,
-    })),
-    "No compiler diagnostics.",
-  );
+function diffText(before: string, after: string): string {
+  const oldLines = before.split("\n");
+  const newLines = after.split("\n");
+  let start = 0;
+  while (start < oldLines.length && start < newLines.length && oldLines[start] === newLines[start]) {
+    start++;
+  }
+  let oldEnd = oldLines.length - 1;
+  let newEnd = newLines.length - 1;
+  while (oldEnd >= start && newEnd >= start && oldLines[oldEnd] === newLines[newEnd]) {
+    oldEnd--;
+    newEnd--;
+  }
+  const lines = [
+    ...oldLines.slice(0, start).map((line) => ` ${line}`),
+    ...oldLines.slice(start, oldEnd + 1).map((line) => `-${line}`),
+    ...newLines.slice(start, newEnd + 1).map((line) => `+${line}`),
+    ...newLines.slice(newEnd + 1).map((line) => ` ${line}`),
+  ];
+  return lines.join("\n");
 }
 
-function renderDiagnostics(issues: readonly ManifestIssue[]): void {
-  renderIssueList(
-    diagnosticList,
-    issues.map((issue) => ({
-      code: issue.code,
-      message: `${issue.file}: ${issue.message}`,
-      hint: null,
-    })),
-    "No manifest issues.",
-  );
+function promoteManifestEdition(): void {
+  for (const path of ["core.json", "core.toml"]) {
+    const text = project.read(path);
+    if (text === undefined) continue;
+    const next = path.endsWith(".json")
+      ? text.replace('"edition": "0.1"', '"edition": "0.2"')
+      : text.replace('edition = "0.1"', 'edition = "0.2"');
+    if (next !== text) project.write(path, next);
+  }
 }
+
+shell.actions.append(
+  button("Check project", () => {
+    void perform<ProjectCheckResult>(
+      "Check project",
+      "check_project",
+      { ...withOptionalFields(effective()), sources: sourceUnits() },
+      (result) => {
+        shell.output.textContent = JSON.stringify(result, null, 2);
+        showTab("output");
+      },
+    );
+  }),
+  button("Format", () => {
+    const source = activeSource();
+    if (source === undefined) return;
+    void perform<FormatResult>("Format", "format", sourceParams(source), (result) => {
+      if (result.source !== null) project.write(source.path, result.source);
+      shell.output.textContent = JSON.stringify(result, null, 2);
+      showTab("output");
+    });
+  }),
+  button("AST", () => {
+    const source = activeSource();
+    if (source === undefined) return;
+    void perform<AstResult>("AST", "ast", sourceParams(source), (result) => {
+      shell.output.textContent = JSON.stringify(result, null, 2);
+      showTab("output");
+    });
+  }),
+  button("Explain", () => {
+    const source = activeSource();
+    if (source === undefined) return;
+    void perform<ExplainResult>("Explain", "explain", sourceParams(source), (result) => {
+      shell.output.textContent = result.explanation ?? JSON.stringify(result, null, 2);
+      showTab("output");
+    });
+  }),
+  button("Canonical lint", () => {
+    const source = activeSource();
+    if (source === undefined) return;
+    void perform<CanonicalResult>("Canonical lint", "canonical", sourceParams(source), (result) => {
+      shell.output.textContent = JSON.stringify(result, null, 2);
+      showTab("compiler");
+    });
+  }),
+  button("Migrate preview", () => {
+    const source = activeSource();
+    if (source === undefined) return;
+    void perform<MigrateResult>(
+      "Migrate preview",
+      "migrate",
+      { ...sourceParams(source), changeEdition: false },
+      (result) => {
+        shell.output.textContent = diffText(source.text, result.source);
+        showTab("output");
+      },
+    );
+  }),
+  button("Apply migration", () => {
+    const source = activeSource();
+    if (source === undefined) return;
+    void perform<MigrateResult>(
+      "Apply migration",
+      "migrate",
+      { ...sourceParams(source), changeEdition: true },
+      (result) => {
+        project.write(source.path, result.source);
+        overrides = { ...overrides, edition: "0.2" };
+        promoteManifestEdition();
+        shell.output.textContent = diffText(source.text, result.source);
+        showTab("output");
+      },
+    );
+  }),
+);
+
+// ── Editor and rendering ─────────────────────────────────────────────────────
+
+shell.editor.addEventListener("input", () => {
+  guard(() => {
+    project.write(project.activePath, shell.editor.value);
+    saveProject(project.getFiles());
+    render();
+  });
+});
 
 function renderFileList(): void {
-  fileList.replaceChildren();
+  shell.fileList.replaceChildren();
   for (const path of project.paths) {
     const item = element("li");
-    const button = element("button", "file-button", path);
-    button.classList.toggle("active", path === project.activePath);
-    button.addEventListener("click", () => {
-      try {
-        project.select(path);
-      } catch (error) {
-        setStatus(error instanceof Error ? error.message : String(error), true);
-      }
-    });
-    item.append(button);
-    fileList.append(item);
+    const kind = path.endsWith(".ns") ? "source" : path.includes("lock") ? "lock" : "manifest";
+    const node = button(path, () => guard(() => project.select(path)));
+    node.className = `file-button ${kind}`;
+    node.classList.toggle("active", path === project.activePath);
+    item.append(node);
+    shell.fileList.append(item);
   }
 }
 
 function render(): void {
   renderFileList();
   const active = project.activePath;
-  activePathLabel.textContent = active === "" ? "(no files)" : active;
+  shell.activePath.textContent = active === "" ? "(no files)" : active;
   const text = active === "" ? "" : (project.read(active) ?? "");
-  if (editor.value !== text) editor.value = text;
+  if (shell.editor.value !== text) shell.editor.value = text;
+  const lines = text === "" ? 0 : text.split("\n").length;
+  shell.editorMeta.textContent = `${String(lines)} lines - ${String(text.length)} chars`;
+
   const validation = validateManifestFiles(project.snapshot());
-  renderDiagnostics(validation.issues);
-  const files: readonly ProjectFile[] = project.getFiles();
-  saveProject(files);
+  renderIssues(
+    shell.diagnostics,
+    validation.issues.map((issue: ManifestIssue) => ({
+      code: issue.code,
+      message: `${issue.file}: ${issue.message}`,
+      hint: null,
+    })),
+    "No manifest issues.",
+  );
+  renderIssues(shell.compilerDiagnostics, compilerIssues, "No compiler diagnostics.");
+  saveProject(project.getFiles());
 }
 
 render();
-setStatus("S2 virtual project ready.");
+showTab(activeTab);
+setStatus(`S4 ready. API ${COMPILER_API_VERSION}.`);
