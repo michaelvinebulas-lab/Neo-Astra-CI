@@ -1,7 +1,7 @@
 # Playground v1.2 — Plan
 
 **Status:** Draft for principal review
-**Progress:** S0-S4 features landed (2026-11-28): compiler core command, Worker protocol, public repo + Pages CI, virtual project editor, compiler panels, edition controls, and a heavy UI rework. Native-diagnostic parity (S3) and the conformance migration-pair sweep (S4) remain open.
+**Progress:** S0-S6 features landed (2026-11-28): compiler core command, Worker protocol, public repo + Pages CI, virtual project editor, compiler panels, edition controls, target codegen, sandbox runner, and a code-editor-style UI. Open verification: S3 native-diagnostic parity, S4 migration pairs, S5 CLI byte-parity, and S6 browser execution checks.
 **Date:** 2026-11-28
 
 ## Task list
@@ -55,15 +55,20 @@ Mark items `[x]` only when the stated evidence exists. Do not mark a slice done 
 - [ ] Verify all `conformance/v0.2` migration pairs.
 
 ### S5 - Codegen
-- [ ] Generate JS and TS per module from `ModuleIr`.
-- [ ] Compute relative `moduleSpecifiers` from virtual paths.
+- [x] Generate JS and TS per module from `ModuleIr`.
+- [x] Map module keys to import-map specifiers for browser loading.
+- [x] Add a Compile button that shows generated output for the selected target.
+- [x] Merge PR #4 and verify the staged `codegen-js` modules are served.
 - [ ] Verify generated ESM is byte-identical to CLI output for the fixture set.
 
 ### S6 - Runner
-- [ ] Add the sandboxed iframe with a stdout/stderr `runtime` shim.
-- [ ] Enforce a hard wall-clock timeout by terminating the iframe/Worker.
-- [ ] Block DOM, network, storage, and filesystem access.
-- [ ] Verify runaway loops are killed and sample programs print correctly.
+- [x] Add the sandboxed iframe with a stdout/stderr `runtime` shim.
+- [x] Enforce a hard wall-clock timeout by terminating the iframe.
+- [x] Block DOM, network, storage, and filesystem access (`sandbox="allow-scripts"`).
+- [x] Add an optional expected-output box that reports pass/fail for simple tests.
+- [x] Treat native/wasm targets as check-only in the browser and say so explicitly.
+- [x] Code-editor UI: line-number gutter, syntax-highlight overlay, tab insertion, synchronized scrolling.
+- [ ] Verify runaway loops are killed and sample programs print correctly in a browser.
 
 ### S7 - NoPM
 - [ ] Extract a browser-safe resolver core with no Node imports.

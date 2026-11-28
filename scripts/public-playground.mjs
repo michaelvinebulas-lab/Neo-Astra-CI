@@ -557,6 +557,9 @@ jobs:
           cp orchestrator/packages/playground/dist/bridge.js apps/playground/dist/bridge.js
           cp orchestrator/packages/playground/dist/protocol.js apps/playground/dist/protocol.js
 
+      - name: Stage codegen modules
+        run: cp -r orchestrator/packages/codegen-js/dist apps/playground/dist/codegen-js
+
       - name: Rewrite worker imports
         run: node scripts/rewrite-worker-imports.mjs
 

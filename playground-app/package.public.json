@@ -9,6 +9,7 @@
     "test": "tsc -b && node --test tests/*.test.mjs"
   },
   "dependencies": {
-    "@neo-astra/playground": "1.1.2"
+    "@neo-astra/playground": "1.1.2",
+    "@neo-astra/codegen-js": "1.1.2"
   }
 }

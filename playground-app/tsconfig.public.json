@@ -16,6 +16,7 @@
     "src/**/*.ts"
   ],
   "references": [
-    { "path": "../../orchestrator/packages/playground" }
+    { "path": "../../orchestrator/packages/playground" },
+    { "path": "../../orchestrator/packages/codegen-js" }
   ]
 }

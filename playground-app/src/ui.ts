@@ -49,6 +49,8 @@ export interface Shell {
   readonly dataActions: HTMLDivElement;
   readonly activePath: HTMLSpanElement;
   readonly editor: HTMLTextAreaElement;
+  readonly gutter: HTMLDivElement;
+  readonly highlight: HTMLPreElement;
   readonly editorMeta: HTMLSpanElement;
   readonly actions: HTMLDivElement;
   readonly tabs: HTMLDivElement;
@@ -56,6 +58,7 @@ export interface Shell {
   readonly diagnostics: HTMLUListElement;
   readonly compilerDiagnostics: HTMLUListElement;
   readonly output: HTMLPreElement;
+  readonly expected: HTMLTextAreaElement;
   readonly lockfile: HTMLPreElement;
   readonly status: HTMLDivElement;
 }
@@ -85,9 +88,14 @@ export function buildShell(root: HTMLElement): Shell {
   const activePath = element("span", "active-path");
   const editorMeta = element("span", "editor-meta");
   editorHeader.append(activePath, editorMeta);
+  const editorShell = element("div", "editor-shell");
+  const gutter = element("div", "gutter");
+  const highlight = element("pre", "highlight");
   const editor = element("textarea", "editor");
   editor.spellcheck = false;
-  editorPane.append(editorHeader, editor);
+  editor.wrap = "off";
+  editorShell.append(gutter, highlight, editor);
+  editorPane.append(editorHeader, editorShell);
 
   const infoPane = element("aside", "panel info-pane");
   const tabs = element("div", "tabs");
@@ -95,6 +103,8 @@ export function buildShell(root: HTMLElement): Shell {
   const diagnostics = element("ul", "diagnostics");
   const compilerDiagnostics = element("ul", "diagnostics");
   const output = element("pre", "panel-output", "Run an action to see output.");
+  const expected = element("textarea", "expected", "");
+  expected.placeholder = "Expected stdout (optional). Run shows pass/fail when set.";
   const lockfile = element("pre", "panel-output", "No lockfile generated yet.");
   infoPane.append(tabs, panels);
 
@@ -116,6 +126,8 @@ export function buildShell(root: HTMLElement): Shell {
     dataActions,
     activePath,
     editor,
+    gutter,
+    highlight,
     editorMeta,
     actions,
     tabs,
@@ -123,6 +135,7 @@ export function buildShell(root: HTMLElement): Shell {
     diagnostics,
     compilerDiagnostics,
     output,
+    expected,
     lockfile,
     status,
   };

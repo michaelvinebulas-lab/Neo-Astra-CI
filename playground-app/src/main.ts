@@ -12,6 +12,9 @@ import {
 } from "./project.js";
 import { generateLockfile } from "./lockfile.js";
 import { PlaygroundCompiler } from "./compiler-client.js";
+import { compileProject, type CompiledProject } from "./codegen.js";
+import { runProject } from "./runner.js";
+import { highlightSource, lineNumbers } from "./editor.js";
 import {
   COMPILER_API_VERSION,
   PLAYGROUND_PROTOCOL_VERSION,
@@ -53,6 +56,7 @@ const project = new ProjectStore(() => render(), loadProject() ?? DEFAULT_FILES)
 const compiler = new PlaygroundCompiler();
 let overrides: UiOverrides = DEFAULT_OVERRIDES;
 let compilerIssues: readonly DisplayIssue[] = [];
+let compiled: CompiledProject | undefined;
 
 function setStatus(message: string, isError = false): void {
   shell.status.textContent = message;
@@ -220,7 +224,7 @@ const panels: Record<TabName, HTMLElement> = {
 };
 panels.diagnostics.append(shell.diagnostics);
 panels.compiler.append(shell.compilerDiagnostics);
-panels.output.append(shell.output);
+panels.output.append(shell.expected, shell.output);
 panels.lockfile.append(shell.lockfile);
 shell.panels.append(panels.diagnostics, panels.compiler, panels.output, panels.lockfile);
 
@@ -321,7 +325,57 @@ function promoteManifestEdition(): void {
   }
 }
 
+async function compileCurrent(): Promise<void> {
+  setStatus("Compiling...");
+  try {
+    const settings = effective();
+    const sources = sourceUnits();
+    const checked = await compiler.request<ProjectCheckResult>("check_project", {
+      ...withOptionalFields(settings),
+      sources,
+    });
+    setCompilerDiagnostics(asDiagnostics(checked));
+    if (!checked.ok) {
+      setStatus("Compilation blocked by diagnostics.", true);
+      return;
+    }
+    const result = compileProject(checked, sources, settings);
+    setCompilerDiagnostics(result.diagnostics);
+    compiled = result;
+    shell.output.textContent = result.files
+      .map((file) => `// ${file.path}\n${file.code}`)
+      .join("\n\n");
+    showTab("output");
+    setStatus(`Compiled ${String(result.files.length)} module(s) for ${result.target}.`);
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
+async function runCurrent(): Promise<void> {
+  if (effective().target !== "js") {
+    setStatus("Run is available for the js target only.", true);
+    return;
+  }
+  if (compiled === undefined) {
+    setStatus("Compile the project before running it.", true);
+    return;
+  }
+  setStatus("Running...");
+  try {
+    const result = await runProject(compiled.files, shell.expected.value);
+    const verdict = result.passed === undefined ? "not checked" : result.passed ? "pass" : "fail";
+    shell.output.textContent = `stdout:\n${result.output}\n\nexpected: ${verdict}`;
+    showTab("output");
+    setStatus(`Run complete (${verdict}).`);
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
+  }
+}
+
 shell.actions.append(
+  button("Compile", () => void compileCurrent()),
+  button("Run", () => void runCurrent()),
   button("Check project", () => {
     void perform<ProjectCheckResult>(
       "Check project",
@@ -407,6 +461,20 @@ shell.editor.addEventListener("input", () => {
   });
 });
 
+shell.editor.addEventListener("scroll", () => {
+  shell.highlight.scrollTop = shell.editor.scrollTop;
+  shell.highlight.scrollLeft = shell.editor.scrollLeft;
+  shell.gutter.scrollTop = shell.editor.scrollTop;
+});
+
+shell.editor.addEventListener("keydown", (event) => {
+  if (event.key !== "Tab") return;
+  event.preventDefault();
+  const input = event.currentTarget as HTMLTextAreaElement;
+  input.setRangeText("  ", input.selectionStart, input.selectionEnd, "end");
+  input.dispatchEvent(new Event("input"));
+});
+
 function renderFileList(): void {
   shell.fileList.replaceChildren();
   for (const path of project.paths) {
@@ -426,6 +494,8 @@ function render(): void {
   shell.activePath.textContent = active === "" ? "(no files)" : active;
   const text = active === "" ? "" : (project.read(active) ?? "");
   if (shell.editor.value !== text) shell.editor.value = text;
+  shell.gutter.textContent = lineNumbers(text);
+  shell.highlight.innerHTML = `${highlightSource(text)}\n`;
   const lines = text === "" ? 0 : text.split("\n").length;
   shell.editorMeta.textContent = `${String(lines)} lines - ${String(text.length)} chars`;
 
@@ -445,4 +515,4 @@ function render(): void {
 
 render();
 showTab(activeTab);
-setStatus(`S4 ready. API ${COMPILER_API_VERSION}.`);
+setStatus(`Playground ready. API ${COMPILER_API_VERSION}.`);
