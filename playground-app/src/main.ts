@@ -364,9 +364,13 @@ function promoteManifestEdition(): void {
 }
 
 async function compileCurrent(): Promise<void> {
+  const settings = effective();
+  if (settings.target !== "js" && settings.target !== "ts") {
+    setStatus("Browser codegen supports js and ts only. Native/wasm are check-only.", true);
+    return;
+  }
   setStatus("Compiling...");
   try {
-    const settings = effective();
     const sources = sourceUnits();
     const checked = await compiler.request<ProjectCheckResult>("check_project", {
       ...withOptionalFields(settings),
