@@ -28,6 +28,7 @@ const skippedDirectories = new Set([
   "dist",
   "fuzz",
   "node_modules",
+  "playground-app",
   "public",
   "target",
   "test_comparison",

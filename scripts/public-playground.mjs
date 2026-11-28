@@ -377,6 +377,23 @@ function copyTree(source, destination, relativePath = "") {
   }
 }
 
+function copyApp(source, destination, relativePath = "") {
+  for (const entry of readdirSync(source, { withFileTypes: true })) {
+    if (entry.name === "node_modules" || entry.name === "dist") continue;
+    const childRelative = relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
+    const childSource = join(source, entry.name);
+    const childDestination = join(destination, entry.name);
+    if (entry.isDirectory()) {
+      mkdirSync(childDestination, { recursive: true });
+      copyApp(childSource, childDestination, childRelative);
+    } else if (entry.isFile()) {
+      const cleaned = cleanFile(childRelative, readFileSync(childSource, "utf8"));
+      mkdirSync(dirname(childDestination), { recursive: true });
+      writeFileSync(childDestination, cleaned, "utf8");
+    }
+  }
+}
+
 function prepareOutput() {
   mkdirSync(out, { recursive: true });
   for (const entry of readdirSync(out, { withFileTypes: true })) {
@@ -478,81 +495,7 @@ writeFileSync(
   "utf8",
 );
 
-mkdirSync(join(out, "apps", "playground", "src"), { recursive: true });
-writeFileSync(
-  join(out, "apps", "playground", "package.json"),
-  `${JSON.stringify(
-    {
-      name: "@neo-astra/playground-app",
-      version: workspace.version,
-      private: true,
-      type: "module",
-      scripts: { build: "tsc -b", clean: "tsc -b --clean" },
-    },
-    null,
-    2,
-  )}\n`,
-  "utf8",
-);
-writeFileSync(
-  join(out, "apps", "playground", "tsconfig.json"),
-  `${JSON.stringify(
-    {
-      extends: "../../tsconfig.base.json",
-      compilerOptions: {
-        rootDir: "src",
-        outDir: "dist",
-        tsBuildInfoFile: "dist/.tsbuildinfo",
-        lib: ["ES2022", "DOM"],
-        types: [],
-        module: "ESNext",
-        moduleResolution: "Bundler",
-      },
-      include: ["src/**/*.ts"],
-    },
-    null,
-    2,
-  )}\n`,
-  "utf8",
-);
-writeFileSync(
-  join(out, "apps", "playground", "src", "protocol.ts"),
-  cleanFile(
-    "apps/playground/src/protocol.ts",
-    readFileSync(join(root, "orchestrator", "packages", "playground", "src", "protocol.ts"), "utf8"),
-  ),
-  "utf8",
-);
-writeFileSync(
-  join(out, "apps", "playground", "src", "main.ts"),
-  `import { PLAYGROUND_PROTOCOL_VERSION } from "./protocol.js";
-
-const host = document.getElementById("app");
-if (host === null) {
-  throw new Error("Missing #app element");
-}
-host.textContent = "Neo Astra playground scaffold - protocol " + String(PLAYGROUND_PROTOCOL_VERSION);
-`,
-  "utf8",
-);
-writeFileSync(
-  join(out, "apps", "playground", "index.html"),
-  `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Neo Astra Playground</title>
-  </head>
-  <body>
-    <main id="app">Loading...</main>
-    <script type="module" src="./dist/main.js"></script>
-  </body>
-</html>
-`,
-  "utf8",
-);
-writeFileSync(join(out, "apps", "playground", ".nojekyll"), "", "utf8");
+copyApp(join(root, "playground-app"), join(out, "apps", "playground"));
 
 mkdirSync(join(out, ".github", "workflows"), { recursive: true });
 writeFileSync(
@@ -596,6 +539,9 @@ jobs:
 
       - name: Build TypeScript app
         run: npm run build
+
+      - name: Test playground app
+        run: npm test --workspace @neo-astra/playground-app
 
       - name: Stage wasm artifact
         run: |

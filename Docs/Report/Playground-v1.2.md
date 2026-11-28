@@ -1,7 +1,7 @@
 # Playground v1.2 — Plan
 
 **Status:** Draft for principal review
-**Progress:** S0 and S1 complete (2026-11-28): `canonical` command, Worker protocol types, public `Neo-Astra-Playground` repo, sanitized export script, Pages CI, and a live placeholder page. S2 (virtual project) not started.
+**Progress:** S0, S1, and S2 complete (2026-11-28): `canonical` command, Worker protocol types, public repo and Pages CI, plus the virtual project editor with JSON/TOML manifest validation and lockfile preview. S3 (compiler panels) not started.
 **Date:** 2026-11-28
 
 ## Task list
@@ -27,11 +27,13 @@ Mark items `[x]` only when the stated evidence exists. Do not mark a slice done 
 - [x] Verify the served JS uses a relative import and `protocol.js` is present.
 
 ### S2 - Virtual project
-- [ ] Implement the in-memory file tree with add/rename/delete.
-- [ ] Add JSON and TOML manifest parsing with strict key validation.
-- [ ] Add duplicate-JSON-key detection and wrong-manifest-key diagnostics.
-- [ ] Add the `core.lock.json` panel.
-- [ ] Verify the 10 manifest validation cases.
+- [x] Implement the in-memory file tree with add/rename/delete.
+- [x] Add JSON and TOML manifest parsing with strict key validation.
+- [x] Add duplicate-JSON-key detection and wrong-manifest-key diagnostics.
+- [x] Add the `core.lock.json` panel with Web Crypto SHA-256 integrity.
+- [x] Verify the manifest validation cases (12 tests, including the required 10).
+- [x] Move app source into `playground-app/` in the private tree so regeneration preserves it.
+- [x] Merge PR #1 in the playground repo and verify the live page.
 
 ### S3 - Compiler panels
 - [ ] Implement the Worker transport with timeout and termination.
