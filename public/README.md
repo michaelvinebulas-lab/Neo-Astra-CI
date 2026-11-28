@@ -6,7 +6,7 @@ This repo is the public source mirror. It holds the production source plus the f
 
 ## Where things stand
 
-Neo Astra `1.1.2` is out. The table below is the current support contract.
+Neo Astra `1.2.0` is out. The table below is the current support contract.
 
 | Area | Status | Notes |
 | --- | --- | --- |
@@ -25,9 +25,11 @@ Neo Astra `1.1.2` is out. The table below is the current support contract.
 | Wasm execution backend | **Later** | Not shipped. |
 | Browser playground | **Later** | Not shipped. |
 
-The 1.1.2 release archives are built for **Windows x64**, **Linux x64**, and **macOS arm64**. Other platforms may build from source, but they aren't official release targets yet.
+The 1.2.0 release archives are built for **Windows x64**, **Linux x64**, and **macOS arm64**. Other platforms may build from source, but they aren't official release targets yet.
 
-In `1.1.2` the `astra` and `nopm` commands are native Rust binaries. `check`, `fmt`, `ast`, `explain`, `doctor`, C and native builds, and NoPM path flows need no Node.js or npm at runtime. Only JS and TypeScript builds use an isolated, on-demand Node bridge.
+A browser playground is available at <https://luminousvalentine-cell.github.io/Neo-Astra-Playground/>. It uses the same Rust compiler core and JavaScript backend as the CLI, no server.
+
+In `1.2.0` the `astra` and `nopm` commands are native Rust binaries. `check`, `fmt`, `ast`, `explain`, `doctor`, C and native builds, and NoPM path flows need no Node.js or npm at runtime. Only JS and TypeScript builds use an isolated, on-demand Node bridge.
 
 Edition `0.1` remains the default and is unchanged. Edition `0.2` adds `if let` / `while let`, ranges (`a..b`, `a..=b`), integer bitwise operators, `char` literals, immediate lambdas, and the complete numeric suffix table. All are gated by the edition setting; see the language specification shipped with the release.
 

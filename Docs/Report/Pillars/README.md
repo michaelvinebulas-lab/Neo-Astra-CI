@@ -12,11 +12,18 @@ This folder turns the founding idea into executable proofs. Each file records:
 
 The codes are `PV-01` … `PV-09`. They are stable identifiers, **not** version commitments. A release slot is assigned when the proof is scheduled.
 
+## Conformance cases
+
+- [`PV-01` — one semantic contract](../../../conformance/vision/pv01-contract.ns): frozen stdout in
+  [`pv01-contract.expected`](../../../conformance/vision/pv01-contract.expected), driver
+  [`run-pv01.mjs`](../../../conformance/vision/run-pv01.mjs), and captured evidence
+  [`pv01-report.md`](../../../conformance/vision/pv01-report.md).
+
 ## Index
 
 | Code | Pillar | Status | Release target |
 |---|---|---|---|
-| `PV-01` | One semantic contract | Partial | TBD |
+| `PV-01` | One semantic contract | Proven | TBD |
 | `PV-02` | Modes as capabilities | Partial | TBD |
 | `PV-03` | Semantic policies | Unproven | TBD |
 | `PV-04` | GC + manual memory | Partial | TBD |

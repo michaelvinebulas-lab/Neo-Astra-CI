@@ -21,6 +21,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 - Native language server, phase 1: a stdio LSP with diagnostics and formatting.
 
+## [1.2.0] - 2026-11-28
+
+### Added
+
+- A standalone browser playground: virtual multi-file projects, JSON and TOML manifests, edition/target/mode/integer controls, canonical lint, migration preview/apply, per-module JS/TS generation, a sandboxed runner, and browser-safe package resolution.
+- A `canonical` JSON-RPC command and a portable `@neo-astra/nopm/core` module.
+
+### Fixed
+
+- Generated programs now call the exported `main()` when run in the playground.
+- Native and wasm targets are check-only in the browser.
+
 ## [1.1.2] - 2026-11-28
 
 ### Added

@@ -1,6 +1,6 @@
 # Install and upgrade
 
-Neo Astra `1.1.2` ships as a host-native package. Once it's installed, you don't need Node.js, npm, Cargo, or a source checkout to run it. There's no background service and nothing is stored globally beyond the installed commands.
+Neo Astra `1.2.0` ships as a host-native package. Once it's installed, you don't need Node.js, npm, Cargo, or a source checkout to run it. There's no background service and nothing is stored globally beyond the installed commands.
 
 ## Supported hosts
 
@@ -10,7 +10,7 @@ Neo Astra `1.1.2` ships as a host-native package. Once it's installed, you don't
 | Linux x64 | yes | `neo-astra-linux-x64` |
 | macOS arm64 | yes | `neo-astra-darwin-arm64` |
 
-Other hosts can build from source, but they aren't covered by the 1.1.2 release contract.
+Other hosts can build from source, but they aren't covered by the 1.2.0 release contract.
 
 ## Install from npm
 
@@ -47,7 +47,7 @@ Here's what's inside the archive:
 
 The binaries are compiled and stripped, so the package has no TypeScript sources, source maps, comments, or debug symbols.
 
-A `.sha256` sidecar catches corrupted downloads, but it can't prove an archive wasn't swapped out. The 1.1.2 archives include provenance attestations. When one is present, you can verify it with the GitHub CLI:
+A `.sha256` sidecar catches corrupted downloads, but it can't prove an archive wasn't swapped out. The 1.2.0 archives include provenance attestations. When one is present, you can verify it with the GitHub CLI:
 
 ```sh
 gh attestation verify neo-astra-*.tar.gz --repo luminousvalentine-cell/Neo-Astra

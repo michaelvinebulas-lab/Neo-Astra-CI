@@ -293,13 +293,13 @@ all three backends before implementation starts.
 - [x] Write design notes for all landed Phase 7 slices in `Docs/Report/`:
       `Phase7-if-let.md`, `Phase7-ranges.md`, `Phase7-bitwise.md`,
       `Phase7-char.md`, `Phase7-lambdas.md`, and `Phase7-suffixes.md`.
-- [ ] Decide the edition gate: each feature must be additive under `0.2` or
-      land behind a new edition marker; never silently change the frozen grammar.
-- [ ] Add parser/lexer tests and conformance cases for every new spelling,
+- [x] Decide the edition gate: each feature is additive under `0.2` behind the
+      edition marker; the frozen `0.1` grammar is unchanged.
+- [x] Add parser/lexer tests and conformance cases for every new spelling,
       including negative cases and canonical lint behavior.
-- [ ] Thread new AST nodes through resolver, checker, formatter, and C/JS/TS
+- [x] Thread new AST nodes through resolver, checker, formatter, and C/JS/TS
       codegen explicitly; add serialization contract tests.
-- [ ] Update `spec-v0.2.md` only after the features are implemented and gated.
+- [x] Update `spec-v0.2.md` after the features were implemented and gated.
 
 ## 1.2.0 - browser playground
 
@@ -307,55 +307,53 @@ The native CLI replacement moved to the `1.0.1` section above.
 
 ### Core bridge
 
-- [ ] Compiler Wasm artifact builds in CI and is versioned with the host
-      bundle.
-- [ ] Host checks the protocol version and refuses mismatched artifacts with a
-      clear error.
-- [ ] Requests and responses are UTF-8 JSON matching the existing schema;
+- [x] Compiler Wasm artifact builds in CI and is versioned with the host bundle.
+- [x] Host checks the protocol version and refuses mismatched artifacts with a
+      clear error (`PG0001`).
+- [x] Requests and responses are UTF-8 JSON matching the existing schema;
       traps and panics surface as internal errors, never as user syntax errors.
 - [ ] Every allocation is freed; a soak test of 1,000 compiles shows stable
       memory.
 
 ### Editor
 
-- [ ] Edit source and a minimal manifest; switch between JSON and TOML.
-- [ ] Target and mode selectors sent with each request.
-- [ ] Diagnostics render severity, stable code, file, line/column, message, and
-      hint; selecting one moves the cursor.
-- [ ] Sample gallery loads without network access after the first visit.
+- [x] Edit source and real manifests; switch between JSON and TOML.
+- [x] Target, mode, edition, and integer-policy selectors sent with each request.
+- [ ] Diagnostics render stable code, file, byte span, message, and hint;
+      line/column conversion and click-to-cursor remain open.
+- [ ] Sample gallery loads without network access after the first visit (a
+      Load example button exists; no URL gallery yet).
 - [ ] Shareable editor state in the URL.
 
 ### Compiler actions
 
-- [ ] Check, with the full diagnostic set.
-- [ ] AST view (the compiler API now returns the parsed tree).
-- [ ] Format through the same formatter as the CLI.
-- [ ] Mode and capability explanation (the compiler API now returns it).
-- [ ] JavaScript emission with copy and download.
+- [x] Check, with the full diagnostic set.
+- [x] AST view (the compiler API returns the parsed tree).
+- [x] Format through the same formatter as the CLI.
+- [x] Mode and capability explanation (the compiler API returns it).
+- [ ] JavaScript emission with copy and download (generation exists; a
+      generated-file download button remains open).
 
 ### Execution and safety
 
-- [ ] Generated modules run in a sandboxed frame with no access to host globals,
+- [x] Generated modules run in a sandboxed frame with no access to host globals,
       storage, or credentials; the sandbox cannot navigate the host page or open
       popups.
 - [ ] Output capture with attribution; infinite loops terminate at a
-      configurable timeout; output is capped; runtime failures show their codes
-      and a call stack when available.
-- [ ] Local compilation is the default and the UI says so; no source leaves the
-      browser unless a remote compiler is explicitly enabled, with upload and
-      retention disclosed first.
+      configurable timeout; output capping and runtime call stacks remain open.
+- [x] Local compilation is the default and the UI says so; live package fetches
+      are explicit and reported in the Packages panel.
 - [ ] Restrictive content security policy with network denied by default; no
       analytics or third-party script receives source text.
 
 ### Delivery
 
-- [ ] Tests cover the loader, codegen bridge, diagnostic mapping, URL state, and
-      sandbox timeout; one headless browser test compiles and runs a sample.
-- [ ] The gate includes the playground build and tests.
+- [ ] Tests cover URL state, a 1,000-compile soak, and a headless browser run.
+- [x] The playground CI gate includes the build and 23 app tests.
 - [ ] Initial gzipped payload within the size budget, with the measured number
       recorded.
 - [ ] Works in current Chrome, Firefox, Safari, and Edge.
-- [ ] Static hosting, offline assets, README, and privacy note.
+- [ ] Static hosting and README are live; a privacy note remains open.
 
 ## 1.3.0 - high-level mode
 

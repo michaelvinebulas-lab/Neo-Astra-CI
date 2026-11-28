@@ -1,11 +1,12 @@
-{
-  "name": "@neo-astra/playground-app",
-  "version": "1.1.2",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "build": "tsc -b",
-    "clean": "tsc -b --clean",
-    "test": "tsc -b && node --test tests/*.test.mjs"
-  }
+﻿{
+    "name":  "@neo-astra/playground-app",
+    "version":  "1.2.0",
+    "private":  true,
+    "type":  "module",
+    "scripts":  {
+                    "build":  "tsc -b",
+                    "clean":  "tsc -b --clean",
+                    "test":  "tsc -b \u0026\u0026 node --test tests/*.test.mjs"
+                }
 }
+

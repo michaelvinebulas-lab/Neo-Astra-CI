@@ -5,9 +5,9 @@ Everything else is either normative (the spec), operational (the work order),
 or frozen history (`Docs/archive/`).
 
 **Last updated:** 2026-11-28
-**Phase:** `1.1.2` is released: all six Phase 7 slices landed behind the edition-`0.2` boundary. `v1.1.0` was tagged but its release failed on a packaging smoke fixture that used an unsupported edition, so no assets or npm packages were published for it; the fix shipped as `1.1.1`.
-**Master:** private `master` at the 1.1.2 docs refresh, pushed to `ci`; public `master` at `5208181` (docs PR #11), tag `v1.1.2` at `76d2d7d`. Release run `46114596390` is green on Windows, macOS, and Linux; GitHub release has three archives plus `.sha256` sidecars, and all four npm packages are at `1.1.2` with SLSA provenance.
-**Blockers:** `1.0.0` still lacks provenance and reports `immutable: false`. The exposed `1.0.0` npm token has been revoked; the stale local token was cleared and npm web/passkey login refreshed credentials. Existing trusted publishers matched the release workflow and were reused successfully. Docs-only follow-up PR #11 refreshed the public README/INSTALL/SECURITY/CHANGELOG for 1.1.2.
+**Phase:** `1.2.0` release prep is complete locally: lockstep version bump, changelog and public docs, verification, and native parity are green. Tag/publish is pending the sanitized public PR.
+**Master:** private `master` at the `1.2.0` release bump (pushed to `ci`); public `master` remains at `5208181`, tag `v1.1.2` at `76d2d7d`. Playground repo `luminousvalentine-cell/Neo-Astra-Playground` is at `5ce0275` with S0-S7 landed.
+**Blockers:** `1.0.0` still lacks provenance and reports `immutable: false`. The exposed `1.0.0` npm token has been revoked. The principal confirmed the existing npm trusted publishers are still valid, so no passkey recreation is needed for this release.
 
 ---
 
@@ -171,6 +171,7 @@ rejected this" invariant errors, not unfinished features.
 
 | Date | Change | Evidence |
 |---|---|---|
+| 2026-11-28 | Started the `1.2.0` release: lockstep bumped 23 tracked packages, moved `[Unreleased]` into `[1.2.0]` in `CHANGELOG.md`, added the public overlay entry, refreshed public README/INSTALL/SECURITY to `1.2.0`, updated roadmap/todo/plan, and bumped the playground app package to `1.2.0`. `npm run verify` and native parity 15/15 are green. | `node scripts/release.mjs 1.2.0`, `node scripts/check-versions.mjs`, `npm run verify`, `npm run test:native-parity` |
 | 2026-11-28 | Landed `1.2` S7 browser-safe NoPM: split the portable resolver into `orchestrator/packages/nopm/src/core.ts` with no Node imports, kept Node-only helpers in `index.ts`, added `@neo-astra/nopm/core` export, and built a browser resolver that emits a standard `core.lock.json` via `formatLockfile`. Path packages read the virtual tree; npm/Cargo fetch with Web Crypto integrity and CORS fallback; Git/PyPI/NuGet/OCI/nova are declare-only with honest diagnostics. New Packages tab and Resolve button. PR #8 merged at `5ce0275`; stable sort comparators added after Sonar flagged seven unsorted `.sort()` calls. | `node --test orchestrator/tests/nopm.test.mjs` 38/38, `npm test --workspace @neo-astra/playground-app` 23/23, PR #8 checks green, run `46169707354`, live `dist/nopm-core/core.js` |
 | 2026-11-28 | Made native and wasm targets explicitly check-only in the browser playground. Compile previously reported "Compiled for native" while generating JS; it now rejects those targets with a clear status message, matching Run. PR #7 merged at `1f80c0f`. | `npm run build`, 20 tests, PR #7 checks green, run `46167443774` |
 | 2026-11-28 | Fixed the playground run path after a user screenshot showed empty stdout. Generated Neo Astra JS exports `main()` but does not call it; the browser host only imported the module. The runner now calls `module.main()` after import, matching the standard entry point. Verified locally by importing a CLI-generated hello-world module and calling `main()` (`hello world\n`). PR #6 merged at `d4524bc`. | `npm run build`, `npm test --workspace @neo-astra/playground-app` 20/20, PR #6 checks green, run `46166044738`, live `dist/runner.js` |

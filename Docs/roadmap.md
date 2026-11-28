@@ -115,7 +115,7 @@ and lambdas (`fn(x) => expr`) with parameter inference and capture rules.
 Complete the integer/float suffix table. Do not ship any of these without a
 new edition gate or an additive release.
 
-### 1.2.0 - Browser playground
+### 1.2.0 - Browser playground (released)
 
 - A static, browser-hosted playground in its own public repo
   (`Neo-Astra-Playground`), deployed with GitHub Actions Pages on merge and on

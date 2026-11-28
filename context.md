@@ -2,10 +2,10 @@
 
 **Snapshot:** 2026-11-28
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** private `master` at the 1.1.2 docs refresh (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized docs merge at `5208181`
+**Branch:** private `master` at the `1.2.0` release bump (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is still the sanitized docs merge at `5208181`
 **Published release:** `1.1.2` (tag `v1.1.2` -> public `76d2d7d`)
-**Next release:** `1.2.0` - browser playground (planned, not started)
-**Current state:** `1.1.2` is published on GitHub and npm; public docs were refreshed by PR #11 and merged. Playground repo `luminousvalentine-cell/Neo-Astra-Playground` is at `6b76966` with S0-S6 landed: virtual project, manifest validation, Worker transport, check/format/AST/explain, edition/target/mode/policy controls, canonical lint, migrate preview/apply, target codegen (js/ts), sandboxed runner with expected-output tests, and a code-editor-style UI. Pages: `https://luminousvalentine-cell.github.io/Neo-Astra-Playground/`. Open verification: S3 native-diagnostic parity, S4 migration pairs, S5 CLI byte-parity, S6 browser execution checks. Run path fixed at playground `d4524bc` (sandbox calls exported `main()`); native/wasm made check-only at `1f80c0f`; S7 browser NoPM landed at `5ce0275` with a Packages tab. Next slice: S8 release (version bump + publish).
+**Pending release:** `1.2.0` - browser playground (local prep complete, tag pending)
+**Current state:** `1.2.0` local prep is complete: lockstep bump, changelog, public docs, roadmap/todo, `npm run verify`, and native parity 15/15. Playground repo `luminousvalentine-cell/Neo-Astra-Playground` is at `5ce0275` with S0-S7 landed. Pages: `https://luminousvalentine-cell.github.io/Neo-Astra-Playground/`. Next actions: regenerate sanitized source, open public PR, merge, tag `v1.2.0`, publish, then tag the playground repo `v1.2.0`.
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.

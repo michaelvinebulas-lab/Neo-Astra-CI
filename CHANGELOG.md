@@ -6,6 +6,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-28
+
+### Added
+- A standalone browser playground in `Neo-Astra-Playground`: virtual project
+  files, JSON/TOML manifests, edition/target/mode/policy controls, canonical
+  lint, migration preview/apply, per-module JS/TS codegen, a sandboxed runner,
+  and browser-safe NoPM resolution.
+- A `canonical` JSON-RPC command in the shared compiler core, separate from
+  `check` so existing response shapes stay stable.
+- A portable `nopm` core module with no Node imports, exposed as
+  `@neo-astra/nopm/core`.
+- `conformance/vision/pv01-contract.ns`, a four-target proof of the one semantic
+  contract, with frozen expected output and a runnable driver.
+
+### Fixed
+- The playground runner now calls the exported `main()` after importing a
+  generated module, so programs actually produce stdout.
+- Native and wasm targets are explicitly check-only in the browser playground.
+- Seven unstable `Array.sort()` calls in the portable NoPM core now use
+  `localeCompare` comparators.
+
 ## [1.1.2] - 2026-11-27
 
 ### Added

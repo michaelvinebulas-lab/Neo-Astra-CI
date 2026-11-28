@@ -82,8 +82,9 @@ Mark items `[x]` only when the stated evidence exists. Do not mark a slice done 
 - [ ] Verify lockfile parity with native `nopm` fixtures.
 
 ### S8 - Release
-- [ ] Lockstep bump all versions to `1.2.0`.
-- [ ] Update root docs, public overlay docs, and CHANGELOG.
+- [x] Lockstep bump all tracked packages to `1.2.0`.
+- [x] Update root CHANGELOG, public overlay docs, roadmap, todo, state, and context.
+- [x] Verify `npm run verify` and native parity 15/15 on the release tree.
 - [ ] Regenerate the sanitized source tree and open a public PR.
 - [ ] Complete the release checklist and publish `v1.2.0` artifacts.
 - [ ] Tag the playground repo `v1.2.0` and verify Pages serves it.
