@@ -59,6 +59,7 @@ export interface Shell {
   readonly guide: HTMLDivElement;
   readonly diagnostics: HTMLUListElement;
   readonly compilerDiagnostics: HTMLUListElement;
+  readonly packageIssues: HTMLUListElement;
   readonly output: HTMLPreElement;
   readonly expected: HTMLTextAreaElement;
   readonly lockfile: HTMLPreElement;
@@ -113,6 +114,7 @@ export function buildShell(root: HTMLElement): Shell {
   const guide = element("div", "panel-body guide");
   const diagnostics = element("ul", "diagnostics");
   const compilerDiagnostics = element("ul", "diagnostics");
+  const packageIssues = element("ul", "diagnostics");
   const output = element("pre", "panel-output", "Run an action to see output.");
   const expected = element("textarea", "expected", "");
   expected.placeholder = "Expected stdout (optional). Run reports pass/fail when set.";
@@ -143,6 +145,7 @@ export function buildShell(root: HTMLElement): Shell {
     guide,
     diagnostics,
     compilerDiagnostics,
+    packageIssues,
     output,
     expected,
     lockfile,

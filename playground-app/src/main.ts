@@ -15,6 +15,7 @@ import { PlaygroundCompiler } from "./compiler-client.js";
 import { compileProject, type CompiledProject } from "./codegen.js";
 import { runProject } from "./runner.js";
 import { highlightSource, lineNumbers } from "./editor.js";
+import { resolvePackages } from "./nopm-browser.js";
 import {
   COMPILER_API_VERSION,
   PLAYGROUND_PROTOCOL_VERSION,
@@ -56,6 +57,7 @@ const project = new ProjectStore(() => render(), loadProject() ?? DEFAULT_FILES)
 const compiler = new PlaygroundCompiler();
 let overrides: UiOverrides = DEFAULT_OVERRIDES;
 let compilerIssues: readonly DisplayIssue[] = [];
+let packageIssues: readonly DisplayIssue[] = [];
 let compiled: CompiledProject | undefined;
 
 function setStatus(message: string, isError = false): void {
@@ -210,17 +212,19 @@ shell.projectActions.append(
     link.click();
     URL.revokeObjectURL(url);
   }),
+  button("Resolve packages", () => void resolveCurrent()),
 );
 
 // ── Panel tabs ───────────────────────────────────────────────────────────────
 
-type TabName = "guide" | "diagnostics" | "compiler" | "output" | "lockfile";
+type TabName = "guide" | "diagnostics" | "compiler" | "packages" | "output" | "lockfile";
 let activeTab: TabName = "guide";
 
 const tabDefinitions: readonly { readonly key: TabName; readonly label: string }[] = [
   { key: "guide", label: "Start here" },
   { key: "diagnostics", label: "Manifest" },
   { key: "compiler", label: "Core" },
+  { key: "packages", label: "Packages" },
   { key: "output", label: "Output" },
   { key: "lockfile", label: "Lockfile" },
 ];
@@ -229,17 +233,20 @@ const panels: Record<TabName, HTMLElement> = {
   guide: shell.guide,
   diagnostics: element("div", "panel-body"),
   compiler: element("div", "panel-body"),
+  packages: element("div", "panel-body"),
   output: element("div", "panel-body"),
   lockfile: element("div", "panel-body"),
 };
 panels.diagnostics.append(shell.diagnostics);
 panels.compiler.append(shell.compilerDiagnostics);
+panels.packages.append(shell.packageIssues);
 panels.output.append(shell.expected, shell.output);
 panels.lockfile.append(shell.lockfile);
 shell.panels.append(
   panels.guide,
   panels.diagnostics,
   panels.compiler,
+  panels.packages,
   panels.output,
   panels.lockfile,
 );
@@ -360,6 +367,24 @@ function promoteManifestEdition(): void {
       ? text.replace('"edition": "0.1"', '"edition": "0.2"')
       : text.replace('edition = "0.1"', 'edition = "0.2"');
     if (next !== text) project.write(path, next);
+  }
+}
+
+async function resolveCurrent(): Promise<void> {
+  setStatus("Resolving packages...");
+  try {
+    const result = await resolvePackages(project.snapshot(), effective());
+    packageIssues = result.issues.map((issue) => ({
+      code: issue.code,
+      message: issue.message,
+      hint: null,
+    }));
+    renderIssues(shell.packageIssues, packageIssues, "No package issues.");
+    shell.lockfile.textContent = result.lockfile;
+    showTab("packages");
+    setStatus(`Resolved ${String(JSON.parse(result.lockfile)["packages"].length)} package(s).`);
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : String(error), true);
   }
 }
 
@@ -555,6 +580,7 @@ function render(): void {
     "No manifest issues.",
   );
   renderIssues(shell.compilerDiagnostics, compilerIssues, "No compiler diagnostics.");
+  renderIssues(shell.packageIssues, packageIssues, "No package issues.");
   saveProject(project.getFiles());
 }
 

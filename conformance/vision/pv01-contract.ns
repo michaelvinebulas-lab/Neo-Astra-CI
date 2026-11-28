@@ -1,0 +1,31 @@
+// PV-01 proof: one observable contract across JS, TS, native, and Nova.
+// Edition 0.1 is deliberate: the error effect uses postfix `!`.
+module app.main
+
+fn show(label: str, value: i32) {
+    println(label)
+    println(value)
+}
+
+fn parse_age(input: str) -> i32 ! ParseIntError {
+    return input.to_int()!
+}
+
+pub fn main() -> i32 {
+    // math.integers = wrapping: signed overflow must wrap, not panic or become Infinity.
+    let x: i32 = 2147483647
+    show("overflow", x + 1)
+
+    // strings.model = utf8: len is UTF-8 byte length, not UTF-16 units or scalars.
+    let s = "héllo😀"
+    println("len")
+    println(s.len())
+
+    // Nominal error effect: parsed explicitly on every backend.
+    println("parse")
+    match parse_age("nope") {
+        Ok(age) => show("age", age)
+        Err(error) => println("bad age")
+    }
+    return 0
+}

@@ -32,6 +32,7 @@ const tsPackages = [
   "manifest",
   "codegen-js",
   "codegen-ts",
+  "nopm",
   "playground",
 ];
 
@@ -427,6 +428,45 @@ for (const pkg of tsPackages) {
 }
 
 writeFileSync(
+  join(out, "orchestrator", "packages", "nopm", "package.json"),
+  `${JSON.stringify(
+    {
+      name: "@neo-astra/nopm",
+      version: workspace.version,
+      private: true,
+      type: "module",
+      main: "./dist/index.js",
+      types: "./dist/index.d.ts",
+      exports: {
+        ".": { types: "./dist/index.d.ts", default: "./dist/index.js" },
+        "./core": { types: "./dist/core.d.ts", default: "./dist/core.js" },
+      },
+      scripts: { build: "tsc -b", clean: "tsc -b --clean" },
+    },
+    null,
+    2,
+  )}\n`,
+  "utf8",
+);
+writeFileSync(
+  join(out, "orchestrator", "packages", "nopm", "tsconfig.json"),
+  `${JSON.stringify(
+    {
+      extends: "../../../tsconfig.base.json",
+      compilerOptions: {
+        rootDir: "src",
+        outDir: "dist",
+        tsBuildInfoFile: "dist/.tsbuildinfo",
+      },
+      include: ["src/core.ts", "src/index.ts"],
+    },
+    null,
+    2,
+  )}\n`,
+  "utf8",
+);
+
+writeFileSync(
   join(out, "Cargo.toml"),
   `[workspace]
 members = [
@@ -559,6 +599,11 @@ jobs:
 
       - name: Stage codegen modules
         run: cp -r orchestrator/packages/codegen-js/dist apps/playground/dist/codegen-js
+
+      - name: Stage NoPM core
+        run: |
+          mkdir -p apps/playground/dist/nopm-core
+          cp orchestrator/packages/nopm/dist/core.js apps/playground/dist/nopm-core/core.js
 
       - name: Rewrite worker imports
         run: node scripts/rewrite-worker-imports.mjs

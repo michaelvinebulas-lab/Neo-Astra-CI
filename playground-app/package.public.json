@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@neo-astra/playground": "1.1.2",
-    "@neo-astra/codegen-js": "1.1.2"
+    "@neo-astra/codegen-js": "1.1.2",
+    "@neo-astra/nopm": "1.1.2"
   }
 }

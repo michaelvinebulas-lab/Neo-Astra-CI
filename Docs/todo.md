@@ -406,6 +406,15 @@ One release per surface, in the order taken up:
 - [ ] Remote/hosted playground compilation (out of scope unless explicitly
       enabled).
 
+## PV-01 — semantic contract proof
+
+- [x] Prove one observable contract across JS, TS, native, and Nova with
+      `conformance/vision/pv01-contract.ns`, the frozen wrapping/utf8 manifests,
+      and `conformance/vision/run-pv01.mjs` (evidence: `pv01-report.md`).
+- [ ] Run the parity check from a real browser playground worker. The current
+      check uses the Wasm compiler bridge plus the shared `codegen-js` backend;
+      the worker UI is part of the 1.2.0 playground work.
+
 ## Housekeeping
 
 - [x] Wire the already-implemented `astra ast` and `astra explain` commands

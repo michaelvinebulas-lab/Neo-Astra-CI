@@ -17,6 +17,7 @@
   ],
   "references": [
     { "path": "../../orchestrator/packages/playground" },
-    { "path": "../../orchestrator/packages/codegen-js" }
+    { "path": "../../orchestrator/packages/codegen-js" },
+    { "path": "../../orchestrator/packages/nopm" }
   ]
 }

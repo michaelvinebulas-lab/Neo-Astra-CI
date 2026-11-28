@@ -1,7 +1,7 @@
 # Playground v1.2 — Plan
 
 **Status:** Draft for principal review
-**Progress:** S0-S6 features landed (2026-11-28): compiler core command, Worker protocol, public repo + Pages CI, virtual project editor, compiler panels, edition controls, target codegen, sandbox runner, and a code-editor-style UI. Open verification: S3 native-diagnostic parity, S4 migration pairs, S5 CLI byte-parity, and S6 browser execution checks.
+**Progress:** S0-S7 features landed (2026-11-28): compiler core command, Worker protocol, public repo + Pages CI, virtual project editor, compiler panels, edition controls, target codegen, sandbox runner, code-editor-style UI, and browser-safe NoPM resolution. Open verification: S3 native-diagnostic parity, S4 migration pairs, S5 CLI byte-parity, S6 runaway-loop checks, and S7 lockfile parity fixtures.
 **Date:** 2026-11-28
 
 ## Task list
@@ -68,14 +68,17 @@ Mark items `[x]` only when the stated evidence exists. Do not mark a slice done 
 - [x] Add an optional expected-output box that reports pass/fail for simple tests.
 - [x] Treat native/wasm targets as check-only in the browser and say so explicitly.
 - [x] Code-editor UI: line-number gutter, syntax-highlight overlay, tab insertion, synchronized scrolling.
+- [x] Invoke the exported `main()` after import so generated programs actually run.
 - [ ] Verify runaway loops are killed and sample programs print correctly in a browser.
 
 ### S7 - NoPM
-- [ ] Extract a browser-safe resolver core with no Node imports.
-- [ ] Implement virtual path packages and Git declaration/injection.
-- [ ] Implement explicit npm and Cargo fetch with Web Crypto integrity.
-- [ ] Add declare-only adapters for PyPI, NuGet, OCI, and `sys`.
-- [ ] Add honest CORS/upload fallback diagnostics.
+- [x] Extract a browser-safe resolver core with no Node imports (`nopm/src/core.ts`).
+- [x] Implement virtual path packages and Git declaration/injection.
+- [x] Implement explicit npm and Cargo fetch with Web Crypto integrity and CORS fallback.
+- [x] Add declare-only adapters for PyPI, NuGet, OCI, and `nova`/`sys`.
+- [x] Add honest status diagnostics for unmounted packages.
+- [x] Add a Packages tab and Resolve button using the shared `formatLockfile`.
+- [x] Merge PR #8 and verify the live `nopm-core/core.js` asset.
 - [ ] Verify lockfile parity with native `nopm` fixtures.
 
 ### S8 - Release
