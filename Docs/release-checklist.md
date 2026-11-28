@@ -111,5 +111,18 @@ Use this checklist for every release. No step may be skipped.
 - `NPM_TOKEN` is already deleted and the exposed 1.0.0 token has been revoked;
   do not re-add it. Re-create the trusted publishers before each future
   release; see `Docs/github-trust.md`.
+- Permanent npm-auth runbook (do this locally, never in the repo or CI env):
+  1. Clear any stale/revoked token from the user config:
+     `npm config delete "//registry.npmjs.org/:_authToken" --location=user`.
+  2. Refresh credentials interactively with web/OTP auth:
+     `npm login --auth-type=web --registry=https://registry.npmjs.org`.
+     This writes a fresh token to `~/.npmrc` outside the repository.
+  3. Confirm `npm whoami --registry=https://registry.npmjs.org` succeeds before
+     tagging. An `E401` means stop: do not push the release tag, because the
+     tag-triggered workflow would publish with untrusted credentials.
+  4. Re-create the four trusted publishers with `--allow-publish` immediately
+     before the tag push; unvalidated configurations expire after two days.
+  5. After publishing, clear the local token again with the command in step 1
+     so a revoked credential never lingers in `~/.npmrc`.
 - Verify npm provenance and archive attestations for `1.0.1`; `1.0.0` has
   neither.
