@@ -9,26 +9,73 @@
 //! boundary, because the AST has no expression-level trivia.
 
 use crate::ast::*;
-use crate::lexer::{Comment, lex};
-use crate::parser::{ParseResult, parse_with_comments};
+use crate::edition::Edition;
+use crate::lexer::{Comment, LexOptions, lex_with_options};
+use crate::parser::{ParseOptions, ParseResult, parse_with_comments_with_options};
 
-/// Formats source by parsing it and then formatting the AST.
+/// Formatter options. Edition `0.2` emits canonical spellings (`fail`, `?`,
+/// `::<...>`, and `@mode(...)` / `@memory(...)`); edition `0.1` preserves the
+/// legacy spellings.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FormatOptions {
+    pub edition: Edition,
+}
+
+/// Formats source with the default options.
 pub fn format_source(source: &str) -> ParseResult<String> {
-    let (module, comments) = parse_with_comments(source)?;
-    Ok(format_module_with_comments(&module, source, &comments))
+    format_source_with_options(source, FormatOptions::default())
+}
+
+/// Formats source with explicit options.
+pub fn format_source_with_options(source: &str, options: FormatOptions) -> ParseResult<String> {
+    let (module, comments) = parse_with_comments_with_options(
+        source,
+        ParseOptions {
+            edition: options.edition,
+        },
+    )?;
+    Ok(format_module_with_comments_edition(
+        &module,
+        source,
+        &comments,
+        options.edition,
+    ))
 }
 
 /// Formats a parsed module and re-lexes `source` for comment trivia.
 #[must_use]
 pub fn format_module(module: &Module, source: &str) -> String {
-    let comments = lex(source).comments;
-    format_module_with_comments(module, source, &comments)
+    format_module_with_options(module, source, FormatOptions::default())
+}
+
+/// Formats a parsed module with explicit options.
+#[must_use]
+pub fn format_module_with_options(module: &Module, source: &str, options: FormatOptions) -> String {
+    let comments = lex_with_options(
+        source,
+        LexOptions {
+            edition: options.edition,
+        },
+    )
+    .comments;
+    format_module_with_comments_edition(module, source, &comments, options.edition)
 }
 
 /// Formats a parsed module with an explicit comment list.
 #[must_use]
 pub fn format_module_with_comments(module: &Module, source: &str, comments: &[Comment]) -> String {
-    Formatter::new(source, comments).format_module(module)
+    format_module_with_comments_edition(module, source, comments, Edition::default())
+}
+
+/// Formats a parsed module with an explicit comment list and edition.
+#[must_use]
+pub fn format_module_with_comments_edition(
+    module: &Module,
+    source: &str,
+    comments: &[Comment],
+    edition: Edition,
+) -> String {
+    Formatter::new(source, comments, edition).format_module(module)
 }
 
 struct Formatter<'a> {
@@ -39,10 +86,11 @@ struct Formatter<'a> {
     comment_index: usize,
     consumed_comments: Vec<bool>,
     source_len: usize,
+    edition: Edition,
 }
 
 impl<'a> Formatter<'a> {
-    fn new(source: &'a str, comments: &'a [Comment]) -> Self {
+    fn new(source: &'a str, comments: &'a [Comment], edition: Edition) -> Self {
         let mut line_starts = vec![0];
         for (index, byte) in source.bytes().enumerate() {
             if byte == b'\n' {
@@ -58,6 +106,7 @@ impl<'a> Formatter<'a> {
             comment_index: 0,
             consumed_comments: vec![false; comments.len()],
             source_len: source.len(),
+            edition,
         }
     }
 
@@ -268,11 +317,16 @@ impl<'a> Formatter<'a> {
         let inner_pad = "    ".repeat(indent + 1);
         let exports_pad = "    ".repeat(indent + 2);
 
-        self.output.push_str(&format!("{{@script:{} as {};\n", script.language, script.name));
-        self.output.push_str(&format!("{inner_pad}@mode({})\n", script.mode));
+        self.output.push_str(&format!(
+            "{{@script:{} as {};\n",
+            script.language, script.name
+        ));
+        self.output
+            .push_str(&format!("{inner_pad}@mode({})\n", script.mode));
         self.output.push_str(&format!("{inner_pad}@exports {{\n"));
         for export in &script.exports {
-            self.output.push_str(&format!("{exports_pad}fn {}(", export.name));
+            self.output
+                .push_str(&format!("{exports_pad}fn {}(", export.name));
             for (index, parameter) in export.parameters.iter().enumerate() {
                 if index > 0 {
                     self.output.push_str(", ");
@@ -558,14 +612,23 @@ impl<'a> Formatter<'a> {
     }
 
     fn write_scope_annotation(&mut self, annotation: &ScopeAnnotation) {
-        self.output.push_str("{@");
-        self.output.push_str(match annotation.kind {
+        let kind = match annotation.kind {
             ScopeKind::Mode => "mode",
             ScopeKind::Memory => "memory",
-        });
-        self.output.push(':');
-        self.output.push_str(&annotation.value);
-        self.output.push(';');
+        };
+        if self.edition == Edition::V0_2 {
+            self.output.push('@');
+            self.output.push_str(kind);
+            self.output.push('(');
+            self.output.push_str(&annotation.value);
+            self.output.push_str(") {");
+        } else {
+            self.output.push_str("{@");
+            self.output.push_str(kind);
+            self.output.push(':');
+            self.output.push_str(&annotation.value);
+            self.output.push(';');
+        }
     }
 
     fn write_import(&mut self, import: &ImportDecl) {
@@ -690,6 +753,18 @@ impl<'a> Formatter<'a> {
     fn write_attribute(&mut self, attribute: &Attribute, _indent: usize) {
         self.output.push('@');
         self.output.push_str(&attribute.name);
+        if let Some(spec) = &attribute.export_as {
+            self.output.push('(');
+            self.write_literal(&Literal::String(spec.symbol.clone()));
+            for (parameter, ty) in &spec.bindings {
+                self.output.push_str(", ");
+                self.output.push_str(parameter);
+                self.output.push_str(" = ");
+                self.write_type(ty);
+            }
+            self.output.push(')');
+            return;
+        }
         if !attribute.arguments.is_empty() {
             self.output.push('(');
             for (index, argument) in attribute.arguments.iter().enumerate() {
@@ -753,6 +828,15 @@ impl<'a> Formatter<'a> {
                 self.write_expr(index, 0);
                 self.output.push(']');
             }
+            ExprKind::Range {
+                start,
+                end,
+                inclusive,
+            } => {
+                self.write_expr(start, 0);
+                self.output.push_str(if *inclusive { "..=" } else { ".." });
+                self.write_expr(end, 0);
+            }
             ExprKind::Member { target, member } => {
                 self.write_expr(target, precedence);
                 self.output.push('.');
@@ -760,11 +844,15 @@ impl<'a> Formatter<'a> {
             }
             ExprKind::TypeArguments { target, arguments } => {
                 self.write_expr(target, precedence);
-                self.write_type_arguments(arguments);
+                self.write_expression_type_arguments(arguments);
             }
             ExprKind::Propagate(target) => {
                 self.write_expr(target, precedence);
-                self.output.push('!');
+                if self.edition == Edition::V0_2 {
+                    self.output.push('?');
+                } else {
+                    self.output.push('!');
+                }
             }
             ExprKind::Array(elements) => {
                 self.output.push('[');
@@ -799,7 +887,8 @@ impl<'a> Formatter<'a> {
                 self.output.push(')');
             }
             ExprKind::StructInit { path, fields } => {
-                self.write_type_path(path);
+                self.output.push_str(&path.segments.join("."));
+                self.write_expression_type_arguments(&path.arguments);
                 if fields.is_empty() {
                     self.output.push_str(" {}");
                 } else {
@@ -874,11 +963,19 @@ impl<'a> Formatter<'a> {
                 }
             }
             ExprKind::Spawn { body } => {
-                self.output.push_str("spawn || ");
+                if self.edition == Edition::V0_2 {
+                    self.output.push_str("spawn ");
+                } else {
+                    self.output.push_str("spawn || ");
+                }
                 self.write_block(body, self.current_indent);
             }
             ExprKind::Fail { error, arguments } => {
-                self.output.push('!');
+                if self.edition == Edition::V0_2 {
+                    self.output.push_str("fail ");
+                } else {
+                    self.output.push('!');
+                }
                 self.write_type_path(error);
                 match arguments {
                     FailArguments::Tuple(arguments) => {
@@ -927,9 +1024,28 @@ impl<'a> Formatter<'a> {
             Literal::Integer(value) | Literal::Float(value) => self.output.push_str(value),
             Literal::String(value) => self.write_string(value),
             Literal::Bytes(value) => self.write_bytes(value),
+            Literal::Character(value) => self.write_char(*value),
             Literal::Bool(value) => self.output.push_str(if *value { "true" } else { "false" }),
             Literal::Unit => self.output.push_str("()"),
         }
+    }
+
+    fn write_char(&mut self, value: char) {
+        self.output.push('\'');
+        match value {
+            '\\' => self.output.push_str("\\\\"),
+            '\'' => self.output.push_str("\\'"),
+            '\n' => self.output.push_str("\\n"),
+            '\r' => self.output.push_str("\\r"),
+            '\t' => self.output.push_str("\\t"),
+            '\0' => self.output.push_str("\\0"),
+            character if character.is_control() => {
+                self.output
+                    .push_str(&format!("\\u{{{:X}}}", character as u32));
+            }
+            character => self.output.push(character),
+        }
+        self.output.push('\'');
     }
 
     fn write_string(&mut self, value: &str) {
@@ -1086,6 +1202,16 @@ impl<'a> Formatter<'a> {
         self.output.push('>');
     }
 
+    fn write_expression_type_arguments(&mut self, arguments: &[Type]) {
+        if arguments.is_empty() {
+            return;
+        }
+        if self.edition == Edition::V0_2 {
+            self.output.push_str("::");
+        }
+        self.write_type_arguments(arguments);
+    }
+
     fn write_type_arguments(&mut self, arguments: &[Type]) {
         if arguments.is_empty() {
             return;
@@ -1216,21 +1342,25 @@ fn expression_precedence(kind: &ExprKind) -> u8 {
             BinaryOp::And => 3,
             BinaryOp::Equal | BinaryOp::NotEqual => 4,
             BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual => 5,
-            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::AddWrap | BinaryOp::SubtractWrap => 6,
+            BinaryOp::BitOr => 6,
+            BinaryOp::BitXor => 7,
+            BinaryOp::BitAnd => 8,
+            BinaryOp::Shl | BinaryOp::Shr => 9,
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::AddWrap | BinaryOp::SubtractWrap => 10,
             BinaryOp::Multiply
             | BinaryOp::Divide
             | BinaryOp::Remainder
             | BinaryOp::MultiplyWrap
-            | BinaryOp::DivideWrap => 7,
+            | BinaryOp::DivideWrap => 11,
         },
-        ExprKind::Unary { .. } => 8,
+        ExprKind::Unary { .. } => 12,
         ExprKind::Call { .. }
         | ExprKind::Index { .. }
         | ExprKind::Member { .. }
         | ExprKind::TypeArguments { .. }
         | ExprKind::Propagate(_)
-        | ExprKind::StructInit { .. } => 9,
-        _ => 10,
+        | ExprKind::StructInit { .. } => 13,
+        _ => 14,
     }
 }
 
@@ -1253,12 +1383,28 @@ fn binary_operator(operator: BinaryOp) -> &'static str {
         BinaryOp::GreaterEqual => ">=",
         BinaryOp::And => "&&",
         BinaryOp::Or => "||",
+        BinaryOp::BitAnd => "&",
+        BinaryOp::BitOr => "|",
+        BinaryOp::BitXor => "^",
+        BinaryOp::Shl => "<<",
+        BinaryOp::Shr => ">>",
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::format_source;
+    use super::{FormatOptions, format_source, format_source_with_options};
+    use crate::edition::Edition;
+
+    fn format_v02(source: &str) -> String {
+        format_source_with_options(
+            source,
+            FormatOptions {
+                edition: Edition::V0_2,
+            },
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"))
+    }
 
     #[test]
     fn formats_canonical_keywords_and_spacing() {
@@ -1275,6 +1421,110 @@ public function add(a: i32, b: i32) -> i32 {
         assert!(formatted.contains("total = a + b"));
         assert!(!formatted.contains("public"));
         assert!(!formatted.contains("var"));
+    }
+
+    #[test]
+    fn v0_2_preserves_range_spelling_in_for_headers() {
+        let source = r#"
+module app.main
+
+pub fn main() -> i32 {
+    let mut total = 0
+    for value in 0..3 {
+        total = total + value
+    }
+    for value in 0..=3 {
+        total = total + value
+    }
+    return total
+}
+"#;
+        let formatted = format_v02(source);
+        assert!(formatted.contains("for value in 0..3 {"), "{formatted}");
+        assert!(formatted.contains("for value in 0..=3 {"), "{formatted}");
+        assert_eq!(format_v02(&formatted), formatted);
+    }
+
+    #[test]
+    fn v0_2_canonicalizes_index_ranges_to_slice_calls() {
+        let source = r#"
+module app.main
+
+fn part(text: str) -> str ! SliceError {
+    return text[0..2]?
+}
+"#;
+        let formatted = format_v02(source);
+        assert!(formatted.contains("text.slice(0, 2)?"), "{formatted}");
+        assert_eq!(format_v02(&formatted), formatted);
+    }
+
+    #[test]
+    fn v0_2_emits_canonical_spellings_and_is_idempotent() {
+        let source = r#"
+module app.main
+
+struct Error {
+    message: str,
+}
+
+fn identity<T>(value: T) -> T {
+    return value
+}
+
+@mode(core) {
+    fn helper() -> i32 {
+        return 1
+    }
+}
+
+fn run() -> i32 {
+    let value = identity::<i32>(1)?
+    fail Error { message: "x" }
+}
+"#;
+        let formatted = format_v02(source);
+        assert!(formatted.contains("identity::<i32>(1)?"), "{formatted}");
+        assert!(
+            formatted.contains("fail Error { message: \"x\" }"),
+            "{formatted}"
+        );
+        assert!(formatted.contains("@mode(core) {"), "{formatted}");
+        assert!(!formatted.contains("!Error"), "{formatted}");
+        assert!(!formatted.contains("{@mode:"), "{formatted}");
+        assert_eq!(
+            format_v02(&formatted),
+            formatted,
+            "formatting must be idempotent"
+        );
+    }
+
+    #[test]
+    fn v0_1_preserves_legacy_spellings() {
+        let source = r#"
+module app.main
+
+struct Error(str)
+
+fn identity<T>(value: T) -> T {
+    return value
+}
+
+fn run() -> i32 {
+    let value = identity<i32>(1)!
+    !Error("x")
+}
+"#;
+        let formatted = format_source(source).unwrap();
+        assert!(formatted.contains("identity<i32>(1)!"), "{formatted}");
+        assert!(formatted.contains("!Error(\"x\")"), "{formatted}");
+    }
+
+    #[test]
+    fn preserves_wrapping_division_in_both_editions() {
+        let source = "module app.main\nfn f(a: i32, b: i32) -> i32 {\n    return a /% b\n}\n";
+        assert!(format_source(source).unwrap().contains("a /% b"));
+        assert!(format_v02(source).contains("a /% b"));
     }
 
     #[test]
@@ -1507,5 +1757,27 @@ fn main() {
         let first = format_source(source).unwrap();
         let second = format_source(&first).unwrap();
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn formats_export_as_attributes() {
+        let source = r#"
+@export_as( "ns_demo_id_i32" , T=i32 )
+@export_as("ns_demo_id_str", T = str)
+pub fn identity<T>(value: T) -> T {
+    return value
+}
+"#;
+        let formatted = format_source(source).unwrap();
+        assert!(
+            formatted.contains("@export_as(\"ns_demo_id_i32\", T = i32)"),
+            "{formatted}"
+        );
+        assert!(
+            formatted.contains("@export_as(\"ns_demo_id_str\", T = str)"),
+            "{formatted}"
+        );
+        let second = format_source(&formatted).unwrap();
+        assert_eq!(formatted, second);
     }
 }

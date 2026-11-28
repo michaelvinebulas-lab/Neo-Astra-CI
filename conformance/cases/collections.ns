@@ -1,0 +1,12 @@
+pub fn main() -> i32 {
+    let mut values = [1, 2, 3]
+    values.push(4)
+    println(values.len())
+    println(values[1])
+
+    let mut scores = {"a": 1}
+    scores.insert("b", 2)
+    println(scores.len())
+    println(scores.get("b").unwrap())
+    return 0
+}

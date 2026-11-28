@@ -1,0 +1,27 @@
+// edition: 0.2
+// purpose: character literals, char type, equality, and literal patterns
+
+fn label(value: char) -> str {
+    return match value {
+        'a' => "first",
+        _ => "other",
+    }
+}
+
+pub fn main() -> i32 {
+    let letter = 'a'
+    let newline = '\n'
+    let emoji = '\u{1F600}'
+    let quote = '\''
+    let optional: Option<char> = Some('b')
+    println(letter)
+    println(label(letter))
+    println(optional.unwrap_or('z'))
+    if letter == 'a' {
+        println(newline)
+    }
+    if emoji != 'x' {
+        println(quote)
+    }
+    return 0
+}

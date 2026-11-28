@@ -1,0 +1,10 @@
+// A task record lives in the child's heap. Returning the handle copies a
+// pointer that is freed with the child heap.
+pub fn main() -> i32 {
+    let outer = spawn || {
+        let inner = spawn || { 1 }
+        inner
+    }
+    let task = outer.join()
+    return task.join()
+}

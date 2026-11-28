@@ -1,0 +1,7 @@
+// edition: 0.2
+// purpose: a binary operator cannot start an expression
+
+pub fn main() -> i32 {
+    let value = * 2
+    return 0
+}

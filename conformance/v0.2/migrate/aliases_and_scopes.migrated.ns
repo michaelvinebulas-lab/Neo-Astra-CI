@@ -1,0 +1,23 @@
+// edition: 0.2
+// migration: --edition 0.2
+
+fn greet(name: str) -> str {
+    return name
+}
+
+const LIMIT: i32 = 3
+type UserId = u64
+struct User {
+    name: str,
+}
+
+pub fn main() -> i32 {
+    let mut count = 0
+    @mode(core) {
+        let user = User {
+            name: greet("Neo"),
+        }
+        count = count + LIMIT
+        return count
+    }
+}

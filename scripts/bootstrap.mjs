@@ -89,104 +89,23 @@ function record(name, ok, detail) {
   log(`${ok ? "[ok]" : "[missing]"} ${name}${detail ? ` — ${detail}` : ""}`);
 }
 
-function installWindows(id, name, optional = false) {
-  if (!has("winget")) {
-    record(name, false, "winget is unavailable");
-    return false;
+const nopmCli = join(root, "orchestrator", "packages", "nopm", "dist", "cli.js");
+
+function ensureNopmBuilt() {
+  if (existsSync(nopmCli)) {
+    return true;
   }
-
-  const result = run(
-    "winget",
-    [
-      "install",
-      "--id",
-      id,
-      "-e",
-      "--accept-package-agreements",
-      "--accept-source-agreements",
-      "--silent",
-    ],
-    { optional, timeout: 900_000 },
-  );
-
-  if (!result.ok) {
-    record(name, false, optional ? "install failed or needs elevation" : "install failed");
-    return false;
-  }
-
-  record(name, true, "installed with winget");
-  return true;
+  // The system source lives in the TypeScript workspace, so the CLI must be
+  // built before bootstrap can delegate to it. tsc is available after
+  // `npm install`, which runs earlier in a real bootstrap.
+  const result = run(isWindows ? "npm.cmd" : "npm", ["run", "build"], { optional: false });
+  return result.ok && existsSync(nopmCli);
 }
 
-function installBrew(pkg, name, optional = false) {
-  if (!has("brew")) {
-    record(name, false, "Homebrew is unavailable");
-    return false;
-  }
-
-  const result = run("brew", ["install", pkg], { optional, timeout: 900_000 });
-  if (!result.ok) {
-    record(name, false, optional ? "install failed" : "install failed");
-    return false;
-  }
-
-  record(name, true, "installed with Homebrew");
-  return true;
-}
-
-function installLinux(packages, name, optional = false) {
-  if (!has("apt-get") && !has("dnf") && !has("pacman") && !has("zypper") && !has("apk")) {
-    record(name, false, "no supported Linux package manager found");
-    return false;
-  }
-
-  const sudo = process.getuid?.() === 0 ? [] : ["sudo", "-n"];
-  if (sudo.length > 0 && !has("sudo")) {
-    record(name, false, "sudo is unavailable");
-    return false;
-  }
-
-  const elevated = (args) => {
-    if (sudo.length === 0) {
-      return run(args[0], args.slice(1), { optional });
-    }
-    return run(sudo[0], [...sudo.slice(1), ...args], { optional });
-  };
-
-  let result;
-  if (has("apt-get")) {
-    result = elevated(["apt-get", "update"]);
-    if (result.ok) {
-      result = elevated(["apt-get", "install", "-y", packages]);
-    }
-  } else if (has("dnf")) {
-    result = elevated(["dnf", "install", "-y", packages]);
-  } else if (has("pacman")) {
-    result = elevated(["pacman", "-S", "--noconfirm", packages]);
-  } else if (has("zypper")) {
-    result = elevated(["zypper", "--non-interactive", "install", packages]);
-  } else {
-    result = elevated(["apk", "add", packages]);
-  }
-
-  if (!result.ok) {
-    record(name, false, optional ? "install failed" : "install failed");
-    return false;
-  }
-
-  record(name, true, "installed with the system package manager");
-  return true;
-}
-
-function ensureSystemTool(name, windowsId, brewPackage, linuxPackages, optional = false) {
+function systemTool(name, tool, optional = false) {
   if (has(name)) {
     record(name, true, which(name).split(/\r?\n/)[0]);
     return true;
-  }
-
-  if (checkOnly) {
-    record(name, false, "not installed");
-    return false;
   }
 
   if (skipSystem) {
@@ -194,18 +113,30 @@ function ensureSystemTool(name, windowsId, brewPackage, linuxPackages, optional 
     return false;
   }
 
-  if (isWindows) {
-    return installWindows(windowsId, name, optional);
-  }
-  if (isMac) {
-    return installBrew(brewPackage, name, optional);
-  }
-  if (isLinux) {
-    return installLinux(linuxPackages, name, optional);
+  if (checkOnly) {
+    record(name, false, "not installed");
+    return false;
   }
 
-  record(name, false, "unsupported platform");
-  return false;
+  if (!ensureNopmBuilt()) {
+    record(name, false, "nopm is not built; run npm run bootstrap");
+    return false;
+  }
+
+  log(`[run] nopm add sys:${tool}`);
+  const result = spawnSync(process.execPath, [nopmCli, "add", `sys:${tool}`], {
+    cwd: root,
+    env,
+    stdio: "inherit",
+    timeout: 900_000,
+  });
+  if (result.error || result.status !== 0) {
+    record(name, false, optional ? "install failed or needs elevation" : "install failed");
+    return false;
+  }
+
+  record(name, true, "installed with the system package manager");
+  return true;
 }
 
 function installRustup() {
@@ -220,10 +151,42 @@ function installRustup() {
   }
 
   if (isWindows) {
-    return installWindows("Rustlang.Rustup", "rustup");
+    if (!has("winget")) {
+      record("rustup", false, "winget is unavailable");
+      return false;
+    }
+    const result = run(
+      "winget",
+      [
+        "install",
+        "--id",
+        "Rustlang.Rustup",
+        "-e",
+        "--accept-package-agreements",
+        "--accept-source-agreements",
+        "--silent",
+      ],
+      { timeout: 900_000 },
+    );
+    if (!result.ok) {
+      record("rustup", false, "install failed or needs elevation");
+      return false;
+    }
+    record("rustup", true, "installed with winget");
+    return true;
   }
   if (isMac) {
-    return installBrew("rustup", "rustup");
+    if (!has("brew")) {
+      record("rustup", false, "Homebrew is unavailable");
+      return false;
+    }
+    const result = run("brew", ["install", "rustup"], { timeout: 900_000 });
+    if (!result.ok) {
+      record("rustup", false, "install failed");
+      return false;
+    }
+    record("rustup", true, "installed with Homebrew");
+    return true;
   }
 
   if (!has("curl")) {
@@ -302,9 +265,9 @@ function main() {
     record("JavaScript dependencies", install.ok, install.ok ? "npm install complete" : "npm install failed");
   }
 
-  ensureSystemTool("git", "Git.Git", "git", "git");
-  ensureSystemTool("cmake", "Kitware.CMake", "cmake", "cmake");
-  ensureSystemTool("clang", "LLVM.LLVM", "llvm", "clang", true);
+  systemTool("git", "git");
+  systemTool("cmake", "cmake");
+  systemTool("clang", "clang", true);
 
   if (!installRustup()) {
     process.exitCode = 1;

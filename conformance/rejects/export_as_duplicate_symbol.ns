@@ -1,0 +1,6 @@
+// Two instantiations may not share an exported symbol (spec 11.5). NS7013.
+@export_as("ns_demo_identity_i32", T = i32)
+@export_as("ns_demo_identity_i32", T = str)
+pub fn identity<T>(value: T) -> T {
+    return value
+}

@@ -1,5 +1,11 @@
 # Step-by-Step Runbook
 
+> **Current note (2026-11-11):** This runbook is historical phase guidance. The
+> project is past `1.0.0`; current work is the native Rust CLI/NoPM port for
+> `1.0.1` (slice 3a is open after two rejected handbacks), followed by the v0.2
+> cleanup. Use `../state.md`, `../context.md`, and `../Report/Task.md` for
+> current status, not the phase table below.
+
 This runbook breaks Neo Astra into sequential phases. Work on one phase and one task at a time. Do not skip a phase because a later phase looks more interesting.
 
 ---
@@ -9,16 +15,16 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 | Phase | Name | Output | Status |
 |---|---|---|---|
 | 0 | Orientation | Verified project state | Ongoing at session start |
-| 1 | Architecture decisions | Confirmed D1–D25 | Done |
+| 1 | Architecture decisions | Confirmed D1-D25 | Done |
 | 2 | Specification v0.1 | `Docs/spec-v0.1.md` | Done |
 | 3 | Workspace scaffolding | TS orchestrator + Rust core skeleton | Done |
 | 4 | Lexer and parser | AST + diagnostics | Done |
-| 5 | Types, modes, and errors | Typed HIR + capability checks | Current |
-| 6 | Nova and NoPM | Executable `.ns` source and reproducible packages | In progress |
-| 7 | JS/TS backend and playground | Browser-runnable output | In progress |
-| 8 | C backend, native, Wasm | Native and Wasm binaries | Not started |
-| 9 | FFI and concurrency | Foreign modules, inline `@script`, and structured tasks | Not started |
-| 10 | Hardening | Stable v0.1 | Not started |
+| 5 | Types, modes, and errors | Typed HIR + capability checks | Done |
+| 6 | Nova and NoPM | Executable `.ns` source and reproducible packages | Done; native NoPM port for `1.0.1` in progress |
+| 7 | JS/TS backend and playground | Browser-runnable output | JS/TS backend done; playground later |
+| 8 | C backend, native, Wasm | Native and Wasm binaries | C/native done; Wasm later |
+| 9 | FFI and concurrency | Foreign modules, inline `@script`, and structured tasks | Done for C/JS/TS |
+| 10 | Hardening | Stable v1.0 | `1.0.0` done; `1.0.1` native port current |
 
 ---
 
@@ -28,9 +34,9 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 
 ### Steps
 
-1. Read `state-log.md`.
-2. Read `todo.md`.
-3. Read the relevant section of `../architecture.md`.
+1. Read `../state.md`.
+2. Read `../state.md`.
+3. Read the relevant section of `../archive/architecture.md`.
 4. List the files that exist.
 5. Identify the current phase.
 6. Identify blockers.
@@ -39,7 +45,7 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 ### Gate
 
 - The current phase is known.
-- The selected task is in `todo.md`.
+- The selected task is in `../state.md`.
 - No unresolved blocker prevents the task.
 
 ---
@@ -50,7 +56,7 @@ This runbook breaks Neo Astra into sequential phases. Work on one phase and one 
 
 ### Output
 
-- D1–D25 confirmed in `../architecture.md`.
+- D1–D25 confirmed in `../archive/architecture.md`.
 - Naming normalized to Neo Astra, `.ns`, `astra`.
 - Manifest, memory, mode, error, concurrency, FFI, package, and compiler decisions recorded.
 
@@ -146,7 +152,7 @@ Do not reopen a decision unless the user explicitly asks. If a new requirement c
 - No section contradicts another.
 - Every syntax example is plausible.
 - Every semantic rule has a test plan.
-- `state-log.md` records completion.
+- `../state.md` records completion.
 
 ---
 
@@ -208,14 +214,14 @@ Do not reopen a decision unless the user explicitly asks. If a new requirement c
 
 ---
 
-## 7. Phase 5 — Types, modes, and errors (current)
+## 7. Phase 5 — Types, modes, and errors (complete)
 
 **Goal:** Enforce the semantic contract.
 
 **Status:** `TYPE-001`-`TYPE-004`, `MODE-001`, `ERR-001`, `NOVA-001`,
 `NOVA-002`, and `NOVA-003` are complete, including manifest `[nova].entry`
-discovery and project module linking. The dedicated `astra explain` command
-remains. Compiler metadata already exposes the stable mode explanation tree.
+discovery and project module linking. `astra explain` now ships in the CLI and
+exposes the stable mode explanation tree.
 
 ### Steps
 
@@ -300,9 +306,16 @@ work is production backends, starting with `JS-001`, and conformance coverage.
 
 ## 9. Phase 7 - JavaScript/TypeScript backend and playground
 
-**Status:** In progress. The first `JS-001` single-module slice is implemented;
-project imports, recoverable error effects, tasks, source maps, and `TS-001`
-remain.
+**Status:** `JS-001` and `TS-001` complete. The JavaScript backend emits linked
+multi-module projects, inline `@script:js` ESM modules, recoverable errors,
+checked and arbitrary integer policies, eager tasks, bounded channels, UTF-8
+string/byte operations, source maps, `.d.ts` artifacts, and the shared
+`conformance/` suite. The TypeScript backend (`@neo-astra/codegen-ts`) shares
+the emitter pipeline with `backend: "ts"`, adds explicit types and typed
+helpers for `tsc --strict`, wires `astra build --target ts`, and transpiles
+`@script:ts` bodies with one pinned `typescript@7.0.2` (missing/mismatched
+transpilers are hard `NS7008` errors). External package modules and the
+playground remain.
 
 **Goal:** Produce readable, runnable web output.
 
@@ -325,12 +338,29 @@ remain.
 - `@neo-astra/codegen-js` emits functions, constants, control flow, defer,
   structs, enums, arrays, structural maps, tuples, options, results, match,
   built-ins, and tree-shaken local helpers.
-- `astra build` selects a target, checks the entry module, emits ESM under the
+- `astra build` selects a target, discovers reachable local modules, checks the
+  project graph, emits linked ESM modules plus per-module source maps under the
   target `outDir`, and adds `"type": "module"` when needed.
-- Unsupported imports, error effects, tasks, and manual memory fail with
-  source-located diagnostics instead of changing semantics.
-- Next: project-wide typed modules and import emission, error effects, source
-  maps, checked integer methods, then the TypeScript backend.
+- Recoverable failures, `?`, checked integer methods, eager spawn/tasks, bounded
+  channels (capacity 16; recoverable `ChannelError` on a closed channel;
+  single-threaded deadlock panic instead of blocking), UTF-8 string/byte
+  operations (`char_count`, `bytes`, `chars`, `byte_at`, `char_at`, `slice`
+  with `SliceError`, `bytes.new`, indexed `u8` writes), named/default/namespace
+  imports, and named/namespace/default/star re-exports are implemented.
+  External imports and manual memory fail with source-located diagnostics
+  instead of changing semantics.
+- The backend-neutral `conformance/` suite (runner:
+  `orchestrator/tests/conformance.mjs`) pins shared semantics; `TS-001` runs
+  the same cases.
+- `@neo-astra/codegen-ts` is a thin wrapper over the shared emitter with
+  `backend: "ts"`: object-form `Option`/`Tuple`, typed helpers, body-level
+  `interface`/`type` declarations, `bigint` for i8–u32 under `arbitrary`, and
+  `.ts`/`.ts.map`/`.d.ts` artifacts. Cross-module specifiers stay `.js`.
+- `@script:ts` bodies are transpiled by the pinned compiler
+  (`PINNED_TYPESCRIPT_VERSION`, currently 7.0.2) via the `tsc` CLI
+  (`--noCheck`: bodies are opaque to Nova); the artifact carries a composed
+  source map that points back at `.ns` line numbers.
+- Next: the browser playground (WASM build of the Rust core).
 
 ### Gate
 
@@ -357,6 +387,23 @@ remain.
 7. Add binary-size checks.
 8. Add native conformance tests.
 
+### Toolchain note (Windows)
+
+The Rust `x86_64-pc-windows-gnu` toolchain needs GNU binutils on `PATH`. Without
+`dlltool.exe`, building crates such as `getrandom` and `windows-sys` fails with
+`error calling dlltool 'dlltool.exe': program not found`.
+
+This host installs binutils and GCC through MSYS2 UCRT64. Put this directory on
+the **user** `PATH` (already applied) and restart terminals and editors:
+
+```text
+C:\msys64\ucrt64\bin
+```
+
+Verified: `dlltool` 2.46.1 and `gcc` 16.1.0, plus a compile/link/run smoke test.
+`make` is not required. LLVM `clang` exists at `C:\Program Files\LLVM\bin` but is
+not on `PATH`; GCC is enough for the C backend's native toolchain discovery.
+
 ### Gate
 
 - Native binaries run the conformance suite.
@@ -376,8 +423,9 @@ remain.
 2. Implement manifest FFI mappings.
 3. Implement C ABI bindings.
 4. Implement JS/TS import bindings.
-5. Implement inline `@script` parsing and typed exports after the Phase 7 JS/TS
-   backends; add JS emission, then the C/C++ translation-unit path.
+5. Inline `@script` parsing and typed exports are complete; the JavaScript ESM
+   and TypeScript-target emission slices are complete (`@script:ts` uses the
+   pinned transpiler). The C/C++ translation-unit path remains.
 6. Implement structured concurrency on native.
 7. Implement Web Worker generation.
 8. Add boundary, inline-script, and concurrency conformance tests.
@@ -434,8 +482,8 @@ Read state
 
 ### Start of session
 
-- [ ] Read `state-log.md`
-- [ ] Read `todo.md`
+- [ ] Read `../state.md`
+- [ ] Read `../state.md`
 - [ ] Read the relevant architecture section
 - [ ] Confirm the current phase
 - [ ] Select one task

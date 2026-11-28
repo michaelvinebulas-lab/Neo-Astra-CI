@@ -7,6 +7,7 @@
 use unicode_ident::{is_xid_continue, is_xid_start};
 
 use crate::diagnostic::Diagnostic;
+use crate::edition::Edition;
 use crate::span::Span;
 
 /// Canonical reserved words. Keyword aliases map to these variants.
@@ -15,6 +16,7 @@ pub enum Keyword {
     Abort,
     As,
     Break,
+    Char,
     Const,
     Continue,
     Default,
@@ -22,6 +24,7 @@ pub enum Keyword {
     Else,
     Enum,
     Export,
+    Fail,
     False,
     Fn,
     For,
@@ -54,6 +57,7 @@ impl Keyword {
             Self::Abort => "abort",
             Self::As => "as",
             Self::Break => "break",
+            Self::Char => "char",
             Self::Const => "const",
             Self::Continue => "continue",
             Self::Default => "default",
@@ -61,6 +65,7 @@ impl Keyword {
             Self::Else => "else",
             Self::Enum => "enum",
             Self::Export => "export",
+            Self::Fail => "fail",
             Self::False => "false",
             Self::Fn => "fn",
             Self::For => "for",
@@ -106,12 +111,16 @@ pub enum Punctuation {
     Gt,
     GtEq,
     AmpAmp,
+    Amp,
     PipePipe,
     Bang,
     Eq,
     Dot,
+    DotDot,
+    DotDotEq,
     Comma,
     Colon,
+    DoubleColon,
     Semicolon,
     Arrow,
     FatArrow,
@@ -123,6 +132,8 @@ pub enum Punctuation {
     RBrace,
     At,
     Pipe,
+    Caret,
+    Question,
     Underscore,
 }
 
@@ -134,6 +145,7 @@ pub enum TokenKind {
     Float,
     String,
     ByteString,
+    Character,
     RawSource,
     Keyword(Keyword),
     Punct(Punctuation),
@@ -172,10 +184,23 @@ impl LexResult {
     }
 }
 
-/// Lexes one UTF-8 source unit.
+/// Lexer options. Editions are threaded through now; syntax behavior changes
+/// land in the next phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LexOptions {
+    pub edition: Edition,
+}
+
+/// Lexes one UTF-8 source unit with the default options.
 #[must_use]
 pub fn lex(source: &str) -> LexResult {
-    Lexer::new(source).run()
+    lex_with_options(source, LexOptions::default())
+}
+
+/// Lexes one UTF-8 source unit with explicit options.
+#[must_use]
+pub fn lex_with_options(source: &str, options: LexOptions) -> LexResult {
+    Lexer::new(source, options).run()
 }
 
 enum EscapeOutcome {
@@ -189,6 +214,9 @@ struct Lexer<'a> {
     tokens: Vec<Token>,
     comments: Vec<Comment>,
     diagnostics: Vec<Diagnostic>,
+    /// Selected language edition; consumed by the v0.2 lexer rules in Phase 2.
+    #[allow(dead_code)]
+    edition: Edition,
     /// Brace depth inside a `{@script:…}` header.
     /// 0 = not in a script header. Set to 1 when `{@script:` is entered;
     /// incremented for each inner `{`, decremented for each `}`. When it
@@ -198,13 +226,14 @@ struct Lexer<'a> {
 }
 
 impl<'a> Lexer<'a> {
-    fn new(source: &'a str) -> Self {
+    fn new(source: &'a str, options: LexOptions) -> Self {
         Self {
             source,
             offset: 0,
             tokens: Vec::new(),
             comments: Vec::new(),
             diagnostics: Vec::new(),
+            edition: options.edition,
             script_header_depth: 0,
             script_start: 0,
         }
@@ -231,6 +260,7 @@ impl<'a> Lexer<'a> {
                 '#' => self.invalid_line_comment(start),
                 '-' if self.starts_with("--") => self.invalid_line_comment(start),
                 '"' => self.string(start, false),
+                '\'' if self.edition == Edition::V0_2 => self.character(start),
                 'b' if self.starts_with("b\"") => self.string(start, true),
                 '0'..='9' => self.number(start),
                 character if is_identifier_start(character) => self.identifier(start),
@@ -425,6 +455,70 @@ impl<'a> Lexer<'a> {
         );
     }
 
+    fn character(&mut self, start: usize) {
+        self.bump();
+        let mut scalars = 0_usize;
+        let mut closed = false;
+
+        while let Some(character) = self.peek() {
+            match character {
+                '\'' => {
+                    self.bump();
+                    closed = true;
+                    break;
+                }
+                '\n' | '\r' => {
+                    self.diagnostic(
+                        "NS1003",
+                        "Unterminated character literal.",
+                        "Close the literal before the end of the line.",
+                        start,
+                        self.offset,
+                    );
+                    self.skip_to_newline();
+                    return;
+                }
+                '\\' => match self.escape(false) {
+                    EscapeOutcome::Continue => scalars += 1,
+                    EscapeOutcome::Unterminated => {
+                        self.diagnostic(
+                            "NS1003",
+                            "Unterminated character literal.",
+                            "Close the literal before the end of the line.",
+                            start,
+                            self.offset,
+                        );
+                        self.skip_to_newline();
+                        return;
+                    }
+                },
+                _ => {
+                    self.bump();
+                    scalars += 1;
+                }
+            }
+        }
+
+        if !closed {
+            self.diagnostic(
+                "NS1003",
+                "Unterminated character literal.",
+                "Add a closing quote.",
+                start,
+                self.offset,
+            );
+        } else if scalars != 1 {
+            self.diagnostic(
+                "NS1002",
+                "Character literal must contain exactly one Unicode scalar value.",
+                "Use one character or one escape, such as 'a' or '\\u{1F600}'.",
+                start,
+                self.offset,
+            );
+        }
+        self.push(TokenKind::Character, start);
+    }
+
     fn escape(&mut self, is_byte: bool) -> EscapeOutcome {
         let start = self.offset;
         self.bump();
@@ -434,7 +528,7 @@ impl<'a> Lexer<'a> {
         };
 
         match escaped {
-            '\\' | '"' | 'n' | 'r' | 't' | '0' => {
+            '\\' | '"' | '\'' | 'n' | 'r' | 't' | '0' => {
                 self.bump();
                 EscapeOutcome::Continue
             }
@@ -528,7 +622,7 @@ impl<'a> Lexer<'a> {
                     self.offset,
                 );
             }
-            self.byte_suffix();
+            self.integer_suffix();
             self.push(TokenKind::Integer, start);
             return;
         }
@@ -553,7 +647,7 @@ impl<'a> Lexer<'a> {
                     self.offset,
                 );
             }
-            self.byte_suffix();
+            self.integer_suffix();
             self.push(TokenKind::Integer, start);
             return;
         }
@@ -566,9 +660,20 @@ impl<'a> Lexer<'a> {
             }
         }
 
+        // After a postfix `.`, a digit is an integer-only tuple index. It must
+        // not absorb the following dot as a float (`t.0.1` is two indexes).
+        let tuple_index = self.edition == Edition::V0_2
+            && matches!(
+                self.tokens.last(),
+                Some(token) if token.kind == TokenKind::Punct(Punctuation::Dot)
+            );
+
         let mut is_float = false;
 
-        if self.peek() == Some('.') && self.peek_n(1).is_some_and(|c| c.is_ascii_digit()) {
+        if !tuple_index
+            && self.peek() == Some('.')
+            && self.peek_n(1).is_some_and(|c| c.is_ascii_digit())
+        {
             is_float = true;
             self.bump();
             while let Some(character) = self.peek() {
@@ -580,7 +685,7 @@ impl<'a> Lexer<'a> {
             }
         }
 
-        if matches!(self.peek(), Some('e' | 'E')) {
+        if !tuple_index && matches!(self.peek(), Some('e' | 'E')) {
             let has_digit = match self.peek_n(1) {
                 Some('+' | '-') => self.peek_n(2).is_some_and(|c| c.is_ascii_digit()),
                 Some(character) => character.is_ascii_digit(),
@@ -604,21 +709,59 @@ impl<'a> Lexer<'a> {
         }
 
         if is_float {
+            if !tuple_index {
+                self.float_suffix();
+            }
             self.push(TokenKind::Float, start);
         } else {
-            self.byte_suffix();
+            if !tuple_index {
+                self.integer_suffix();
+            }
             self.push(TokenKind::Integer, start);
         }
     }
 
-    fn byte_suffix(&mut self) {
-        if self.starts_with("u8")
-            && self
-                .peek_n(2)
-                .is_none_or(|character| !is_identifier_continue(character))
-        {
-            self.bump();
-            self.bump();
+    fn integer_suffix(&mut self) {
+        const V02: &[&str] = &[
+            "usize", "isize", "i16", "i32", "i64", "u16", "u32", "u64", "i8", "u8",
+        ];
+        const V01: &[&str] = &["u8"];
+        let suffixes = if self.edition == Edition::V0_2 {
+            V02
+        } else {
+            V01
+        };
+        for suffix in suffixes {
+            let length = suffix.len();
+            if self.starts_with(suffix)
+                && self
+                    .peek_n(length)
+                    .is_none_or(|character| !is_identifier_continue(character))
+            {
+                for _ in 0..length {
+                    self.bump();
+                }
+                return;
+            }
+        }
+    }
+
+    fn float_suffix(&mut self) {
+        if self.edition != Edition::V0_2 {
+            return;
+        }
+        for suffix in ["f32", "f64"] {
+            let length = suffix.len();
+            if self.starts_with(suffix)
+                && self
+                    .peek_n(length)
+                    .is_none_or(|character| !is_identifier_continue(character))
+            {
+                for _ in 0..length {
+                    self.bump();
+                }
+                return;
+            }
         }
     }
 
@@ -637,7 +780,13 @@ impl<'a> Lexer<'a> {
         let kind = if text == "_" {
             TokenKind::Punct(Punctuation::Underscore)
         } else if let Some(keyword) = keyword(text) {
-            TokenKind::Keyword(keyword)
+            if (keyword == Keyword::Fail || keyword == Keyword::Char)
+                && self.edition != Edition::V0_2
+            {
+                TokenKind::Identifier
+            } else {
+                TokenKind::Keyword(keyword)
+            }
         } else {
             TokenKind::Identifier
         };
@@ -676,10 +825,9 @@ impl<'a> Lexer<'a> {
         while self.offset < self.source.len() {
             let line_start = self.offset;
             let remaining = &self.source[line_start..];
-            let trimmed = remaining.trim_start_matches(|c| c == ' ' || c == '\t');
-            if trimmed.starts_with("@end") {
-                let after = &trimmed[4..];
-                let trimmed_after = after.trim_start_matches(|c| c == ' ' || c == '\t');
+            let trimmed = remaining.trim_start_matches([' ', '\t']);
+            if let Some(after) = trimmed.strip_prefix("@end") {
+                let trimmed_after = after.trim_start_matches([' ', '\t']);
                 if trimmed_after.starts_with("\r\n")
                     || trimmed_after.starts_with('\n')
                     || trimmed_after.starts_with('}')
@@ -814,11 +962,26 @@ impl<'a> Lexer<'a> {
                 if self.peek() == Some('&') {
                     self.bump();
                     one(self, Punctuation::AmpAmp);
+                } else if self.edition == Edition::V0_2 {
+                    one(self, Punctuation::Amp);
                 } else {
                     self.diagnostic(
                         "NS1005",
                         "Unexpected character '&'.",
                         "Use && for logical and.",
+                        start,
+                        self.offset,
+                    );
+                }
+            }
+            '^' => {
+                if self.edition == Edition::V0_2 {
+                    one(self, Punctuation::Caret);
+                } else {
+                    self.diagnostic(
+                        "NS1005",
+                        "Unexpected character '^'.",
+                        "Bitwise xor is available in edition 0.2.",
                         start,
                         self.offset,
                     );
@@ -832,9 +995,39 @@ impl<'a> Lexer<'a> {
                     one(self, Punctuation::Pipe);
                 }
             }
-            '.' => one(self, Punctuation::Dot),
+            '.' => {
+                if self.edition == Edition::V0_2 && self.peek() == Some('.') {
+                    self.bump();
+                    if self.peek() == Some('=') {
+                        self.bump();
+                        one(self, Punctuation::DotDotEq);
+                    } else {
+                        one(self, Punctuation::DotDot);
+                    }
+                } else {
+                    one(self, Punctuation::Dot);
+                }
+            }
             ',' => one(self, Punctuation::Comma),
-            ':' => one(self, Punctuation::Colon),
+            ':' => {
+                if self.peek() == Some(':') && self.edition == Edition::V0_2 {
+                    self.bump();
+                    let rest = self.source.get(self.offset..).unwrap_or_default();
+                    if self.peek() == Some('<') {
+                        one(self, Punctuation::DoubleColon);
+                    } else {
+                        let hint = if rest.trim_start().starts_with('<') {
+                            "Write `::<` with no space."
+                        } else {
+                            "A standalone `::` is not valid; use `::<...>` for type arguments."
+                        };
+                        self.diagnostic("NS2011", "Malformed turbofish.", hint, start, self.offset);
+                        one(self, Punctuation::DoubleColon);
+                    }
+                } else {
+                    one(self, Punctuation::Colon);
+                }
+            }
             ';' => one(self, Punctuation::Semicolon),
             '(' => one(self, Punctuation::LParen),
             ')' => one(self, Punctuation::RParen),
@@ -865,6 +1058,7 @@ impl<'a> Lexer<'a> {
                 }
                 one(self, Punctuation::At);
             }
+            '?' if self.edition == Edition::V0_2 => one(self, Punctuation::Question),
             _ => {
                 self.diagnostic(
                     "NS1005",
@@ -891,6 +1085,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "abort" => Keyword::Abort,
         "as" => Keyword::As,
         "break" => Keyword::Break,
+        "char" => Keyword::Char,
         "const" | "constant" => Keyword::Const,
         "continue" => Keyword::Continue,
         "default" => Keyword::Default,
@@ -898,6 +1093,7 @@ fn keyword(text: &str) -> Option<Keyword> {
         "else" => Keyword::Else,
         "enum" => Keyword::Enum,
         "export" => Keyword::Export,
+        "fail" => Keyword::Fail,
         "false" => Keyword::False,
         "fn" | "function" => Keyword::Fn,
         "for" => Keyword::For,
@@ -926,7 +1122,7 @@ fn keyword(text: &str) -> Option<Keyword> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Keyword, Punctuation, TokenKind, lex};
+    use super::{Edition, Keyword, LexOptions, Punctuation, TokenKind, lex, lex_with_options};
 
     fn kinds(source: &str) -> Vec<TokenKind> {
         lex(source)
@@ -1158,5 +1354,115 @@ mod tests {
             kinds("b b\"x\""),
             vec![TokenKind::Identifier, TokenKind::ByteString, TokenKind::Eof]
         );
+    }
+
+    fn v02(source: &str) -> super::LexResult {
+        lex_with_options(
+            source,
+            LexOptions {
+                edition: Edition::V0_2,
+            },
+        )
+    }
+
+    #[test]
+    fn fail_is_a_keyword_only_in_edition_0_2() {
+        assert_eq!(kinds("fail"), vec![TokenKind::Identifier, TokenKind::Eof]);
+        let result = v02("fail");
+        assert!(!result.has_errors());
+        assert_eq!(result.tokens[0].kind, TokenKind::Keyword(Keyword::Fail));
+    }
+
+    #[test]
+    fn question_is_a_token_only_in_edition_0_2() {
+        assert!(lex("?").has_errors());
+        let result = v02("x?");
+        assert!(!result.has_errors());
+        assert_eq!(
+            result.tokens[1].kind,
+            TokenKind::Punct(Punctuation::Question)
+        );
+    }
+
+    #[test]
+    fn double_colon_requires_a_following_angle_bracket() {
+        let valid = v02("::<i32>");
+        assert!(!valid.has_errors());
+        assert_eq!(
+            valid.tokens[0].kind,
+            TokenKind::Punct(Punctuation::DoubleColon)
+        );
+
+        for source in ["::", ":: <i32>"] {
+            let result = v02(source);
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.code == "NS2011"),
+                "{source}: {:?}",
+                result.diagnostics
+            );
+        }
+    }
+
+    #[test]
+    fn v0_1_keeps_two_colons_for_a_standalone_double_colon() {
+        assert_eq!(
+            kinds("::"),
+            vec![
+                TokenKind::Punct(Punctuation::Colon),
+                TokenKind::Punct(Punctuation::Colon),
+                TokenKind::Eof
+            ]
+        );
+    }
+
+    #[test]
+    fn tuple_indexes_are_integers_after_a_postfix_dot() {
+        for (source, indexes) in [("t.0.1", 2), ("t.0.1.2", 3)] {
+            let result = v02(source);
+            assert!(!result.has_errors(), "{source}: {:?}", result.diagnostics);
+            let integer_indexes = result
+                .tokens
+                .iter()
+                .filter(|token| token.kind == TokenKind::Integer)
+                .count();
+            assert_eq!(integer_indexes, indexes, "{source}");
+            assert!(
+                result
+                    .tokens
+                    .iter()
+                    .all(|token| token.kind != TokenKind::Float),
+                "{source} must not produce a float"
+            );
+        }
+
+        let float = lex("1.0");
+        assert_eq!(
+            float.tokens[0].kind,
+            TokenKind::Float,
+            "a leading digit still starts a float"
+        );
+    }
+
+    #[test]
+    fn v0_1_keeps_suffixed_postfix_numbers_as_one_token() {
+        let result = lex("t.0u8");
+        assert!(!result.has_errors(), "{:?}", result.diagnostics);
+        let integers = result
+            .tokens
+            .iter()
+            .filter(|token| token.kind == TokenKind::Integer)
+            .count();
+        assert_eq!(integers, 1, "t.0u8 must stay a single integer token");
+    }
+
+    #[test]
+    fn triple_slash_stays_an_ordinary_comment() {
+        let result = lex("/// doc\nfn main() {}");
+        assert!(!result.has_errors());
+        assert_eq!(result.comments.len(), 1);
+        assert_eq!(result.comments[0].text, "/// doc");
     }
 }

@@ -1,0 +1,13 @@
+// Option<Task> is still a composite; the shape copy would duplicate the
+// handle inside the Some payload.
+pub fn main() -> i32 {
+    let inner = spawn || { 1 }
+    let maybe = Some(inner)
+    let outer = spawn || {
+        match maybe {
+            Some(task) => task.join(),
+            None => 0,
+        }
+    }
+    return outer.join()
+}

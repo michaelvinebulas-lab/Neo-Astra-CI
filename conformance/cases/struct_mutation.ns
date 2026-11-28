@@ -1,0 +1,13 @@
+struct Profile {
+    name: str
+    age: i32
+}
+
+pub fn main() -> i32 {
+    let mut profile = Profile { name: "Ada", age: 36 }
+    profile.name = "Neo"
+    profile.age = profile.age + 1
+    println(profile.name)
+    println(profile.age)
+    return 0
+}

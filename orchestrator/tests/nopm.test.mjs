@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -27,6 +27,7 @@ import {
   writeLockfileFile,
 } from "../packages/nopm/dist/index.js";
 import { resolveNpmPackage } from "../packages/nopm/dist/npm-adapter.js";
+import { commandName, defaultCommandRunner } from "../packages/nopm/dist/command.js";
 import { resolveGitPackage } from "../packages/nopm/dist/git-adapter.js";
 import { resolveCargoPackage } from "../packages/nopm/dist/cargo-adapter.js";
 import { resolvePyPiPackage } from "../packages/nopm/dist/pypi-adapter.js";
@@ -34,6 +35,7 @@ import { resolveNuGetPackage } from "../packages/nopm/dist/nuget-adapter.js";
 import { resolveOciPackage } from "../packages/nopm/dist/oci-adapter.js";
 import { resolveRegistryPackage } from "../packages/nopm/dist/registry-client.js";
 import { installLockedPackages } from "../packages/nopm/dist/store.js";
+import { detectManagers, executeSysInstall, planSysInstall } from "../packages/nopm/dist/sys-adapter.js";
 
 function expectCode(fn, code) {
   assert.throws(fn, (error) => {
@@ -499,8 +501,13 @@ test("reports missing lockfiles", () => {
 
 // ─── adapters and CLI ───────────────────────────────────────────────────────
 
-test("npm adapter resolves an exact version and metadata", () => {
-  const runner = {
+test("default command runner executes npm on every host", () => {
+  const result = defaultCommandRunner.run(commandName("npm"), ["--version"]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout.trim(), /^\d+\.\d+\.\d+/);
+});
+
+test("npm adapter resolves an exact version and metadata", () => {  const runner = {
     run(_command, args) {
       if (args[0] === "view" && args[2] === "version") {
         return { status: 0, stdout: '"19.1.0"\n', stderr: "" };
@@ -554,11 +561,20 @@ test("nopm lock and install work for a path package", () => {
       JSON.stringify(
         {
           package: { name: "demo", version: "0.1.0" },
-          targets: { web: { backend: "js", mode: "web" } },
           dependencies: {
             "local-utils": { source: "path", path: "local-utils" },
           },
           packageSources: { path: true },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFileSync(
+      join(directory, "build.json"),
+      JSON.stringify(
+        {
+          targets: { web: { backend: "js", mode: "web" } },
         },
         null,
         2,
@@ -570,6 +586,15 @@ test("nopm lock and install work for a path package", () => {
       JSON.stringify(
         {
           package: { name: "local-utils", version: "0.1.0" },
+        },
+        null,
+        2,
+      ),
+    );
+    writeFileSync(
+      join(packageDirectory, "build.json"),
+      JSON.stringify(
+        {
           targets: { web: { backend: "js", mode: "web" } },
         },
         null,
@@ -605,7 +630,6 @@ test("git adapter resolves a cached pinned commit", () => {
       join(packageDirectory, "core.json"),
       JSON.stringify({
         package: { name: "git-pkg", version: "1.0.0" },
-        targets: { web: { backend: "js", mode: "web" } },
       }),
     );
     const runner = {
@@ -883,3 +907,311 @@ test("store installs and verifies a remote tarball", async (t) => {
 
 
 
+
+const nopmCliPath = fileURLToPath(new URL("../packages/nopm/dist/cli.js", import.meta.url));
+
+function runNopm(args, cwd) {
+  return spawnSync(process.execPath, [nopmCliPath, ...args], {
+    cwd,
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
+function writePathProject(directory, manifestName = "core.json") {
+  const packageDirectory = join(directory, "local-utils");
+  mkdirSync(packageDirectory, { recursive: true });
+
+  const packageData = JSON.stringify(
+    { package: { name: "local-utils", version: "0.1.0" } },
+    null,
+    2,
+  );
+  const buildData = JSON.stringify(
+    { targets: { web: { backend: "js", mode: "web" } } },
+    null,
+    2,
+  );
+  writeFileSync(join(packageDirectory, "core.json"), `${packageData}\n`);
+  writeFileSync(join(packageDirectory, "build.json"), `${buildData}\n`);
+
+  if (manifestName === "core.toml") {
+    writeFileSync(
+      join(directory, "core.toml"),
+      [
+        "# demo project",
+        "[package]",
+        'name = "demo"',
+        'version = "0.1.0"',
+        "",
+      ].join("\n"),
+    );
+  } else {
+    writeFileSync(
+      join(directory, "core.json"),
+      `${JSON.stringify({ package: { name: "demo", version: "0.1.0" } }, null, 2)}\n`,
+    );
+  }
+  writeFileSync(join(directory, "build.json"), `${buildData}\n`);
+  return packageDirectory;
+}
+
+test("nopm add and remove update the manifest, lockfile, and store (path source)", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-add-"));
+  try {
+    writePathProject(directory);
+
+    const add = runNopm(["add", "path:local-utils", directory, "--json"], directory);
+    assert.equal(add.status, 0, add.stderr);
+    assert.equal(JSON.parse(add.stdout).action, "add");
+
+    const manifest = JSON.parse(readFileSync(join(directory, "core.json"), "utf8"));
+    assert.deepEqual(manifest.dependencies, { "local-utils": "path:local-utils" });
+
+    const lockfile = readLockfileFile(join(directory, "core.lock.json"));
+    assert.deepEqual(lockfile.packages.map((entry) => entry.id), ["path:local-utils"]);
+
+    const store = JSON.parse(
+      readFileSync(join(directory, ".astra", "store", "index.json"), "utf8"),
+    );
+    assert.deepEqual(store.packages.map((entry) => entry.id), ["path:local-utils"]);
+
+    const duplicate = runNopm(["add", "path:local-utils", directory], directory);
+    assert.notEqual(duplicate.status, 0);
+    assert.match(duplicate.stderr, /NP0013/);
+
+    const remove = runNopm(["remove", "local-utils", directory], directory);
+    assert.equal(remove.status, 0, remove.stderr);
+    const removed = JSON.parse(readFileSync(join(directory, "core.json"), "utf8"));
+    assert.equal(Object.hasOwn(removed, "dependencies"), false);
+    const relocked = readLockfileFile(join(directory, "core.lock.json"));
+    assert.deepEqual(relocked.packages, []);
+
+    const missing = runNopm(["remove", "local-utils", directory], directory);
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /NP0014/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("nopm add and remove preserve TOML comments through the CLI", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-add-toml-"));
+  try {
+    writePathProject(directory, "core.toml");
+
+    const add = runNopm(["add", "path:local-utils", directory], directory);
+    assert.equal(add.status, 0, add.stderr);
+    let source = readFileSync(join(directory, "core.toml"), "utf8");
+    assert.match(source, /^# demo project$/m);
+    assert.match(source, /^\[dependencies\]$/m);
+    assert.match(source, /^local-utils = "path:local-utils"$/m);
+
+    const remove = runNopm(["remove", "local-utils", directory], directory);
+    assert.equal(remove.status, 0, remove.stderr);
+    source = readFileSync(join(directory, "core.toml"), "utf8");
+    assert.match(source, /^# demo project$/m);
+    assert.match(source, /^name = "demo"$/m);
+    assert.doesNotMatch(source, /^\[dependencies\]$/m);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("nopm add --dry-run writes neither the manifest nor the lockfile", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-add-dry-"));
+  try {
+    writePathProject(directory);
+    const manifestPath = join(directory, "core.json");
+    const before = readFileSync(manifestPath, "utf8");
+
+    const result = runNopm(["add", "path:local-utils", directory, "--dry-run"], directory);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Would add path:local-utils/);
+    assert.equal(readFileSync(manifestPath, "utf8"), before);
+    assert.equal(existsSync(join(directory, "core.lock.json")), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("nopm add restores the manifest and lockfile when resolution fails", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-add-rollback-"));
+  try {
+    writePathProject(directory);
+    const locked = runNopm(["lock", directory], directory);
+    assert.equal(locked.status, 0, locked.stderr);
+
+    const manifestPath = join(directory, "core.json");
+    const lockfilePath = join(directory, "core.lock.json");
+    const manifestBefore = readFileSync(manifestPath, "utf8");
+    const lockfileBefore = readFileSync(lockfilePath, "utf8");
+
+    const failed = runNopm(["add", "path:missing-package", directory], directory);
+    assert.notEqual(failed.status, 0);
+
+    assert.equal(readFileSync(manifestPath, "utf8"), manifestBefore);
+    assert.equal(readFileSync(lockfilePath, "utf8"), lockfileBefore);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("sys planner builds the exact command lines for every manager", () => {
+  const cases = [
+    [
+      "win32",
+      0,
+      ["winget"],
+      "git",
+      "winget",
+      [["winget", "install", "--id", "Git.Git", "-e", "--accept-package-agreements", "--accept-source-agreements", "--silent"]],
+    ],
+    ["darwin", 501, ["brew"], "cmake", "brew", [["brew", "install", "cmake"]]],
+    [
+      "linux",
+      0,
+      ["apt-get"],
+      "clang",
+      "apt-get",
+      [["apt-get", "update"], ["apt-get", "install", "-y", "clang"]],
+    ],
+    [
+      "linux",
+      1000,
+      ["apt-get"],
+      "clang",
+      "apt-get",
+      [["sudo", "-n", "apt-get", "update"], ["sudo", "-n", "apt-get", "install", "-y", "clang"]],
+    ],
+    ["linux", 0, ["dnf"], "git", "dnf", [["dnf", "install", "-y", "git"]]],
+    ["linux", 0, ["pacman"], "git", "pacman", [["pacman", "-S", "--noconfirm", "git"]]],
+    ["linux", 0, ["zypper"], "git", "zypper", [["zypper", "--non-interactive", "install", "git"]]],
+    ["linux", 0, ["apk"], "git", "apk", [["apk", "add", "git"]]],
+  ];
+
+  for (const [platform, uid, managers, tool, manager, commands] of cases) {
+    const plan = planSysInstall(tool, { platform, uid, managers });
+    assert.equal(plan.manager, manager, `${platform} ${managers.join(",")}`);
+    assert.deepEqual(plan.commands, commands, `${platform} ${managers.join(",")}`);
+    assert.equal(plan.installed, false);
+  }
+});
+
+test("sys planner rejects unknown tools and missing managers", () => {
+  expectCode(
+    () => planSysInstall("bogus", { platform: "linux", uid: 0, managers: ["apt-get"] }),
+    "NP0015",
+  );
+  expectCode(() => planSysInstall("git", { platform: "linux", uid: 0, managers: [] }), "NP0017");
+  expectCode(() => planSysInstall("git", { platform: "win32", uid: 0, managers: [] }), "NP0017");
+  expectCode(
+    () => planSysInstall("git", { platform: "darwin", uid: 0, managers: ["brew"] }),
+    "NP0017",
+  );
+});
+
+test("sys manager detection asks the injected presence check", () => {
+  assert.deepEqual(detectManagers("win32", () => false), []);
+  assert.deepEqual(detectManagers("win32", (command) => command === "winget"), ["winget"]);
+  assert.deepEqual(detectManagers("darwin", (command) => command === "brew"), ["brew"]);
+  assert.deepEqual(
+    detectManagers("linux", (_command, args) => args[1] === "command -v dnf"),
+    ["dnf"],
+  );
+});
+
+test("sys executor runs the plan in order and short-circuits when installed", () => {
+  const context = { platform: "linux", uid: 1000, managers: ["apt-get"] };
+  const calls = [];
+
+  const runner = (installed) => ({
+    run(command, args) {
+      calls.push([command, ...args]);
+      if (command === "git" && args[0] === "--version") {
+        return { status: installed ? 0 : 1, stdout: "", stderr: "" };
+      }
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+
+  const plan = executeSysInstall("git", context, runner(false));
+  assert.deepEqual(plan.commands, [
+    ["sudo", "-n", "apt-get", "update"],
+    ["sudo", "-n", "apt-get", "install", "-y", "git"],
+  ]);
+  assert.deepEqual(calls, [
+    ["git", "--version"],
+    ["sudo", "-n", "apt-get", "update"],
+    ["sudo", "-n", "apt-get", "install", "-y", "git"],
+  ]);
+
+  calls.length = 0;
+  const already = executeSysInstall("git", context, runner(true));
+  assert.equal(already.installed, true);
+  assert.deepEqual(already.commands, []);
+  assert.deepEqual(calls, [["git", "--version"]]);
+});
+
+test("sys executor reports a failed install as NP0018", () => {
+  const runner = {
+    run(command, args) {
+      if (command === "git" && args[0] === "--version") {
+        return { status: 1, stdout: "", stderr: "" };
+      }
+      return { status: 3, stdout: "", stderr: "boom" };
+    },
+  };
+
+  assert.throws(
+    () => executeSysInstall("git", { platform: "linux", uid: 0, managers: ["apt-get"] }, runner),
+    (error) => {
+      assert.ok(error instanceof NopmError);
+      assert.equal(error.code, "NP0018");
+      assert.match(error.message, /apt-get/);
+      return true;
+    },
+  );
+});
+
+test("nopm add sys: writes nothing, and remove sys: is refused", () => {
+  const directory = mkdtempSync(join(tmpdir(), "nopm-sys-"));
+  try {
+    writeFileSync(
+      join(directory, "core.json"),
+      `${JSON.stringify({ package: { name: "demo", version: "0.1.0" } }, null, 2)}\n`,
+    );
+    const before = readFileSync(join(directory, "core.json"), "utf8");
+
+    const dry = runNopm(["add", "sys:git", "--dry-run", "--json"], directory);
+    assert.equal(dry.status, 0, dry.stderr);
+    const payload = JSON.parse(dry.stdout);
+    assert.equal(payload.action, "sys-install");
+    assert.equal(payload.tool, "git");
+    assert.equal(typeof payload.installed, "boolean");
+    assert.ok(Array.isArray(payload.commands));
+    assert.equal(readFileSync(join(directory, "core.json"), "utf8"), before);
+    assert.equal(existsSync(join(directory, "core.lock.json")), false);
+    assert.equal(existsSync(join(directory, ".astra")), false);
+
+    const remove = runNopm(["remove", "sys:git"], directory);
+    assert.notEqual(remove.status, 0);
+    assert.match(remove.stderr, /NP0016/);
+
+    const extra = runNopm(["add", "sys:git", directory], directory);
+    assert.notEqual(extra.status, 0);
+    assert.match(extra.stderr, /at most 1/);
+
+    const unknown = runNopm(["add", "sys:bogus-not-real", "--dry-run"], directory);
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /NP0015/);
+
+    // A real command that is not a supported system tool must still fail the
+    // name check; being on PATH is not an installation plan.
+    const installedButUnknown = runNopm(["add", "sys:node", "--dry-run"], directory);
+    assert.notEqual(installedButUnknown.status, 0);
+    assert.match(installedButUnknown.stderr, /NP0015/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -1,7 +1,7 @@
-# Neo Astra Agent
+﻿# Neo Astra Agent
 
-**Status:** Active operating manual  
-**Last updated:** 2026-10-24  
+**Status:** Active operating manual
+**Last updated:** 2026-11-11
 **Canonical entrypoint:** this file
 
 This folder defines how an AI agent works on Neo Astra. It is not product documentation. It is the agent's role, boundaries, workflow, schemas, definition of done, and persistent project memory.
@@ -12,29 +12,26 @@ This folder defines how an AI agent works on Neo Astra. It is not product docume
 
 At the start of every session, read these in order:
 
-1. `agent.md` — this file
-2. `project-context-glossary.md` — the project contract and terminology
-3. `system-prompt.md` — the full persona and behavioral rules
-4. `state-log.md` — what actually happened last
-5. `todo.md` — the current queue
-6. `runbook.md` — the phase workflow
-7. `definition-of-done.md` — the completion gate
-8. `edge-case-protocol.md` — what to do when work goes wrong
-9. `io-schemas.md` — the required input/output formats
-10. `../architecture.md` — the architecture and decision log
-11. `../spec-v0.1.md` — the normative v0.1 language specification
-12. `../syntax-legend.md` — the plain-language syntax and operator reference
+1. `agent.md` - this file
+2. `project-context-glossary.md` - the project contract and terminology
+3. `system-prompt.md` - the full persona and behavioral rules
+4. `../state.md` - status, queue, decisions, and the recent log
+5. `../context.md` - current handoff snapshot, tree state, and next actions
+6. `runbook.md` - the phase workflow
+7. `definition-of-done.md` - the completion gate
+8. `edge-case-protocol.md` - what to do when work goes wrong
+9. `io-schemas.md` - the required input/output formats
+10. `../spec-v0.1.md` - the normative v0.1 language specification
+11. `../syntax-legend.md` - the plain-language syntax and operator reference
 
 If these files conflict, use this precedence:
 
 ```text
 explicit user instruction
-  > confirmed decision in architecture.md
+  > confirmed decision in state.md
   > spec-v0.1.md
   > syntax-legend.md
   > this agent operating system
-  > state-log.md
-  > todo.md
   > runbook.md
   > assumptions
 ```
@@ -70,18 +67,22 @@ The immediate goal is not “ship everything.” The immediate goal is to conver
 
 ## 4. Current phase
 
-**Phase 5 — Types, Nova, and NoPM.**
+**Post-1.0 native port; v0.2 Phase 0 only.**
 
-The architecture decision log D1-D25 is confirmed. The V1 design baseline exists in `Docs/Design/V1/`, including Nova and NoPM, and `Docs/spec-v0.1.md` defines the normative v0.1 language contract. The TypeScript orchestrator and Rust core scaffolds exist, with a JSON-RPC/Wasm compiler boundary and cross-platform CI. The lexer, parser, canonical formatter, comment preservation, `astra fmt` CLI wiring, manifest formatting, resolver, type checker, typed-HIR Nova interpreter, complete Nova CLI, and complete NoPM package/lockfile/store/adapter/registry stack are implemented.
+`1.0.0` is published. The current release work is the native Rust CLI/NoPM
+replacement for `1.0.1`. Slices 1, 2a, 2b, and 2c are landed. Slice 3a (native
+NoPM baseline) is open after two rejected handbacks; slices 3b and 4 are
+blocked. Native parity is 11/12, with only the JS build case red. The current
+`astra-nopm` code is uncommitted and fixture-shaped; do not accept or commit it.
 
-The next concrete action is Nova over typed HIR, without creating a second parser, type checker, or language:
+Language v0.2 is **not** being implemented in the native CLI slices. Phase 0 is
+complete on the documentation side (accepted plan/RFCs, non-normative
+`spec-v0.2.md` skeleton, focused grammar harness, non-loaded corpus).
+`spec-v0.1.md` remains normative. The next concrete action is Kilo's real slice
+3a implementation with the required lifecycle tests, followed by lead review.
 
-- Consume `CheckResult.module` and `CheckResult.annotations` from the shared checker.
-- Interpret functions, values, structs, enums, arrays, maps, and patterns.
-- Reuse structured diagnostics, mode rules, and error effects.
-- Keep Nova development-focused; compiled targets remain the production path.
-
-The open questions in `Docs/spec-v0.1.md` §17 are proposals for V1 freeze review. They do not block Nova, but they must not be silently treated as settled decisions.
+Detailed state and next actions: `../state.md`, `../context.md`, and
+`../Report/Task.md`.
 
 ---
 
@@ -97,7 +98,7 @@ The open questions in `Docs/spec-v0.1.md` §17 are proposals for V1 freeze revie
 8. **Strict at boundaries, inferred locally.** No implicit coercions, exhaustive matching, structured diagnostics.
 9. **No hidden failure.** Recoverable errors use `!`; programmer bugs use `panic`/`abort`.
 10. **No false “zero-runtime” claims.** The correct promise is “zero VM, pay-as-you-go runtime.”
-11. **Do not invent decisions.** If a decision is not in `architecture.md`, mark it as proposed and ask.
+11. **Do not invent decisions.** If a decision is not in the `state.md` Decisions table, mark it as proposed and ask.
 12. **Do not mark work done without evidence.** See `definition-of-done.md`.
 13. **Keyword aliases are lexical only.** `fn`/`function`, `let`/`var`, `const`/`constant`, `type`/`typedef`, `struct`/`record`, `mut`/`mutable`, and `pub`/`public` are exact synonyms. The canonical formatter emits the short form.
 14. **Visibility is optional and private is hard.** Normal declarations are module-local but explicitly exportable. `pub`/`public` and `export` export; `private` forbids export. Both project-path and JS/TS-style imports and exports are supported. Exports never bypass modes or capabilities.
@@ -111,10 +112,10 @@ Use this loop for every task:
 
 ```text
 1. Orient
-   Read state-log.md, todo.md, and the relevant architecture section.
+   Read `../state.md` and the active work order in `../Report/Task.md`.
 
 2. Select one unit of work
-   Pick exactly one task from todo.md. Do not bundle unrelated work.
+   Pick exactly one item from the `../state.md` queue. Do not bundle unrelated work.
 
 3. Restate the contract
    State the goal, scope, out-of-scope items, and acceptance criteria.
@@ -132,7 +133,7 @@ Use this loop for every task:
    Run the relevant checks. If no test exists, say so and explain the evidence.
 
 8. Record
-   Update state-log.md and todo.md. Record decisions, blockers, and next steps.
+   Add one Log row and one CHANGELOG entry. Record decisions and the next action in `../state.md`.
 
 9. Report
    Use the response format in io-schemas.md.
@@ -152,7 +153,7 @@ Stop after the selected task is complete. Do not continue into the next task unl
 - Refactor code that you just wrote
 - Fix a clear bug with a reproducible failure
 - Create small scaffolding that follows the confirmed architecture
-- Update `state-log.md` and `todo.md`
+- Update `../state.md` (Log row, queue state, next action)
 
 ### You must ask before doing
 
@@ -186,17 +187,18 @@ Stop after the selected task is complete. Do not continue into the next task unl
 
 | Topic | Canonical source |
 |---|---|
-| Architecture and decisions | `../architecture.md` |
+| Status, queue, and decisions | `../state.md` |
+| Decision rationale (historical) | `../archive/architecture.md` and `../archive/Design/` |
 | Agent behavior | `./system-prompt.md` |
 | Project terms | `./project-context-glossary.md` |
-| Current work state | `./state-log.md` |
-| Task queue | `./todo.md` |
+| Active work order | `../Report/Task.md` |
 | Workflow | `./runbook.md` |
 | Completion gate | `./definition-of-done.md` |
 | Failure handling | `./edge-case-protocol.md` |
 | Input/output formats | `./io-schemas.md` |
 
-When a document is updated, update `state-log.md` in the same task.
+When a slice lands, add one Log row to `../state.md` and one CHANGELOG entry.
+Do not maintain a second status record.
 
 ---
 
@@ -204,21 +206,19 @@ When a document is updated, update `state-log.md` in the same task.
 
 ### Start of session
 
-- [ ] Read `state-log.md`
-- [ ] Read `todo.md`
-- [ ] Read the relevant section of `../architecture.md`
-- [ ] Identify the current phase
-- [ ] Select one task
+- [ ] Read `../state.md`
+- [ ] Read the active work order in `../Report/Task.md`
+- [ ] Identify the current phase and the active queue item
 - [ ] Confirm there are no unresolved blockers
 
 ### End of session
 
 - [ ] The selected task is done, partial, or blocked — not ambiguous
-- [ ] Verification evidence is recorded
-- [ ] `state-log.md` is updated
-- [ ] `todo.md` is updated
-- [ ] New decisions are recorded
-- [ ] Next action is explicit
+- [ ] Verification evidence is recorded (gate + Tier-1 run number)
+- [ ] One Log row was added to `../state.md`
+- [ ] One CHANGELOG entry exists for the landed change
+- [ ] New decisions are recorded in the `state.md` Decisions table
+- [ ] One next action is explicit in `state.md`
 - [ ] No unrelated files were changed
 
 ---

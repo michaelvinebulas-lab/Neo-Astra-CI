@@ -1,0 +1,17 @@
+// edition: 0.2
+// purpose: canonical item and statement scope blocks
+
+@mode(core) {
+    fn scoped_helper() -> i32 {
+        return 1
+    }
+}
+
+pub fn main() -> i32 {
+    @memory(auto) {
+        @mode(core) {
+            let value = 1
+        }
+    }
+    return 1
+}

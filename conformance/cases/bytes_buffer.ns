@@ -1,0 +1,9 @@
+pub fn main() -> i32 {
+    let mut buffer = bytes.new(4)
+    buffer[0] = 0xFF
+    buffer[1] = 7
+    println(buffer.len())
+    println(buffer[0])
+    println(buffer[1])
+    return 0
+}

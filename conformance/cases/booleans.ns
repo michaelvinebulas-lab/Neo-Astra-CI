@@ -1,0 +1,9 @@
+pub fn main() -> i32 {
+    println(true)
+    println(false)
+    println(1 < 2)
+    println(not false)
+    println(true && false)
+    println(true || false)
+    return 0
+}

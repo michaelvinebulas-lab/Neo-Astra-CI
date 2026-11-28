@@ -423,7 +423,7 @@ fn main() {
     let NovaError::Panic(panic) = output.result.unwrap_err() else {
         panic!("expected a task panic");
     };
-    assert_eq!(panic.message, "task panic");
+    assert_eq!(panic.message, "TaskError: task panic");
 }
 
 #[test]
@@ -533,4 +533,232 @@ fn buffer_host_captures_both_streams() {
     host.stderr("err");
     assert_eq!(host.stdout, "out");
     assert_eq!(host.stderr, "err");
+}
+
+#[test]
+fn runs_utf8_string_methods() {
+    let output = run(r#"
+pub fn main() -> i32 {
+    let text = "héllo"
+    println(text.len())
+    println(text.char_count())
+    match text.byte_at(1) {
+        Some(byte) => println(byte),
+        None => println("none"),
+    }
+    match text.char_at(1) {
+        Some(character) => println(character),
+        None => println("none"),
+    }
+    match text.slice(0, 3) {
+        Ok(part) => println(part),
+        Err(error) => println("slice failed"),
+    }
+    match text.slice(0, 2) {
+        Ok(part) => println(part),
+        Err(error) => println("slice failed"),
+    }
+    println(text.bytes().len())
+    println(text.chars().len())
+    return 0
+}
+"#);
+    assert_ok(&output);
+    assert_eq!(output.stdout, "6\n5\n195\né\nhé\nslice failed\n6\n5\n");
+    assert_eq!(
+        output.result.unwrap(),
+        Value::Integer(crate::Integer::new(0, astra_core::types::Type::I32))
+    );
+}
+
+#[test]
+fn reports_str_slice_and_index_failures() {
+    let output = run(r#"
+pub fn main() -> i32 {
+    let text = "héllo"
+    match text.slice(0, 99) {
+        Ok(part) => println("ok"),
+        Err(error) => println("out of bounds"),
+    }
+    match text.slice(3, 1) {
+        Ok(part) => println("ok"),
+        Err(error) => println("reversed"),
+    }
+    match text.slice(1, 2) {
+        Ok(part) => println("ok"),
+        Err(error) => println("split scalar"),
+    }
+    match text.byte_at(99) {
+        Some(byte) => println(byte),
+        None => println("no byte"),
+    }
+    match text.char_at(99) {
+        Some(character) => println(character),
+        None => println("no char"),
+    }
+    return 0
+}
+"#);
+    assert_ok(&output);
+    assert_eq!(
+        output.stdout,
+        "out of bounds\nreversed\nsplit scalar\nno byte\nno char\n"
+    );
+}
+
+#[test]
+fn allocates_and_mutates_bytes() {
+    let output = run(r#"
+pub fn main() -> i32 {
+    let mut buffer = bytes.new(4)
+    buffer[0] = 0xFF
+    buffer[1] = 7
+    println(buffer.len())
+    println(buffer[0])
+    println(buffer[1])
+    println(buffer.is_empty())
+    let part = buffer.slice(1, 3)
+    println(part.len())
+    for value in buffer {
+        println(value)
+    }
+    let empty = bytes.new(0)
+    println(empty.is_empty())
+    return 0
+}
+"#);
+    assert_ok(&output);
+    assert_eq!(output.stdout, "4\n255\n7\nfalse\n2\n255\n7\n0\n0\ntrue\n");
+}
+
+#[test]
+fn rejects_out_of_bounds_byte_writes() {
+    let output = run(r#"
+pub fn main() -> i32 {
+    let mut buffer = bytes.new(2)
+    buffer[5] = 1
+    return 0
+}
+"#);
+    let NovaError::Panic(panic) = output.result.unwrap_err() else {
+        panic!("expected a panic for an out-of-bounds byte write");
+    };
+    assert!(
+        panic.message.contains("out of bounds"),
+        "unexpected panic message: {}",
+        panic.message
+    );
+}
+
+#[test]
+fn runs_channels_eagerly() {
+    let output = run(r#"
+fn produce(channel: Channel<str>) -> () ! ChannelError {
+    channel.send("hello")!
+    channel.send("world")!
+}
+
+pub fn main() -> i32 {
+    let channel = Channel.create<str>()
+    spawn || {
+        match produce(channel) {
+            Ok(value) => println("sent"),
+            Err(error) => println("send failed"),
+        }
+    }
+    match channel.receive() {
+        Ok(message) => println(message),
+        Err(error) => println("closed"),
+    }
+    match channel.receive() {
+        Ok(message) => println(message),
+        Err(error) => println("closed"),
+    }
+    channel.close()
+    match channel.send("late") {
+        Ok(value) => println("sent late"),
+        Err(error) => println("closed send"),
+    }
+    return 0
+}
+"#);
+    assert_ok(&output);
+    assert_eq!(output.stdout, "sent\nhello\nworld\nclosed send\n");
+}
+
+#[test]
+fn closed_channels_fail_send_and_receive() {
+    let output = run(r#"
+pub fn main() -> i32 {
+    let channel = Channel.create<str>()
+    channel.close()
+    match channel.send("late") {
+        Ok(value) => println("sent"),
+        Err(error) => println("closed send"),
+    }
+    match channel.receive() {
+        Ok(message) => println(message),
+        Err(error) => println("closed receive"),
+    }
+    return 0
+}
+"#);
+    assert_ok(&output);
+    assert_eq!(output.stdout, "closed send\nclosed receive\n");
+}
+
+#[test]
+fn sending_to_a_full_channel_deadlocks() {
+    let output = run(r#"
+fn fill(channel: Channel<i32>) -> () ! ChannelError {
+    let mut index = 0
+    while index < 17 {
+        channel.send(index)!
+        index = index + 1
+    }
+}
+
+pub fn main() -> i32 {
+    let channel = Channel.create<i32>()
+    match fill(channel) {
+        Ok(value) => println("filled"),
+        Err(error) => println("failed"),
+    }
+    return 0
+}
+"#);
+    let NovaError::Panic(panic) = output.result.unwrap_err() else {
+        panic!("expected a deadlock panic when the channel fills");
+    };
+    assert!(
+        panic
+            .message
+            .contains("channel deadlock: send on a full bounded channel"),
+        "unexpected panic message: {}",
+        panic.message
+    );
+}
+
+#[test]
+fn receiving_from_an_empty_channel_deadlocks() {
+    let output = run(r#"
+pub fn main() -> i32 {
+    let channel = Channel.create<i32>()
+    match channel.receive() {
+        Ok(value) => println("received"),
+        Err(error) => println("empty"),
+    }
+    return 0
+}
+"#);
+    let NovaError::Panic(panic) = output.result.unwrap_err() else {
+        panic!("expected a deadlock panic when the channel is empty");
+    };
+    assert!(
+        panic
+            .message
+            .contains("channel deadlock: receive on an empty channel"),
+        "unexpected panic message: {}",
+        panic.message
+    );
 }

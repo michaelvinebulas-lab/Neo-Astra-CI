@@ -12,11 +12,15 @@
 
 **Normative references:**
 
-- [`architecture.md`](./architecture.md)
-- [`Design/V1/README.md`](./Design/V1/README.md)
+- [`architecture.md`](./archive/architecture.md)
+- [`archive/Design/V1/README.md`](./archive/Design/V1/README.md)
 - [`Agent/definition-of-done.md`](./Agent/definition-of-done.md)
 
 **Quick reference:** [`syntax-legend.md`](./syntax-legend.md)
+
+**v0.2 edition:** The syntax-cleanup contract is
+[`spec-v0.2.md`](./spec-v0.2.md), normative for `edition = "0.2"`. This v0.1
+document remains normative for `edition = "0.1"`.
 
 ---
 
@@ -490,6 +494,8 @@ match_arm      = pattern "=>" ( expression | block ) ;
 
 `break` and `continue` are valid only inside a loop body. `defer` may appear anywhere in a block and captures the current scope for cleanup at exit.
 
+A block used in value position (`let x = if ...`, a `match` arm) produces the value of its final expression. A `return` inside such a block returns from the enclosing function, and a `break` or `continue` inside such a block targets the nearest enclosing loop outside the block. They are not local jumps to the block boundary.
+
 ### 3.9 Patterns
 
 ```ebnf
@@ -562,6 +568,12 @@ pattern_list    = pattern { "," pattern } ;
 ```
 
 `if_expr` and `match_expr` are expression forms of the control-flow constructs. A block used as an expression MUST end in an expression or be empty, in which case it evaluates to `()`.
+
+**Evaluation order (D27).** The arguments of a call — including constructor and `fail` calls — are evaluated strictly left-to-right before the callee is invoked. Backends MUST NOT reorder call arguments; a program MAY rely on their side effects occurring in source order, and that order is portable across all backends.
+
+Everywhere else — the operands of a binary operator, the elements of an array literal, the fields of a struct initializer, and the entries of a map literal — evaluation order is **target-native** and carries no portability guarantee. `&&` and `||` short-circuit the right operand when the result is already determined. To keep the portability trap out of systems code, the frontend's side-effect detection pass (system mode) rejects an expression that combines multiple state-changing subexpressions in a target-native-order position, such as `a() + b()`, and instructs the developer to hoist the calls into named bindings.
+
+> Implementation status: the call-argument rule is enforced by every backend and pinned by the `arg_order` conformance case. The system-mode side-effect rejection is enforced by the frontend with `NS5007` and pinned by the `native_order_side_effects` conformance case.
 
 `fail_expr`:
 
@@ -698,7 +710,7 @@ The grammar is parsed with these deterministic rules:
 1. A `{` after a type path is a struct initializer; a `{` at a statement or expression position is a block or map literal according to context.
 2. `<` after a path in expression position is parsed as type arguments when it is immediately followed by a type argument list and a call; otherwise it is comparison.
 3. Prefix `!` followed by a type path and `(` or `{` is failure construction. Postfix `!` at the end of a postfix expression is propagation.
-4. `@mode:` and `@memory:` are scope annotations inside `{ ... }`. `@mode(...)`, `@requires(...)`, and `@tags(...)` are item attributes. `@memory(...)` is reserved and invalid in v0.1; use a file or block wrapper.
+4. `@mode:` and `@memory:` are scope annotations inside `{ ... }`. `@mode(...)`, `@requires(...)`, `@tags(...)`, and `@export_as(...)` are item attributes. `@memory(...)` is reserved and invalid in v0.1; use a file or block wrapper.
 5. `else` binds to the nearest unmatched `if`.
 6. `|` is only an error-set separator in v0.1; it is not a bitwise operator.
 7. `defer` binds the next statement.
@@ -1007,6 +1019,17 @@ v0.1 does not support typeclasses, traits, higher-kinded types, or specializatio
 | Concurrency | Scoped tasks and channels | Web Workers | OS thread pool | Threads or workers |
 | FFI | Manifest-resolved | ESM imports | C ABI | Wasm imports |
 
+### 4.9 Map indexing
+
+`map[key]` returns the value stored under `key`. A missing key MUST raise a
+runtime panic; it MUST NOT return a default value or silently insert an entry.
+Use `map.get(key)` when absence is expected, because `get` returns
+`Option<V>`.
+
+`map[key] = value` inserts a new entry when the key is absent and replaces the
+value when it is present. Inserting a new key preserves insertion order at the
+end of the map.
+
 ---
 
 ## 5. Integer semantics
@@ -1221,6 +1244,7 @@ abort("unrecoverable")
 
 - `panic` reports a programmer bug and terminates the current task.
 - `abort` terminates immediately without unwinding.
+- A target that cannot terminate without unwinding MUST use its strongest host termination primitive. The JavaScript backend exits a Node process with status 134, closes a worker when that primitive exists, and otherwise raises an uncaught host error.
 - `panic` and `abort` have type `Never` and may appear where any type is expected.
 - Panics MUST NOT cross an FFI boundary silently.
 - Panics MUST produce a clean message and, where supported, a stack trace.
@@ -1315,6 +1339,8 @@ Rules:
 - `Memory.free` is explicit.
 - `defer` runs in reverse order at scope exit.
 - `Memory.alloc` in a GC-managed scope is a compile-time error.
+- `Region.new` and `region.alloc` are scoped allocation and do not require the manual-memory mode (the mode gate applies to `Memory.alloc`/`Memory.free`): a region's blocks are released by `region.free()`, and a region that is never freed leaks them — the GC never reclaims manual memory.
+- The element type `T` of `Memory.alloc<T>` and `region.alloc<T>` MUST NOT contain GC-managed references (`str`, `bytes`, `[T]`, a map, `Channel`, `Task`, or a struct, enum, or tuple containing them); such an allocation is a compile-time error.
 - `Ptr<T>` is not a GC reference.
 - `ptr.read` and `ptr.write` are unchecked except in an explicit debug-checked mode.
 - Manual pointers MUST NOT be captured by GC-managed closures without an explicit boundary.
@@ -1353,7 +1379,7 @@ Rules:
 - The parent scope MUST wait for children before exiting.
 - A child panic fails the parent scope.
 - Detached tasks are not allowed in the portable core.
-- A task MAY be cancelled cooperatively.
+- A task MAY be cancelled cooperatively; cancellation is checked at GC safepoints and at channel operations (CONC-001, D1).
 - CPU tasks and I/O readiness are distinct concepts.
 
 ### 9.2 Channels
@@ -1365,23 +1391,29 @@ Rules:
 - `close` is explicit.
 - Sending to a closed channel fails.
 - Cancellation MUST interrupt blocked channel operations.
+- A blocked operation past the runtime deadlock threshold (default 5 s; `ASTRA_CHANNEL_DEADLOCK_TIMEOUT` overrides it in tests) panics rather than hanging (CONC-001, B3).
 
 ### 9.3 Isolation
 
 - Shared mutable state is not allowed between tasks in the portable core.
 - Messages are copied or serialized.
+- Managed values are deep-copied into the receiving task's heap on `send`; primitives and scalars move by value (CONC-001).
+- Channel handles are shared by reference; the handle and its queue live in the process-lived heap.
 - Immutable values MAY be shared.
 - `SharedArrayBuffer` is an explicit `web` opt-in.
-- Native tasks use isolated heaps or synchronized message queues.
+- Native tasks use a per-task heap plus a thread-safe process-lived heap for channel handles, queued messages, interned strings, and static descriptors (CONC-001, C2).
 
 ### 9.4 Target mapping
 
 | Target | Mapping |
 |---|---|
-| Native | OS thread pool |
-| Web/JS | Web Workers + `postMessage` |
-| Wasm | Threads when available; worker fallback |
+| Native | OS thread per spawn, bound to the structured scope (A2) |
+| Web/JS | Eager inline in v0.1; Web Workers deferred (recorded gap) |
+| Wasm | Eager inline in v0.1; threads when available are a later slice |
+| Nova | Eager inline (single-threaded interpreter) |
 | Async I/O | Separate I/O runtime |
+
+Decision record (2026-11-01, CONC-001): native threading is OS-thread-per-spawn (A2), blocked channel operations park with a watchdog panic (B3), native tasks use per-task heaps plus an immortal global heap (C2), and cancellation is cooperative at GC safepoints and channel operations (D1). Web Workers are deferred to the recorded gap beside the Wasm slice. Implemented in V1: per-task heaps, thread-per-spawn scopes, parked channel operations, the shared channel heap, and cooperative cancellation.
 
 ### 9.5 Task results
 
@@ -1571,22 +1603,92 @@ Conversions MUST be explicit.
 
 ---
 
+### 11.5 Generic instantiation exports (FFI-001)
+
+A generic function is not callable across the C boundary by default
+(`11-c-abi.md` §3). A module may explicitly export concrete instantiations of
+a generic function with the `@export_as` attribute:
+
+```ns
+@export_as("ns_demo_identity_i32", T = i32)
+@export_as("ns_demo_identity_str", T = str)
+export fn identity<T>(value: T) -> T {
+    return value
+}
+
+@export_as("ns_demo_first_i32_str", A = i32, B = str)
+export fn first<A, B>(a: A, b: B) -> A {
+    return a
+}
+```
+
+Rules:
+
+- `@export_as(...)` is an item attribute (§3.1) and MAY be repeated on a
+  single declaration; each occurrence lists one instantiation.
+- It MAY only appear on a generic function declaration that is exported
+  (`export`/`pub`). Applying it to a non-generic function, or to a non-exported
+  function, is `NS7010`.
+- The first argument is a string literal naming the exported C symbol. It is
+  used verbatim (the compiler does not mangle it) and MUST be a valid C
+  identifier, unique within the artifact. An invalid identifier, or a
+  collision with another `@export_as` symbol, is `NS7013`.
+- The remaining arguments are `TypeParameter = type` bindings. Every type
+  parameter of the declaration MUST be bound exactly once, in any order; a
+  missing, extra, or duplicated binding is `NS7011`.
+- Every bound type MUST be a concrete type that is boundary-safe for the
+  active target's C ABI (§11.4): primitives, structs, enums, and composites of
+  those; no type parameter and no type that the C backend cannot represent. A
+  non-boundary-safe binding is `NS7012`.
+- Two attributes on the same declaration that name the same symbol or bind the
+  same type list are `NS7013`.
+- Each listed instantiation is emitted as a concrete, externally visible
+  function with exactly the given symbol and the substituted signature,
+  monomorphized exactly as an internal call site is. It obeys the declaration's
+  mode and capability requirements.
+- The attribute does not change the function's generic status: internal call
+  sites still monomorphize per call site, and the generic symbol itself remains
+  non-exported.
+- Without `@export_as`, a generic function remains outside the C
+  boundary, exactly as before.
+- The symbol named by the attribute is part of the ABI contract
+  (`11-c-abi.md` §3).
+
+Conversions at the boundary remain explicit (§11.4).
+
+---
+
 ## 12. Manifest and build
 
-### 12.1 Manifest rules
+### 12.1 Manifest files and rules
+
+Two manifests exist, split by purpose (D26):
+
+- `core.json` / `core.toml` — the **package manifest**: what the package is
+  and what it depends on. Exactly one of the two MUST exist.
+- `build.json` / `build.toml` — the **build manifest**: how the package is
+  built, run, and which toolchain it asks for. Optional; absent means the
+  documented defaults in §12.2.
+
+Rules:
 
 - Exactly one of `core.json` or `core.toml` MUST exist.
-- Both formats MUST use the same semantic schema.
+- At most one of `build.json` or `build.toml` MAY exist.
+- Both formats MUST use the same semantic schema per file.
+- Every key belongs to exactly one manifest. A key placed in the wrong file
+  MUST be rejected with a diagnostic naming the file it belongs in.
 - Unknown keys MUST be rejected.
 - Duplicate keys MUST be rejected.
 - Wrong value types MUST be rejected.
 - Paths MUST NOT escape the project root unless explicitly allowed.
 - Required FFI mappings MUST exist.
-- `astra check` MUST validate the manifest before building.
-- The manifest MUST be canonically formattable without changing semantics.
+- `astra check` MUST validate both manifests before building.
+- Each manifest MUST be canonically formattable without changing semantics.
 - `astra fmt` MUST preserve TOML `#` comments and reject duplicate keys.
 
-### 12.2 Required sections
+### 12.2 Sections
+
+`core.*` (required) — package identity and dependency information:
 
 ```json
 {
@@ -1595,40 +1697,52 @@ Conversions MUST be explicit.
     "version": "0.1.0",
     "edition": "2026"
   },
-  "build": {
-    "defaultTarget": "web",
-    "defaultMode": "app"
-  },
-  "targets": {
-    "web": {
-      "backend": "js",
-      "module": "esm",
-      "mode": "web"
-    }
-  }
+  "dependencies": {},
+  "packageSources": {},
+  "registry": {},
+  "ffi": {},
+  "capabilities": []
 }
 ```
 
-Optional sections:
+`capabilities` declares the package's privilege set and `ffi` its foreign
+contract; both are properties of the package, so they live here.
 
-- `nova`
-- `registry`
-- `math`
-- `strings`
-- `memory`
-- `dependencies`
-- `packageSources`
-- `ffi`
-- `capabilities`
+`build.*` (optional) — build directives and the compiler guide:
 
-`nova` configures the development entry point and watch roots. `registry`
-configures the optional universal registry gateway and default source policy.
-Neither creates a second manifest.
+```json
+{
+  "build": { "defaultTarget": "native" },
+  "targets": {
+    "native": { "backend": "native", "outDir": "dist/native" }
+  },
+  "nova": { "entry": "src/main.ns" },
+  "math": { "integers": "wrapping" },
+  "strings": {},
+  "memory": {},
+  "toolchain": { "c": "auto" }
+}
+```
+
+- `build` selects the default target and mode.
+- `targets` configures each target: `backend`, `mode`, `module`/`outDir`,
+  and emission options.
+- `nova` configures the development entry point and watch roots.
+- `math`, `strings`, and `memory` are the semantic policies that guide
+  codegen.
+- `toolchain` names the build toolchain policy (`auto` = resolve from the
+  environment, or a pinned toolchain id); the resolved toolchain is recorded
+  in the lockfile (§12.3).
+
+Defaults when `build.*` is absent (D26): `defaultTarget` = `native`;
+`defaultMode` omitted, so the mode is inferred least-privileged (§5); `targets.native`
+= `{ backend: "native", outDir: "dist/native" }`; `nova.entry` =
+`src/main.ns`; `math.integers` = `wrapping`; `toolchain.c` = `auto`.
 
 ### 12.3 Lockfile
 
-- The lockfile is `core.lock.json`.
-- It records resolved packages, source-qualified package IDs, target scoping, capabilities, integrity hashes, lifecycle-script policy, and compiler metadata.
+- The lockfile is `core.lock.json` and serves both manifests.
+- It records resolved packages, source-qualified package IDs, target scoping, capabilities, integrity hashes, lifecycle-script policy, compiler metadata, and the resolved toolchain.
 - CI SHOULD verify that the lockfile is current.
 - A release build SHOULD use `--locked` or `--frozen`.
 - The same lockfile serves Nova and compiled builds.
@@ -1761,7 +1875,9 @@ Each entry in `related` MUST contain `file`, `span`, and `message`.
 | `NS8xxx` | Backends and targets |
 | `NS9xxx` | Tooling and configuration |
 
-Codes are stable and MUST NOT be reused for different meanings.
+Codes are stable and MUST NOT be reused for different meanings. The release
+gate enforces this table: a code emitted by the implementation must have a row
+here, and a row without an emitter must be marked reserved with a reason.
 
 ### 14.4 Parser diagnostics
 
@@ -1774,6 +1890,9 @@ Codes are stable and MUST NOT be reused for different meanings.
 | `NS2005` | Invalid or unexpected item |
 | `NS2006` | Missing newline or `;` boundary |
 | `NS2007` | Invalid modifier |
+
+Implementations MUST reject expression, type, or block nesting deeper than 64
+levels with `NS2002` instead of aborting on a stack overflow.
 
 ### 14.5 Type and effect diagnostics
 
@@ -1797,6 +1916,7 @@ Codes are stable and MUST NOT be reused for different meanings.
 | `NS4016` | Invalid, missing, or duplicate struct field |
 | `NS4017` | Invalid pattern or pattern arity |
 | `NS4018` | Invalid type argument or arity |
+| `NS4019` | A value carrying a `Task` handle would cross a task boundary by copy: a channel element, a spawn capture, or a spawn result |
 
 ### 14.6 Mode and capability diagnostics
 
@@ -1808,6 +1928,7 @@ Codes are stable and MUST NOT be reused for different meanings.
 | `NS5004` | Manual memory requires system mode |
 | `NS5005` | Invalid capability or mode annotation |
 | `NS5006` | No single built-in mode satisfies a project requirement |
+| `NS5007` | System mode: two or more state-changing calls in a target-native-order position (binary operands, array elements, struct fields, map entries) - hoist the calls into bindings |
 
 ### 14.7 Nova runtime diagnostics
 
@@ -1824,6 +1945,7 @@ Nova reports parse, resolve, type, mode, and capability failures with the same
 | `NV0005` | Panic, including the interpreted call stack |
 | `NV0006` | Abort without unwinding |
 | `NV0007` | Nova internal invariant failure |
+| `NV0008` | Foreign script requires a production target |
 
 `NV` codes are development-runtime diagnostics. They do not replace `NS` source
 diagnostics and do not appear in compiled target output.
@@ -1847,8 +1969,161 @@ lockfiles:
 | `NP0010` | Lockfile write failure |
 | `NP0011` | Package adapter, path, fetch, or installation failure |
 | `NP0012` | NoPM command-line usage error |
+| `NP0013` | Dependency is already declared |
+| `NP0014` | Dependency is not declared |
+| `NP0015` | Unknown system tool |
+| `NP0016` | NoPM does not uninstall system tools |
+| `NP0017` | No supported package manager was found |
+| `NP0018` | System tool installation failed |
 
 These codes are provisional until the V1 NoPM diagnostics table is frozen.
+
+### 14.9 Memory diagnostics
+
+The `NS6xxx` range declared in §14.3 covers memory-policy violations:
+
+| Code | Meaning |
+|---|---|
+| `NS6001` | Manual allocation outside a manual-memory scope |
+| `NS6002` | Manual allocation of a GC-managed element type |
+
+`Memory.alloc` used where the file or block policy is not `manual` is rejected
+with `NS6001`, which is how the rule in §8.4 that "`Memory.alloc` in a
+GC-managed scope is a compile-time error" is reported. A program whose mode
+does not grant manual memory reports `NS5004` instead: the mode condition is
+checked first, so one program reports the single condition it actually
+violates.
+
+An allocation whose element type `T` holds GC-managed references is rejected
+with `NS6002`, reporting the §8.4 rule that `T` MUST NOT contain them. The
+conditions are checked in order - mode (`NS5004`), then scope (`NS6001`), then
+element type (`NS6002`) - so the single reported condition remains the one the
+program actually violates first. The predicate is the inverse of what a
+precise collector traces: `str`, `bytes`, `[T]`, maps, `Channel`, `Task`, and
+structs, enums, or tuples containing them; scalars, `Ptr<U>`, `Region`, and
+composites built only from pointer-free types are allowed.
+
+### 14.10 FFI diagnostics
+
+The `NS7xxx` range (§14.3) covers FFI. The `@script` block and mapping
+diagnostics are:
+
+| Code | Meaning |
+|---|---|
+| `NS7001` | Unknown or unsupported script language |
+| `NS7002` | Script language is not supported by the active target |
+| `NS7003` | Missing, empty, or duplicate `@exports` declaration |
+| `NS7004` | Malformed script block: missing `@end` or a required header field |
+| `NS7005` | Invalid or non-boundary-safe script export signature |
+| `NS7006` | Script namespace collision |
+| `NS7007` | Missing or inconsistent manifest `ffi` mapping for a foreign module or a required inline-script link/runtime entry |
+| `NS7008` | Script backend or link failure, missing implementation export, or no pinned TypeScript transpiler |
+
+The generic instantiation export diagnostics (§11.5) are:
+
+| Code | Meaning |
+|---|---|
+| `NS7010` | `@export_as` on a non-generic or non-exported function |
+| `NS7011` | `@export_as` binding list does not bind every type parameter exactly once |
+| `NS7012` | `@export_as` bound type is not C-boundary-safe |
+| `NS7013` | `@export_as` symbol is not a valid C identifier, or duplicates another symbol or instantiation |
+
+### 14.11 Lexical diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NS1001` | Invalid comment form |
+| `NS1002` | Invalid escape sequence or byte-literal value |
+| `NS1003` | Unterminated string or byte literal |
+| `NS1004` | Reserved: invalid UTF-8 source is reported by the CLI as `NS9007` |
+| `NS1005` | Invalid identifier, malformed literal, or unexpected character |
+
+### 14.12 Resolver diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NS3001` | Private declaration cannot be exported |
+| `NS3002` | Conflicting visibility modifiers |
+| `NS3003` | Duplicate export name |
+| `NS3004` | Duplicate default export |
+| `NS3005` | Unknown export target |
+| `NS3006` | Duplicate import binding |
+| `NS3007` | Imported name is not exported |
+| `NS3008` | Conflicting re-exports |
+| `NS3009` | Default export target is not a value |
+| `NS3010` | Private declaration leaks through a public API |
+| `NS3011` | Duplicate top-level declaration |
+| `NS3012` | Imported module cannot be resolved |
+| `NS3013` | Cyclic named import or re-export |
+
+### 14.13 Backend diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NS8001` | A backend or target does not support the requested construct or configuration |
+| `NS8002` | A backend request or response is malformed or incomplete: invalid typed module, missing module, output path, entry module, or expected artifact |
+| `NS8003` | Manual memory is not supported by the JavaScript or TypeScript backend |
+| `NS8004` | A generated artifact path escapes the build output directory |
+| `NS8017` | Calling this callee is not supported by the C backend first slice |
+| `NS8018` | A generic function requires monomorphization |
+| `NS8019` | Imports are not supported by the C backend first slice |
+| `NS8020` | C member error: undeclared enum, argument-less enum variant, or missing struct field |
+| `NS8021` | C `for`-loop iteration is limited to arrays, maps, and bytes in the first slice |
+| `NS8022` | Fixed-size arrays are not supported by the C backend first slice |
+| `NS8024` | Printing this value type is not supported by the C backend first slice |
+| `NS8025` | The tuple type is unavailable for this tuple expression in the C backend |
+| `NS8099` | `Never` appears as a stored type, which the C backend cannot emit |
+
+### 14.14 Tooling and configuration diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NS9000` | Unexpected CLI or tooling failure; not a source diagnostic |
+| `NS9001` | No manifest found; exactly one `core.json` or `core.toml` is required |
+| `NS9002` | Unable to read or parse a manifest |
+| `NS9003` | Compiler binary not found |
+| `NS9004` | Compiler process failed |
+| `NS9005` | Compiler returned an invalid, incomplete, or incompatible response |
+| `NS9006` | JSON-RPC request failed |
+| `NS9007` | Source or module is not valid UTF-8 |
+| `NS9008` | A project or source path cannot be resolved, read, or accessed |
+| `NS9009` | Unsupported compiler API version |
+| `NS9010` | A compiler request contains no source units |
+| `NS9011` | The build target is missing or not declared in the manifest |
+| `NS9012` | A build configuration value is invalid: target mode, integer policy, or emit kind |
+| `NS9013` | The entry point is missing, outside the project, or not a `.ns` file |
+| `NS9014` | A build output directory or file cannot be created or written |
+| `NS9015` | A native compile, link, or archive step failed |
+| `NS9016` | A path dependency is missing or escapes its package or project root |
+| `NS9101` | The build manifest or `toolchain` section is malformed |
+| `NS9102` | No cached or `PATH` toolchain was found for the requested family |
+| `NS9103` | `ASTRA_CC` does not exist or is not a usable compiler |
+| `NS9999` | Reserved sentinel; tests assert it never appears in output |
+
+### 14.15 Registry diagnostics
+
+| Code | Meaning |
+|---|---|
+| `NR0001` | Package already exists (HTTP 409) |
+| `NR0002` | Unknown registry route, or signature/public-key verification failed |
+| `NR0003` | Package or version not found |
+| `NR0004` | Package is yanked |
+
+### 14.16 Playground Wasm bridge diagnostics
+
+| Code | Meaning |
+|---|---|
+| `PG0001` | Protocol version mismatch between the bridge and the compiler |
+| `PG0002` | Wasm trap or panic inside the compiler |
+| `PG0003` | Malformed or truncated compiler response |
+| `PG0004` | Allocation failure inside the Wasm instance |
+
+### 14.17 Historical and reserved codes
+
+`NS0001` is a test fixture used by the diagnostic and compiler-API unit tests;
+it is not a user-facing diagnostic. `NS0002`–`NS0004` are historical design-doc
+codes superseded by the NS4 family and are not emitted. `NS1004`, `NS2007`,
+`NS4008`, and `NS9999` are reserved as noted in their tables.
 
 ---
 
@@ -1914,7 +2189,7 @@ tests/conformance/<area>/<case>/
 
 ### 15.3 Target requirements
 
-Target tiers are defined in [`Design/V1/README.md`](./Design/V1/README.md).
+Target tiers are defined in [`archive/Design/V1/README.md`](./archive/Design/V1/README.md).
 
 - Tier 1 targets MUST pass all portable cases.
 - Tier 2 targets MUST pass their documented subset.
@@ -2005,7 +2280,7 @@ The following choices are normative for v0.1 but should be reviewed before V1 fr
 5. `Channel.create<T>()` creates a bounded channel.
 6. Error handling uses `Ok`/`Err` patterns over fallible expressions.
 7. `Task<T>` is the return type of `spawn`.
-8. `@requires` and `@tags` are item/module attributes.
+8. `@requires`, `@tags`, and `@export_as` are item/module attributes.
 9. Scoped annotations use `{@mode:name; ...}` syntax.
 10. `core.json` schema URL is not yet finalized.
 
@@ -2032,7 +2307,7 @@ The following choices are normative for v0.1 but should be reviewed before V1 fr
 19. Whether package-root exports are declared in the manifest or inferred from the entry module.
 20. Whether `export *` should remain portable or be restricted on some targets.
 21. Whether type-only imports and exports need explicit `import type`/`export type` syntax.
-22. Whether declaration-level inline `@script` blocks should be part of the language, and how their raw-body terminator, typed export surface, and target matrix are defined. The current proposal is [`Design/V1/10-inline-script-interop.md`](./Design/V1/10-inline-script-interop.md).
+22. Whether declaration-level inline `@script` blocks should be part of the language, and how their raw-body terminator, typed export surface, and target matrix are defined. The current proposal is [`archive/Design/V1/10-inline-script-interop.md`](./archive/Design/V1/10-inline-script-interop.md).
 
 ---
 
@@ -2158,11 +2433,11 @@ This specification is normative for v0.1.
 Changes follow this order:
 
 1. Identify affected confirmed decisions.
-2. If a confirmed decision must change, update `architecture.md` first.
+2. If a confirmed decision must change, update the Decisions table in `state.md` first.
 3. Update this specification.
 4. Update the V1 design if the change affects it.
 5. Add or update conformance cases.
-6. Record the change in `Agent/state-log.md`.
+6. Record it in `state.md` (a Decisions row and a Log row).
 
 A change that exists only in source code is not a language change.
 
@@ -2196,9 +2471,9 @@ A change that exists only in source code is not a language change.
 | D22 | Keyword aliases with canonical formatting | §1.6, §3.1–§3.7 |
 | D23 | Declaration visibility, imports, exports, and canonical ESM mapping | §3.15, §3.16, §16.3 |
 | D24 | Semicolon soft separators and scope-header separators | §1.4, §2.2, §3.1, §3.7, §3.14 |
-| D25 | Nova development interpreter and NoPM universal packages; production stays compiled | §16.1, `Docs/Design/V1/08-nova-and-nopm.md` |
+| D25 | Nova development interpreter and NoPM universal packages; production stays compiled | §16.1, `Docs/archive/Design/V1/08-nova-and-nopm.md` |
 
-D3, D4, and D19 are architecture-level decisions. This document consumes their consequences but does not replace the compiler design in `Docs/Design/V1/02-compiler-design.md`. D25 is a tooling/runtime decision; it does not change the language contract.
+D3, D4, and D19 are architecture-level decisions. This document consumes their consequences but does not replace the compiler design in `Docs/archive/Design/V1/02-compiler-design.md`. D25 is a tooling/runtime decision; it does not change the language contract.
 
 ### 20.1 Review result
 

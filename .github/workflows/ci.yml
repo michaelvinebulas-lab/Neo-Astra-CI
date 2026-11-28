@@ -2,35 +2,51 @@ name: CI
 
 on:
   push:
+    branches: [master]
   pull_request:
 
 jobs:
-  verify:
-    name: Verify (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+  gate:
+    name: gate (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
+        # Tier-1 targets. Ubuntu and macOS runners ship a hosted-capable C
+        # compiler (gcc/clang) by default, so `cargo test -p astra-codegen-c`
+        # compiles, links, and *runs* the whole C conformance corpus and the
+        # native `astra build --target native` path on those platforms — the
+        # Linux/macOS native verification that cannot be recorded from a
+        # Windows-only host. Tests self-skip the hosted steps only if no hosted
+        # compiler is found.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-
-      - name: Set up Rust
+      - name: Install Rust (stable, with rustfmt + clippy)
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          # test:boundary builds the Wasm target of the compiler, so the
+          # target must be present or that step fails with E0463.
           targets: wasm32-unknown-unknown
 
-      - name: Install JavaScript dependencies
-        run: npm ci
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
-      - name: Run CI checks
+      - name: Install workspace dependencies
+        run: npm install
+
+      - name: Run full CI gate
+        # Builds TypeScript, runs the JS/TS test suites and boundary tests,
+        # checks `cargo fmt`/`clippy`, and runs `cargo test --workspace`
+        # (including the C conformance runner that links and executes each
+        # case against `astra_host.c` when a hosted compiler is present).
         run: npm run ci
+
+      - name: Run native parity gate
+        env:
+          ASTRA_NATIVE_PARITY: "1"
+        run: npm run test:native-parity

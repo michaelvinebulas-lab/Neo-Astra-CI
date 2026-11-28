@@ -1,0 +1,6 @@
+// `@export_as` is only meaningful on a generic exported function; applying it
+// to a non-generic declaration is rejected (spec 11.5, NS7010).
+@export_as("ns_demo_f", T = i32)
+pub fn f(value: i32) -> i32 {
+    return value
+}

@@ -5,13 +5,17 @@
 //! and lowering land in later milestones.
 
 pub mod ast;
+pub mod canonical;
 pub mod checker;
 pub mod diagnostic;
+pub mod edition;
 pub mod formatter;
+pub mod free_names;
 pub mod hir;
 pub mod ir;
 pub mod lexer;
 pub mod literal;
+pub mod migrate;
 pub mod mode;
 pub mod parser;
 pub mod resolver;

@@ -1,0 +1,11 @@
+{
+  "build": { "defaultTarget": "native" },
+  "targets": {
+    "js": { "backend": "js", "outDir": "dist/js" },
+    "ts": { "backend": "ts", "outDir": "dist/ts" },
+    "native": { "backend": "native", "outDir": "dist/native" }
+  },
+  "nova": { "entry": "src/main.ns" },
+  "math": { "integers": "wrapping" },
+  "strings": { "model": "utf8" }
+}

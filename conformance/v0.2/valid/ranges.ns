@@ -1,0 +1,22 @@
+// edition: 0.2
+// purpose: exclusive/inclusive ranges in for loops, and slicing sugar
+
+fn part(text: str) -> str ! SliceError {
+    return text[0..2]?
+}
+
+pub fn main() -> i32 {
+    let mut total = 0
+    for value in 0..3 {
+        total = total + value
+    }
+    for value in 0..=3 {
+        total = total + value
+    }
+    let values = [10, 20, 30, 40]
+    let part = values[0..2]
+    let tail = values[1..=2]
+    println(part.len())
+    println(tail.len())
+    return total
+}

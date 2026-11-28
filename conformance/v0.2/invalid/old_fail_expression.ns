@@ -1,0 +1,12 @@
+// edition: 0.2
+// purpose: the v0.1 prefix error constructor is removed under edition 0.2
+
+struct NotFound(str)
+
+fn parse() -> i32 ! NotFound {
+    return !NotFound("x")
+}
+
+pub fn main() -> i32 {
+    return 0
+}

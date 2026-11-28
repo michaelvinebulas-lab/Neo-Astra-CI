@@ -13,18 +13,19 @@ const env = {
 };
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 
-function run(label, command, args) {
+function run(label, command, args, extraEnv = {}) {
   process.stdout.write(`\n[ci] ${label}\n`);
+  const runEnv = { ...env, ...extraEnv };
   const result =
     process.platform === "win32"
       ? spawnSync(
           process.env.ComSpec ?? "cmd.exe",
           ["/d", "/s", "/c", [command, ...args].join(" ")],
-          { cwd: root, env, stdio: "inherit", shell: false },
+          { cwd: root, env: runEnv, stdio: "inherit", shell: false },
         )
       : spawnSync(command, args, {
           cwd: root,
-          env,
+          env: runEnv,
           stdio: "inherit",
           shell: false,
         });
@@ -39,11 +40,31 @@ function run(label, command, args) {
   }
 }
 
+run("Version check", "node", ["scripts/check-versions.mjs"]);
+run("Error-code table", "node", ["scripts/check-error-codes.mjs"]);
 run("TypeScript build", npm, ["run", "build"]);
 run("TypeScript tests", npm, ["test"]);
 run("Native/Wasm boundary", npm, ["run", "test:boundary"]);
 run("Rust format", "cargo", ["fmt", "--all", "--check"]);
 run("Rust clippy", "cargo", ["clippy", "--workspace", "--all-targets", "--", "-D", "warnings"]);
 run("Rust tests", "cargo", ["test", "--workspace"]);
+run("Native parity", npm, ["run", "test:native-parity"], { ASTRA_NATIVE_PARITY: "1" });
+// GC-001 §8.1: run the hosted C tests again with collection at every managed
+// allocation and at every safepoint, so a missing or stale root slot fails the
+// gate instead of hiding until collection is on by default.
+run(
+  "Rust tests (GC stress)",
+  "cargo",
+  [
+    "test",
+    "-p",
+    "astra-codegen-c",
+    "--test",
+    "emit_c",
+    "--test",
+    "conformance",
+  ],
+  { ASTRA_GC_STRESS: "1" },
+);
 
 process.stdout.write("\n[ci] all checks passed\n");

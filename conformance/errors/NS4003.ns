@@ -1,0 +1,2 @@
+fn f(x: UnknownType) -> i32 { return 1 }
+

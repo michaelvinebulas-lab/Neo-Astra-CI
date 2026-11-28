@@ -803,6 +803,9 @@ fn discover(
     Ok(())
 }
 
+// `Diagnostic` carries the optional `related` label list, which puts it at the
+// clippy large-Err threshold. The payload is still small in practice.
+#[allow(clippy::result_large_err)]
 fn resolve_specifier(importer: &ModuleId, raw: &str) -> Result<Option<ModuleId>, Diagnostic> {
     if raw.starts_with("std:") {
         return Ok(None);

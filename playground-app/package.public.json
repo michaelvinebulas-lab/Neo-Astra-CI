@@ -1,0 +1,17 @@
+﻿{
+    "name":  "@neo-astra/playground-app",
+    "version":  "1.2.0",
+    "private":  true,
+    "type":  "module",
+    "scripts":  {
+                    "build":  "tsc -b",
+                    "clean":  "tsc -b --clean",
+                    "test":  "tsc -b \u0026\u0026 node --test tests/*.test.mjs"
+                },
+    "dependencies":  {
+                         "@neo-astra/playground":  "1.2.0",
+                         "@neo-astra/codegen-js":  "1.2.0",
+                         "@neo-astra/nopm":  "1.2.0"
+                     }
+}
+

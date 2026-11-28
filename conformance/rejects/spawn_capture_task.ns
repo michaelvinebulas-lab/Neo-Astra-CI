@@ -1,0 +1,7 @@
+// A bare task handle has one owner. A spawn must not capture it: the child
+// could join the same thread the parent still owns.
+pub fn main() -> i32 {
+    let inner = spawn || { 1 }
+    let outer = spawn || { inner.join() }
+    return outer.join()
+}

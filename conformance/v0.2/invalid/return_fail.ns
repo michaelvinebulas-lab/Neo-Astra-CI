@@ -1,0 +1,12 @@
+// edition: 0.2
+// purpose: return fail is redundant
+
+struct NotFound(str)
+
+fn fail_now() -> i32 ! NotFound {
+    return fail NotFound("x")
+}
+
+pub fn main() -> i32 {
+    return 0
+}

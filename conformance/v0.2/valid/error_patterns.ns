@@ -1,0 +1,41 @@
+// edition: 0.2
+// purpose: Err binding, wildcard, and constructor member patterns
+
+struct InvalidAge(str)
+struct ParseIntError(i32)
+
+fn parse_age(input: str) -> i32 ! InvalidAge | ParseIntError {
+    if input == "" {
+        fail InvalidAge("empty")
+    }
+    if input == "bad" {
+        fail ParseIntError(1)
+    }
+    return 42
+}
+
+fn discard(input: str) -> i32 {
+    match parse_age(input) {
+        Ok(age) => return age,
+        Err(_) => return 0,
+    }
+}
+
+fn bind(input: str) -> i32 {
+    match parse_age(input) {
+        Ok(age) => return age,
+        Err(error) => return 1,
+    }
+}
+
+fn classify(input: str) -> i32 {
+    match parse_age(input) {
+        Ok(age) => return age,
+        Err(InvalidAge(message)) => return 1,
+        Err(ParseIntError(code)) => return code,
+    }
+}
+
+pub fn main() -> i32 {
+    return discard("42") + bind("bad") + classify("bad")
+}

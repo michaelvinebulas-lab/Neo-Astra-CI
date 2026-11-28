@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Neo Astra Playground</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #0b0f14;
+        color: #e6edf3;
+        --border: #30363d;
+        --muted: #8b949e;
+        --accent: #1f6feb;
+        --panel: #121820;
+        --danger: #f85149;
+        --ok: #3fb950;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; }
+      button, select {
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        background: #21262d;
+        color: inherit;
+        padding: 5px 9px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      button:hover, select:hover { border-color: var(--muted); }
+      button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+      .header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 10px 16px; background: var(--panel);
+        border-bottom: 1px solid var(--border);
+      }
+      .header h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+      .badge {
+        font-size: 11px; color: var(--muted);
+        border: 1px solid var(--border); border-radius: 999px; padding: 2px 8px;
+      }
+      .settings {
+        display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+        padding: 8px 16px; background: #0f141b; border-bottom: 1px solid var(--border);
+      }
+      .setting { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+      .layout {
+        display: grid; grid-template-columns: 240px minmax(0, 1fr) 330px;
+        gap: 10px; padding: 10px; height: calc(100vh - 150px);
+      }
+      .panel {
+        border: 1px solid var(--border); border-radius: 8px;
+        background: var(--panel); padding: 10px; min-width: 0; min-height: 0;
+      }
+      .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 8px 0 6px; }
+      .file-list { list-style: none; padding: 0; margin: 0 0 8px; max-height: 34vh; overflow: auto; }
+      .file-button {
+        display: block; width: 100%; text-align: left; border-color: transparent;
+        background: transparent; font-family: ui-monospace, monospace; font-size: 12px;
+      }
+      .file-button.source { color: #79c0ff; }
+      .file-button.manifest { color: #d2a8ff; }
+      .file-button.lock { color: #a5d6ff; }
+      .button-row { display: flex; flex-wrap: wrap; gap: 6px; }
+      .editor-pane { display: flex; flex-direction: column; }
+      .editor-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+      .active-path { flex: 1; font-family: ui-monospace, monospace; font-size: 12px; color: var(--muted); }
+      .editor-meta { font-size: 11px; color: var(--muted); }
+      .editor-shell {
+        position: relative; flex: 1; min-height: 0;
+        border: 1px solid var(--border); border-radius: 6px; background: #0b0f14;
+        overflow: hidden; font-family: ui-monospace, monospace; font-size: 13px; line-height: 1.55;
+      }
+      .gutter, .highlight, .editor {
+        position: absolute; top: 0; bottom: 0; margin: 0;
+        font: inherit; line-height: inherit; tab-size: 2; white-space: pre;
+      }
+      .gutter {
+        left: 0; width: 48px; padding: 12px 8px 12px 0; overflow: hidden;
+        text-align: right; color: #484f58; background: #0f141b;
+        border-right: 1px solid var(--border); user-select: none;
+      }
+      .highlight {
+        left: 48px; right: 0; padding: 12px; overflow: hidden;
+        color: #e6edf3; pointer-events: none;
+      }
+      .editor {
+        left: 48px; right: 0; padding: 12px; resize: none; border: 0; outline: 0;
+        background: transparent; color: transparent; caret-color: #e6edf3;
+      }
+      .editor::selection { background: #264f78; }
+      .tok-keyword { color: #ff7b72; }
+      .tok-string { color: #a5d6ff; }
+      .tok-comment { color: #6e7681; }
+      .tok-number { color: #79c0ff; }
+      .tok-type { color: #ffa657; }
+      .expected {
+        width: 100%; min-height: 64px; margin-bottom: 8px; resize: vertical;
+        background: #0b0f14; color: #e6edf3; border: 1px solid var(--border);
+        border-radius: 6px; padding: 8px; font-family: ui-monospace, monospace; font-size: 11px;
+      }
+      .info-pane { display: flex; flex-direction: column; }
+      .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+      .tabs button { border-color: transparent; background: transparent; border-radius: 6px 6px 0 0; }
+      .panels { flex: 1; min-height: 0; }
+      .panel-body { height: 100%; overflow: auto; }
+      .hidden { display: none; }
+      .diagnostics { list-style: none; padding: 0; margin: 0; }
+      .issue {
+        font-size: 12px; margin-bottom: 8px; padding: 8px; border-left: 2px solid var(--danger);
+        background: #1b1215; border-radius: 4px;
+      }
+      .issue code { color: #ff7b72; margin-right: 6px; }
+      .ok { font-size: 12px; color: var(--ok); list-style: none; }
+      .panel-output {
+        white-space: pre-wrap; word-break: break-word; font-size: 11px; line-height: 1.5;
+        background: #0b0f14; border: 1px solid var(--border); border-radius: 6px; padding: 10px;
+      }
+      .primary button { background: #1f6feb; border-color: #1f6feb; color: #fff; font-weight: 600; }
+      .advanced { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 6px; }
+      .advanced summary { font-size: 11px; color: var(--muted); cursor: pointer; }
+      .advanced .button-row { margin-top: 8px; }
+      .guide { padding: 4px; line-height: 1.6; }
+      .guide h3 { font-size: 14px; margin: 0 0 8px; }
+      .guide p { font-size: 12px; margin: 6px 0; color: #c9d1d9; }
+      .status { padding: 6px 16px; font-size: 12px; color: var(--muted); background: #0f141b; }
+      .status.error { color: var(--danger); }
+      @media (max-width: 980px) {
+        .layout { grid-template-columns: 1fr; height: auto; }
+        .editor { min-height: 420px; }
+      }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@neo-astra/playground": "./dist/bridge.js",
+          "@neo-astra/playground/protocol": "./dist/protocol.js",
+          "@neo-astra/codegen-js": "./dist/codegen-js/index.js",
+          "@neo-astra/nopm/core": "./dist/nopm-core/core.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./dist/main.js"></script>
+  </body>
+</html>

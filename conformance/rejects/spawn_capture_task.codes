@@ -1,0 +1,2 @@
+# A task handle may not cross a spawn boundary as a copied value.
+NS4019

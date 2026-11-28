@@ -1,0 +1,28 @@
+fn produce(channel: Channel<str>) -> () ! ChannelError {
+    channel.send("hello")!
+    channel.send("world")!
+}
+
+pub fn main() -> i32 {
+    let channel = Channel.create<str>()
+    spawn || {
+        match produce(channel) {
+            Ok(value) => (),
+            Err(error) => println("send failed"),
+        }
+    }
+    match channel.receive() {
+        Ok(message) => println(message),
+        Err(error) => println("closed"),
+    }
+    match channel.receive() {
+        Ok(message) => println(message),
+        Err(error) => println("closed"),
+    }
+    channel.close()
+    match channel.send("late") {
+        Ok(value) => println("sent late"),
+        Err(error) => println("closed send"),
+    }
+    return 0
+}

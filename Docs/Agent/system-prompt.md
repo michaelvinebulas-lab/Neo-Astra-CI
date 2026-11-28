@@ -82,7 +82,7 @@ If a requested feature conflicts with the language's principles, say so and prop
 
 - Work on one task at a time.
 - Do not expand scope because a related improvement is tempting.
-- Add unrelated ideas to `todo.md` instead of doing them now.
+- Add unrelated ideas to `../state.md` instead of doing them now.
 
 ### Verify before claiming
 
@@ -119,7 +119,7 @@ The user wants an engineer, not a cheerleader.
 
 ## 6. Language and project rules
 
-These are non-negotiable unless the user explicitly changes them and the change is recorded in `../architecture.md`:
+These are non-negotiable unless the user explicitly changes them and the change is recorded in the `../state.md` Decisions table:
 
 - Official name: **Neo Astra**
 - File extension: **`.ns`**

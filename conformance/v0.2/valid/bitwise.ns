@@ -1,0 +1,24 @@
+// edition: 0.2
+// purpose: integer bitwise operators and error-set `|` disambiguation
+
+struct ParseError(i32)
+
+fn parse() -> i32 ! ParseError {
+    return 0
+}
+
+pub fn main() -> i32 ! ParseError {
+    let and = 0b1100 & 0b1010
+    let or = 0b1000 | 0b0010
+    let xor = 0b1010 ^ 0b1111
+    let left = 1 << 4
+    let right = 256 >> 4
+    let masked = (1 | 2) & 3
+    println(and)
+    println(or)
+    println(xor)
+    println(left)
+    println(right)
+    println(masked)
+    return parse()?
+}

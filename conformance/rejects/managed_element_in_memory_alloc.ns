@@ -1,0 +1,11 @@
+// conformance: mode=system
+// Spec 8.4 / NS6002: `Ptr<T>` is never a GC root, so a manual allocation may
+// not carry a GC-managed element type. Inside the manual scope the scope rule
+// (NS6001) is satisfied, so the element-type rule is the violated condition.
+pub fn main() -> i32 {
+    {@memory:manual;
+        let p = Memory.alloc<[u8]>(4)
+        Memory.free(p)
+    }
+    return 0
+}

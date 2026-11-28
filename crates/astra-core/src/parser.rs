@@ -7,8 +7,11 @@
 
 use crate::ast::*;
 use crate::diagnostic::Diagnostic;
-use crate::lexer::{Comment, Keyword, LexResult, Punctuation, Token, TokenKind, lex};
-use crate::literal::{decode_byte_literal, decode_string_literal};
+use crate::edition::Edition;
+use crate::lexer::{
+    Comment, Keyword, LexOptions, LexResult, Punctuation, Token, TokenKind, lex_with_options,
+};
+use crate::literal::{decode_byte_literal, decode_char_literal, decode_string_literal};
 use crate::span::Span;
 
 /// Result of a parser operation.
@@ -20,42 +23,152 @@ const INVALID_TYPE: &str = "NS2003";
 const INVALID_PATTERN: &str = "NS2004";
 const INVALID_ITEM: &str = "NS2005";
 const BOUNDARY: &str = "NS2006";
+const BARE_TYPE_ARGUMENTS: &str = "NS2010";
+const MALFORMED_TURBOFISH: &str = "NS2011";
+const INVALID_TYPE_ARGUMENT: &str = "NS4018";
+const DEPRECATED_SYNTAX: &str = "NS2015";
+const INVALID_CONTROL_FLOW: &str = "NS4014";
+
+/// Nesting limit for the recursive-descent parser (HARD-001). Beyond this depth
+/// the parser reports `NS2002` and unwinds instead of risking a stack
+/// overflow, which would abort the process rather than report diagnostics.
+const MAX_NESTING_DEPTH: usize = 64;
 const CONFLICTING_VISIBILITY: &str = "NS3002";
 const UNKNOWN_SCRIPT_LANGUAGE: &str = "NS7001";
 const INVALID_SCRIPT_EXPORTS: &str = "NS7003";
 const MALFORMED_SCRIPT_BLOCK: &str = "NS7004";
 const INVALID_SCRIPT_SIGNATURE: &str = "NS7005";
 
-/// Parses one source unit.
+/// Parser options. Editions are threaded through now; syntax behavior changes
+/// land in the next phase.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParseOptions {
+    pub edition: Edition,
+}
+
+/// Parses one source unit with the default options.
 pub fn parse(source: &str) -> ParseResult<Module> {
-    parse_with_comments(source).map(|(module, _)| module)
+    parse_with_options(source, ParseOptions::default())
+}
+
+/// Parses one source unit with explicit options.
+pub fn parse_with_options(source: &str, options: ParseOptions) -> ParseResult<Module> {
+    parse_with_comments_with_options(source, options).map(|(module, _)| module)
 }
 
 /// Parses one source unit and returns valid line comments as trivia.
 pub fn parse_with_comments(source: &str) -> ParseResult<(Module, Vec<Comment>)> {
+    parse_with_comments_with_options(source, ParseOptions::default())
+}
+
+/// Parses one source unit with explicit options and returns line comments.
+pub fn parse_with_comments_with_options(
+    source: &str,
+    options: ParseOptions,
+) -> ParseResult<(Module, Vec<Comment>)> {
     let LexResult {
         tokens,
         comments,
         diagnostics,
-    } = lex(source);
+    } = lex_with_options(
+        source,
+        LexOptions {
+            edition: options.edition,
+        },
+    );
     let mut parser = Parser {
         tokens,
         index: 0,
         diagnostics,
+        pending_lambda: None,
+        lambda_depth: 0,
+        edition: options.edition,
+        depth: 0,
+        depth_reported: false,
+        nesting_drained: false,
     };
     let module = parser.parse_module();
 
     if parser.diagnostics.is_empty() {
         Ok((module, comments))
     } else {
-        Err(parser.diagnostics)
+        Err(suppress_cascades(parser.diagnostics, source))
     }
+}
+
+/// Bounds parser cascades per source line.
+///
+/// Only parser codes are eligible: `NS2002` is the nesting-limit guard and is
+/// always kept, and non-parser codes are never suppressed. Within one line we
+/// keep at most two *distinct* parser codes; later repeats and a third distinct
+/// code are consequences of the first mistake rather than independent errors.
+/// Line numbers use raw byte offsets (`\n` is ASCII), so a span that is not on a
+/// character boundary still gets a stable line.
+fn suppress_cascades(diagnostics: Vec<Diagnostic>, source: &str) -> Vec<Diagnostic> {
+    let mut per_line: std::collections::HashMap<usize, (usize, std::collections::HashSet<String>)> =
+        std::collections::HashMap::new();
+    diagnostics
+        .into_iter()
+        .filter(|diagnostic| {
+            if !diagnostic.code.starts_with("NS2") || diagnostic.code == "NS2002" {
+                return true;
+            }
+            let line = diagnostic.span.map_or(0, |span| {
+                source.as_bytes()[..span.start.min(source.len())]
+                    .iter()
+                    .filter(|byte| **byte == b'\n')
+                    .count()
+            });
+            let (count, codes) = per_line
+                .entry(line)
+                .or_insert((0, std::collections::HashSet::new()));
+            if codes.contains(&diagnostic.code) {
+                return false;
+            }
+            if *count >= 2 {
+                return false;
+            }
+            codes.insert(diagnostic.code.clone());
+            *count += 1;
+            true
+        })
+        .collect()
+}
+
+struct PendingLambda {
+    parameters: Vec<LambdaParameter>,
+    body: Box<Expr>,
+    span: Span,
+}
+
+struct LambdaParameter {
+    name: String,
+    ty: Option<Type>,
+    span: Span,
 }
 
 struct Parser {
     tokens: Vec<Token>,
     index: usize,
     diagnostics: Vec<Diagnostic>,
+    /// A lambda parsed by `parse_primary`, consumed by the immediately
+    /// following call in `parse_postfix`.
+    pending_lambda: Option<PendingLambda>,
+    /// Nesting depth of `parse_expression` only, used to report an unconsumed
+    /// lambda at the outermost expression.
+    lambda_depth: usize,
+    /// Selected language edition; consumed by the v0.2 parser rules in Phase 3.
+    #[allow(dead_code)]
+    edition: Edition,
+    /// Current recursion depth of expression/type/block parsing.
+    depth: usize,
+    /// Whether the nesting-limit diagnostic was already reported.
+    depth_reported: bool,
+    /// Whether the guard has drained the token stream to EOF. Sticky: once
+    /// set, speculative restores must not rewind the index, or unwinding
+    /// speculation frames would each re-scan the tail (quadratic on deep
+    /// nesting).
+    nesting_drained: bool,
 }
 
 impl Parser {
@@ -106,6 +219,17 @@ impl Parser {
                 exported: false,
                 kind: ItemKind::ScriptBlock(script.clone()),
                 span: script.span,
+            });
+        }
+
+        if self.at_canonical_scope() {
+            let scoped = self.parse_canonical_scoped_items();
+            return Some(Item {
+                attributes,
+                visibility: Visibility::Normal,
+                exported: false,
+                kind: ItemKind::ScopedItems(scoped.clone()),
+                span: scoped.span,
             });
         }
 
@@ -261,12 +385,61 @@ impl Parser {
         let mut attributes = Vec::new();
 
         while self.at_punct(Punctuation::At) {
+            if self.at_canonical_scope() {
+                break;
+            }
             let start = self.bump().span.start;
             let name = self.expect_identifier().unwrap_or_default();
             let mut arguments = Vec::new();
 
             if self.eat_punct(Punctuation::LParen) {
                 self.skip_newlines();
+
+                if name == "export_as" {
+                    let symbol_expr = self.parse_expression();
+                    let symbol = match &symbol_expr.kind {
+                        ExprKind::Literal(Literal::String(value)) => value.clone(),
+                        _ => {
+                            self.error(
+                                EXPECTED,
+                                "The first argument of '@export_as' must be a string literal naming the exported symbol.",
+                                symbol_expr.span,
+                                "Write @export_as(\"ns_module_fn_type\", T = i32).",
+                            );
+                            String::new()
+                        }
+                    };
+                    let mut bindings = Vec::new();
+                    loop {
+                        if !self.eat_punct(Punctuation::Comma) {
+                            break;
+                        }
+                        self.skip_newlines();
+                        if self.at_punct(Punctuation::RParen) {
+                            break;
+                        }
+                        let Some(parameter) = self.expect_identifier() else {
+                            break;
+                        };
+                        self.expect_punct(Punctuation::Eq, "'='");
+                        let ty = self.parse_type();
+                        bindings.push((parameter, ty));
+                    }
+                    self.expect_punct(Punctuation::RParen, "')'");
+                    let span = self.span_from(start);
+                    attributes.push(Attribute {
+                        name,
+                        arguments: Vec::new(),
+                        export_as: Some(ExportAsAttribute {
+                            symbol,
+                            bindings,
+                            span,
+                        }),
+                        span,
+                    });
+                    self.skip_newlines();
+                    continue;
+                }
 
                 if !self.at_punct(Punctuation::RParen) {
                     loop {
@@ -288,6 +461,7 @@ impl Parser {
             attributes.push(Attribute {
                 name,
                 arguments,
+                export_as: None,
                 span: self.span_from(start),
             });
             self.skip_newlines();
@@ -519,6 +693,19 @@ impl Parser {
         }
     }
 
+    /// Skips to the next recovery anchor without emitting more diagnostics.
+    ///
+    /// A malformed item should not desynchronise the rest of the file. Anchors
+    /// are delimiters that bound the item we were parsing.
+    fn recover_to_anchor(&mut self, anchors: &[Punctuation]) {
+        while !self.at_eof()
+            && !self.at(TokenKind::Newline)
+            && !anchors.iter().any(|anchor| self.at_punct(*anchor))
+        {
+            self.bump();
+        }
+    }
+
     fn parse_parameters(&mut self) -> Vec<Parameter> {
         let mut parameters = Vec::new();
         self.expect_punct(Punctuation::LParen, "'('");
@@ -529,8 +716,19 @@ impl Parser {
             return parameters;
         }
 
+        let mut recovered = false;
         loop {
             let start = self.peek().span.start;
+            if !self.at(TokenKind::Identifier) {
+                self.error_current(
+                    EXPECTED,
+                    "Expected a parameter name.",
+                    "Write name: Type inside the parentheses.",
+                );
+                self.recover_to_anchor(&[Punctuation::RParen, Punctuation::LBrace]);
+                recovered = true;
+                break;
+            }
             let name = self.expect_identifier().unwrap_or_default();
             self.expect_punct(Punctuation::Colon, "':'");
             let ty = self.parse_type();
@@ -551,7 +749,11 @@ impl Parser {
         }
 
         self.skip_newlines();
-        self.expect_punct(Punctuation::RParen, "')'");
+        if recovered {
+            self.eat_punct(Punctuation::RParen);
+        } else {
+            self.expect_punct(Punctuation::RParen, "')'");
+        }
         parameters
     }
 
@@ -565,6 +767,9 @@ impl Parser {
             parameters.push(self.expect_identifier().unwrap_or_default());
             if self.eat_punct(Punctuation::Comma) {
                 self.skip_newlines();
+                if self.edition == Edition::V0_2 && self.at_punct(Punctuation::Gt) {
+                    break;
+                }
                 continue;
             }
             break;
@@ -851,8 +1056,14 @@ impl Parser {
             );
             None
         };
-        let language = lang_token.as_ref().map(|t| t.text.clone()).unwrap_or_default();
-        let lang_span = lang_token.as_ref().map(|t| t.span).unwrap_or_else(|| self.span_from(block_start));
+        let language = lang_token
+            .as_ref()
+            .map(|t| t.text.clone())
+            .unwrap_or_default();
+        let lang_span = lang_token
+            .as_ref()
+            .map(|t| t.span)
+            .unwrap_or_else(|| self.span_from(block_start));
         match language.as_str() {
             "js" | "ts" | "c" | "cpp" | "python" => {}
             "java" => {
@@ -873,9 +1084,7 @@ impl Parser {
             }
         }
 
-        if self.at_keyword(Keyword::As) {
-            self.bump();
-        } else if self.peek().text == "as" {
+        if self.at_keyword(Keyword::As) || self.peek().text == "as" {
             self.bump();
         } else {
             self.error_current(
@@ -1058,6 +1267,27 @@ impl Parser {
     }
 
     fn parse_scoped_items(&mut self) -> ScopedItems {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Scope nesting exceeds the supported depth.");
+            let span = self.peek().span;
+            self.depth -= 1;
+            return ScopedItems {
+                annotation: ScopeAnnotation {
+                    kind: ScopeKind::Mode,
+                    value: String::new(),
+                    span,
+                },
+                items: Vec::new(),
+                span,
+            };
+        }
+        let scoped = self.parse_scoped_items_inner();
+        self.depth -= 1;
+        scoped
+    }
+
+    fn parse_scoped_items_inner(&mut self) -> ScopedItems {
         let start = self.bump().span.start;
         let annotation = self.parse_scope_annotation_body();
         let mut items = Vec::new();
@@ -1085,6 +1315,27 @@ impl Parser {
     }
 
     fn parse_scoped_statements(&mut self) -> ScopedStatements {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Scope nesting exceeds the supported depth.");
+            let span = self.peek().span;
+            self.depth -= 1;
+            return ScopedStatements {
+                annotation: ScopeAnnotation {
+                    kind: ScopeKind::Mode,
+                    value: String::new(),
+                    span,
+                },
+                statements: Vec::new(),
+                span,
+            };
+        }
+        let scoped = self.parse_scoped_statements_inner();
+        self.depth -= 1;
+        scoped
+    }
+
+    fn parse_scoped_statements_inner(&mut self) -> ScopedStatements {
         let start = self.bump().span.start;
         let annotation = self.parse_scope_annotation_body();
         let mut statements = Vec::new();
@@ -1112,6 +1363,123 @@ impl Parser {
         ScopedStatements {
             annotation,
             statements,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_canonical_scoped_items(&mut self) -> ScopedItems {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Scope nesting exceeds the supported depth.");
+            let span = self.peek().span;
+            self.depth -= 1;
+            return ScopedItems {
+                annotation: ScopeAnnotation {
+                    kind: ScopeKind::Mode,
+                    value: String::new(),
+                    span,
+                },
+                items: Vec::new(),
+                span,
+            };
+        }
+        let start = self.peek().span.start;
+        let annotation = self.parse_canonical_scope_annotation();
+        self.expect_punct(Punctuation::LBrace, "'{'");
+        let mut items = Vec::new();
+
+        self.skip_separators();
+        while !self.at_punct(Punctuation::RBrace) && !self.at_eof() {
+            let before = self.index;
+            let attributes = self.parse_attributes();
+            if let Some(item) = self.parse_item_with_attributes(attributes) {
+                items.push(item);
+            }
+            self.finish_boundary(true);
+            if self.index == before {
+                self.bump();
+            }
+        }
+
+        self.expect_punct(Punctuation::RBrace, "'}'");
+        self.depth -= 1;
+
+        ScopedItems {
+            annotation,
+            items,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_canonical_scoped_statements(&mut self) -> ScopedStatements {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Scope nesting exceeds the supported depth.");
+            let span = self.peek().span;
+            self.depth -= 1;
+            return ScopedStatements {
+                annotation: ScopeAnnotation {
+                    kind: ScopeKind::Mode,
+                    value: String::new(),
+                    span,
+                },
+                statements: Vec::new(),
+                span,
+            };
+        }
+        let start = self.peek().span.start;
+        let annotation = self.parse_canonical_scope_annotation();
+        self.expect_punct(Punctuation::LBrace, "'{'");
+        let mut statements = Vec::new();
+
+        self.skip_separators();
+        while !self.at_punct(Punctuation::RBrace) && !self.at_eof() {
+            let before = self.index;
+            if let Some(statement) = self.parse_statement() {
+                statements.push(statement);
+            }
+            self.finish_boundary(true);
+            if self.index == before {
+                self.bump();
+            }
+        }
+
+        self.expect_punct(Punctuation::RBrace, "'}'");
+        self.depth -= 1;
+
+        ScopedStatements {
+            annotation,
+            statements,
+            span: self.span_from(start),
+        }
+    }
+
+    fn parse_canonical_scope_annotation(&mut self) -> ScopeAnnotation {
+        let start = self
+            .expect_punct(Punctuation::At, "'@'")
+            .map_or_else(|| self.peek().span.start, |token| token.span.start);
+        let name = self.expect_identifier().unwrap_or_default();
+        self.expect_punct(Punctuation::LParen, "'('");
+        self.skip_newlines();
+        let value = self.expect_identifier().unwrap_or_default();
+        self.skip_newlines();
+        self.expect_punct(Punctuation::RParen, "')'");
+        let kind = match name.as_str() {
+            "mode" => ScopeKind::Mode,
+            "memory" => ScopeKind::Memory,
+            _ => {
+                self.error_current(
+                    INVALID,
+                    format!("Unknown scope annotation '@{name}'."),
+                    "Use @mode(...) or @memory(...).",
+                );
+                ScopeKind::Mode
+            }
+        };
+
+        ScopeAnnotation {
+            kind,
+            value,
             span: self.span_from(start),
         }
     }
@@ -1145,12 +1513,42 @@ impl Parser {
     }
 
     fn parse_block(&mut self) -> Block {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.nesting_limit_error("Block nesting exceeds the supported depth.");
+            // Consume the opening brace so the caller always makes progress.
+            self.eat_punct(Punctuation::LBrace);
+            let span = self.peek().span;
+            self.depth -= 1;
+            return Block {
+                statements: Vec::new(),
+                span,
+            };
+        }
+        let block = self.parse_block_inner();
+        self.depth -= 1;
+        block
+    }
+
+    fn parse_block_inner(&mut self) -> Block {
         let start = self
             .expect_punct(Punctuation::LBrace, "'{'")
             .map_or_else(|| self.peek().span.start, |token| token.span.start);
         let mut statements = Vec::new();
 
         self.skip_separators();
+        self.parse_block_statements(&mut statements);
+
+        self.expect_punct(Punctuation::RBrace, "'}'");
+
+        Block {
+            statements,
+            span: self.span_from(start),
+        }
+    }
+
+    /// Parses block statements up to (but not including) the closing `}`.
+    fn parse_block_statements(&mut self, statements: &mut Vec<Stmt>) {
         while !self.at_punct(Punctuation::RBrace) && !self.at_eof() {
             let before = self.index;
             if self.looks_like_scope_annotation() {
@@ -1167,17 +1565,18 @@ impl Parser {
                 self.bump();
             }
         }
-
-        self.expect_punct(Punctuation::RBrace, "'}'");
-
-        Block {
-            statements,
-            span: self.span_from(start),
-        }
     }
 
     fn parse_statement(&mut self) -> Option<Stmt> {
         let start = self.peek().span.start;
+
+        if self.at_canonical_scope() {
+            let scoped = self.parse_canonical_scoped_statements();
+            return Some(Stmt {
+                kind: StmtKind::Scoped(scoped.clone()),
+                span: scoped.span,
+            });
+        }
 
         if self.at_keyword(Keyword::Let) {
             return self.parse_let_statement();
@@ -1191,6 +1590,14 @@ impl Parser {
             {
                 None
             } else {
+                if self.edition == Edition::V0_2 && self.at_keyword(Keyword::Fail) {
+                    self.error(
+                        INVALID_CONTROL_FLOW,
+                        "'return fail' is redundant in edition 0.2.",
+                        self.peek().span,
+                        "Remove `return`; `fail` already diverges.",
+                    );
+                }
                 Some(self.parse_expression())
             };
             return Some(Stmt {
@@ -1221,6 +1628,14 @@ impl Parser {
         }
 
         if self.eat_keyword(Keyword::While) {
+            if self.edition == Edition::V0_2 && self.at_keyword(Keyword::Let) {
+                self.bump();
+                let pattern = self.parse_pattern();
+                self.expect_punct(Punctuation::Eq, "'='");
+                let value = self.parse_expression();
+                let body = self.parse_block();
+                return Some(self.desugar_while_let(pattern, value, body, start));
+            }
             let condition = self.parse_expression();
             let body = self.parse_block();
             return Some(Stmt {
@@ -1292,13 +1707,87 @@ impl Parser {
     }
 
     fn parse_expression(&mut self) -> Expr {
-        self.parse_assignment()
+        self.depth += 1;
+        self.lambda_depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            self.lambda_depth -= 1;
+            return self.nesting_limit_expression();
+        }
+        let depth = self.lambda_depth;
+        let expression = self.parse_assignment();
+        self.depth -= 1;
+        self.lambda_depth -= 1;
+        if depth == 1 && self.pending_lambda.is_some() {
+            let lambda = self.pending_lambda.take().expect("pending lambda");
+            self.error(
+                EXPECTED,
+                "A lambda must be invoked immediately.",
+                lambda.span,
+                "Write (fn(x) => body)(argument).",
+            );
+            return Expr {
+                kind: ExprKind::Literal(Literal::Unit),
+                span: lambda.span,
+            };
+        }
+        expression
+    }
+
+    /// Bails out of a recursion deeper than `MAX_NESTING_DEPTH`: reports the
+    /// limit once (`NS2002`), consumes a token so the caller always makes
+    /// progress, and returns the same placeholder the "expected an expression"
+    /// path produces.
+    fn nesting_limit_expression(&mut self) -> Expr {
+        let span = self.peek().span;
+        self.nesting_limit_error("Expression nesting exceeds the supported depth.");
+        if self.can_consume_for_progress() {
+            self.bump();
+        }
+        self.depth -= 1;
+        Expr {
+            kind: ExprKind::Literal(Literal::Unit),
+            span,
+        }
+    }
+
+    /// Whether the parser may consume the current token to guarantee progress
+    /// on an error path (stopper tokens stay put for the caller to handle).
+    fn can_consume_for_progress(&self) -> bool {
+        !self.at_eof()
+            && !self.at(TokenKind::Newline)
+            && !self.at_punct(Punctuation::Semicolon)
+            && !self.at_punct(Punctuation::RBrace)
+            && !self.at_punct(Punctuation::RParen)
+            && !self.at_punct(Punctuation::RBracket)
+            && !self.at_punct(Punctuation::Comma)
+    }
+
+    /// Reports the nesting limit once per parse and skips the rest of the
+    /// input. Draining matters: without it the unwinding frames would keep
+    /// parsing (and boxing) the remaining tokens into an ever deeper tree,
+    /// and dropping that tree would overflow the stack again.
+    fn nesting_limit_error(&mut self, message: &str) {
+        if self.depth_reported {
+            return;
+        }
+        self.depth_reported = true;
+        // Leave the final EOF token in place for callers that expect it.
+        self.index = self.tokens.len().saturating_sub(1);
+        self.nesting_drained = true;
+        let span = self.peek().span;
+        self.error(
+            INVALID,
+            message,
+            span,
+            "Simplify the expression; the parser supports at most 64 levels of nesting.",
+        );
     }
 
     fn parse_assignment(&mut self) -> Expr {
-        let left = self.parse_logical_or();
+        let left = self.parse_range();
 
         if self.eat_punct(Punctuation::Eq) {
+            self.skip_continuation_newlines();
             let value = self.parse_assignment();
             let span = Span::new(left.span.start, value.span.end);
             return Expr {
@@ -1313,10 +1802,37 @@ impl Parser {
         left
     }
 
+    /// Ranges bind looser than logical operators and tighter than assignment.
+    fn parse_range(&mut self) -> Expr {
+        let start = self.parse_logical_or();
+        if self.edition != Edition::V0_2 {
+            return start;
+        }
+        let inclusive = if self.eat_punct(Punctuation::DotDotEq) {
+            true
+        } else if self.eat_punct(Punctuation::DotDot) {
+            false
+        } else {
+            return start;
+        };
+        self.skip_continuation_newlines();
+        let end = self.parse_logical_or();
+        let span = Span::new(start.span.start, end.span.end);
+        Expr {
+            kind: ExprKind::Range {
+                start: Box::new(start),
+                end: Box::new(end),
+                inclusive,
+            },
+            span,
+        }
+    }
+
     fn parse_logical_or(&mut self) -> Expr {
         let mut expression = self.parse_logical_and();
 
         while self.eat_punct(Punctuation::PipePipe) {
+            self.skip_continuation_newlines();
             let right = self.parse_logical_and();
             let span = Span::new(expression.span.start, right.span.end);
             expression = Expr {
@@ -1336,11 +1852,121 @@ impl Parser {
         let mut expression = self.parse_equality();
 
         while self.eat_punct(Punctuation::AmpAmp) {
+            self.skip_continuation_newlines();
             let right = self.parse_equality();
             let span = Span::new(expression.span.start, right.span.end);
             expression = Expr {
                 kind: ExprKind::Binary {
                     operator: BinaryOp::And,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        expression
+    }
+
+    /// `|` is bitwise-or here; error sets consume `|` in their own parser
+    /// before expression parsing begins.
+    fn parse_bit_or(&mut self) -> Expr {
+        let mut expression = self.parse_bit_xor();
+
+        while self.edition == Edition::V0_2 && self.eat_punct(Punctuation::Pipe) {
+            self.skip_continuation_newlines();
+            let right = self.parse_bit_xor();
+            let span = Span::new(expression.span.start, right.span.end);
+            expression = Expr {
+                kind: ExprKind::Binary {
+                    operator: BinaryOp::BitOr,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        expression
+    }
+
+    fn parse_bit_xor(&mut self) -> Expr {
+        let mut expression = self.parse_bit_and();
+
+        while self.edition == Edition::V0_2 && self.eat_punct(Punctuation::Caret) {
+            self.skip_continuation_newlines();
+            let right = self.parse_bit_and();
+            let span = Span::new(expression.span.start, right.span.end);
+            expression = Expr {
+                kind: ExprKind::Binary {
+                    operator: BinaryOp::BitXor,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        expression
+    }
+
+    fn parse_bit_and(&mut self) -> Expr {
+        let mut expression = self.parse_shift();
+
+        while self.edition == Edition::V0_2 && self.eat_punct(Punctuation::Amp) {
+            self.skip_continuation_newlines();
+            let right = self.parse_shift();
+            let span = Span::new(expression.span.start, right.span.end);
+            expression = Expr {
+                kind: ExprKind::Binary {
+                    operator: BinaryOp::BitAnd,
+                    left: Box::new(expression),
+                    right: Box::new(right),
+                },
+                span,
+            };
+        }
+
+        expression
+    }
+
+    /// Shifts are recognized as two adjacent `<` / `>` tokens so closing
+    /// nested generic arguments (`Option<Result<i32, str>>`) still parse.
+    fn parse_shift(&mut self) -> Expr {
+        let mut expression = self.parse_additive();
+
+        loop {
+            let operator = if self.edition != Edition::V0_2 {
+                None
+            } else {
+                let current = self.peek();
+                let next = self.peek_at(1);
+                let adjacent = next.is_some_and(|token| token.span.start == current.span.end);
+                if adjacent
+                    && current.kind == TokenKind::Punct(Punctuation::Lt)
+                    && next.is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Lt))
+                {
+                    Some(BinaryOp::Shl)
+                } else if adjacent
+                    && current.kind == TokenKind::Punct(Punctuation::Gt)
+                    && next.is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Gt))
+                {
+                    Some(BinaryOp::Shr)
+                } else {
+                    None
+                }
+            };
+            let Some(operator) = operator else {
+                break;
+            };
+            self.bump();
+            self.bump();
+            self.skip_continuation_newlines();
+            let right = self.parse_additive();
+            let span = Span::new(expression.span.start, right.span.end);
+            expression = Expr {
+                kind: ExprKind::Binary {
+                    operator,
                     left: Box::new(expression),
                     right: Box::new(right),
                 },
@@ -1366,6 +1992,7 @@ impl Parser {
             let Some(operator) = operator else {
                 break;
             };
+            self.skip_continuation_newlines();
 
             let right = self.parse_comparison();
             let span = Span::new(expression.span.start, right.span.end);
@@ -1383,7 +2010,7 @@ impl Parser {
     }
 
     fn parse_comparison(&mut self) -> Expr {
-        let mut expression = self.parse_additive();
+        let mut expression = self.parse_bit_or();
 
         loop {
             let operator = if self.eat_punct(Punctuation::Lt) {
@@ -1401,8 +2028,9 @@ impl Parser {
             let Some(operator) = operator else {
                 break;
             };
+            self.skip_continuation_newlines();
 
-            let right = self.parse_additive();
+            let right = self.parse_bit_or();
             let span = Span::new(expression.span.start, right.span.end);
             expression = Expr {
                 kind: ExprKind::Binary {
@@ -1436,6 +2064,7 @@ impl Parser {
             let Some(operator) = operator else {
                 break;
             };
+            self.skip_continuation_newlines();
 
             let right = self.parse_multiplicative();
             let span = Span::new(expression.span.start, right.span.end);
@@ -1473,6 +2102,7 @@ impl Parser {
             let Some(operator) = operator else {
                 break;
             };
+            self.skip_continuation_newlines();
 
             let right = self.parse_unary();
             let span = Span::new(expression.span.start, right.span.end);
@@ -1517,7 +2147,26 @@ impl Parser {
     fn parse_postfix(&mut self) -> Expr {
         let mut expression = self.parse_primary();
 
+        if let Some(lambda) = self.pending_lambda.take() {
+            if self.eat_punct(Punctuation::LParen) {
+                let arguments = self.parse_expression_list_after_open();
+                let span = Span::new(lambda.span.start, self.last_end());
+                expression = self.lower_lambda_call(lambda, arguments, span);
+            } else {
+                // Keep the pending lambda: it may be wrapped in parentheses,
+                // with the call appearing after the closing parenthesis.
+                self.pending_lambda = Some(lambda);
+            }
+        }
+
         loop {
+            if self.edition == Edition::V0_2
+                && self.at(TokenKind::Newline)
+                && self.next_non_newline_is_punct(Punctuation::Dot)
+            {
+                self.skip_newlines();
+            }
+
             if self.eat_punct(Punctuation::Dot) {
                 let member = if self.at(TokenKind::Identifier) || self.at(TokenKind::Integer) {
                     self.bump().text
@@ -1558,17 +2207,79 @@ impl Parser {
                 let index = self.parse_expression();
                 self.expect_punct(Punctuation::RBracket, "']'");
                 let span = Span::new(expression.span.start, self.last_end());
+                if self.edition == Edition::V0_2 && matches!(index.kind, ExprKind::Range { .. }) {
+                    let index_span = index.span;
+                    let ExprKind::Range {
+                        start,
+                        end,
+                        inclusive,
+                    } = index.kind
+                    else {
+                        unreachable!("range was checked above");
+                    };
+                    // Checker annotations are keyed by span. Every synthetic
+                    // node therefore needs a distinct span; reusing the whole
+                    // index span would overwrite the receiver/argument types.
+                    let callee = Expr {
+                        kind: ExprKind::Member {
+                            target: Box::new(expression),
+                            member: "slice".to_owned(),
+                        },
+                        span: index_span,
+                    };
+                    let end = if inclusive {
+                        let end_span = end.span;
+                        Expr {
+                            kind: ExprKind::Binary {
+                                operator: BinaryOp::Add,
+                                left: end,
+                                right: Box::new(Expr {
+                                    kind: ExprKind::Literal(Literal::Integer("1".to_owned())),
+                                    span: Span::new(end_span.end, end_span.end),
+                                }),
+                            },
+                            span: end_span,
+                        }
+                    } else {
+                        *end
+                    };
+                    expression = Expr {
+                        kind: ExprKind::Call {
+                            callee: Box::new(callee),
+                            arguments: vec![*start, end],
+                        },
+                        span,
+                    };
+                } else {
+                    expression = Expr {
+                        kind: ExprKind::Index {
+                            target: Box::new(expression),
+                            index: Box::new(index),
+                        },
+                        span,
+                    };
+                }
+                continue;
+            }
+
+            if self.eat_punct(Punctuation::Bang) {
+                let span = Span::new(expression.span.start, self.last_end());
+                if self.edition == Edition::V0_2 {
+                    self.error(
+                        DEPRECATED_SYNTAX,
+                        "Postfix `!` is not allowed in edition 0.2.",
+                        span,
+                        "Use `?` to propagate a failure.",
+                    );
+                }
                 expression = Expr {
-                    kind: ExprKind::Index {
-                        target: Box::new(expression),
-                        index: Box::new(index),
-                    },
+                    kind: ExprKind::Propagate(Box::new(expression)),
                     span,
                 };
                 continue;
             }
 
-            if self.eat_punct(Punctuation::Bang) {
+            if self.edition == Edition::V0_2 && self.eat_punct(Punctuation::Question) {
                 let span = Span::new(expression.span.start, self.last_end());
                 expression = Expr {
                     kind: ExprKind::Propagate(Box::new(expression)),
@@ -1577,7 +2288,82 @@ impl Parser {
                 continue;
             }
 
-            if self.at_punct(Punctuation::Lt)
+            if self.edition == Edition::V0_2 && self.at_punct(Punctuation::DoubleColon) {
+                let start = expression.span.start;
+                let turbofish_span = self.peek().span;
+                if matches!(&expression.kind, ExprKind::TypeArguments { .. }) {
+                    self.error(
+                        MALFORMED_TURBOFISH,
+                        "Only one turbofish is allowed in a postfix chain.",
+                        turbofish_span,
+                        "Remove the second turbofish.",
+                    );
+                    self.bump();
+                    let _ = self.parse_type_arguments();
+                    continue;
+                }
+
+                self.bump();
+                let arguments = self.parse_type_arguments();
+                let span = Span::new(start, self.last_end());
+                let target_is_path = matches!(
+                    &expression.kind,
+                    ExprKind::Identifier(_) | ExprKind::Member { .. }
+                );
+                let followed_by_call = self.at_punct(Punctuation::LParen);
+                let followed_by_struct_init =
+                    self.at_punct(Punctuation::LBrace) && self.looks_like_struct_init();
+                if !target_is_path {
+                    self.error(
+                        MALFORMED_TURBOFISH,
+                        "A turbofish must follow a path.",
+                        span,
+                        "Use path::<...>(...) or path::<...> { ... }.",
+                    );
+                } else if !followed_by_call
+                    && !followed_by_struct_init
+                    && matches!(&expression.kind, ExprKind::Member { .. })
+                {
+                    self.error(
+                        BARE_TYPE_ARGUMENTS,
+                        "A qualified value path cannot carry expression-position type arguments.",
+                        span,
+                        "Use the bare variant name, such as None::<i32>.",
+                    );
+                }
+                expression = Expr {
+                    kind: ExprKind::TypeArguments {
+                        target: Box::new(expression),
+                        arguments,
+                    },
+                    span,
+                };
+                continue;
+            }
+
+            if self.edition == Edition::V0_2 && self.at_punct(Punctuation::Lt) {
+                let lt_span = self.peek().span;
+                if let Some(arguments) = self.try_type_arguments_for_call() {
+                    self.error(
+                        BARE_TYPE_ARGUMENTS,
+                        "Expression-position type arguments require `::<...>` in edition 0.2.",
+                        lt_span,
+                        "Write path::<T>(value) instead of path<T>(value).",
+                    );
+                    let span = Span::new(expression.span.start, self.last_end());
+                    expression = Expr {
+                        kind: ExprKind::TypeArguments {
+                            target: Box::new(expression),
+                            arguments,
+                        },
+                        span,
+                    };
+                    continue;
+                }
+            }
+
+            if self.edition == Edition::V0_1
+                && self.at_punct(Punctuation::Lt)
                 && let Some(arguments) = self.try_type_arguments_for_call()
             {
                 let span = Span::new(expression.span.start, self.last_end());
@@ -1608,6 +2394,104 @@ impl Parser {
         }
 
         expression
+    }
+
+    /// Parses `fn(x: T, y) => body` and records it for `parse_postfix`, which
+    /// requires an immediately following call and lowers the pair to a block.
+    fn parse_lambda(&mut self) -> Expr {
+        let start = self.bump().span.start;
+        self.expect_punct(Punctuation::LParen, "'('");
+        let mut parameters = Vec::new();
+        if !self.at_punct(Punctuation::RParen) {
+            loop {
+                let token = self.peek().clone();
+                let name = if self.at(TokenKind::Identifier) {
+                    self.bump().text
+                } else {
+                    self.error_current(
+                        EXPECTED,
+                        "Expected a lambda parameter name.",
+                        "Write fn(name) => expression.",
+                    );
+                    String::new()
+                };
+                let ty = if self.eat_punct(Punctuation::Colon) {
+                    Some(self.parse_type())
+                } else {
+                    None
+                };
+                parameters.push(LambdaParameter {
+                    name,
+                    ty,
+                    span: token.span,
+                });
+                if !self.eat_punct(Punctuation::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+            }
+        }
+        self.expect_punct(Punctuation::RParen, "')'");
+        self.expect_punct(Punctuation::FatArrow, "'=>'");
+        self.skip_continuation_newlines();
+        let body = Box::new(self.parse_assignment());
+        let span = Span::new(start, body.span.end);
+        self.pending_lambda = Some(PendingLambda {
+            parameters,
+            body,
+            span,
+        });
+        Expr {
+            kind: ExprKind::Identifier("__lambda".to_owned()),
+            span,
+        }
+    }
+
+    /// Lowers `(fn(x, y) => body)(a, b)` to `{ let x = a; let y = b; body }`.
+    fn lower_lambda_call(
+        &mut self,
+        lambda: PendingLambda,
+        arguments: Vec<Expr>,
+        span: Span,
+    ) -> Expr {
+        let mut statements = Vec::new();
+        let body = lambda.body;
+        let body_span = body.span;
+        let arity = lambda.parameters.len();
+        if arguments.len() != arity {
+            self.error(
+                EXPECTED,
+                format!(
+                    "Lambda expects {arity} argument(s), but {} were provided.",
+                    arguments.len()
+                ),
+                span,
+                "Match the lambda parameter list.",
+            );
+        }
+        for (index, parameter) in lambda.parameters.into_iter().enumerate() {
+            let value = arguments.get(index).cloned().unwrap_or(Expr {
+                kind: ExprKind::Literal(Literal::Unit),
+                span: parameter.span,
+            });
+            statements.push(Stmt {
+                kind: StmtKind::Let {
+                    mutable: false,
+                    name: parameter.name,
+                    ty: parameter.ty,
+                    value,
+                },
+                span: parameter.span,
+            });
+        }
+        statements.push(Stmt {
+            kind: StmtKind::Expr(*body),
+            span: body_span,
+        });
+        Expr {
+            kind: ExprKind::Block(Block { statements, span }),
+            span,
+        }
     }
 
     fn parse_primary(&mut self) -> Expr {
@@ -1657,6 +2541,20 @@ impl Parser {
                     span: token.span,
                 }
             }
+            TokenKind::Character => {
+                self.bump();
+                let value = match decode_char_literal(&token.text) {
+                    Ok(value) => value,
+                    Err(message) => {
+                        self.error(INVALID, message, token.span, "Fix the character literal.");
+                        '\0'
+                    }
+                };
+                Expr {
+                    kind: ExprKind::Literal(Literal::Character(value)),
+                    span: token.span,
+                }
+            }
             TokenKind::Keyword(Keyword::True) => {
                 self.bump();
                 Expr {
@@ -1681,7 +2579,18 @@ impl Parser {
             TokenKind::Punct(Punctuation::LParen) => self.parse_parenthesized(),
             TokenKind::Punct(Punctuation::LBracket) => self.parse_array_literal(),
             TokenKind::Punct(Punctuation::LBrace) => self.parse_brace_expression(),
-            TokenKind::Punct(Punctuation::Bang) => self.parse_fail_expression(),
+            TokenKind::Punct(Punctuation::Bang) => {
+                if self.edition == Edition::V0_2 {
+                    self.error(
+                        DEPRECATED_SYNTAX,
+                        "Prefix `!` failure construction is not allowed in edition 0.2.",
+                        token.span,
+                        "Use `fail Error(...)` or `fail Error { field: value }`.",
+                    );
+                }
+                self.parse_fail_expression()
+            }
+            TokenKind::Keyword(Keyword::Fail) => self.parse_fail_keyword_expression(),
             TokenKind::Keyword(Keyword::If) => self.parse_if_expression(),
             TokenKind::Keyword(Keyword::Match) => self.parse_match_expression(),
             TokenKind::Keyword(Keyword::Spawn) => self.parse_spawn_expression(),
@@ -1691,13 +2600,21 @@ impl Parser {
             TokenKind::Keyword(Keyword::Abort) => {
                 self.parse_message_expression(|message| ExprKind::Abort { message })
             }
+            TokenKind::Keyword(Keyword::Fn) if self.edition == Edition::V0_2 => self.parse_lambda(),
             _ => {
-                self.error(
-                    INVALID,
-                    "Expected an expression.",
-                    token.span,
-                    "Add a literal, identifier, call, block, if, or match expression.",
-                );
+                let (message, hint) =
+                    if self.edition == Edition::V0_2 && is_binary_operator_token(&token.kind) {
+                        (
+                            "A binary operator cannot start an expression.",
+                            "Add a left-hand operand before the operator.",
+                        )
+                    } else {
+                        (
+                            "Expected an expression.",
+                            "Add a literal, identifier, call, block, if, or match expression.",
+                        )
+                    };
+                self.error(INVALID, message, token.span, hint);
                 if !self.at_eof()
                     && !self.at(TokenKind::Newline)
                     && !self.at_punct(Punctuation::Semicolon)
@@ -1726,12 +2643,22 @@ impl Parser {
         }
 
         let first = self.parse_expression();
+        if matches!(&first.kind, ExprKind::Identifier(name) if name == "__lambda")
+            && let Some(lambda) = self.pending_lambda.as_mut()
+        {
+            // The call belongs to the parenthesized lambda, so extend its span
+            // to the opening parenthesis for the lowered block.
+            lambda.span = Span::new(start, lambda.span.end);
+        }
         self.skip_newlines();
 
         if self.eat_punct(Punctuation::Comma) {
             let mut elements = vec![first];
             loop {
                 self.skip_newlines();
+                if self.edition == Edition::V0_2 && self.at_punct(Punctuation::RParen) {
+                    break;
+                }
                 elements.push(self.parse_expression());
                 self.skip_newlines();
                 if self.eat_punct(Punctuation::Comma) {
@@ -1787,7 +2714,9 @@ impl Parser {
         self.skip_newlines();
 
         if self.at_punct(Punctuation::RBrace) {
-            self.index = saved_index;
+            if !self.nesting_drained {
+                self.index = saved_index;
+            }
             self.diagnostics.truncate(saved_diagnostics);
             return Expr {
                 kind: ExprKind::Block(self.parse_block()),
@@ -1834,7 +2763,38 @@ impl Parser {
             };
         }
 
-        self.index = saved_index;
+        // Clean speculation with no map colon: `first` is exactly what the
+        // block's first statement parses to (`parse_statement` falls through
+        // to `parse_expression` for non-keyword statements), so keep it
+        // instead of restoring and re-parsing the same tokens. Restoring here
+        // re-parsed the whole subtree a second time at every nesting level,
+        // which made nested blocks exponential in depth (28 levels parsed for
+        // minutes). Dirty speculations (keyword-led or malformed first
+        // statements, scope annotations) still restore; they fail on their
+        // first token, so nesting stays linear.
+        if self.diagnostics.len() == saved_diagnostics {
+            let statement_start = first.span.start;
+            let statement = Stmt {
+                kind: StmtKind::Expr(first),
+                span: self.span_from(statement_start),
+            };
+            let mut statements = vec![statement];
+            self.finish_boundary(true);
+            self.parse_block_statements(&mut statements);
+            self.expect_punct(Punctuation::RBrace, "'}'");
+
+            return Expr {
+                kind: ExprKind::Block(Block {
+                    statements,
+                    span: self.span_from(start),
+                }),
+                span: self.span_from(start),
+            };
+        }
+
+        if !self.nesting_drained {
+            self.index = saved_index;
+        }
         self.diagnostics.truncate(saved_diagnostics);
         Expr {
             kind: ExprKind::Block(self.parse_block()),
@@ -1844,7 +2804,36 @@ impl Parser {
 
     fn parse_if_expression(&mut self) -> Expr {
         let start = self.bump().span.start;
+
+        // Edition 0.2 adds `if let PATTERN = EXPR`. It is desugared to the
+        // existing match form so every backend inherits match semantics.
+        if self.edition == Edition::V0_2 && self.at_keyword(Keyword::Let) {
+            self.bump();
+            let pattern = self.parse_pattern();
+            self.expect_punct(Punctuation::Eq, "'='");
+            let value = self.parse_expression();
+            let then_branch = self.parse_block();
+            let else_branch = if self.eat_keyword(Keyword::Else) {
+                if self.at_keyword(Keyword::If) {
+                    Some(ElseBranch::If(Box::new(self.parse_if_expression())))
+                } else {
+                    Some(ElseBranch::Block(self.parse_block()))
+                }
+            } else {
+                None
+            };
+            return self.desugar_if_let(pattern, value, then_branch, else_branch, start);
+        }
+
         let condition = self.parse_expression();
+        if self.edition == Edition::V0_2 && expression_has_unparenthesized_struct_init(&condition) {
+            self.error(
+                EXPECTED,
+                "Wrap a struct initializer in parentheses in a condition.",
+                condition.span,
+                "Write (User { field: value }) instead of User { field: value }.",
+            );
+        }
         let then_branch = self.parse_block();
         let else_branch = if self.eat_keyword(Keyword::Else) {
             if self.at_keyword(Keyword::If) {
@@ -1866,6 +2855,97 @@ impl Parser {
         }
     }
 
+    /// Rewrites `if let P = V { T } else { E }` to `match V { P => T, _ => E }`.
+    fn desugar_if_let(
+        &self,
+        pattern: Pattern,
+        value: Expr,
+        then_branch: Block,
+        else_branch: Option<ElseBranch>,
+        start: usize,
+    ) -> Expr {
+        let span = self.span_from(start);
+        let else_body = match else_branch {
+            Some(ElseBranch::Block(block)) => MatchArmBody::Block(block),
+            Some(ElseBranch::If(expression)) => MatchArmBody::Expr(*expression),
+            None => MatchArmBody::Expr(Expr {
+                kind: ExprKind::Literal(Literal::Unit),
+                span,
+            }),
+        };
+        let arms = vec![
+            MatchArm {
+                pattern,
+                body: MatchArmBody::Block(then_branch),
+                span,
+            },
+            MatchArm {
+                pattern: Pattern {
+                    kind: PatternKind::Wildcard,
+                    span,
+                },
+                body: else_body,
+                span,
+            },
+        ];
+        Expr {
+            kind: ExprKind::Match {
+                value: Box::new(value),
+                arms,
+            },
+            span,
+        }
+    }
+
+    /// Rewrites `while let P = V { B }` to a `while true` loop whose body
+    /// matches `V`; a non-match breaks out of the loop.
+    fn desugar_while_let(&self, pattern: Pattern, value: Expr, body: Block, start: usize) -> Stmt {
+        let span = self.span_from(start);
+        let match_expression = Expr {
+            kind: ExprKind::Match {
+                value: Box::new(value),
+                arms: vec![
+                    MatchArm {
+                        pattern,
+                        body: MatchArmBody::Block(body),
+                        span,
+                    },
+                    MatchArm {
+                        pattern: Pattern {
+                            kind: PatternKind::Wildcard,
+                            span,
+                        },
+                        body: MatchArmBody::Block(Block {
+                            statements: vec![Stmt {
+                                kind: StmtKind::Break,
+                                span,
+                            }],
+                            span,
+                        }),
+                        span,
+                    },
+                ],
+            },
+            span,
+        };
+        Stmt {
+            kind: StmtKind::While {
+                condition: Expr {
+                    kind: ExprKind::Literal(Literal::Bool(true)),
+                    span,
+                },
+                body: Block {
+                    statements: vec![Stmt {
+                        kind: StmtKind::Expr(match_expression),
+                        span,
+                    }],
+                    span,
+                },
+            },
+            span,
+        }
+    }
+
     fn parse_match_expression(&mut self) -> Expr {
         let start = self.bump().span.start;
         let value = self.parse_expression();
@@ -1881,9 +2961,21 @@ impl Parser {
             self.expect_punct(Punctuation::FatArrow, "'=>'");
             let body = if self.at_punct(Punctuation::LBrace) {
                 MatchArmBody::Block(self.parse_block())
+            } else if self.at_keyword(Keyword::Return) {
+                // `arm => return value` is a block-bodied arm with a single
+                // return statement. The AST has no statement arm variant.
+                let statement = self
+                    .parse_statement()
+                    .expect("a return keyword always parses a statement");
+                let span = statement.span;
+                MatchArmBody::Block(Block {
+                    statements: vec![statement],
+                    span,
+                })
             } else {
                 MatchArmBody::Expr(self.parse_expression())
             };
+            let block_body = matches!(body, MatchArmBody::Block(_));
             arms.push(MatchArm {
                 pattern,
                 body,
@@ -1893,9 +2985,24 @@ impl Parser {
             if self.index == before {
                 self.bump();
             }
-            self.skip_newlines();
-            self.eat_punct(Punctuation::Comma);
-            self.skip_newlines();
+            if self.eat_punct(Punctuation::Comma) {
+                self.skip_newlines();
+            } else {
+                let next = self.skip_newlines_at(self.index);
+                let at_close = self
+                    .tokens
+                    .get(next)
+                    .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::RBrace));
+                if self.edition == Edition::V0_2 && !block_body && !at_close && !self.at_eof() {
+                    self.error(
+                        BOUNDARY,
+                        "Expected ',' after a match arm.",
+                        self.span_from(arm_start),
+                        "Add a comma between match arms, or use a block body to omit it.",
+                    );
+                }
+                self.skip_newlines();
+            }
         }
 
         self.expect_punct(Punctuation::RBrace, "'}'");
@@ -1911,6 +3018,13 @@ impl Parser {
 
     fn parse_spawn_expression(&mut self) -> Expr {
         let start = self.bump().span.start;
+        if self.edition == Edition::V0_2 && self.at_punct(Punctuation::LBrace) {
+            let body = self.parse_block();
+            return Expr {
+                kind: ExprKind::Spawn { body },
+                span: self.span_from(start),
+            };
+        }
         self.expect_punct(Punctuation::PipePipe, "'||'");
         let body = self.parse_block();
         Expr {
@@ -1921,6 +3035,15 @@ impl Parser {
 
     fn parse_fail_expression(&mut self) -> Expr {
         let start = self.bump().span.start;
+        self.parse_fail_tail(start, "!Error(args) or !Error { field: value }")
+    }
+
+    fn parse_fail_keyword_expression(&mut self) -> Expr {
+        let start = self.bump().span.start;
+        self.parse_fail_tail(start, "fail Error(args) or fail Error { field: value }")
+    }
+
+    fn parse_fail_tail(&mut self, start: usize, example: &str) -> Expr {
         let error = self.parse_type_path();
 
         let arguments = if self.eat_punct(Punctuation::LParen) {
@@ -1931,7 +3054,7 @@ impl Parser {
             self.error_current(
                 EXPECTED,
                 "Expected '(' or '{' after a failure type.",
-                "Construct a failure with !Error(args) or !Error { field: value }.",
+                format!("Construct a failure with {example}."),
             );
             FailArguments::Tuple(Vec::new())
         };
@@ -1992,7 +3115,9 @@ impl Parser {
         {
             Some(arguments)
         } else {
-            self.index = saved_index;
+            if !self.nesting_drained {
+                self.index = saved_index;
+            }
             self.diagnostics.truncate(saved_diagnostics);
             None
         }
@@ -2007,6 +3132,9 @@ impl Parser {
                 arguments.push(self.parse_type());
                 if self.eat_punct(Punctuation::Comma) {
                     self.skip_newlines();
+                    if self.edition == Edition::V0_2 && self.at_punct(Punctuation::Gt) {
+                        break;
+                    }
                     continue;
                 }
                 break;
@@ -2069,6 +3197,9 @@ impl Parser {
                     patterns.push(self.parse_pattern());
                     if self.eat_punct(Punctuation::Comma) {
                         self.skip_newlines();
+                        if self.edition == Edition::V0_2 && self.at_punct(Punctuation::RParen) {
+                            break;
+                        }
                         continue;
                     }
                     break;
@@ -2188,6 +3319,9 @@ impl Parser {
             TokenKind::Float => Some(Literal::Float(token.text.clone())),
             TokenKind::String => decode_string_literal(&token.text).ok().map(Literal::String),
             TokenKind::ByteString => decode_byte_literal(&token.text).ok().map(Literal::Bytes),
+            TokenKind::Character => decode_char_literal(&token.text)
+                .ok()
+                .map(Literal::Character),
             TokenKind::Keyword(Keyword::True) => Some(Literal::Bool(true)),
             TokenKind::Keyword(Keyword::False) => Some(Literal::Bool(false)),
             _ => None,
@@ -2195,10 +3329,42 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Type {
+        self.depth += 1;
+        if self.depth > MAX_NESTING_DEPTH {
+            let span = self.peek().span;
+            self.nesting_limit_error("Type nesting exceeds the supported depth.");
+            if self.can_consume_for_progress() {
+                self.bump();
+            }
+            self.depth -= 1;
+            return Type {
+                kind: TypeKind::Unit,
+                span,
+            };
+        }
+        let ty = self.parse_type_inner();
+        self.depth -= 1;
+        ty
+    }
+
+    fn parse_type_inner(&mut self) -> Type {
         let token = self.peek().clone();
         let start = token.span.start;
 
         match token.kind {
+            TokenKind::Punct(Punctuation::Underscore) if self.edition == Edition::V0_2 => {
+                self.bump();
+                self.error(
+                    INVALID_TYPE_ARGUMENT,
+                    "Wildcard type arguments are not supported in edition 0.2.",
+                    token.span,
+                    "Write an explicit type instead of `_`.",
+                );
+                Type {
+                    kind: TypeKind::Unit,
+                    span: token.span,
+                }
+            }
             TokenKind::Punct(Punctuation::LBracket) => {
                 self.bump();
                 let element = self.parse_type();
@@ -2243,6 +3409,10 @@ impl Parser {
                 loop {
                     elements.push(self.parse_type());
                     if self.eat_punct(Punctuation::Comma) {
+                        self.skip_newlines();
+                        if self.edition == Edition::V0_2 && self.at_punct(Punctuation::RParen) {
+                            break;
+                        }
                         continue;
                     }
                     break;
@@ -2272,6 +3442,17 @@ impl Parser {
                 kind: TypeKind::Path(self.parse_type_path()),
                 span: self.span_from(start),
             },
+            TokenKind::Keyword(Keyword::Char) if self.edition == Edition::V0_2 => {
+                self.bump();
+                Type {
+                    kind: TypeKind::Path(TypePath {
+                        segments: vec!["char".to_owned()],
+                        arguments: Vec::new(),
+                        span: token.span,
+                    }),
+                    span: token.span,
+                }
+            }
             _ => {
                 self.error(
                     INVALID_TYPE,
@@ -2388,12 +3569,68 @@ impl Parser {
             && self
                 .peek_at(1)
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::At))
-            && self
-                .peek_at(2)
-                .is_some_and(|token| token.text == "script")
+            && self.peek_at(2).is_some_and(|token| token.text == "script")
             && self
                 .peek_at(3)
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Colon))
+    }
+
+    fn at_canonical_scope(&self) -> bool {
+        if self.edition != Edition::V0_2 || !self.at_punct(Punctuation::At) {
+            return false;
+        }
+        let mut index = self.index + 1;
+        let Some(name) = self.tokens.get(index) else {
+            return false;
+        };
+        if name.kind != TokenKind::Identifier || !matches!(name.text.as_str(), "mode" | "memory") {
+            return false;
+        }
+        index += 1;
+        if self.tokens.get(index).map(|token| &token.kind)
+            != Some(&TokenKind::Punct(Punctuation::LParen))
+        {
+            return false;
+        }
+        index = self.skip_newlines_at(index + 1);
+        if !self
+            .tokens
+            .get(index)
+            .is_some_and(|token| token.kind == TokenKind::Identifier)
+        {
+            return false;
+        }
+        index = self.skip_newlines_at(index + 1);
+        if self.tokens.get(index).map(|token| &token.kind)
+            != Some(&TokenKind::Punct(Punctuation::RParen))
+        {
+            return false;
+        }
+        index = self.skip_newlines_at(index + 1);
+        self.tokens.get(index).map(|token| &token.kind)
+            == Some(&TokenKind::Punct(Punctuation::LBrace))
+    }
+
+    fn skip_continuation_newlines(&mut self) {
+        if self.edition == Edition::V0_2 {
+            self.skip_newlines();
+        }
+    }
+
+    fn next_non_newline_is_punct(&self, punctuation: Punctuation) -> bool {
+        let index = self.skip_newlines_at(self.index);
+        self.tokens.get(index).map(|token| &token.kind) == Some(&TokenKind::Punct(punctuation))
+    }
+
+    fn skip_newlines_at(&self, mut index: usize) -> usize {
+        while self
+            .tokens
+            .get(index)
+            .is_some_and(|token| token.kind == TokenKind::Newline)
+        {
+            index += 1;
+        }
+        index
     }
 
     fn looks_like_scope_annotation(&self) -> bool {
@@ -2410,12 +3647,17 @@ impl Parser {
     }
 
     fn looks_like_struct_init(&self) -> bool {
-        self.at_punct(Punctuation::LBrace)
+        if !self.at_punct(Punctuation::LBrace) {
+            return false;
+        }
+        let name = self.skip_newlines_at(self.index + 1);
+        let colon = self.skip_newlines_at(name + 1);
+        self.tokens
+            .get(name)
+            .is_some_and(|token| token.kind == TokenKind::Identifier)
             && self
-                .peek_at(1)
-                .is_some_and(|token| token.kind == TokenKind::Identifier)
-            && self
-                .peek_at(2)
+                .tokens
+                .get(colon)
                 .is_some_and(|token| token.kind == TokenKind::Punct(Punctuation::Colon))
     }
 
@@ -2619,6 +3861,51 @@ impl Parser {
     }
 }
 
+fn is_binary_operator_token(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Punct(
+            Punctuation::Plus
+                | Punctuation::Minus
+                | Punctuation::Star
+                | Punctuation::Slash
+                | Punctuation::Percent
+                | Punctuation::PlusWrap
+                | Punctuation::MinusWrap
+                | Punctuation::StarWrap
+                | Punctuation::SlashWrap
+                | Punctuation::EqEq
+                | Punctuation::BangEq
+                | Punctuation::Lt
+                | Punctuation::LtEq
+                | Punctuation::Gt
+                | Punctuation::GtEq
+                | Punctuation::AmpAmp
+                | Punctuation::Amp
+                | Punctuation::Pipe
+                | Punctuation::Caret
+                | Punctuation::PipePipe
+                | Punctuation::Eq
+        )
+    )
+}
+
+fn expression_has_unparenthesized_struct_init(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::StructInit { .. } => true,
+        ExprKind::Binary { left, right, .. } => {
+            expression_has_unparenthesized_struct_init(left)
+                || expression_has_unparenthesized_struct_init(right)
+        }
+        ExprKind::Assign { target, value } => {
+            expression_has_unparenthesized_struct_init(target)
+                || expression_has_unparenthesized_struct_init(value)
+        }
+        ExprKind::Unary { operand, .. } => expression_has_unparenthesized_struct_init(operand),
+        _ => false,
+    }
+}
+
 fn expression_to_type_path(expression: &Expr) -> Option<TypePath> {
     match &expression.kind {
         ExprKind::Identifier(name) => Some(TypePath {
@@ -2647,14 +3934,620 @@ fn expression_to_type_path(expression: &Expr) -> Option<TypePath> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, parse_with_comments};
-    use crate::ast::{
-        ElseBranch, ExprKind, ImportForm, ItemKind, PatternKind, StmtKind, StructFields, TypeKind,
-        Visibility,
+    use super::{
+        ParseOptions, parse, parse_with_comments, parse_with_comments_with_options,
+        parse_with_options,
     };
+    use crate::ast::{
+        ElseBranch, ExprKind, FailArguments, ImportForm, ItemKind, Literal, MatchArmBody,
+        PatternKind, ScopeKind, StmtKind, StructFields, TypeKind, Visibility,
+    };
+    use crate::edition::Edition;
 
     fn parse_ok(source: &str) -> crate::ast::Module {
         parse(source).unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"))
+    }
+
+    fn parse_v02(source: &str) -> Result<crate::ast::Module, Vec<crate::diagnostic::Diagnostic>> {
+        parse_with_options(
+            source,
+            ParseOptions {
+                edition: Edition::V0_2,
+            },
+        )
+    }
+
+    #[test]
+    fn v0_2_parses_fail_keyword_in_both_shapes() {
+        let tuple = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    fail Error("x")
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &tuple.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Fail { error, arguments } = &expression.kind else {
+            panic!("expected fail expression");
+        };
+        assert_eq!(error.segments, vec!["Error"]);
+        assert!(matches!(arguments, FailArguments::Tuple(items) if items.len() == 1));
+
+        let named = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    fail Error { message: "x" }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &named.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Fail { arguments, .. } = &expression.kind else {
+            panic!("expected fail expression");
+        };
+        assert!(matches!(arguments, FailArguments::Struct(fields) if fields.len() == 1));
+    }
+
+    #[test]
+    fn v0_2_parses_postfix_question_as_propagation() {
+        let kind = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    work()?
+}
+"#,
+        )
+        .map(|module| {
+            let ItemKind::Function(function) = &module.items[0].kind else {
+                panic!("expected function");
+            };
+            let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+                panic!("expected expression statement");
+            };
+            expression.kind.clone()
+        })
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+
+        let ExprKind::Propagate(inner) = kind else {
+            panic!("expected propagation");
+        };
+        assert!(matches!(inner.kind, ExprKind::Call { .. }));
+    }
+
+    #[test]
+    fn v0_2_rejects_prefix_and_postfix_bang_with_migration_hints() {
+        let prefix = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    !Error("x")
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(prefix.iter().any(|diagnostic| {
+            diagnostic.code == "NS2015"
+                && diagnostic
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("fail Error"))
+        }));
+
+        let postfix = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    work()!
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(postfix.iter().any(|diagnostic| {
+            diagnostic.code == "NS2015"
+                && diagnostic
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("`?`"))
+        }));
+    }
+
+    #[test]
+    fn v0_2_rejects_return_fail_as_redundant() {
+        let diagnostics = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    return fail Error("x")
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "NS4014"
+                && diagnostic
+                    .hint
+                    .as_deref()
+                    .is_some_and(|hint| hint.contains("Remove `return`"))
+        }));
+    }
+
+    #[test]
+    fn v0_1_keeps_bang_forms_and_treats_fail_as_an_identifier() {
+        let prefix = parse_ok(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    !Error("x")
+}
+"#,
+        );
+        let ItemKind::Function(function) = &prefix.items[0].kind else {
+            panic!("expected function");
+        };
+        assert!(matches!(
+            function.body.statements[0].kind,
+            StmtKind::Expr(ref expression) if matches!(expression.kind, ExprKind::Fail { .. })
+        ));
+
+        let postfix = parse_ok(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    work()!
+}
+"#,
+        );
+        let ItemKind::Function(function) = &postfix.items[0].kind else {
+            panic!("expected function");
+        };
+        assert!(matches!(
+            function.body.statements[0].kind,
+            StmtKind::Expr(ref expression) if matches!(expression.kind, ExprKind::Propagate(_))
+        ));
+
+        let identifier = parse_ok(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    fail
+}
+"#,
+        );
+        let ItemKind::Function(function) = &identifier.items[0].kind else {
+            panic!("expected function");
+        };
+        assert!(matches!(
+            function.body.statements[0].kind,
+            StmtKind::Expr(ref expression)
+                if matches!(&expression.kind, ExprKind::Identifier(name) if name == "fail")
+        ));
+    }
+
+    #[test]
+    fn v0_2_parses_turbofish_calls_constructors_and_unit_variants() {
+        let call = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    identity::<i32>(5)
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &call.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Call { callee, .. } = &expression.kind else {
+            panic!("expected call");
+        };
+        assert!(matches!(
+            &callee.kind,
+            ExprKind::TypeArguments { arguments, .. } if arguments.len() == 1
+        ));
+
+        let constructor = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    Box::<i32> { value: 1 }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &constructor.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::StructInit { path, .. } = &expression.kind else {
+            panic!("expected struct initializer");
+        };
+        assert_eq!(path.segments, vec!["Box"]);
+        assert_eq!(path.arguments.len(), 1);
+
+        let unit_variant = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    None::<i32>
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &unit_variant.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        assert!(matches!(expression.kind, ExprKind::TypeArguments { .. }));
+    }
+
+    #[test]
+    fn v0_2_rejects_second_and_misplaced_turbofish() {
+        let second = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    identity::<i32>::<u8>()
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(second.iter().any(|diagnostic| {
+            diagnostic.code == "NS2011" && diagnostic.message.contains("Only one turbofish")
+        }));
+
+        let indexed = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    xs[0]::<i32>()
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(indexed.iter().any(|diagnostic| {
+            diagnostic.code == "NS2011" && diagnostic.message.contains("must follow a path")
+        }));
+
+        let member = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    math.add::<i32>
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(member.iter().any(|diagnostic| {
+            diagnostic.code == "NS2010" && diagnostic.message.contains("qualified value path")
+        }));
+    }
+
+    #[test]
+    fn v0_1_keeps_the_bare_angle_type_argument_heuristic() {
+        let module = parse_ok(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    identity<i32>(5)
+}
+"#,
+        );
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Call { callee, .. } = &expression.kind else {
+            panic!("expected call");
+        };
+        assert!(matches!(
+            &callee.kind,
+            ExprKind::TypeArguments { arguments, .. } if arguments.len() == 1
+        ));
+    }
+
+    #[test]
+    fn v0_2_parses_canonical_scope_blocks_at_item_and_statement_positions() {
+        let items = parse_v02(
+            r#"
+module app.main
+
+@mode(system) {
+    pub fn helper() -> i32 {
+        return 1
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::ScopedItems(scoped) = &items.items[0].kind else {
+            panic!("expected scoped items");
+        };
+        assert_eq!(scoped.annotation.kind, ScopeKind::Mode);
+        assert_eq!(scoped.annotation.value, "system");
+        assert_eq!(scoped.items.len(), 1);
+
+        let statements = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    @memory(system) {
+        let value = 1
+        return value
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &statements.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Scoped(scoped) = &function.body.statements[0].kind else {
+            panic!("expected scoped statements");
+        };
+        assert_eq!(scoped.annotation.kind, ScopeKind::Memory);
+        assert_eq!(scoped.annotation.value, "system");
+        assert_eq!(scoped.statements.len(), 2);
+    }
+
+    #[test]
+    fn v0_2_allows_nested_canonical_scopes_without_semicolons() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    @mode(system) {
+        @memory(system) {
+            return 1
+        }
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Scoped(outer) = &function.body.statements[0].kind else {
+            panic!("expected outer scope");
+        };
+        let StmtKind::Scoped(inner) = &outer.statements[0].kind else {
+            panic!("expected inner scope");
+        };
+        assert_eq!(inner.annotation.kind, ScopeKind::Memory);
+    }
+
+    #[test]
+    fn v0_1_keeps_the_braced_scope_block_form() {
+        let module = parse_ok(
+            r#"
+module app.main
+
+{@mode:system;
+    pub fn helper() -> i32 {
+        return 1
+    }
+}
+"#,
+        );
+        let ItemKind::ScopedItems(scoped) = &module.items[0].kind else {
+            panic!("expected scoped items");
+        };
+        assert_eq!(scoped.annotation.kind, ScopeKind::Mode);
+        assert_eq!(scoped.annotation.value, "system");
+    }
+
+    #[test]
+    fn v0_2_allows_trailing_commas_in_lists() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn identity<T,>(value: T,) -> (T,) {
+    let pair = (value, value,)
+    match pair {
+        (first, _,) => first,
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        assert_eq!(function.type_parameters, vec!["T"]);
+        assert!(function.return_type.is_some());
+        let StmtKind::Let { value, .. } = &function.body.statements[0].kind else {
+            panic!("expected let");
+        };
+        assert!(matches!(value.kind, ExprKind::Tuple(ref elements) if elements.len() == 2));
+    }
+
+    #[test]
+    fn v0_2_continues_after_a_trailing_binary_operator_and_before_a_dot() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn run(user: User) -> i32 {
+    let value = 1 +
+        2
+    let name = user
+        .name
+    return value
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Let { value, .. } = &function.body.statements[0].kind else {
+            panic!("expected let");
+        };
+        assert!(matches!(
+            value.kind,
+            ExprKind::Binary {
+                operator: crate::ast::BinaryOp::Add,
+                ..
+            }
+        ));
+        let StmtKind::Let { value, .. } = &function.body.statements[1].kind else {
+            panic!("expected let");
+        };
+        assert!(matches!(value.kind, ExprKind::Member { .. }));
+    }
+
+    #[test]
+    fn v0_2_rejects_a_leading_binary_operator() {
+        let diagnostics = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    let value = * 2
+    return value
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "NS2002"
+                && diagnostic
+                    .message
+                    .contains("binary operator cannot start an expression")
+        }));
+    }
+
+    #[test]
+    fn v0_2_enforces_match_arm_commas_except_after_blocks() {
+        let missing = parse_v02(
+            r#"
+module app.main
+
+fn run(value: i32) -> i32 {
+    match value {
+        1 => 1
+        2 => 2
+    }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(missing.iter().any(|diagnostic| {
+            diagnostic.code == "NS2006" && diagnostic.message.contains("match arm")
+        }));
+
+        let blocks = parse_v02(
+            r#"
+module app.main
+
+fn run(value: i32) -> i32 {
+    match value {
+        1 => { return 1 }
+        2 => { return 2 }
+    }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let ItemKind::Function(function) = &blocks.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected match expression");
+        };
+        assert!(matches!(expression.kind, ExprKind::Match { ref arms, .. } if arms.len() == 2));
+    }
+
+    #[test]
+    fn v0_1_does_not_continue_after_a_trailing_binary_operator() {
+        assert!(
+            parse(
+                r#"
+module app.main
+
+fn run() -> i32 {
+    let value = 1 +
+        2
+    return value
+}
+"#
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn v0_2_ast_serializes_fail_and_propagation_contract() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn run() -> i32 {
+    let value = work()?
+    fail Error { message: "x" }
+}
+"#,
+        )
+        .unwrap_or_else(|diagnostics| panic!("{diagnostics:?}"));
+        let value = serde_json::to_value(&module).expect("AST must serialize");
+
+        let statements = &value["items"][0]["kind"]["Function"]["body"]["statements"];
+        let propagate = &statements[0]["kind"]["Let"]["value"]["kind"]["Propagate"];
+        assert!(
+            propagate.is_object(),
+            "postfix `?` must serialize as Propagate"
+        );
+        let failure = &statements[1]["kind"]["Expr"]["kind"]["Fail"];
+        assert!(
+            failure["error"].is_object(),
+            "fail type path must serialize"
+        );
+        assert!(
+            failure["arguments"]["Struct"].is_array(),
+            "named fail arguments must serialize as Struct"
+        );
     }
 
     #[test]
@@ -3081,5 +4974,233 @@ module io
                 .iter()
                 .any(|diagnostic| diagnostic.code == "NS3002")
         );
+    }
+
+    #[test]
+    fn slice_c_parse_error_stays_bounded() {
+        let diagnostics =
+            parse_with_comments_with_options("public fn broken( {\n", ParseOptions::default())
+                .expect_err("expected a parse error");
+        assert!(
+            diagnostics.len() <= 2,
+            "one malformed parameter list must not cascade: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "NS2001")
+        );
+    }
+
+    #[test]
+    fn slice_c_malformed_struct_body_stays_bounded() {
+        let diagnostics = parse_with_comments_with_options(
+            "struct Broken {\n    name: ,\n}\n",
+            ParseOptions::default(),
+        )
+        .expect_err("expected a parse error");
+        assert!(
+            diagnostics.len() <= 2,
+            "one malformed field must not cascade: {diagnostics:?}"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "NS2003")
+        );
+    }
+
+    #[test]
+    fn slice_c_depth_guard_is_never_suppressed() {
+        let source = format!("fn f() -> i32 {{ return {} }}\n", "(".repeat(80));
+        let diagnostics = parse_with_comments_with_options(&source, ParseOptions::default())
+            .expect_err("expected a depth-limit error");
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "NS2002")
+        );
+    }
+
+    #[test]
+    fn v0_2_if_let_desugars_to_match() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn classify(value: Option<i32>) -> i32 {
+    if let Some(inner) = value {
+        return inner
+    } else {
+        return 0
+    }
+}
+"#,
+        )
+        .expect("if let should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Expr(expression) = &function.body.statements[0].kind else {
+            panic!("expected expression statement");
+        };
+        let ExprKind::Match { value: _, arms } = &expression.kind else {
+            panic!("expected match desugaring");
+        };
+        assert_eq!(arms.len(), 2);
+        assert!(matches!(arms[0].body, MatchArmBody::Block(_)));
+        assert!(matches!(arms[1].pattern.kind, PatternKind::Wildcard));
+        assert!(matches!(arms[1].body, MatchArmBody::Block(_)));
+    }
+
+    #[test]
+    fn v0_2_while_let_desugars_to_while_match_break() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn drain(values: [Option<i32>]) -> i32 {
+    while let Some(value) = values.pop() {
+        return value
+    }
+    return 0
+}
+"#,
+        )
+        .expect("while let should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::While { condition, body } = &function.body.statements[0].kind else {
+            panic!("expected while desugaring");
+        };
+        assert!(matches!(
+            condition.kind,
+            ExprKind::Literal(Literal::Bool(true))
+        ));
+        let StmtKind::Expr(expression) = &body.statements[0].kind else {
+            panic!("expected match expression in loop body");
+        };
+        let ExprKind::Match { arms, .. } = &expression.kind else {
+            panic!("expected match desugaring");
+        };
+        assert_eq!(arms.len(), 2);
+        let MatchArmBody::Block(break_block) = &arms[1].body else {
+            panic!("expected break arm");
+        };
+        assert!(matches!(break_block.statements[0].kind, StmtKind::Break));
+    }
+
+    #[test]
+    fn v0_2_parses_exclusive_range_in_for() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn count() -> i32 {
+    let mut total = 0
+    for value in 0..3 {
+        total = total + value
+    }
+    return total
+}
+"#,
+        )
+        .expect("range should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::For { iterable, .. } = &function.body.statements[1].kind else {
+            panic!("expected for loop");
+        };
+        let ExprKind::Range {
+            start: _,
+            end: _,
+            inclusive,
+        } = &iterable.kind
+        else {
+            panic!("expected range iterable");
+        };
+        assert!(!inclusive);
+    }
+
+    #[test]
+    fn v0_2_parses_inclusive_range_in_for() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn count() -> i32 {
+    let mut total = 0
+    for value in 0..=3 {
+        total = total + value
+    }
+    return total
+}
+"#,
+        )
+        .expect("inclusive range should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::For { iterable, .. } = &function.body.statements[1].kind else {
+            panic!("expected for loop");
+        };
+        assert!(matches!(
+            &iterable.kind,
+            ExprKind::Range {
+                inclusive: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn v0_2_index_range_lowers_to_slice_call() {
+        let module = parse_v02(
+            r#"
+module app.main
+
+fn part(text: str) -> str ! SliceError {
+    return text[0..2]?
+}
+"#,
+        )
+        .expect("index range should parse in edition 0.2");
+        let ItemKind::Function(function) = &module.items[0].kind else {
+            panic!("expected function");
+        };
+        let StmtKind::Return {
+            value: Some(expression),
+        } = &function.body.statements[0].kind
+        else {
+            panic!("expected return");
+        };
+        let ExprKind::Propagate(inner) = &expression.kind else {
+            panic!("expected propagation");
+        };
+        let ExprKind::Call { callee, arguments } = &inner.kind else {
+            panic!("expected slice call");
+        };
+        assert!(matches!(
+            &callee.kind,
+            ExprKind::Member { member, .. } if member == "slice"
+        ));
+        assert_eq!(arguments.len(), 2);
+    }
+
+    #[test]
+    fn v0_1_still_rejects_if_let() {
+        let source = r#"
+module app.main
+
+fn classify(value: Option<i32>) -> i32 {
+    if let Some(inner) = value {
+        return inner
+    }
+    return 0
+}
+"#;
+        assert!(parse(source).is_err());
     }
 }

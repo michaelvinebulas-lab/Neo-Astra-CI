@@ -1,0 +1,10 @@
+// edition: 0.2
+// purpose: postfix dot starts an integer-only tuple index, never a float
+
+fn run() -> i32 {
+    let pair = (1, 2)
+    let first = pair.0
+    let second = pair.1
+    let float = 1.0
+    return first + second
+}

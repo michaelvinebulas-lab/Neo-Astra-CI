@@ -7,6 +7,7 @@ use std::rc::Rc;
 use astra_core::ast;
 use astra_core::checker::CheckResult;
 use astra_core::hir;
+use astra_core::literal::{float_suffix, integer_suffix};
 use astra_core::mode::Mode;
 use astra_core::span::Span;
 use astra_core::types::Type;
@@ -14,7 +15,7 @@ use astra_core::types::Type;
 use crate::error::{Abort, Fault, Frame, NovaError, Panic};
 use crate::host::Host;
 use crate::value::{
-    BuiltinFunction, Constructor, ConstructorKind, Float, FunctionValue, Integer,
+    BuiltinFunction, ChannelValue, Constructor, ConstructorKind, Float, FunctionValue, Integer,
     StructFieldsValue, Task, TaskFailure, Value, values_equal,
 };
 
@@ -506,8 +507,46 @@ impl Interpreter {
                 iterable,
                 body,
             } => {
-                let iterable = eval_value!(self.eval_expr(iterable, scope));
-                let values = self.iterate(iterable)?;
+                let values = if let ast::ExprKind::Range {
+                    start,
+                    end,
+                    inclusive,
+                } = &iterable.kind
+                {
+                    let start = eval_value!(self.eval_expr(start, scope));
+                    let end = eval_value!(self.eval_expr(end, scope));
+                    match (start, end) {
+                        (Value::Integer(start), Value::Integer(end)) => {
+                            let ty = start.ty.clone();
+                            let mut values = Vec::new();
+                            let mut current = start.value;
+                            let stop = if *inclusive {
+                                end.value.checked_add(1)
+                            } else {
+                                Some(end.value)
+                            };
+                            let Some(stop) = stop else {
+                                return Err(self.internal("range end overflows i128"));
+                            };
+                            while current < stop {
+                                values.push(Value::Integer(Integer::new(current, ty.clone())));
+                                let Some(next) = current.checked_add(1) else {
+                                    break;
+                                };
+                                current = next;
+                            }
+                            values
+                        }
+                        _ => {
+                            return Err(
+                                self.internal("range bounds were not integers after type checking")
+                            );
+                        }
+                    }
+                } else {
+                    let iterable = eval_value!(self.eval_expr(iterable, scope));
+                    self.iterate(iterable)?
+                };
                 for value in values {
                     let iteration = Scope::child(scope);
                     iteration.borrow_mut().values.insert(binding.clone(), value);
@@ -548,14 +587,24 @@ impl Interpreter {
         loop {
             let tasks = std::mem::take(&mut scope.borrow_mut().tasks);
             for task in tasks {
-                let (joined, outcome) = {
+                let (joined, cancelled, outcome) = {
                     let mut task = task.borrow_mut();
                     let joined = task.joined;
                     task.joined = true;
-                    (joined, task.outcome.clone())
+                    (joined, task.cancelled, task.outcome.clone())
                 };
-                if !joined && let Some(Err(TaskFailure::Panic(panic))) = outcome {
-                    pending = Some(Fault::Panic(panic));
+                if !joined {
+                    match outcome {
+                        Some(Err(TaskFailure::Panic(panic))) => {
+                            pending = Some(
+                                self.task_error(&panic.message, panic.span.unwrap_or_default()),
+                            );
+                        }
+                        None if cancelled => {
+                            pending = Some(self.task_error("task was cancelled", Span::default()));
+                        }
+                        _ => {}
+                    }
                 }
             }
 
@@ -637,6 +686,9 @@ impl Interpreter {
                 let target = eval_value!(self.eval_expr(target, scope));
                 let index = eval_value!(self.eval_expr(index, scope));
                 Ok(Flow::Value(self.index(target, index, expression.span)?))
+            }
+            ast::ExprKind::Range { .. } => {
+                Err(self.internal("range values are only supported as a for-loop iterable"))
             }
             ast::ExprKind::Member { target, member } => {
                 self.member(target, member, expression.span, scope)
@@ -771,7 +823,12 @@ impl Interpreter {
             | ast::BinaryOp::AddWrap
             | ast::BinaryOp::SubtractWrap
             | ast::BinaryOp::MultiplyWrap
-            | ast::BinaryOp::DivideWrap => self.numeric_binary(operator, left, right, span)?,
+            | ast::BinaryOp::DivideWrap
+            | ast::BinaryOp::BitAnd
+            | ast::BinaryOp::BitOr
+            | ast::BinaryOp::BitXor
+            | ast::BinaryOp::Shl
+            | ast::BinaryOp::Shr => self.numeric_binary(operator, left, right, span)?,
             ast::BinaryOp::And | ast::BinaryOp::Or => unreachable!("handled above"),
         };
         Ok(Flow::Value(value))
@@ -831,20 +888,25 @@ impl Interpreter {
                 ),
                 span: Some(span),
             })),
-            Value::ScriptBlock { name, language, span: script_span } => {
-                Err(Fault::Error(NovaError::ForeignScriptUnsupported {
-                    name,
-                    language,
-                    span: script_span,
-                }))
-            }
-            Value::ScriptFunction { script_name, language, span: script_span, .. } => {
-                Err(Fault::Error(NovaError::ForeignScriptUnsupported {
-                    name: script_name,
-                    language,
-                    span: script_span,
-                }))
-            }
+            Value::ScriptBlock {
+                name,
+                language,
+                span: script_span,
+            } => Err(Fault::Error(NovaError::ForeignScriptUnsupported {
+                name,
+                language,
+                span: script_span,
+            })),
+            Value::ScriptFunction {
+                script_name,
+                language,
+                span: script_span,
+                ..
+            } => Err(Fault::Error(NovaError::ForeignScriptUnsupported {
+                name: script_name,
+                language,
+                span: script_span,
+            })),
             Value::Imported { module, name } => {
                 if !self.modules.contains_key(&module) {
                     return Err(Fault::Error(NovaError::Unsupported {
@@ -919,7 +981,7 @@ impl Interpreter {
         &mut self,
         kind: ConstructorKind,
         arguments: Vec<Value>,
-        _span: Span,
+        span: Span,
     ) -> Result<Value, Fault> {
         match kind {
             ConstructorKind::Some => {
@@ -945,6 +1007,27 @@ impl Interpreter {
                     );
                 };
                 Ok(Value::Result(Err(Box::new(value.clone()))))
+            }
+            ConstructorKind::BytesNew => {
+                expect_arguments("bytes.new", &arguments, 1)?;
+                let Value::Integer(size) = &arguments[0] else {
+                    return Err(self.internal("bytes.new length was not an integer after checking"));
+                };
+                let limit = usize::try_from(isize::MAX).unwrap_or(usize::MAX);
+                let Some(length) = usize::try_from(size.value)
+                    .ok()
+                    .filter(|length| *length <= limit)
+                else {
+                    return Err(self.panic(
+                        format!("byte buffer length '{}' is out of range", size.value),
+                        span,
+                    ));
+                };
+                Ok(Value::Bytes(Rc::new(RefCell::new(vec![0; length]))))
+            }
+            ConstructorKind::ChannelCreate => {
+                expect_arguments("Channel.create", &arguments, 0)?;
+                Ok(Value::Channel(Rc::new(RefCell::new(ChannelValue::new()))))
             }
             ConstructorKind::TupleStruct { name, .. } => Ok(Value::tuple_struct(name, arguments)),
             ConstructorKind::EnumVariant {
@@ -984,6 +1067,98 @@ impl Interpreter {
                         vec![Value::string(value.to_string())],
                     ))))),
                 }
+            }
+            (Value::Str(value), "char_count") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::Integer(Integer::new(
+                    i128::try_from(value.chars().count()).unwrap_or(i128::MAX),
+                    Type::Usize,
+                )))
+            }
+            (Value::Str(value), "bytes") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::array(
+                    value
+                        .as_bytes()
+                        .iter()
+                        .map(|byte| Value::Integer(Integer::new(i128::from(*byte), Type::U8)))
+                        .collect(),
+                ))
+            }
+            (Value::Str(value), "chars") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::array(
+                    value
+                        .chars()
+                        .map(|character| Value::string(character.to_string()))
+                        .collect(),
+                ))
+            }
+            (Value::Str(value), "byte_at") => {
+                let index = expect_argument(name, &arguments, 0)?;
+                let Some(index) = checked_offset(index) else {
+                    return Ok(Value::Option(None));
+                };
+                Ok(Value::Option(value.as_bytes().get(index).copied().map(
+                    |byte| Box::new(Value::Integer(Integer::new(i128::from(byte), Type::U8))),
+                )))
+            }
+            (Value::Str(value), "char_at") => {
+                let index = expect_argument(name, &arguments, 0)?;
+                let Some(index) = checked_offset(index) else {
+                    return Ok(Value::Option(None));
+                };
+                Ok(Value::Option(value.chars().nth(index).map(|character| {
+                    Box::new(Value::string(character.to_string()))
+                })))
+            }
+            (Value::Str(value), "slice") => {
+                let arguments = expect_arguments(name, &arguments, 2)?;
+                let (Some(start), Some(end)) =
+                    (checked_offset(&arguments[0]), checked_offset(&arguments[1]))
+                else {
+                    return Ok(slice_error());
+                };
+                let bytes = value.as_bytes();
+                let boundary = |position: usize| {
+                    position == bytes.len()
+                        || (position < bytes.len() && (bytes[position] & 0xC0) != 0x80)
+                };
+                if start > end || end > bytes.len() || !boundary(start) || !boundary(end) {
+                    return Ok(slice_error());
+                }
+                match std::str::from_utf8(&bytes[start..end]) {
+                    Ok(part) => Ok(Value::Result(Ok(Box::new(Value::string(part))))),
+                    Err(_) => Ok(slice_error()),
+                }
+            }
+            (Value::Bytes(bytes), "len") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::Integer(Integer::new(
+                    i128::try_from(bytes.borrow().len()).unwrap_or(i128::MAX),
+                    Type::Usize,
+                )))
+            }
+            (Value::Bytes(bytes), "is_empty") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::Bool(bytes.borrow().is_empty()))
+            }
+            (Value::Bytes(bytes), "slice") => {
+                let arguments = expect_arguments(name, &arguments, 2)?;
+                let (Some(start), Some(end)) =
+                    (checked_offset(&arguments[0]), checked_offset(&arguments[1]))
+                else {
+                    return Err(self.panic("bytes slice index is out of range", span));
+                };
+                let bytes = bytes.borrow();
+                if start > end || end > bytes.len() {
+                    return Err(
+                        self.panic(format!("bytes slice {start}..{end} is out of bounds"), span)
+                    );
+                }
+                Ok(Value::Bytes(Rc::new(RefCell::new(
+                    bytes[start..end].to_vec(),
+                ))))
             }
             (Value::Array(values), "len") => {
                 expect_arguments(name, &arguments, 0)?;
@@ -1084,22 +1259,68 @@ impl Interpreter {
                     task.joined = true;
                     (task.cancelled, task.outcome.clone())
                 };
-                if cancelled {
-                    return Ok(Value::Failure(Box::new(Value::tuple_struct(
-                        "TaskError",
-                        vec![Value::string("task was cancelled")],
-                    ))));
-                }
                 match outcome {
                     Some(Ok(value)) => Ok(value),
                     Some(Err(TaskFailure::Error(error))) => Ok(Value::Failure(Box::new(error))),
-                    Some(Err(TaskFailure::Panic(panic))) => Err(Fault::Panic(panic)),
+                    Some(Err(TaskFailure::Panic(panic))) => {
+                        Err(self.task_error(&panic.message, span))
+                    }
+                    None if cancelled => Err(self.task_error("task was cancelled", span)),
                     None => Err(self.internal("joined a task without an outcome")),
                 }
             }
             (Value::Task(task), "cancel") => {
                 expect_arguments(name, &arguments, 0)?;
-                task.borrow_mut().cancelled = true;
+                let mut task = task.borrow_mut();
+                /* A request after the task produced a result has no effect and
+                is not recorded; `canceled()` reports cancellation accepted
+                while the task was running. The eager interpreter completes
+                every spawn before control returns, so this is a no-op here
+                (spec 9.4). */
+                if task.outcome.is_none() {
+                    task.cancelled = true;
+                }
+                Ok(Value::Unit)
+            }
+            (Value::Task(task), "canceled") => {
+                expect_arguments(name, &arguments, 0)?;
+                Ok(Value::Bool(task.borrow().cancelled))
+            }
+            (Value::Channel(channel), "send") => {
+                let value = expect_argument(name, &arguments, 0)?.clone();
+                let mut channel = channel.borrow_mut();
+                if channel.closed {
+                    return Ok(channel_error("send on a closed channel"));
+                }
+                if channel.buffer.len() >= channel.capacity {
+                    return Err(self.panic(
+                        "channel deadlock: send on a full bounded channel would block \
+                         (single-threaded runtime)",
+                        span,
+                    ));
+                }
+                channel.buffer.push(value);
+                Ok(Value::Result(Ok(Box::new(Value::Unit))))
+            }
+            (Value::Channel(channel), "receive") => {
+                expect_arguments(name, &arguments, 0)?;
+                let mut channel = channel.borrow_mut();
+                if channel.buffer.is_empty() {
+                    if channel.closed {
+                        return Ok(channel_error("receive on a closed channel"));
+                    }
+                    return Err(self.panic(
+                        "channel deadlock: receive on an empty channel would block \
+                         (single-threaded runtime)",
+                        span,
+                    ));
+                }
+                let value = channel.buffer.remove(0);
+                Ok(Value::Result(Ok(Box::new(value))))
+            }
+            (Value::Channel(channel), "close") => {
+                expect_arguments(name, &arguments, 0)?;
+                channel.borrow_mut().closed = true;
                 Ok(Value::Unit)
             }
             (Value::Integer(integer), method) => {
@@ -1301,6 +1522,29 @@ impl Interpreter {
                 let declaration = self.current().enums.get(name).cloned().expect("checked");
                 return self.enum_member(self.active.clone(), name, &declaration, member);
             }
+
+            // Built-in namespace constructors: `bytes.new(length)` and
+            // `Channel.create<T>()`. They resolve only when the name carries
+            // no value of its own, mirroring the checker's shadowing rules.
+            let is_builtin_namespace = {
+                let current = self.current();
+                self.scope_lookup(scope, name).is_none()
+                    && !current.constants.contains_key(name)
+                    && !current.imported_values.contains_key(name)
+                    && !current.imported_namespaces.contains_key(name)
+                    && !current.globals.borrow().values.contains_key(name)
+                    && !current.structs.contains_key(name)
+            };
+            if is_builtin_namespace {
+                let kind = match (name.as_str(), member) {
+                    ("bytes", "new") => Some(ConstructorKind::BytesNew),
+                    ("Channel", "create") => Some(ConstructorKind::ChannelCreate),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    return Ok(Flow::Value(Value::Constructor(Constructor { kind })));
+                }
+            }
         }
 
         let value = eval_value!(self.eval_expr(target, scope));
@@ -1372,7 +1616,11 @@ impl Interpreter {
                 module: module.clone(),
                 name: member.to_owned(),
             }),
-            Value::ScriptBlock { name, language, span } => Ok(Value::ScriptFunction {
+            Value::ScriptBlock {
+                name,
+                language,
+                span,
+            } => Ok(Value::ScriptFunction {
                 script_name: name.clone(),
                 function_name: member.to_owned(),
                 language: language.clone(),
@@ -1542,12 +1790,21 @@ impl Interpreter {
                 .iter()
                 .find(|(key, _)| values_equal(key, &index))
                 .map(|(_, value)| value.clone())
-                .ok_or_else(|| self.panic(format!("map key {index} is not present"), span)),
+                .ok_or_else(|| self.panic("map key is not present", span)),
             Value::Tuple(elements) => {
                 let index = self.index_usize(&index, span)?;
                 elements.borrow().get(index).cloned().ok_or_else(|| {
                     self.panic(format!("tuple index {index} is out of bounds"), span)
                 })
+            }
+            Value::Bytes(bytes) => {
+                let index = self.index_usize(&index, span)?;
+                bytes
+                    .borrow()
+                    .get(index)
+                    .copied()
+                    .map(|byte| Value::Integer(Integer::new(i128::from(byte), Type::U8)))
+                    .ok_or_else(|| self.panic(format!("byte index {index} is out of bounds"), span))
             }
             value => Err(self.internal(format!(
                 "indexed non-indexable value after type checking: {value}"
@@ -1643,6 +1900,22 @@ impl Interpreter {
                         *element = value;
                         Ok(Flow::Value(Value::Unit))
                     }
+                    Value::Bytes(bytes) => {
+                        let index = self.index_usize(&index, span)?;
+                        let Value::Integer(byte) = value else {
+                            return Err(
+                                self.internal("assigned a non-integer byte after type checking")
+                            );
+                        };
+                        let mut bytes = bytes.borrow_mut();
+                        let Some(slot) = bytes.get_mut(index) else {
+                            return Err(
+                                self.panic(format!("byte index {index} is out of bounds"), span)
+                            );
+                        };
+                        *slot = byte.value as u8;
+                        Ok(Flow::Value(Value::Unit))
+                    }
                     _ => Err(self.internal(
                         "assigned an index of a non-assignable value after type checking",
                     )),
@@ -1663,6 +1936,11 @@ impl Interpreter {
             Value::Str(value) => Ok(value
                 .chars()
                 .map(|character| Value::string(character.to_string()))
+                .collect()),
+            Value::Bytes(bytes) => Ok(bytes
+                .borrow()
+                .iter()
+                .map(|byte| Value::Integer(Integer::new(i128::from(*byte), Type::U8)))
                 .collect()),
             value => Err(self.internal(format!(
                 "iterated a non-iterable value after type checking: {value}"
@@ -1778,11 +2056,10 @@ impl Interpreter {
     fn pattern_literal(&self, literal: &ast::Literal, expected: &Value) -> Value {
         match literal {
             ast::Literal::Integer(text) => {
-                let (raw, suffix_u8) = strip_u8_suffix(text);
+                let (raw, suffix) = integer_suffix(text);
                 let ty = match expected {
                     Value::Integer(integer) => integer.ty.clone(),
-                    _ if suffix_u8 => Type::U8,
-                    _ => Type::I32,
+                    _ => suffix.unwrap_or(Type::I32),
                 };
                 let value = parse_integer(raw)
                     .and_then(|value| i128::try_from(value).ok())
@@ -1790,15 +2067,17 @@ impl Interpreter {
                 Value::Integer(Integer::new(value, ty))
             }
             ast::Literal::Float(text) => {
+                let (raw, suffix) = float_suffix(text);
                 let ty = match expected {
                     Value::Float(float) => float.ty.clone(),
-                    _ => Type::F64,
+                    _ => suffix.unwrap_or(Type::F64),
                 };
-                let value = text.replace('_', "").parse::<f64>().unwrap_or(0.0);
+                let value = raw.replace('_', "").parse::<f64>().unwrap_or(0.0);
                 Value::Float(Float::new(value, ty))
             }
             ast::Literal::String(value) => Value::string(value.clone()),
             ast::Literal::Bytes(value) => Value::Bytes(Rc::new(RefCell::new(value.clone()))),
+            ast::Literal::Character(value) => Value::string(value.to_string()),
             ast::Literal::Bool(value) => Value::Bool(*value),
             ast::Literal::Unit => Value::Unit,
         }
@@ -1992,32 +2271,36 @@ impl Interpreter {
     fn literal(&self, literal: &ast::Literal, span: Span) -> Value {
         match literal {
             ast::Literal::Integer(text) => {
-                let (raw, suffix_u8) = strip_u8_suffix(text);
+                let (raw, suffix) = integer_suffix(text);
                 let ty = self
                     .current()
                     .annotations
                     .get(&span)
                     .filter(|ty| ty.is_integer())
                     .cloned()
-                    .unwrap_or(if suffix_u8 { Type::U8 } else { Type::I32 });
+                    .or(suffix)
+                    .unwrap_or(Type::I32);
                 let value = parse_integer(raw)
                     .and_then(|value| i128::try_from(value).ok())
                     .unwrap_or(0);
                 Value::Integer(Integer::new(value, ty))
             }
             ast::Literal::Float(text) => {
+                let (raw, suffix) = float_suffix(text);
                 let ty = self
                     .current()
                     .annotations
                     .get(&span)
                     .filter(|ty| ty.is_float())
                     .cloned()
+                    .or(suffix)
                     .unwrap_or(Type::F64);
-                let value = text.replace('_', "").parse::<f64>().unwrap_or(0.0);
+                let value = raw.replace('_', "").parse::<f64>().unwrap_or(0.0);
                 Value::Float(Float::new(value, ty))
             }
             ast::Literal::String(value) => Value::string(value.clone()),
             ast::Literal::Bytes(value) => Value::Bytes(Rc::new(RefCell::new(value.clone()))),
+            ast::Literal::Character(value) => Value::string(value.to_string()),
             ast::Literal::Bool(value) => Value::Bool(*value),
             ast::Literal::Unit => Value::Unit,
         }
@@ -2085,6 +2368,38 @@ impl Interpreter {
     ) -> Result<Value, Fault> {
         match (left, right) {
             (Value::Integer(left), Value::Integer(right)) => {
+                if matches!(
+                    operator,
+                    ast::BinaryOp::BitAnd
+                        | ast::BinaryOp::BitOr
+                        | ast::BinaryOp::BitXor
+                        | ast::BinaryOp::Shl
+                        | ast::BinaryOp::Shr
+                ) {
+                    let value = match operator {
+                        ast::BinaryOp::BitAnd => left.value & right.value,
+                        ast::BinaryOp::BitOr => left.value | right.value,
+                        ast::BinaryOp::BitXor => left.value ^ right.value,
+                        ast::BinaryOp::Shl | ast::BinaryOp::Shr => {
+                            let shift = u32::try_from(right.value).map_err(|_| {
+                                self.panic("shift count must be non-negative", span)
+                            })?;
+                            let bits = integer_bits(&left.ty).unwrap_or(128);
+                            if shift >= bits {
+                                0
+                            } else if operator == ast::BinaryOp::Shl {
+                                left.value << shift
+                            } else {
+                                left.value >> shift
+                            }
+                        }
+                        _ => unreachable!("bitwise arm"),
+                    };
+                    return Ok(Value::Integer(Integer::new(
+                        normalize_integer(value, &left.ty),
+                        left.ty,
+                    )));
+                }
                 let mode = if matches!(
                     operator,
                     ast::BinaryOp::AddWrap
@@ -2211,6 +2526,17 @@ impl Interpreter {
         Fault::Panic(Panic::new(message, Some(span), stack))
     }
 
+    /// Raises a structured `TaskError` at a join or scope boundary. A nested
+    /// join already carries the prefix, so propagation never doubles it.
+    fn task_error(&self, message: &str, span: Span) -> Fault {
+        let message = if message.starts_with("TaskError: ") {
+            message.to_owned()
+        } else {
+            format!("TaskError: {message}")
+        };
+        self.panic(message, span)
+    }
+
     fn internal(&self, message: impl Into<String>) -> Fault {
         Fault::Error(NovaError::Internal(message.into()))
     }
@@ -2237,6 +2563,33 @@ fn expect_argument<'a>(
 ) -> Result<&'a Value, Fault> {
     expect_arguments(method, arguments, index + 1)?;
     Ok(&arguments[index])
+}
+
+/// Converts an integer argument to a byte or character offset, or `None`
+/// when the value is negative or too large to address.
+fn checked_offset(value: &Value) -> Option<usize> {
+    match value {
+        Value::Integer(integer) => usize::try_from(integer.value).ok(),
+        _ => None,
+    }
+}
+
+/// The shared `str.slice` failure payload from the spec (§6.2).
+fn slice_error() -> Value {
+    Value::Result(Err(Box::new(Value::tuple_struct(
+        "SliceError",
+        vec![Value::string(
+            "slice range is out of bounds or splits a UTF-8 scalar value",
+        )],
+    ))))
+}
+
+/// The shared `ChannelError` payload for closed-channel operations.
+fn channel_error(message: &str) -> Value {
+    Value::Result(Err(Box::new(Value::tuple_struct(
+        "ChannelError",
+        vec![Value::string(message)],
+    ))))
 }
 
 fn map_insert(entries: &mut Vec<(Value, Value)>, key: Value, value: Value) -> Option<Value> {
@@ -2278,14 +2631,6 @@ fn builtin_function(name: &str) -> Option<BuiltinFunction> {
         "dbg" => Some(BuiltinFunction::Dbg),
         "assert" => Some(BuiltinFunction::Assert),
         _ => None,
-    }
-}
-
-fn strip_u8_suffix(text: &str) -> (&str, bool) {
-    if let Some(raw) = text.strip_suffix("u8") {
-        (raw, true)
-    } else {
-        (text, false)
     }
 }
 

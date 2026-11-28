@@ -6,5 +6,5 @@
     "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src/**/*.ts"],
-  "references": [{ "path": "../manifest" }, { "path": "../registry" }]
+  "references": [{ "path": "../manifest" }, { "path": "../registry" }, { "path": "../toolchain" }]
 }

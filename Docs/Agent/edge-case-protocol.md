@@ -16,7 +16,7 @@ Every failure gets one of three outcomes:
 2. **Blocked** — the task cannot proceed without information or a decision.
 3. **Partial** — some work is complete, but the definition of done is not met.
 
-Record the outcome in `state-log.md`.
+Record the outcome in `../state.md`.
 
 ---
 
@@ -83,7 +83,7 @@ Do not silently pick the more convenient decision.
 
 1. Check whether it is already implied by a confirmed decision.
 2. If not, treat it as a new proposal.
-3. Add it to `todo.md` as a proposal.
+3. Add it to `../state.md` as a proposal.
 4. Ask whether it should become a decision before implementation.
 
 ### EC-05 — Scope creep
@@ -227,7 +227,7 @@ Do not silently pick the more convenient decision.
 
 **If** the correct next action is not obvious:
 
-1. Re-read `state-log.md` and `todo.md`.
+1. Re-read `../state.md` and `../state.md`.
 2. Re-read the relevant decision.
 3. If still unclear, propose two options and ask.
 

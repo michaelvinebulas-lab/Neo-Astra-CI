@@ -1,0 +1,17 @@
+// edition: 0.2
+// purpose: an Err member pattern head must be in the declared error set
+
+struct InvalidAge(str)
+struct Other(str)
+
+fn parse() -> i32 ! InvalidAge {
+    fail InvalidAge("x")
+}
+
+pub fn main() -> i32 {
+    match parse() {
+        Ok(value) => return value,
+        Err(InvalidAge(message)) => return 1,
+        Err(Other(message)) => return 2,
+    }
+}

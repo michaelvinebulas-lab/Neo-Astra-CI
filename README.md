@@ -5,52 +5,90 @@ targets. Source files use `.ns`; the CLI is `astra`.
 
 ## Repository
 
-- [`Docs/spec-v0.1.md`](Docs/spec-v0.1.md) — normative v0.1 language contract
-- [`Docs/syntax-legend.md`](Docs/syntax-legend.md) — plain-language syntax and operator reference
-- [`Docs/architecture.md`](Docs/architecture.md) — confirmed decisions D1-D25
-- [`Docs/Design/V1/`](Docs/Design/V1/) — V1 design baseline, including Nova and NoPM
-- [`Docs/Agent/`](Docs/Agent/) — agent operating system
-- [`orchestrator/`](orchestrator/) — TypeScript CLI, manifest, LSP, plugin, and codegen workspace
-- [`crates/`](crates/) — Rust compiler core, capabilities, protocol, and backend boundaries
+- [`Docs/spec-v0.1.md`](Docs/spec-v0.1.md) - normative v0.1 language contract
+- [`Docs/syntax-legend.md`](Docs/syntax-legend.md) - plain-language syntax and operator reference
+- [`Docs/install.md`](Docs/install.md) - install, run, and upgrade instructions
+- [`Docs/state.md`](Docs/state.md) - status, queue, and decisions
+- [`context.md`](context.md) - current handoff snapshot for a new session
+- [`Docs/roadmap.md`](Docs/roadmap.md) - what is built, what is next, and the versioning scheme
+- [`Docs/todo.md`](Docs/todo.md) - open tasks, grouped by version
+- [`Docs/archive/`](Docs/archive/) - frozen history: design baseline, proposals, earlier status docs
+- [`Docs/Agent/`](Docs/Agent/) - agent operating system
+- [`orchestrator/`](orchestrator/) - TypeScript CLI, manifest, plugin contracts, and codegen workspace
+- [`crates/`](crates/) - Rust compiler core, capabilities, protocol, and backend boundaries
 
 ## Quick start
 
-On a fresh machine with Node.js 22+ installed, the bootstrap command installs
-the JavaScript dependencies, Rust toolchain, Rust components, and future Wasm
-targets:
+On a fresh machine with Node.js 22+ installed:
 
 ```sh
 npm run bootstrap
-```
-
-Then build and verify:
-
-```sh
-npm run ci
+npm run bootstrap:verify
 npm run astra -- --help
 npm run astra -- fmt . --check
 ```
 
-The current scaffold can discover and parse `core.json` / `core.toml`, lex and
-parse `.ns` source into an AST with byte spans and structured diagnostics, format
-`.ns` source canonically through the Rust core while preserving `//` comments,
-resolve modules and visibility, type-check the supported language subset, and
-expose a JSON-RPC 2.0 compiler boundary through a native binary and raw Wasm
-exports. `astra fmt` also formats `core.json` / `core.toml` canonically and
-preserves TOML `#` comments. The `astra-nova` Rust crate executes checked HIR for
-the managed development subset and provides the `nova` binary with `run`, `eval`,
-`repl`, `watch`, `test`, `version`, inferred or explicit mode selection, text
-diagnostics, JSON reports with the resolved mode, and manifest entry discovery.
-The compiler infers least-privileged modes from annotations, built-ins, and the
-fixed-point call graph, and reports `NS5006` for unsatisfiable `web`/`system`
-joins. Error effects retain their construction and propagation sites, including
-cross-module function surfaces. NoPM is complete through its first four
-milestones: package model, target/mode resolution, deterministic graph, lockfile
-I/O, content-addressed store, path/Git/npm/Cargo/PyPI/NuGet/OCI adapters,
-`nopm lock`/`tree`/`install`/`search`/`audit`/`why`/`update`, and an optional
-registry gateway with signing and federation. The first JavaScript ESM backend
-slice emits readable, framework-free modules for the supported language subset,
-and `astra build` writes runnable ESM for a single entry module. Project imports,
-recoverable error effects, tasks, source maps, and TypeScript generation remain
-staged. Inline `@script` foreign-language blocks are designed in
-`Docs/Design/V1/10-inline-script-interop.md`; they are not implemented yet.
+Build a standalone host-native package that does not need Node.js or npm:
+
+```sh
+npm run package
+dist/neo-astra-*/bin/astra --version
+```
+
+See [`Docs/install.md`](Docs/install.md) for prerequisites, packaged
+installations, native builds, C-toolchain resolution, upgrades, and
+troubleshooting.
+
+## Status
+
+> **Development note (2026-11-11):** `1.0.0` is the published release. The
+> native Rust `astra`/`nopm` replacement for `1.0.1` is in progress: slices
+> 1-2c are landed, slice 3a is under review after two rejected handbacks, and
+> slices 3b/4 are pending. Native parity is 11/12. Nothing in this checkout
+> should be described as a shipped `1.0.1` until the release checklist is
+> green. See [`context.md`](context.md) for the exact tree state.
+
+The `1.0.0` checkout provides:
+
+- The two-manifest project model (`core.json` / `core.toml`, optional
+  `build.json` / `build.toml`), strict key ownership, canonical formatting, and
+  the package manifest edit API.
+- The Rust frontend: lexer, parser, AST, module resolver, capability/mode
+  inference, type checker, error effects, the system-mode evaluation-order
+  rule (`NS5007`), the task-handle copy-boundary guard (`NS4019`), and a
+  JSON-RPC compiler boundary exposed as a native binary and raw Wasm exports.
+- The `astra` CLI: `check`, `fmt`, `build`, `doctor`, `ast`, and `explain`.
+  `check` validates both manifests, runs the frontend over the project entry,
+  and validates `ffi` mappings; the other commands cover formatting, all four
+  targets, JavaScript/TypeScript/C/native code generation,
+  executable/staticlib/cdylib emission, and `--json` reports.
+  `ASTRA_COMPILER_BIN` and `--compiler` select the compiler binary;
+  `ASTRA_CC` and `toolchain.c` select the C toolchain.
+- Pinned C toolchains: verified Zig 0.13.0 downloads for Linux, macOS, and
+  Windows, a project-local cache, `zig cc`/`zig ar`, lockfile records, and
+  `--no-download` with manual instructions.
+- A standalone package: one host-native `astra` executable with
+  `astra nopm`, a tiny `nopm` launcher, the stripped Rust compiler and Nova
+  runtime, and the pinned native TypeScript compiler. It runs without Node.js,
+  npm, Cargo, or a source checkout; NoPM downloads other package managers only
+  when a project requests them.
+- The C backend: managed GC, manual memory, regions, FFI, generics, packages,
+  native libraries, export attributes, per-task heaps, scoped OS-thread tasks,
+  task cancellation, and channel messages. Inline `@script:js`,
+  `@script:ts`, `@script:c`, and `@script:cpp` blocks are emitted with boundary
+  validation; Python scripts are parsed but not generated.
+- The JavaScript and TypeScript backends: readable ESM/TS output, recoverable
+  failures, `?` propagation, checked integer methods, tasks, linked
+  multi-module projects, source maps, and the `@export_as` ABI surface.
+- The `nova` development runtime: `run`, `eval`, `watch`, `repl`, `test`, and
+  `version`, with inferred or explicit modes and JSON reports.
+- NoPM: package model, deterministic graph, lockfile/store, path/Git/npm/
+  Cargo/PyPI/NuGet/OCI adapters, `add`/`remove`/`lock`/`tree`/`install`/
+  `search`/`audit`/`why`/`update`, a `sys:` system-package source, and the
+  optional signed registry gateway.
+
+Still staged for a later release: the language server and plugin host, the Wasm
+execution backend, Web Worker code generation, and the browser playground UI.
+Inline scripts for languages other than JS, TS, C, and C++ are not generated in
+v1; unsupported targets reject explicitly rather than emulating different
+semantics.

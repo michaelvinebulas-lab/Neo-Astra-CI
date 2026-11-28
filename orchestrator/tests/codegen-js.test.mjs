@@ -13,6 +13,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { generateJavaScript } from "../packages/codegen-js/dist/index.js";
+import {
+  loadConformanceCases,
+  normalizeConformanceText,
+} from "./conformance.mjs";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const binary = join(
@@ -23,7 +27,43 @@ const binary = join(
 );
 const cli = join(root, "orchestrator", "packages", "cli", "dist", "index.js");
 
-function compileSource(source, { mode = "core", integerPolicy = "wrapping" } = {}) {
+/**
+ * Returns a compiler that can build a hosted C program, or null.
+ *
+ * `astra build --target native` links `astra_host.c`, which needs libc headers
+ * and a linker. clang on Windows without the MSVC/Windows SDK cannot do that
+ * even though it compiles freestanding objects, so probe instead of assuming.
+ */
+function hostedCCompiler() {
+  for (const candidate of [
+    "C:\\Program Files\\LLVM\\bin\\clang.exe",
+    "clang",
+    "gcc",
+    "cc",
+  ]) {
+    const version = spawnSync(candidate, ["--version"], { windowsHide: true });
+    if (version.status !== 0) {
+      continue;
+    }
+    const probe = spawnSync(
+      candidate,
+      ["-std=c17", "-fsyntax-only", "-x", "c", "-"],
+      {
+        windowsHide: true,
+        input: "#include <stdio.h>\nint main(void) { return 0; }\n",
+      },
+    );
+    if (probe.status === 0) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function compileSource(
+  source,
+  { mode = "core", integerPolicy = "wrapping", edition } = {},
+) {
   const request = JSON.stringify({
     jsonrpc: "2.0",
     id: "codegen",
@@ -34,6 +74,7 @@ function compileSource(source, { mode = "core", integerPolicy = "wrapping" } = {
       target: "js",
       mode,
       integerPolicy,
+      ...(edition === undefined ? {} : { edition }),
     },
   });
   const result = spawnSync(binary, [], { input: request, encoding: "utf8" });
@@ -158,6 +199,47 @@ test("javascript backend executes structs, enums, options, maps, and defer", () 
   );
 });
 
+test("javascript backend reads and writes map index syntax", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let mut values = {"a": 1, "b": 2}',
+      '    println(values["a"])',
+      '    values["b"] = 3',
+      '    values["c"] = 4',
+      '    println(values["b"])',
+      '    println(values["c"])',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$mapIndex\(map, key\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "1\n3\n4\nRETURN=0");
+});
+
+test("javascript backend panics on a missing map index key", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let values = {"a": 1}',
+      '    println(values["missing"])',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /panic: map key is not present/);
+});
+
 test("javascript backend implements wrapping and checked integer policies", () => {
   const wrapping = generate(
     [
@@ -193,6 +275,196 @@ test("javascript backend implements wrapping and checked integer policies", () =
   const checkedResult = runGenerated(checked.code);
   assert.notEqual(checkedResult.status, 0);
   assert.match(checkedResult.stderr, /integer overflow/);
+});
+
+test("javascript backend implements the arbitrary integer policy", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let a: i32 = 2147483647",
+      "    let b: i32 = 1",
+      "    let sum: i32 = a + b",
+      "    println(sum)",
+      "    println(sum * sum)",
+      "    println(a.wrapping_add(b))",
+      "    let mut index: usize = 0",
+      "    let values: [i32] = [10, 20, 30]",
+      "    println(values[index])",
+      "    let length: usize = values.len()",
+      "    println(length)",
+      '    match "42".to_int() {',
+      "        Ok(value) => println(value)",
+      '        Err(error) => println("parse error")',
+      "    }",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { integerPolicy: "arbitrary" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "2147483648\n4611686018427387904\n-2147483648\n10\n3\n42\nRETURN=0",
+  );
+});
+
+test("javascript backend implements checked integer methods", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let value: i32 = 2147483647",
+      "    match value.checked_add(1) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    let other: i32 = 7",
+      "    match other.checked_mul(6) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    let quotient: i32 = 9",
+      "    match quotient.checked_div(2) {",
+      "        Ok(result) => println(result)",
+      '        Err(error) => println("overflow")',
+      "    }",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$checkedInteger\(tag, operation, left, right\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "overflow\n42\n4\nRETURN=0");
+});
+
+test("javascript backend runs spawned tasks eagerly and joins them", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let task = spawn || {",
+      '        println("task")',
+      "        21",
+      "    }",
+      '    println("after")',
+      "    return task.join()",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$spawn\(body\)/);
+  assert.match(generated.code, /function \$taskJoin\(task\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "task\nafter\nRETURN=21");
+});
+
+test("javascript backend propagates panics from joined tasks", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let task = spawn || { panic("task boom") }',
+      "    task.join()",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /panic: TaskError: task boom/);
+});
+
+test("javascript backend reports task cancellation state without joining", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let task = spawn || { 42 }",
+      "    task.cancel()",
+      "    println(task.canceled())",
+      "    return task.join()",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$taskCanceled\(task\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "false\nRETURN=42");
+});
+
+test("javascript backend does not nest TaskError messages across joins", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let outer = spawn || {",
+      "        let inner = spawn || { panic(\"deep boom\") }",
+      "        inner.join()",
+      "        0",
+      "    }",
+      "    outer.join()",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /panic: TaskError: deep boom/);
+  assert.doesNotMatch(result.stderr, /TaskError: TaskError/);
+});
+
+test("javascript backend fails a scope for unjoined task panics", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    spawn || { panic("scope boom") }',
+      '    println("after")',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "after\n");
+  assert.match(result.stderr, /panic: TaskError: scope boom/);
+});
+
+test("javascript backend aborts immediately without running defers", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    defer println("deferred")',
+      '    abort("stop")',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$abort\(message\)/);
+
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /abort: stop/);
+  assert.doesNotMatch(result.stdout, /deferred/);
 });
 
 test("javascript backend preserves float values and rendering", () => {
@@ -247,6 +519,13 @@ test("javascript backend emits named and default exports", () => {
   assert.deepEqual(generated.diagnostics, []);
   assert.match(generated.code, /export \{ add as plus \};/);
   assert.match(generated.code, /export default add;/);
+  assert.match(
+    generated.declarations,
+    /declare function add\(a: number, b: number\): number;/,
+  );
+  assert.match(generated.declarations, /export \{ add as plus \};/);
+  assert.match(generated.declarations, /export \{ add as default \};/);
+  assert.match(generated.declarations, /declare function main\(\): number;/);
 
   const result = runGeneratedWith(generated.code, [
     'process.stdout.write(String(module.plus(2, 3)) + "," + String(module.default(4, 5)) + "," + String(module.main()));',
@@ -273,7 +552,7 @@ test("javascript backend emits expression default exports", () => {
   assert.equal(result.stdout, "7");
 });
 
-test("javascript backend rejects non-local control flow inside expression blocks", () => {
+test("javascript backend returns from inside a statement-position match", () => {
   const generated = generate(
     [
       "fn choose(value: i32) -> i32 {",
@@ -287,13 +566,114 @@ test("javascript backend rejects non-local control flow inside expression blocks
       "",
     ].join("\n"),
   );
-  assert.ok(
-    generated.diagnostics.some(
-      (diagnostic) =>
-        diagnostic.code === "NS8001" &&
-        diagnostic.message.includes("Control flow that exits an expression block"),
-    ),
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "RETURN=10");
+});
+
+test("javascript backend emits statement-position if and match control flow", () => {
+  const generated = generate(
+    [
+      "fn summarize(values: [i32]) -> i32 {",
+      "    let mut total = 0",
+      "    for value in values {",
+      "        if value < 0 {",
+      "            continue",
+      "        }",
+      "        match value {",
+      "            99 => { break }",
+      "            _ => { total = total + value }",
+      "        }",
+      "    }",
+      "    if total == 0 {",
+      "        return -1",
+      "    }",
+      "    return total",
+      "}",
+      "",
+      "pub fn main() -> i32 {",
+      "    println(summarize([-5, 1, 2, 99, 3]))",
+      "    println(summarize([0]))",
+      "    println(summarize([]))",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
   );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "3\n-1\n-1\nRETURN=0");
+});
+
+test("javascript backend returns from inside value-position expressions", () => {
+  const generated = generate(
+    [
+      "fn choose(value: i32) -> i32 {",
+      "    let picked: i32 = match value {",
+      "        1 => { return 10 },",
+      "        _ => { 20 },",
+      "    }",
+      "    return picked",
+      "}",
+      "fn first_negative(values: [i32]) -> i32 {",
+      "    for value in values {",
+      "        let ignored: i32 = if value < 0 { return value } else { 0 }",
+      "    }",
+      "    return 0",
+      "}",
+      "pub fn main() -> i32 {",
+      "    println(choose(1))",
+      "    println(choose(2))",
+      "    println(first_negative([1, -7, 3]))",
+      "    let task = spawn || {",
+      "        let result: i32 = match 1 {",
+      "            1 => { return 5 },",
+      "            _ => { 0 },",
+      "        }",
+      "        result",
+      "    }",
+      "    println(task.join())",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "10\n20\n-7\n5\nRETURN=0");
+});
+
+test("javascript backend breaks and continues through value-position expressions", () => {
+  const generated = generate(
+    [
+      "fn scan(values: [i32]) -> i32 {",
+      "    let mut total = 0",
+      "    for value in values {",
+      "        let step: i32 = if value < 0 { continue } else { value }",
+      "        if value == 99 {",
+      "            let stop: i32 = match value {",
+      "                99 => { break },",
+      "                _ => { 0 },",
+      "            }",
+      "        }",
+      "        total = total + step",
+      "    }",
+      "    return total",
+      "}",
+      "pub fn main() -> i32 {",
+      "    println(scan([1, -2, 3, 99, 4]))",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "4\nRETURN=0");
 });
 
 test("javascript backend rejects project imports explicitly", () => {
@@ -321,41 +701,239 @@ test("javascript backend rejects manual memory explicitly", () => {
   );
 });
 
-test("javascript backend rejects error propagation explicitly", () => {
+test("javascript backend executes recoverable failures and propagation", () => {
   const generated = generate(
     [
-      "fn parse() -> i32 ! ParseIntError {",
-      '    return "1".to_int()!',
+      "struct ParseError(str)",
+      "",
+      "fn reject() -> i32 ! ParseError {",
+      '    return !ParseError("negative")',
       "}",
-      "pub fn main() -> i32 ! ParseIntError { return parse()! }",
+      "",
+      "fn checked(value: i32) -> i32 ! ParseError {",
+      "    return match value < 0 {",
+      "        true => reject()!,",
+      "        false => value,",
+      "    }",
+      "}",
+      "",
+      "pub fn main() -> i32 {",
+      "    match checked(-1) {",
+      '        Ok(value) => println(value)',
+      '        Err(error) => println("caught")',
+      "    }",
+      "    match checked(2) {",
+      "        Ok(value) => println(value)",
+      '        Err(_) => println("unexpected")',
+      "    }",
+      '    match "not a number".to_int() {',
+      "        Ok(value) => println(value)",
+      '        Err(error) => println("parse error")',
+      "    }",
+      "    return 0",
+      "}",
       "",
     ].join("\n"),
   );
-  assert.ok(
-    generated.diagnostics.some(
-      (diagnostic) =>
-        diagnostic.code === "NS8001" &&
-        diagnostic.message.includes("Error propagation"),
-    ),
-  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$failure\(error\)/);
+  assert.match(generated.code, /function \$fail\(error\)/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "caught\n2\nparse error\nRETURN=0");
 });
 
-test("astra build writes runnable ESM and a module package marker", () => {
-  const project = mkdtempSync(join(tmpdir(), "astra-build-"));
+test("astra build emits a linked multi-module project with re-exports", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-build-project-"));
   try {
     mkdirSync(join(project, "src"), { recursive: true });
     writeFileSync(
       join(project, "core.json"),
       JSON.stringify(
-        {
-          package: { name: "demo", version: "1.0.0", edition: "2026", license: "MIT" },
-          build: { defaultTarget: "web", defaultMode: "core" },
-          nova: { entry: "src/main.ns" },
-          targets: {
-            web: { backend: "js", module: "esm", mode: "core", outDir: "dist/web" },
-          },
-          math: { integers: "wrapping" },
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
         },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "src", "lib.ns"),
+      [
+        "module demo.lib",
+        "",
+        "pub fn add(a: i32, b: i32) -> i32 { return a + b }",
+        "pub fn make() -> i32 { return 7 }",
+        "export default make",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "barrel.ns"),
+      [
+        "module demo.barrel",
+        "",
+        'export { add as plus } from "./lib"',
+        'export * from "./lib"',
+        'export * as math from "./lib"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        'import { add, plus, math } from "./barrel"',
+        'import make from "./lib"',
+        'import * as libMath from "./lib"',
+        "",
+        "pub fn main() -> i32 {",
+        "    println(plus(2, 3))",
+        "    println(libMath.add(4, 5))",
+        "    println(math.add(6, 7))",
+        "    println(make())",
+        "    return add(1, 2)",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built web/);
+
+    const mainPath = join(project, "dist", "web", "src", "main.js");
+    assert.ok(existsSync(mainPath));
+    const mainCode = readFileSync(mainPath, "utf8");
+    assert.match(mainCode, /import \{ add, plus, math \} from "\.\/barrel\.js";/);
+    assert.match(mainCode, /import make from "\.\/lib\.js";/);
+    assert.match(mainCode, /import \* as libMath from "\.\/lib\.js";/);
+
+    const barrelCode = readFileSync(
+      join(project, "dist", "web", "src", "barrel.js"),
+      "utf8",
+    );
+    assert.match(barrelCode, /export \{ add as plus \} from "\.\/lib\.js";/);
+    assert.match(barrelCode, /export \* from "\.\/lib\.js";/);
+    assert.match(barrelCode, /export \* as math from "\.\/lib\.js";/);
+    const mainDeclarations = readFileSync(
+      join(project, "dist", "web", "src", "main.d.ts"),
+      "utf8",
+    );
+    assert.match(mainDeclarations, /declare function main\(\): number;/);
+    assert.match(mainDeclarations, /export \{ main \};/);
+
+    writeFileSync(
+      join(project, "dist", "web", "runner.mjs"),
+      [
+        'import { main } from "./src/main.js";',
+        "const value = main();",
+        'process.stdout.write("RETURN=" + String(value));',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const run = spawnSync(
+      process.execPath,
+      [join(project, "dist", "web", "runner.mjs")],
+      { cwd: join(project, "dist", "web"), encoding: "utf8" },
+    );
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, "5\n9\n13\n7\nRETURN=3");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build emits an inline JavaScript script module and calls it", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-script-project-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "script-demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
         null,
         2,
       ),
@@ -364,10 +942,28 @@ test("astra build writes runnable ESM and a module package marker", () => {
     writeFileSync(
       join(project, "src", "main.ns"),
       [
-        "module demo.main",
+        "{@script:js as math;",
+        "    @mode(core)",
+        "    @exports {",
+        "        fn add(a: i32, b: i32) -> i32",
+        "        fn greet(name: str) -> str",
+        "        fn maybe(flag: bool) -> Option<i32>",
+        "        fn unwrap_or(value: Option<i32>, fallback: i32) -> i32",
+        "    }",
+        "",
+        "    @impl",
+        "    export function add(a, b) { return a + b }",
+        '    export function greet(name) { return "hi " + name }',
+        "    export function maybe(flag) { return flag ? 5 : null }",
+        "    export function unwrap_or(value, fallback) { return value === null ? fallback : value }",
+        "@end",
+        "}",
         "",
         "pub fn main() -> i32 {",
-        '    println("hello from build")',
+        "    println(math.add(2, 3))",
+        '    println(math.greet("neo"))',
+        "    println(math.maybe(true))",
+        "    println(math.unwrap_or(Some(4), 9))",
         "    return 0",
         "}",
         "",
@@ -383,12 +979,409 @@ test("astra build writes runnable ESM and a module package marker", () => {
     assert.equal(result.status, 0, result.stderr);
     assert.match(result.stdout, /built web/);
 
+    const mainPath = join(project, "dist", "web", "src", "main.js");
+    const mainCode = readFileSync(mainPath, "utf8");
+    assert.match(mainCode, /import \* as \$script_math from "\.\/main\.math\.js";/);
+    assert.match(mainCode, /\$script_math\.add\(arg0, arg1\)/);
+    assert.match(mainCode, /arg0\.\$option \? arg0\.value : null/);
+
+    const scriptPath = join(project, "dist", "web", "src", "main.math.js");
+    const scriptCode = readFileSync(scriptPath, "utf8");
+    assert.match(scriptCode, /export function add\(a, b\)/);
+    assert.ok(existsSync(`${scriptPath}.map`));
+    const scriptMap = JSON.parse(readFileSync(`${scriptPath}.map`, "utf8"));
+    assert.match(scriptMap.sourcesContent[0], /export function add\(a, b\)/);
+    const scriptDeclarations = readFileSync(
+      join(project, "dist", "web", "src", "main.math.d.ts"),
+      "utf8",
+    );
+    assert.match(
+      scriptDeclarations,
+      /export declare function add\(a: number, b: number\): number;/,
+    );
+    assert.match(
+      scriptDeclarations,
+      /export declare function maybe\(flag: boolean\): \(number \| null\);/,
+    );
+
+    const runnerPath = join(project, "dist", "web", "runner.mjs");
+    writeFileSync(
+      runnerPath,
+      [
+        'import { main } from "./src/main.js";',
+        "const value = main();",
+        'process.stdout.write("RETURN=" + String(value));',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const run = spawnSync(process.execPath, [runnerPath], {
+      cwd: join(project, "dist", "web"),
+      encoding: "utf8",
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, "5\nhi neo\nSome(5)\n4\nRETURN=0");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build reports a missing script export", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-script-missing-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "script-missing",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "{@script:js as math;",
+        "    @mode(core)",
+        "    @exports {",
+        "        fn add(a: i32, b: i32) -> i32",
+        "    }",
+        "",
+        "    @impl",
+        "    export function subtract(a, b) { return a - b }",
+        "@end",
+        "}",
+        "",
+        "pub fn main() -> i32 {",
+        "    return math.add(1, 2)",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /NS7008/);
+    assert.match(output, /does not export declared function 'add'/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build maps script exceptions into Nova recoverable errors", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-script-error-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "script-error",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "struct ParseError(str)",
+        "",
+        "{@script:js as parser;",
+        "    @mode(core)",
+        "    @exports {",
+        "        fn parse(input: str) -> i32 ! ParseError",
+        "    }",
+        "",
+        "    @impl",
+        "    export function parse(input) {",
+        '        if (input === "bad") throw new Error("bad input")',
+        "        return 7",
+        "    }",
+        "@end",
+        "}",
+        "",
+        "pub fn main() -> i32 {",
+        '    let result = match parser.parse("bad") {',
+        "        Ok(value) => value,",
+        "        Err(error) => { println(error); -1 }",
+        "    }",
+        "    return result",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+
+    const runnerPath = join(project, "dist", "web", "runner.mjs");
+    writeFileSync(
+      runnerPath,
+      [
+        'import { main } from "./src/main.js";',
+        "const value = main();",
+        'process.stdout.write("RETURN=" + String(value));',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const run = spawnSync(process.execPath, [runnerPath], {
+      cwd: join(project, "dist", "web"),
+      encoding: "utf8",
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout, "ParseError(bad input)\nRETURN=-1");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build rejects a TypeScript script on the JavaScript target", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-script-ts-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "script-ts",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "{@script:ts as math;",
+        "    @mode(core)",
+        "    @exports {",
+        "        fn add(a: i32, b: i32) -> i32",
+        "    }",
+        "",
+        "    @impl",
+        "    export function add(a: number, b: number): number { return a + b }",
+        "@end",
+        "}",
+        "",
+        "pub fn main() -> i32 {",
+        "    return math.add(1, 2)",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    const output = `${result.stdout}${result.stderr}`;
+    assert.match(output, /NS7008/);
+    assert.match(output, /is not supported by the JavaScript backend/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build writes runnable ESM and a module package marker", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-build-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "web",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "web": {
+            "backend": "js",
+            "module": "esm",
+            "mode": "core",
+            "outDir": "dist/web"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    const mainSource = [
+      "module demo.main",
+      "",
+      "pub fn main() -> i32 {",
+      '    println("hello from build")',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n");
+    writeFileSync(join(project, "src", "main.ns"), mainSource, "utf8");
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built web/);
+
     const outputPath = join(project, "dist", "web", "src", "main.js");
     assert.ok(existsSync(outputPath));
     assert.equal(
       readFileSync(join(project, "dist", "web", "package.json"), "utf8"),
       '{ "type": "module" }\n',
     );
+
+    const mapPath = `${outputPath}.map`;
+    assert.ok(existsSync(mapPath));
+    assert.match(
+      readFileSync(outputPath, "utf8"),
+      /\/\/# sourceMappingURL=main\.js\.map/,
+    );
+    const sourceMap = JSON.parse(readFileSync(mapPath, "utf8"));
+    assert.equal(sourceMap.version, 3);
+    assert.equal(sourceMap.file, "main.js");
+    assert.deepEqual(sourceMap.sourcesContent, [mainSource]);
+    assert.ok(sourceMap.mappings.length > 0);
 
     writeFileSync(
       join(project, "dist", "web", "runner.mjs"),
@@ -410,4 +1403,1490 @@ test("astra build writes runnable ESM and a module package marker", () => {
   } finally {
     rmSync(project, { recursive: true, force: true });
   }
+});
+
+test("javascript backend implements UTF-8 string and byte operations", () => {
+  const source = [
+    "pub fn main() -> i32 {",
+    '    let text = "héllo"',
+    "    println(text.len())",
+    "    println(text.char_count())",
+    "    match text.byte_at(1) {",
+    "        Some(byte) => println(byte),",
+    '        None => println("none"),',
+    "    }",
+    "    match text.char_at(1) {",
+    "        Some(character) => println(character),",
+    '        None => println("none"),',
+    "    }",
+    "    match text.slice(0, 3) {",
+    "        Ok(part) => println(part),",
+    '        Err(error) => println("slice failed"),',
+    "    }",
+    "    match text.slice(0, 2) {",
+    "        Ok(part) => println(part),",
+    '        Err(error) => println("slice failed"),',
+    "    }",
+    "    match text.slice(1, 99) {",
+    "        Ok(part) => println(part),",
+    '        Err(error) => println("oob"),',
+    "    }",
+    "    println(text.bytes().len())",
+    "    println(text.chars().len())",
+    "    println(text.chars()[1])",
+    "    return 0",
+    "}",
+    "",
+  ].join("\n");
+
+  const generated = generate(source);
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /\$charCount\(/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    [
+      "6",
+      "5",
+      "195",
+      "é",
+      "hé",
+      "slice failed",
+      "oob",
+      "6",
+      "5",
+      "é",
+      "RETURN=0",
+    ].join("\n"),
+  );
+});
+
+test("javascript backend implements bounded channels with structured errors", () => {
+  const source = [
+    "fn produce(channel: Channel<str>) -> () ! ChannelError {",
+    '    channel.send("hello")!',
+    '    channel.send("world")!',
+    "}",
+    "",
+    "pub fn main() -> i32 {",
+    "    let channel = Channel.create<str>()",
+    "    spawn || {",
+    "        match produce(channel) {",
+    '            Ok(value) => println("sent"),',
+    '            Err(error) => println("send failed"),',
+    "        }",
+    "    }",
+    "    match channel.receive() {",
+    "        Ok(message) => println(message),",
+    '        Err(error) => println("closed"),',
+    "    }",
+    "    match channel.receive() {",
+    "        Ok(message) => println(message),",
+    '        Err(error) => println("closed"),',
+    "    }",
+    "    channel.close()",
+    '    match channel.send("late") {',
+    '        Ok(value) => println("sent late"),',
+    '        Err(error) => println("closed send"),',
+    "    }",
+    "    match channel.receive() {",
+    "        Ok(message) => println(message),",
+    '        Err(error) => println("closed recv"),',
+    "    }",
+    "    return 0",
+    "}",
+    "",
+  ].join("\n");
+
+  const generated = generate(source);
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /function \$channel\(/);
+  assert.match(generated.code, /\$channelSend\(/);
+  assert.match(generated.code, /\$channelReceive\(/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    ["sent", "hello", "world", "closed send", "closed recv", "RETURN=0"].join("\n"),
+  );
+});
+
+test("javascript backend turns a full bounded channel into a structured deadlock panic", () => {
+  const source = [
+    "fn fill(channel: Channel<i32>) -> () ! ChannelError {",
+    "    let mut index = 0",
+    "    while index < 17 {",
+    "        channel.send(index)!",
+    "        index = index + 1",
+    "    }",
+    "}",
+    "",
+    "pub fn main() -> i32 {",
+    "    let channel = Channel.create<i32>()",
+    "    match fill(channel) {",
+    '        Ok(value) => println("filled"),',
+    '        Err(error) => println("failed"),',
+    "    }",
+    "    return 0",
+    "}",
+    "",
+  ].join("\n");
+
+  const generated = generate(source);
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /channel deadlock/);
+});
+
+test("javascript backend implements bytes buffers with bounds-checked writes", () => {
+  const source = [
+    "pub fn main() -> i32 {",
+    "    let mut buffer = bytes.new(4)",
+    "    buffer[0] = 0xFF",
+    "    buffer[1] = 7",
+    "    println(buffer.len())",
+    "    println(buffer[0])",
+    "    println(buffer[1])",
+    "    return 0",
+    "}",
+    "",
+  ].join("\n");
+
+  const generated = generate(source);
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /\$indexSet\(/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, ["4", "255", "7", "RETURN=0"].join("\n"));
+
+  const outOfBounds = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let mut buffer = bytes.new(2)",
+      "    buffer[5] = 1",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const failed = runGenerated(outOfBounds.code);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /index out of bounds/);
+});
+
+test("javascript backend bounds-checks bytes slices instead of clamping", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let buffer = b"abcdef"',
+      "    let part = buffer.slice(1, 3)",
+      "    println(part.len())",
+      "    println(part[0])",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /\$byteSlice\(/);
+
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, ["2", "98", "RETURN=0"].join("\n"));
+
+  // Out-of-range and reversed ranges panic instead of clamping to a shorter
+  // (or empty) view the way the native Uint8Array.slice did.
+  const outOfRange = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let buffer = b"abc"',
+      "    let part = buffer.slice(1, 99)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const failed = runGenerated(outOfRange.code);
+  assert.notEqual(failed.status, 0);
+  assert.match(failed.stderr, /bytes slice/);
+
+  const reversed = generate(
+    [
+      "pub fn main() -> i32 {",
+      '    let buffer = b"abc"',
+      "    let part = buffer.slice(2, 1)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  const reversedFailed = runGenerated(reversed.code);
+  assert.notEqual(reversedFailed.status, 0);
+  assert.match(reversedFailed.stderr, /bytes slice/);
+});
+
+test("javascript backend declares channel runtime shapes in TypeScript output", () => {
+  const generated = generate(
+    [
+      "pub fn produce(channel: Channel<str>) -> () ! ChannelError {",
+      '    channel.send("hello")!',
+      "}",
+      "",
+      "pub fn main() -> i32 {",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.declarations, /interface AstraChannel<T> \{/);
+  assert.match(
+    generated.declarations,
+    /declare function produce\(channel: AstraChannel<string>\): /,
+  );
+
+  const plain = generate("pub fn main() -> i32 {\n    return 0\n}\n");
+  assert.doesNotMatch(plain.declarations, /AstraChannel/);
+});
+
+test("javascript backend passes the shared conformance suite", () => {
+  const cases = loadConformanceCases();
+  assert.ok(cases.length >= 4, "expected the shared conformance suite to have cases");
+  for (const conformanceCase of cases) {
+    const generated = generate(conformanceCase.source);
+    assert.deepEqual(
+      generated.diagnostics,
+      [],
+      `${conformanceCase.name}: ${JSON.stringify(generated.diagnostics)}`,
+    );
+    const result = runGenerated(generated.code);
+    assert.equal(result.status, 0, `${conformanceCase.name}: ${result.stderr}`);
+    assert.equal(
+      normalizeConformanceText(result.stdout),
+      conformanceCase.expected,
+      conformanceCase.name,
+    );
+  }
+});
+
+test("astra build writes C translation unit and host shim with --target c", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-build-c-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "c",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "c": {
+            "backend": "c",
+            "mode": "core",
+            "outDir": "dist/c"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        "pub fn main() -> i32 {",
+        '    println("hello from c build")',
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "c"],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built c/);
+
+    const cPath = join(project, "dist", "c", "main.c");
+    const hostPath = join(project, "dist", "c", "astra_host.c");
+    assert.ok(existsSync(cPath), `expected ${cPath} to exist`);
+    assert.ok(existsSync(hostPath), `expected ${hostPath} to exist`);
+
+    const cContent = readFileSync(cPath, "utf8");
+    assert.match(cContent, /int main\(void\)/);
+    assert.match(cContent, /ns_main\(\)/);
+
+    const hostContent = readFileSync(hostPath, "utf8");
+    assert.match(hostContent, /astra_panic/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --target native links and runs a hosted binary", (t) => {
+  if (hostedCCompiler() === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-native-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "core",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        "pub fn main() -> i32 {",
+        '    println("hello from native build")',
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built native/);
+
+    const exePath = join(
+      project,
+      "dist",
+      "native",
+      process.platform === "win32" ? "main.exe" : "main",
+    );
+    assert.ok(existsSync(exePath), `expected ${exePath} to exist`);
+
+    const run = spawnSync(exePath, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(
+      normalizeConformanceText(run.stdout),
+      "hello from native build",
+    );
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --target native links an inline @script:c block", (t) => {
+  if (hostedCCompiler() === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-native-script-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "system"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "system",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        "{@script:c as math;",
+        "    @mode(system)",
+        "    @exports {",
+        "        fn mul(a: i32, b: i32) -> i32",
+        "    }",
+        "",
+        "    @impl",
+        "    int32_t mul(int32_t a, int32_t b) {",
+        "        return a * b;",
+        "    }",
+        "@end",
+        "}",
+        "",
+        "pub fn main() -> i32 {",
+        "    println(math.mul(6, 7))",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built native/);
+
+    const exePath = join(
+      project,
+      "dist",
+      "native",
+      process.platform === "win32" ? "main.exe" : "main",
+    );
+    assert.ok(existsSync(exePath), `expected ${exePath} to exist`);
+    assert.ok(
+      existsSync(join(project, "dist", "native", "script_math.c")),
+      "expected the script translation unit to be written",
+    );
+
+    const run = spawnSync(exePath, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --target native roots managed args across a @script:c call", (t) => {
+  if (hostedCCompiler() === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-native-script-root-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "system"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "system",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        "{@script:c as math;",
+        "    @mode(system)",
+        "    @exports {",
+        "        fn first(xs: [i32]) -> i32",
+        "        fn root_count() -> usize",
+        "    }",
+        "",
+        "    @impl",
+        "    int32_t first(NS_Array xs) {",
+        "        astra_gc_collect();",
+        "        const int32_t* p = (const int32_t*)xs.data;",
+        "        return xs.len > 0 ? p[0] : -1;",
+        "    }",
+        "    size_t root_count(void) {",
+        "        return astra_gc_root_count();",
+        "    }",
+        "@end",
+        "}",
+        "",
+        "pub fn main() -> i32 {",
+        "    let xs = [10, 20, 30]",
+        "    let before = math.root_count()",
+        "    println(math.first(xs))",
+        "    let after = math.root_count()",
+        "    if before != after {",
+        "        println(999)",
+        "        return 1",
+        "    }",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /built native/);
+
+    const exePath = join(
+      project,
+      "dist",
+      "native",
+      process.platform === "win32" ? "main.exe" : "main",
+    );
+    assert.ok(existsSync(exePath), `expected ${exePath} to exist`);
+
+    const run = spawnSync(exePath, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "10");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --emit staticlib produces a linkable C library", (t) => {
+  const compiler = hostedCCompiler();
+  if (compiler === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-staticlib-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "mathlib",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "c",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/lib.ns"
+        },
+        "targets": {
+          "c": {
+            "backend": "c",
+            "mode": "core",
+            "outDir": "dist/lib"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "lib.ns"),
+      [
+        "pub fn add(a: i32, b: i32) -> i32 {",
+        "    return a + b",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const built = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "c", "--emit", "staticlib"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(built.status, 0, built.stderr);
+
+    const outDir = join(project, "dist", "lib");
+    const archive = join(outDir, "libmathlib.a");
+    assert.ok(existsSync(archive), `expected ${archive} to exist`);
+    const header = readFileSync(join(outDir, "src_lib.h"), "utf8");
+    assert.match(header, /ns_src_lib_add/);
+    assert.doesNotMatch(readFileSync(join(outDir, "src_lib.c"), "utf8"), /int main\(void\)/);
+
+    const consumer = join(outDir, "consumer.c");
+    writeFileSync(
+      consumer,
+      [
+        "#include <stdio.h>",
+        '#include "src_lib.h"',
+        "",
+        "int main(void) {",
+        "    printf(\"%d\\n\", ns_src_lib_add(20, 22));",
+        "    return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const exe = join(outDir, "consumer.exe");
+    const linked = spawnSync(
+      compiler,
+      [
+        "-std=c17",
+        consumer,
+        "-I",
+        outDir,
+        archive,
+        join(outDir, "astra_host.c"),
+        "-o",
+        exe,
+      ],
+      { encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(linked.status, 0, linked.stderr);
+    const run = spawnSync(exe, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --emit cdylib produces a runnable shared library", (t) => {
+  const compiler = hostedCCompiler();
+  if (compiler === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-cdylib-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "mathlib",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "c",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/lib.ns"
+        },
+        "targets": {
+          "c": {
+            "backend": "c",
+            "mode": "core",
+            "outDir": "dist/lib"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "lib.ns"),
+      [
+        "pub fn add(a: i32, b: i32) -> i32 {",
+        "    return a + b",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const built = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "c", "--emit", "cdylib"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(built.status, 0, built.stderr);
+
+    const outDir = join(project, "dist", "lib");
+    const shared = join(
+      outDir,
+      process.platform === "win32" ? "libmathlib.dll" : "libmathlib.so",
+    );
+    assert.ok(existsSync(shared), `expected ${shared} to exist`);
+
+    const consumer = join(outDir, "consumer.c");
+    writeFileSync(
+      consumer,
+      [
+        "#include <stdio.h>",
+        '#include "src_lib.h"',
+        "",
+        "int main(void) {",
+        "    printf(\"%d\\n\", ns_src_lib_add(20, 22));",
+        "    return 0;",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const exe = join(outDir, "consumer.exe");
+    let linkArgs = [
+      "-std=c17",
+      consumer,
+      "-I",
+      outDir,
+      "-L",
+      outDir,
+      "-lmathlib",
+      `-Wl,-rpath,${outDir}`,
+      "-o",
+      exe,
+    ];
+    if (process.platform === "win32") {
+      // GNU linkers write `libmathlib.dll.a`, link.exe writes `libmathlib.lib`;
+      // link against whichever the build produced. ELF/Mach-O builds have no
+      // import library at all and link with `-lmathlib` above.
+      const implib = ["libmathlib.dll.a", "libmathlib.lib"]
+        .map((name) => join(outDir, name))
+        .find((path) => existsSync(path));
+      assert.ok(implib, `expected an import library in ${outDir}`);
+      linkArgs = ["-std=c17", consumer, "-I", outDir, implib, "-o", exe];
+    }
+    const linked = spawnSync(compiler, linkArgs, {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    assert.equal(linked.status, 0, linked.stderr);
+    // Run from the library directory so Windows finds the DLL.
+    const run = spawnSync(exe, [], {
+      cwd: outDir,
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build links a path package through a bare import", (t) => {
+  const compiler = hostedCCompiler();
+  if (compiler === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-path-package-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    mkdirSync(join(project, "packages", "mathlib", "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "app",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        },
+        "dependencies": {
+          "mathlib": {
+            "source": "path",
+            "path": "./packages/mathlib"
+          }
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "core",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        'import { add } from "mathlib"',
+        "",
+        "pub fn main() -> i32 {",
+        "    println(add(20, 22))",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "packages", "mathlib", "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "mathlib",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "packages", "mathlib", "build.json"),
+      JSON.stringify(
+      {
+        "nova": {
+          "entry": "src/lib.ns"
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "packages", "mathlib", "src", "lib.ns"),
+      ["pub fn add(a: i32, b: i32) -> i32 {", "    return a + b", "}", ""].join("\n"),
+      "utf8",
+    );
+
+    const built = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(built.status, 0, built.stderr);
+
+    const outDir = join(project, "dist", "native");
+    assert.ok(
+      existsSync(join(outDir, "deps_mathlib_src_lib.c")),
+      "expected the package translation unit",
+    );
+    const exe = join(outDir, process.platform === "win32" ? "main.exe" : "main");
+    const run = spawnSync(exe, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build links an installed (non-path) package via the NoPM store", (t) => {
+  const compiler = hostedCCompiler();
+  if (compiler === null) {
+    t.skip("no C compiler with hosted libc headers");
+    return;
+  }
+  const project = mkdtempSync(join(tmpdir(), "astra-build-installed-package-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    // The "installed" package, as NoPM's content store would lay it out.
+    mkdirSync(join(project, ".astra", "store", "nova-mathlib", "src"), {
+      recursive: true,
+    });
+    // App declares a non-path dependency (a registry package).
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "app",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        },
+        "dependencies": {
+          "mathlib": {
+            "source": "nova",
+            "version": "1.0.0"
+          }
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "native",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "native": {
+            "backend": "native",
+            "mode": "core",
+            "outDir": "dist/native"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        'import { add } from "mathlib"',
+        "",
+        "pub fn main() -> i32 {",
+        "    println(add(20, 22))",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    // `nopm lock` output: name -> id.
+    writeFileSync(
+      join(project, "core.lock.json"),
+      JSON.stringify(
+        {
+          lockfileVersion: 1,
+          generatedBy: "test",
+          manifestHash: "sha256:test",
+          compiler: { version: "0.1.0", apiVersion: "1.0" },
+          semantics: { integers: "wrapping", strings: "unicode" },
+          targets: { native: { backend: "native", mode: "core", triple: null } },
+          packages: [
+            {
+              id: "nova:mathlib@1.0.0",
+              name: "mathlib",
+              source: "nova",
+              version: "1.0.0",
+              resolved: "https://registry.test/mathlib/1.0.0",
+              registry: "https://registry.test",
+              integrity: "sha256:test",
+              targets: ["native"],
+              capabilities: [],
+              lifecycleScripts: false,
+              dependencies: [],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    // `nopm install` output: id -> root (relative to the project root).
+    writeFileSync(
+      join(project, ".astra", "store", "index.json"),
+      JSON.stringify(
+        {
+          version: 1,
+          generatedBy: "test",
+          packages: [
+            {
+              id: "nova:mathlib@1.0.0",
+              source: "nova",
+              root: ".astra/store/nova-mathlib",
+              integrity: "sha256:test",
+              targets: ["native"],
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, ".astra", "store", "nova-mathlib", "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "mathlib",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, ".astra", "store", "nova-mathlib", "build.json"),
+      JSON.stringify(
+      {
+        "nova": {
+          "entry": "src/lib.ns"
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    writeFileSync(
+      join(project, ".astra", "store", "nova-mathlib", "src", "lib.ns"),
+      ["pub fn add(a: i32, b: i32) -> i32 {", "    return a + b", "}", ""].join("\n"),
+      "utf8",
+    );
+
+    const built = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "native"],
+      { cwd: root, encoding: "utf8", windowsHide: true },
+    );
+    assert.equal(built.status, 0, built.stderr);
+
+    const outDir = join(project, "dist", "native");
+    assert.ok(
+      existsSync(join(outDir, "deps_mathlib_src_lib.c")),
+      "expected the installed package translation unit",
+    );
+    const exe = join(outDir, process.platform === "win32" ? "main.exe" : "main");
+    const run = spawnSync(exe, [], { encoding: "utf8", windowsHide: true });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(normalizeConformanceText(run.stdout), "42");
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("astra build --target c emits one qualified translation unit per module", () => {
+  const project = mkdtempSync(join(tmpdir(), "astra-build-c-multi-"));
+  try {
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(
+      join(project, "core.json"),
+      JSON.stringify(
+      {
+        "package": {
+          "name": "demo",
+          "version": "1.0.0",
+          "edition": "2026",
+          "license": "MIT"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    writeFileSync(
+      join(project, "build.json"),
+      JSON.stringify(
+      {
+        "build": {
+          "defaultTarget": "c",
+          "defaultMode": "core"
+        },
+        "nova": {
+          "entry": "src/main.ns"
+        },
+        "targets": {
+          "c": {
+            "backend": "c",
+            "mode": "core",
+            "outDir": "dist/c"
+          }
+        },
+        "math": {
+          "integers": "wrapping"
+        }
+      },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    // The dependency module.
+    writeFileSync(
+      join(project, "src", "lib.ns"),
+      [
+        "module demo.lib",
+        "",
+        "pub fn add(a: i32, b: i32) -> i32 {",
+        "    return a + b",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    // The entry module imports the dependency by name.
+    writeFileSync(
+      join(project, "src", "main.ns"),
+      [
+        "module demo.main",
+        "",
+        'import { add } from "./lib"',
+        "",
+        "pub fn main() -> i32 {",
+        "    println(add(2, 3))",
+        "    return 0",
+        "}",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "build", project, "--compiler", binary, "--target", "c"],
+      { cwd: root, encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+
+    // CLI module keys are file-relative paths; with the `.ns` suffix stripped
+    // the stems are `src_main` and `src_lib`.
+    const mainPath = join(project, "dist", "c", "src_main.c");
+    const libPath = join(project, "dist", "c", "src_lib.c");
+    const libHeaderPath = join(project, "dist", "c", "src_lib.h");
+    assert.ok(existsSync(mainPath), "entry translation unit not written");
+    assert.ok(existsSync(libPath), "dependency translation unit not written");
+    assert.ok(existsSync(libHeaderPath), "dependency header not written");
+
+    const mainCode = readFileSync(mainPath, "utf8");
+    const libCode = readFileSync(libPath, "utf8");
+    // The dependency defines its function under a module-qualified symbol.
+    assert.match(libCode, /ns_src_lib_add/);
+    // The entry calls the qualified dependency symbol, not a local one, and
+    // includes the dependency header so the prototype is visible.
+    assert.match(mainCode, /ns_src_lib_add\(/);
+    assert.doesNotMatch(mainCode, /\bns_add\(/);
+    assert.match(mainCode, /#include "src_lib\.h"/);
+    // The entry's own `main` is module-qualified too.
+    assert.match(mainCode, /ns_src_main_main/);
+
+    const hostPath = join(project, "dist", "c", "astra_host.c");
+    assert.ok(existsSync(hostPath), "host shim not written");
+    assert.match(readFileSync(hostPath, "utf8"), /astra_panic/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
+});
+
+test("javascript backend runs exclusive and inclusive ranges", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let mut total = 0",
+      "    for value in 0..3 {",
+      "        total = total + value",
+      "    }",
+      "    for value in 0..=3 {",
+      "        total = total + value",
+      "    }",
+      "    let values = [10, 20, 30, 40]",
+      "    println(values[0..2].len())",
+      "    println(values[1..=2].len())",
+      "    return total",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /for \(let /);
+  assert.match(generated.code, /\$arraySlice/);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "2\n2\nRETURN=9");
+});
+
+test("javascript backend runs bitwise operators", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    println(0b1100 & 0b1010)",
+      "    println(0b1000 | 0b0010)",
+      "    println(0b1010 ^ 0b1111)",
+      "    println(1 << 4)",
+      "    println(256 >> 4)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, / << /);
+  assert.match(generated.code, / >> /);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "8\n10\n5\n16\n16\nRETURN=0");
+});
+
+test("javascript backend runs char literals", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let letter = 'a'",
+      "    println(letter)",
+      "    println('\\u{1F600}')",
+      '    println(match letter { \'a\' => "first", _ => "other" })',
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  assert.match(generated.code, /😀/);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "a\n😀\nfirst\nRETURN=0");
+});
+
+test("javascript backend lowers immediate lambdas to blocks", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    let offset = 10",
+      "    let mut total = 0",
+      "    println((fn(value) => value * 2)(21))",
+      "    println((fn(x: i32, y: i32) => x + y)(1, 2))",
+      "    println((fn(value) => value + offset)(5))",
+      "    println((fn(value) => { println(value); value + 1 })(8))",
+      "    println((fn(value) => { total = total + value; total })(3))",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "42\n3\n15\n8\n9\n3\nRETURN=0");
+});
+
+test("javascript backend runs numeric suffixes", () => {
+  const generated = generate(
+    [
+      "pub fn main() -> i32 {",
+      "    println(1i8)",
+      "    println(2i16)",
+      "    println(3i32)",
+      "    println(4i64)",
+      "    println(5isize)",
+      "    println(6u8)",
+      "    println(7u16)",
+      "    println(8u32)",
+      "    println(9u64)",
+      "    println(10usize)",
+      "    println(1.5f32)",
+      "    println(2.5f64)",
+      "    return 0",
+      "}",
+      "",
+    ].join("\n"),
+    { edition: "0.2" },
+  );
+  assert.deepEqual(generated.diagnostics, []);
+  const result = runGenerated(generated.code);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(
+    result.stdout,
+    "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n1.5\n2.5\nRETURN=0",
+  );
 });

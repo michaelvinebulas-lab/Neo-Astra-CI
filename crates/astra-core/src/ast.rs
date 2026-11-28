@@ -29,6 +29,23 @@ pub enum Visibility {
 pub struct Attribute {
     pub name: String,
     pub arguments: Vec<Expr>,
+    /// Structured payload for `@export_as(...)`. Present only when `name` is
+    /// `export_as`; the generic `arguments` list stays empty for it because the
+    /// bindings are type syntax, not expressions.
+    #[serde(default)]
+    pub export_as: Option<ExportAsAttribute>,
+    pub span: Span,
+}
+
+/// `@export_as("symbol", T = type, ...)`: export one concrete instantiation of
+/// a generic function across the C ABI under an author-chosen symbol
+/// (spec §11.5, `11-c-abi.md` §3).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ExportAsAttribute {
+    /// The exported C symbol, used verbatim (never mangled).
+    pub symbol: String,
+    /// `TypeParameter = type` bindings, in source order.
+    pub bindings: Vec<(String, Type)>,
     pub span: Span,
 }
 
@@ -396,6 +413,13 @@ pub enum ExprKind {
         target: Box<Expr>,
         index: Box<Expr>,
     },
+    /// `start..end` / `start..=end`. Currently first-class only as a `for`
+    /// iterable; index-position ranges are parsed as `.slice(start, end)`.
+    Range {
+        start: Box<Expr>,
+        end: Box<Expr>,
+        inclusive: bool,
+    },
     Member {
         target: Box<Expr>,
         member: String,
@@ -514,6 +538,7 @@ pub enum Literal {
     Float(String),
     String(String),
     Bytes(Vec<u8>),
+    Character(char),
     Bool(bool),
     Unit,
 }
@@ -545,4 +570,9 @@ pub enum BinaryOp {
     GreaterEqual,
     And,
     Or,
+    BitAnd,
+    BitOr,
+    BitXor,
+    Shl,
+    Shr,
 }

@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import { loadManifest, type ManifestDocument } from "@neo-astra/manifest";
+import { loadManifest, loadBuildManifest, type ManifestDocument } from "@neo-astra/manifest";
 
 import {
   NopmError,
@@ -47,8 +47,9 @@ export function readProject(
 ): ProjectManifest {
   const absolute = resolve(directory);
   const manifest = loadManifest(absolute);
+  const buildManifest = loadBuildManifest(absolute);
   const source = readFileSync(manifest.file.path, "utf8");
-  const data = manifest.data;
+  const data = { ...manifest.data, ...(buildManifest?.data ?? {}) };
   const packageRecord = recordValue(data, "package");
   const registryRecord = recordValue(data, "registry");
   const capabilitiesRecord = recordValue(data, "capabilities");

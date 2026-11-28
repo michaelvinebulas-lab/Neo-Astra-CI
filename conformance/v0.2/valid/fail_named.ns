@@ -1,0 +1,30 @@
+// edition: 0.2
+// purpose: fail with positional and named initializers
+
+struct InvalidAge {
+    message: str,
+    minimum: i32,
+}
+
+struct NotFound(str)
+
+fn validate(age: i32) -> i32 ! InvalidAge {
+    if age < 18 {
+        fail InvalidAge { message: "too young", minimum: 18, }
+    }
+    return age
+}
+
+fn lookup(found: bool) -> i32 ! NotFound {
+    if not found {
+        fail NotFound("missing")
+    }
+    return 1
+}
+
+pub fn main() -> i32 {
+    match validate(21) {
+        Ok(age) => return age,
+        Err(_) => return 0,
+    }
+}

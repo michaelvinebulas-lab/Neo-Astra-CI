@@ -1,0 +1,221 @@
+#!/usr/bin/env node
+
+// Keeps the normative diagnostic tables and the implementation in sync.
+//
+// Every code that appears in compiler/CLI source must have a row in
+// Docs/spec-v0.1.md. Every code in the spec must either appear in source or be
+// listed here with the reason it is reserved. Run with --report to inspect
+// drift without failing the build.
+
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
+const reportOnly = process.argv.includes("--report");
+const codePattern = /\b(?:NS|NP|NR|NV|PG)\d{4}\b/g;
+const specPath = join(root, "Docs", "spec-v0.1.md");
+const specV2Path = join(root, "Docs", "spec-v0.2.md");
+const ledgerPath = join(root, "Docs", "error-code-ledger.md");
+
+// Codes that are deliberately not emitted in v0.1. Keep this list short and
+// give each entry a reason; a reserved code is still part of the stable range.
+const reserved = new Map([
+  ["NS0001", "Test fixture used by the diagnostic and compiler-API unit tests."],
+  ["NS1004", "Reserved: invalid UTF-8 source is reported by the CLI as NS9007."],
+  ["NS2007", "Reserved: no parser path emits an invalid-modifier diagnostic in v0.1."],
+  ["NS4008", "Reserved by the type-diagnostic table."],
+  ["NS9999", "Reserved sentinel; tests assert it never appears in output."],
+]);
+
+const skipDirectories = new Set(["node_modules", "target", "dist", ".git", "tests"]);
+const sourceRoots = ["crates", "orchestrator/packages", "scripts"];
+// Generated or tooling files are not emitters: the catalog is generated from
+// the spec tables, and this script is the checker itself.
+const skipFiles = new Set([
+  "scripts/check-error-codes.mjs",
+  "crates/astra-cli/src/error_catalog.rs",
+]);
+
+function walk(directory, files = []) {
+  for (const entry of readdirSync(directory)) {
+    if (skipDirectories.has(entry)) {
+      continue;
+    }
+    const path = join(directory, entry);
+    const stat = statSync(path);
+    if (stat.isDirectory()) {
+      walk(path, files);
+    } else if (/\.(rs|ts|mjs|js)$/.test(entry)) {
+      files.push(path);
+    }
+  }
+  return files;
+}
+
+function codesIn(text) {
+  return new Set(text.match(codePattern) ?? []);
+}
+
+const emitted = new Map();
+for (const sourceRoot of sourceRoots) {
+  const absolute = join(root, sourceRoot);
+  let files;
+  try {
+    files = walk(absolute);
+  } catch {
+    continue;
+  }
+  const relativePath = (file) => relative(root, file).split(sep).join("/");
+
+  for (const file of files) {
+    if (skipFiles.has(relativePath(file))) {
+      continue;
+    }
+    for (const code of codesIn(readFileSync(file, "utf8"))) {
+      if (!emitted.has(code)) {
+        emitted.set(code, new Set());
+      }
+      emitted.get(code).add(relative(root, file));
+    }
+  }
+}
+
+const spec = readFileSync(specPath, "utf8");
+const specCodes = new Set();
+const rowPattern = /^\|\s*`((?:NS|NP|NR|NV|PG)\d{4})`\s*\|/gm;
+let match;
+while ((match = rowPattern.exec(spec)) !== null) {
+  specCodes.add(match[1]);
+}
+
+// Codes emitted by the v0.2 work while spec-v0.1 stays normative. Add a code
+// here only when a phase actually emits it; this is not a blanket allow-list.
+const plannedCodes = new Set([
+  "NS2008", // unsupported edition, Phase 1 manifest validation
+  "NS2009", // deprecated canonical alias, Phase 4 canonical lint
+  "NS2010", // bare/qualified expression-position type arguments, Phase 3 parser
+  "NS2011", // malformed turbofish, Phase 2 lexer + Phase 3 parser
+  "NS2012", // deprecated `spawn ||`, Phase 4 canonical lint
+  "NS2013", // deprecated `/%`, Phase 4 canonical lint
+  "NS2015", // deprecated v0.1 spellings, Phase 3 parser + Phase 4 lint
+]);
+
+function codeRows(text) {
+  const rows = new Map();
+  const rowPattern = /^\|\s*`((?:NS|NP|NR|NV|PG)\d{4})`\s*\|\s*([^|]*?)\s*\|/gm;
+  let match;
+  while ((match = rowPattern.exec(text)) !== null) {
+    rows.set(match[1], match[2].trim());
+  }
+  return rows;
+}
+
+// --emit <path> writes a Rust catalog from both normative spec tables. Codes in
+// spec-v0.2.md are attributed to edition 0.2; the rest are edition 0.1. The
+// catalog is generated ahead of any explanation corpus, so it is reserved and
+// not surfaced by the CLI yet.
+function catalogBody() {
+  const v1 = codeRows(spec);
+  const v2 = codeRows(readFileSync(specV2Path, "utf8"));
+  const codes = [...new Set([...v1.keys(), ...v2.keys()])].sort();
+  const escape = (value) => value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  // A single string constant keeps generated data out of the analyzer's
+  // duplication detector: string literal contents differ for every code.
+  const entries = codes.map((code) => {
+    const edition = v2.has(code) ? "0.2" : "0.1";
+    const meaning = v2.get(code) ?? v1.get(code) ?? "";
+    return `    "${code}|${edition}|${escape(meaning)}\\n",`;
+  });
+  const body = [
+    "// Generated by scripts/check-error-codes.mjs --emit. Do not edit.",
+    "#![allow(dead_code)]",
+    "",
+    "/// (code|edition|meaning) records generated from the normative specs.",
+    "pub const CATALOG: &str = concat!(",
+    ...entries,
+    ");",
+    "",
+  ].join("\n");
+  return { body, count: codes.length };
+}
+
+const emitIndex = process.argv.indexOf("--emit");
+const emitPath = emitIndex >= 0 ? process.argv[emitIndex + 1] : undefined;
+if (emitPath !== undefined) {
+  const { body, count } = catalogBody();
+  writeFileSync(resolve(root, emitPath), body, "utf8");
+  process.stdout.write(`[codes] wrote ${count} entries to ${emitPath}\n`);
+  process.exit(0);
+}
+
+const catalogPath = "crates/astra-cli/src/error_catalog.rs";
+let catalogDrift = false;
+try {
+  const actual = readFileSync(join(root, catalogPath), "utf8").replace(/\r\n/g, "\n");
+  // rustfmt reflows long tuple entries; compare the token stream, not layout.
+  const compact = (value) => value.replace(/\s+/g, "").replace(/,(\))/g, "$1");
+  catalogDrift = compact(actual) !== compact(catalogBody().body);
+} catch {
+  catalogDrift = true;
+}
+
+const missingFromSpec = [...emitted.keys()]
+  .filter((code) => !specCodes.has(code) && !plannedCodes.has(code) && !reserved.has(code))
+  .sort();
+const missingFromCode = [...specCodes]
+  .filter((code) => !emitted.has(code) && !reserved.has(code))
+  .sort();
+
+// The ledger is the flat index used by the error-code docs. Every emitted code
+// must have a row there; this keeps the acceptance rule enforceable in CI.
+let ledgerCodes = new Set();
+try {
+  ledgerCodes = new Set(readFileSync(ledgerPath, "utf8").match(codePattern) ?? []);
+} catch {
+  // The check below reports the missing ledger.
+}
+const missingFromLedger = [...emitted.keys()]
+  .filter((code) => !ledgerCodes.has(code))
+  .sort();
+
+process.stdout.write(
+  `[codes] emitted=${emitted.size} spec=${specCodes.size} reserved=${reserved.size}\n`,
+);
+
+if (missingFromSpec.length > 0) {
+  process.stdout.write("\nEmitted but absent from Docs/spec-v0.1.md and unplanned in Docs/spec-v0.2.md:\n");
+  for (const code of missingFromSpec) {
+    process.stdout.write(`  ${code}  ${[...emitted.get(code)].slice(0, 3).join(", ")}\n`);
+  }
+}
+
+if (missingFromCode.length > 0) {
+  process.stdout.write("\nDocumented but not emitted (add to the reserved list or remove):\n");
+  for (const code of missingFromCode) {
+    process.stdout.write(`  ${code}\n`);
+  }
+}
+
+if (missingFromLedger.length > 0) {
+  process.stdout.write("\nEmitted but absent from Docs/error-code-ledger.md:\n");
+  for (const code of missingFromLedger) {
+    process.stdout.write(`  ${code}\n`);
+  }
+}
+if (catalogDrift) {
+  process.stdout.write(
+    `\n${catalogPath} is stale; regenerate with: node scripts/check-error-codes.mjs --emit ${catalogPath}\n`,
+  );
+}
+
+if (
+  missingFromSpec.length > 0 ||
+  missingFromCode.length > 0 ||
+  missingFromLedger.length > 0 ||
+  catalogDrift
+) {
+  if (!reportOnly) {
+    process.exitCode = 1;
+  }
+}

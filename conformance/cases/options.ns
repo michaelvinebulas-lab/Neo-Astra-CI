@@ -1,0 +1,19 @@
+fn find(flag: bool) -> Option<i32> {
+    return match flag {
+        true => Some(42)
+        false => None
+    }
+}
+
+pub fn main() -> i32 {
+    match find(true) {
+        Some(value) => println(value)
+        None => println("missing")
+    }
+    match find(false) {
+        Some(value) => println(value)
+        None => println("missing")
+    }
+    println(find(false).unwrap_or(0))
+    return 0
+}

@@ -1,0 +1,17 @@
+// edition: 0.2
+// purpose: postfix ! is removed under edition 0.2; use ?
+
+struct NotFound(str)
+
+fn parse() -> i32 ! NotFound {
+    fail NotFound("x")
+}
+
+fn run() -> i32 ! NotFound {
+    let value = parse()!
+    return value
+}
+
+pub fn main() -> i32 {
+    return 0
+}

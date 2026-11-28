@@ -1,0 +1,10 @@
+// conformance: mode=system
+// GC-001 / spec 8.4: `Memory.alloc` in a GC-managed scope is a compile-time
+// error (NS6001). System mode so the mode gate (NS5004) does not fire first -
+// "one program, one violated condition" - which is exactly what the per-case
+// conformance directive exists for.
+pub fn main() -> i32 {
+    let buffer = Memory.alloc<u8>(16)
+    Memory.free(buffer)
+    return 0
+}

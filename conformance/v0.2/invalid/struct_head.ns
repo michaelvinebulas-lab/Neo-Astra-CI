@@ -1,0 +1,14 @@
+// edition: 0.2
+// purpose: an unparenthesized struct initializer is not allowed in an if head
+
+struct User {
+    id: i32,
+}
+
+pub fn main() -> i32 {
+    let user = User { id: 1, }
+    if user.id == User { id: 1, } {
+        return 1
+    }
+    return 0
+}

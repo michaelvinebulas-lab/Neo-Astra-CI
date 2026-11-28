@@ -52,6 +52,7 @@ export type SemanticType =
   | "Bool"
   | "Str"
   | "Bytes"
+  | "Char"
   | "Unit"
   | "Never"
   | "Error"
@@ -61,6 +62,7 @@ export type SemanticType =
   | { readonly Array: SemanticType }
   | { readonly FixedArray: readonly [SemanticType, number] }
   | { readonly Slice: SemanticType }
+  | { readonly Range: SemanticType }
   | { readonly Map: readonly [SemanticType, SemanticType] }
   | { readonly Tuple: readonly SemanticType[] }
   | { readonly Function: FunctionType }
@@ -107,6 +109,7 @@ export type AstItemKind =
   | { readonly Constant: ConstantDecl }
   | { readonly TypeAlias: TypeAliasDecl }
   | { readonly ForeignModule: ForeignModuleDecl }
+  | { readonly ScriptBlock: ScriptBlockDecl }
   | { readonly ScopedItems: ScopedItems };
 
 export interface ImportDecl {
@@ -238,6 +241,27 @@ export interface ForeignModuleDecl {
   readonly span: Span;
 }
 
+/** A declaration-level `@script` block retained by HIR. */
+export interface ScriptBlockDecl {
+  readonly language: string;
+  readonly name: string;
+  readonly mode: string;
+  readonly exports: readonly ScriptExport[];
+  readonly raw_source: string;
+  readonly span: Span;
+  readonly header_span: Span;
+  readonly body_span: Span;
+}
+
+/** One function signature declared in a script block's `@exports`. */
+export interface ScriptExport {
+  readonly name: string;
+  readonly parameters: readonly Parameter[];
+  readonly return_type: AstType | null;
+  readonly error_set: readonly TypePath[];
+  readonly span: Span;
+}
+
 export interface ForeignFunction {
   readonly name: string;
   readonly parameters: readonly Parameter[];
@@ -338,6 +362,13 @@ export type ExprKind =
       };
     }
   | {
+      readonly Range: {
+        readonly start: Expr;
+        readonly end: Expr;
+        readonly inclusive: boolean;
+      };
+    }
+  | {
       readonly Member: {
         readonly target: Expr;
         readonly member: string;
@@ -404,7 +435,12 @@ export type BinaryOp =
   | "Greater"
   | "GreaterEqual"
   | "And"
-  | "Or";
+  | "Or"
+  | "BitAnd"
+  | "BitOr"
+  | "BitXor"
+  | "Shl"
+  | "Shr";
 
 export interface MapEntry {
   readonly key: Expr;
@@ -461,6 +497,7 @@ export type Literal =
   | { readonly Float: string }
   | { readonly String: string }
   | { readonly Bytes: readonly number[] }
+  | { readonly Character: string }
   | { readonly Bool: boolean }
   | "Unit";
 
@@ -474,7 +511,14 @@ export interface HirModule {
 
 export interface HirItem {
   readonly name: string;
-  readonly kind: "Function" | "Struct" | "Enum" | "Constant" | "TypeAlias" | "ForeignModule";
+  readonly kind:
+    | "Function"
+    | "Struct"
+    | "Enum"
+    | "Constant"
+    | "TypeAlias"
+    | "ForeignModule"
+    | "ScriptBlock";
   readonly ty: SemanticType | null;
   readonly span: Span;
   readonly visibility: Visibility;
@@ -488,7 +532,8 @@ export type Declaration =
   | { readonly Enum: EnumDecl }
   | { readonly Constant: ConstantDecl }
   | { readonly TypeAlias: TypeAliasDecl }
-  | { readonly ForeignModule: ForeignModuleDecl };
+  | { readonly ForeignModule: ForeignModuleDecl }
+  | { readonly ScriptBlock: ScriptBlockDecl };
 
 export interface SymbolTable {
   readonly values: Readonly<Record<string, Symbol>>;

@@ -14,11 +14,12 @@
 //!
 //! The first slice supports the portable managed subset; unsupported features
 //! are rejected with stable `NS80xx` diagnostics instead of emitting
-//! incorrect C. See `C-001` in `Docs/Agent/todo.md` for the supported scope and
+//! incorrect C. See `C-001` in `Docs/archive/Agent/todo.md` for the supported scope and
 //! boundaries.
 
+mod cstrip;
 mod emit;
-mod runtime;
+pub mod runtime;
 mod ty;
 
 /// Backend identifier used by the manifest and diagnostics.
@@ -43,7 +44,7 @@ pub enum IntegerPolicy {
 ///
 /// Mirrors the typed-IR fields the compiler API produces for source-to-source
 /// backends: the parsed AST, resolved HIR, checked expression annotations, the
-/// `@memory:manual` scopes the managed subset rejects, and the integer
+/// `@memory:manual` scopes (supported for alloc/free), and the integer
 /// arithmetic policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CModule {
@@ -55,7 +56,9 @@ pub struct CModule {
     pub hir: astra_core::hir::Module,
     /// Checked expression types, in source order.
     pub annotations: Vec<astra_core::checker::TypeAnnotation>,
-    /// Spans of `@memory:manual` scopes, which this slice rejects.
+    /// Spans of `@memory:manual` scopes. The C backend supports `Memory.alloc`
+    /// / `Memory.free` and pointer access (`ptr.read` / `ptr.write`) inside
+    /// them; `ptr.as_slice` needs the still-unspecced `MutSlice` surface.
     pub manual_memory_scopes: Vec<astra_core::span::Span>,
     /// Selected integer arithmetic policy.
     pub integer_policy: IntegerPolicy,
@@ -80,10 +83,10 @@ impl BackendError {
         }
     }
 
-    /// Creates the scaffold's not-implemented error.
+    /// Creates an unsupported-request error.
     #[must_use]
-    pub fn not_implemented() -> Self {
-        Self::new("NS8002", "The C backend does not support this request.")
+    pub fn unsupported() -> Self {
+        Self::new("NS8001", "The C backend does not support this request.")
     }
 }
 
@@ -92,8 +95,13 @@ impl BackendError {
 pub struct GeneratedC {
     /// The freestanding-safe generated C17 translation unit.
     pub source: String,
+    /// Public C header (`<module>.h`) with extern prototypes for exported
+    /// symbols. `None` for standalone (single-module) builds.
+    pub header: Option<String>,
     /// The hosted runtime implementation (`astra_host.c`), linked to run.
     pub host_shim: String,
+    /// Individual translation units generated from inline `@script` blocks.
+    pub script_sources: Vec<(String, String)>,
     /// The backend target identifier (`"c"`).
     pub target: String,
 }
@@ -104,5 +112,70 @@ pub struct GeneratedC {
 /// first slice does not support, so unsupported programs fail before code
 /// generation instead of producing incorrect C.
 pub fn generate(module: &CModule) -> Result<GeneratedC, BackendError> {
-    emit::emit(module)
+    emit::emit(module).map(strip_generated)
+}
+
+fn strip_generated(mut generated: GeneratedC) -> GeneratedC {
+    generated.source = cstrip::strip_comments(&generated.source);
+    generated.header = generated
+        .header
+        .map(|header| cstrip::strip_comments(&header));
+    generated.host_shim = cstrip::strip_comments(&generated.host_shim);
+    generated.script_sources = generated
+        .script_sources
+        .into_iter()
+        .map(|(name, source)| (name, cstrip::strip_comments(&source)))
+        .collect();
+    generated
+}
+
+/// One entry in a project compile graph.
+///
+/// `dep_keys` lists the canonical module keys (as they appear in `import`
+/// statements) that this module directly imports. The caller is responsible for
+/// ordering `ProjectEntry` slices so each dependency appears before any module
+/// that imports it.
+#[derive(Debug, Clone)]
+pub struct ProjectEntry {
+    /// Compiled module payload (AST + HIR + annotations).
+    pub module: CModule,
+    /// Canonical key by which other modules import this module.
+    pub key: String,
+    /// Keys of modules that this module directly imports.
+    pub dep_keys: Vec<String>,
+}
+
+/// What kind of artifact a project emission targets.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum EmitKind {
+    /// A runnable program: the root module emits `int main(void)`.
+    #[default]
+    Executable,
+    /// A library: no `int main(void)`; `pub` functions stay external so a C
+    /// consumer can link them. Header artifacts are unchanged.
+    Library,
+}
+
+/// Emits C17 source for a multi-module project.
+///
+/// Returns one [`GeneratedC`] per entry (with a `header` containing extern
+/// prototypes for the module's exported functions) plus a shared host shim.
+/// Each `GeneratedC::source` uses `#include "<dep>.h"` instead of inlining
+/// the dependency, so the returned translation units must be compiled and
+/// linked together.
+pub fn generate_project(entries: &[ProjectEntry]) -> Result<Vec<GeneratedC>, BackendError> {
+    emit::emit_project(entries, true)
+        .map(|generated| generated.into_iter().map(strip_generated).collect())
+}
+
+/// Emits a multi-module project for the requested artifact kind.
+///
+/// [`EmitKind::Library`] suppresses the `int main(void)` wrapper so the output
+/// can be archived or linked into a shared library. See `Docs/archive/Design/V1/11-c-abi.md`.
+pub fn generate_project_with_kind(
+    entries: &[ProjectEntry],
+    kind: EmitKind,
+) -> Result<Vec<GeneratedC>, BackendError> {
+    emit::emit_project(entries, kind == EmitKind::Executable)
+        .map(|generated| generated.into_iter().map(strip_generated).collect())
 }

@@ -14,8 +14,8 @@ Every task must satisfy all of these:
 - [ ] No confirmed decision was silently changed.
 - [ ] Unrelated files were not modified.
 - [ ] The relevant checks were run, or the absence of checks is stated.
-- [ ] Evidence is recorded in `state-log.md`.
-- [ ] `todo.md` reflects the new status.
+- [ ] Evidence is recorded in `../state.md`.
+- [ ] `../state.md` reflects the new status.
 - [ ] The next action is explicit.
 - [ ] The final response separates facts from assumptions.
 
@@ -27,15 +27,15 @@ If any item is false, the task is not done.
 
 A decision is done when:
 
-- [ ] The decision is recorded in `../architecture.md` under the Decision Log.
+- [ ] The decision is recorded in the `../state.md` Decisions table (detailed rationale may live in `../archive/`).
 - [ ] The chosen option is checked.
 - [ ] The rejected options are still visible.
 - [ ] Rationale is recorded.
 - [ ] Consequences and tradeoffs are recorded.
-- [ ] Related sections of the architecture are updated for consistency.
+- [ ] Related design notes are updated for consistency.
 - [ ] Contradictions with earlier decisions are resolved or explicitly flagged.
 - [ ] `project-context-glossary.md` is updated if terminology changed.
-- [ ] `state-log.md` records the decision.
+- [ ] `../state.md` records the decision.
 
 A decision is not done if it exists only in chat.
 
@@ -73,7 +73,7 @@ A compiler feature is done when:
 - [ ] The formatter handles the new syntax.
 - [ ] Documentation is updated.
 - [ ] `astra check --json` reports stable diagnostics.
-- [ ] `state-log.md` records the verification.
+- [ ] `../state.md` records the verification.
 
 A feature is not done if it only works in one backend without an explicit target limitation.
 
@@ -90,7 +90,7 @@ A bug fix is done when:
 - [ ] The original failing case now passes.
 - [ ] Related tests still pass.
 - [ ] The fix does not weaken a confirmed semantic guarantee.
-- [ ] The change is recorded in `state-log.md`.
+- [ ] The change is recorded in `../state.md`.
 
 A bug fix is not done if the test was deleted or skipped.
 
@@ -127,7 +127,7 @@ A Nova or NoPM feature is done when:
 - [ ] Unsupported targets or ecosystems fail with a clear diagnostic.
 - [ ] The same lockfile works for Nova and compiled builds.
 - [ ] Tests cover the happy path and at least one target/security failure.
-- [ ] `state-log.md` records the verification.
+- [ ] `../state.md` records the verification.
 
 ---
 
@@ -169,7 +169,7 @@ A phase is complete when:
 - [ ] The phase gate in `runbook.md` is satisfied.
 - [ ] Known risks are recorded.
 - [ ] The next phase is unambiguous.
-- [ ] `state-log.md` records the transition.
+- [ ] `../state.md` records the transition.
 
 Do not start the next phase because the current one is “mostly done.”
 
@@ -211,8 +211,8 @@ Only one task should be `in_progress` at a time.
 
 When the DoD is satisfied:
 
-1. Update `state-log.md`.
-2. Update `todo.md`.
+1. Update `../state.md`.
+2. Update `../state.md`.
 3. Report the result.
 4. Stop.
 

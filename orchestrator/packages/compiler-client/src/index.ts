@@ -22,18 +22,42 @@ export interface DiagnosticSpan {
 }
 
 /** Structured compiler diagnostic returned over JSON-RPC. */
+export interface RelatedSpan {
+  readonly file: string;
+  readonly span: DiagnosticSpan;
+  readonly message: string;
+}
+
 export interface CompilerDiagnostic {
   readonly code: string;
   readonly severity: "error" | "warning" | "note" | "help";
   readonly message: string;
   readonly span: DiagnosticSpan | null;
   readonly hint: string | null;
+  readonly related?: readonly RelatedSpan[];
 }
 
 /** Canonical-format result returned by the Rust compiler. */
 export interface FormatResponse {
   readonly apiVersion: string;
   readonly source: string | null;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+}
+
+/** Parsed surface AST returned by the `ast` command. */
+export interface AstResponse {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly ast?: unknown;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+}
+
+/** Mode-inference explanation returned by the `explain` command. */
+export interface ExplainResponse {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly inference?: unknown;
+  readonly explanation?: string;
   readonly diagnostics: readonly CompilerDiagnostic[];
 }
 
@@ -67,7 +91,7 @@ export interface ModuleIr {
 /** Parameters for `CompilerClient.compile`. */
 export interface CompileRequest {
   readonly source: SourceUnit;
-  readonly target?: "js" | "ts";
+  readonly target?: "js" | "ts" | "c" | string;
   readonly mode?: Mode;
   readonly integerPolicy?: IntegerPolicy;
 }
@@ -88,6 +112,22 @@ export interface FormatRequest {
   readonly target?: string;
   /** Formatting is target independent; an omitted mode is accepted. */
   readonly mode?: Mode;
+}
+
+/** Parameters for the `migrate` command. */
+export interface MigrateRequest {
+  readonly source: SourceUnit;
+  readonly changeEdition?: boolean;
+}
+
+/** Result of the `migrate` command. */
+export interface MigrateResponse {
+  readonly apiVersion: string;
+  /** False when migration could not run; diagnostics are then errors. */
+  readonly ok: boolean;
+  readonly changed: boolean;
+  readonly source: string;
+  readonly diagnostics: readonly CompilerDiagnostic[];
 }
 
 /** Options used to locate and invoke the native compiler binary. */
@@ -207,6 +247,23 @@ export function findCompilerBinary(
 
   addAncestors(cwd);
 
+  // A packaged CLI keeps `astra-compiler` next to the executable. Look there
+  // before the workspace `target` directories so a distributed binary is
+  // self-contained without requiring `cargo` or an environment override.
+  const entry = process.argv[1];
+  const entryDir = entry === undefined ? undefined : dirname(resolve(entry));
+  const packagedCandidates = [
+    ...(entryDir === undefined
+      ? []
+      : [join(entryDir, BINARY_NAME), join(entryDir, "..", "bin", BINARY_NAME)]),
+    join(dirname(process.execPath), BINARY_NAME),
+  ];
+  for (const candidate of packagedCandidates) {
+    if (isFile(candidate)) {
+      return candidate;
+    }
+  }
+
   try {
     addAncestors(fileURLToPath(new URL("../../../../", import.meta.url)));
   } catch {
@@ -262,12 +319,38 @@ function parseDiagnostic(value: unknown): CompilerDiagnostic {
     span = { start: spanValue["start"], end: spanValue["end"] };
   }
 
+  const relatedValue = value["related"];
+  let related: RelatedSpan[] | undefined;
+  if (Array.isArray(relatedValue)) {
+    related = relatedValue.map((entry) => {
+      if (
+        !isRecord(entry) ||
+        typeof entry["file"] !== "string" ||
+        typeof entry["message"] !== "string" ||
+        !isRecord(entry["span"]) ||
+        typeof entry["span"]["start"] !== "number" ||
+        typeof entry["span"]["end"] !== "number"
+      ) {
+        throw new CompilerClientError(
+          "NS9005",
+          "Compiler returned an invalid diagnostic related span.",
+        );
+      }
+      return {
+        file: entry["file"],
+        span: { start: entry["span"]["start"], end: entry["span"]["end"] },
+        message: entry["message"],
+      };
+    });
+  }
+
   return {
     code,
     severity,
     message,
     span,
     hint: hintValue,
+    ...(related === undefined || related.length === 0 ? {} : { related }),
   };
 }
 
@@ -564,6 +647,179 @@ export class CompilerClient {
   ): FormatResponse {
     return this.format({ source: { path, text }, ...options });
   }
+
+  /** Parses one source unit and returns its surface AST. */
+  ast(request: CompileRequest): AstResponse {
+    const result = this.send(
+      "ast",
+      "astra-ast",
+      this.compileParams(request),
+      32 * 1024 * 1024,
+    );
+    if (
+      !isRecord(result) ||
+      typeof result["apiVersion"] !== "string" ||
+      typeof result["ok"] !== "boolean" ||
+      !Array.isArray(result["diagnostics"])
+    ) {
+      throw new CompilerClientError("NS9005", "Compiler returned an invalid AST result.");
+    }
+    if (result["apiVersion"] !== COMPILER_API_VERSION) {
+      throw new CompilerClientError(
+        "NS9005",
+        `Compiler returned API ${result["apiVersion"]}; expected ${COMPILER_API_VERSION}.`,
+      );
+    }
+    const ast = result["ast"];
+    return {
+      apiVersion: result["apiVersion"],
+      ok: result["ok"],
+      ...(ast === undefined ? {} : { ast }),
+      diagnostics: result["diagnostics"].map(parseDiagnostic),
+    };
+  }
+
+  /** Explains the least-privileged mode inferred for one source unit. */
+  explain(request: CompileRequest): ExplainResponse {
+    const result = this.send(
+      "explain",
+      "astra-explain",
+      this.compileParams(request),
+      32 * 1024 * 1024,
+    );
+    if (
+      !isRecord(result) ||
+      typeof result["apiVersion"] !== "string" ||
+      typeof result["ok"] !== "boolean" ||
+      !Array.isArray(result["diagnostics"])
+    ) {
+      throw new CompilerClientError("NS9005", "Compiler returned an invalid explain result.");
+    }
+    if (result["apiVersion"] !== COMPILER_API_VERSION) {
+      throw new CompilerClientError(
+        "NS9005",
+        `Compiler returned API ${result["apiVersion"]}; expected ${COMPILER_API_VERSION}.`,
+      );
+    }
+    const inference = result["inference"];
+    const explanation = result["explanation"];
+    return {
+      apiVersion: result["apiVersion"],
+      ok: result["ok"],
+      ...(inference === undefined ? {} : { inference }),
+      ...(typeof explanation === "string" ? { explanation } : {}),
+      diagnostics: result["diagnostics"].map(parseDiagnostic),
+    };
+  }
+
+  migrate(request: MigrateRequest): MigrateResponse {
+    const result = this.send(
+      "migrate",
+      "astra-migrate",
+      {
+        apiVersion: COMPILER_API_VERSION,
+        source: request.source,
+        changeEdition: request.changeEdition ?? false,
+      },
+      32 * 1024 * 1024,
+    );
+    if (
+      !isRecord(result) ||
+      typeof result["apiVersion"] !== "string" ||
+      typeof result["ok"] !== "boolean" ||
+      typeof result["changed"] !== "boolean" ||
+      typeof result["source"] !== "string" ||
+      !Array.isArray(result["diagnostics"])
+    ) {
+      throw new CompilerClientError("NS9005", "Compiler returned an invalid migrate result.");
+    }
+    if (result["apiVersion"] !== COMPILER_API_VERSION) {
+      throw new CompilerClientError(
+        "NS9005",
+        `Compiler returned API ${result["apiVersion"]}; expected ${COMPILER_API_VERSION}.`,
+      );
+    }
+    return {
+      apiVersion: result["apiVersion"],
+      ok: result["ok"],
+      changed: result["changed"],
+      source: result["source"],
+      diagnostics: result["diagnostics"].map(parseDiagnostic),
+    };
+  }
+
+  private compileParams(request: CompileRequest): Record<string, unknown> {
+    return {
+      apiVersion: COMPILER_API_VERSION,
+      source: request.source,
+      target: request.target ?? "js",
+      ...(request.mode === undefined ? {} : { mode: request.mode }),
+      ...(request.integerPolicy === undefined
+        ? {}
+        : { integerPolicy: request.integerPolicy }),
+    };
+  }
+
+  private send(
+    method: string,
+    id: string,
+    params: unknown,
+    maxBuffer: number,
+  ): unknown {
+    const payload = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+    const result = spawnSync(this.binaryPath, [], {
+      input: payload,
+      cwd: this.cwd,
+      encoding: "utf8",
+      maxBuffer,
+      windowsHide: true,
+      ...(this.timeoutMs === undefined ? {} : { timeout: this.timeoutMs }),
+    });
+
+    if (result.error !== undefined) {
+      throw new CompilerClientError(
+        "NS9004",
+        `Unable to run compiler '${this.binaryPath}': ${result.error.message}`,
+        { cause: result.error },
+      );
+    }
+    if (result.status !== 0) {
+      const detail = result.stderr.trim();
+      throw new CompilerClientError(
+        "NS9004",
+        `Compiler exited with status ${result.status ?? "unknown"}${detail.length === 0 ? "" : `: ${detail}`}`,
+      );
+    }
+
+    const output = result.stdout.trim();
+    if (output.length === 0) {
+      throw new CompilerClientError("NS9005", "Compiler returned an empty response.");
+    }
+
+    let response: unknown;
+    try {
+      response = JSON.parse(output);
+    } catch (error) {
+      throw new CompilerClientError("NS9005", "Compiler returned invalid JSON.", { cause: error });
+    }
+
+    if (!isRecord(response) || response["jsonrpc"] !== "2.0") {
+      throw new CompilerClientError("NS9005", "Compiler returned an invalid JSON-RPC response.");
+    }
+
+    if (response["error"] !== undefined && response["error"] !== null) {
+      const rpcError = response["error"];
+      const code =
+        isRecord(rpcError) && typeof rpcError["code"] === "number" ? rpcError["code"] : -32603;
+      const message =
+        isRecord(rpcError) && typeof rpcError["message"] === "string"
+          ? rpcError["message"]
+          : "Unknown compiler error.";
+      throw new CompilerClientError("NS9006", `Compiler request failed (${code}): ${message}`);
+    }
+
+    return response["result"];
+  }
 }
 
 // ─── Project (multi-source) check ────────────────────────────────────────────
@@ -594,6 +850,7 @@ export interface ProjectCheckRequest {
   readonly sources: readonly ProjectSourceUnit[];
   readonly target?: string;
   readonly mode?: Mode;
+  readonly integerPolicy?: IntegerPolicy;
 }
 
 /** Per-module result returned by `check_project`. */
@@ -602,6 +859,8 @@ export interface ModuleCheckResult {
   readonly path: string;
   readonly diagnostics: readonly CompilerDiagnostic[];
   readonly ok: boolean;
+  /** Typed module payload for a successful project check. */
+  readonly ir?: ModuleIr;
 }
 
 /** Response returned by `CompilerClient.checkProject`. */
@@ -625,12 +884,111 @@ export interface ProjectCheckResponse {
   };
 }
 
+/** Parameters for `CompilerClient.compileProject`. */
+export interface ProjectCompileRequest {
+  /** Ordered list of source units. Dependencies must precede importers. */
+  readonly sources: readonly ProjectSourceUnit[];
+  readonly target?: string;
+  readonly mode?: Mode;
+  readonly integerPolicy?: IntegerPolicy;
+  /** Emit a library (no `int main`) instead of an executable. */
+  readonly library?: boolean;
+  /** Package specifier → canonical module key (bare package imports). */
+  readonly importMap?: Readonly<Record<string, string>>;
+}
+
+/** Per-module artifact returned by `compile_project` (C multi-module). */
+export interface ModuleCompileArtifact {
+  readonly key: string;
+  readonly path: string;
+  /** Emitted C source filename. */
+  readonly cFilename: string;
+  /** Emitted C header filename. */
+  readonly hFilename: string;
+  readonly cSource: string;
+  readonly hSource: string;
+  /** Script translation units (`@script:c` / `@script:cpp`) from this module. */
+  readonly scriptSources: readonly (readonly [string, string])[];
+}
+
+/** Response returned by `CompilerClient.compileProject`. */
+export interface ProjectCompileResponse {
+  readonly apiVersion: string;
+  readonly ok: boolean;
+  readonly modules: readonly ModuleCompileArtifact[];
+  /** Single shared host shim (`astra_host.c`). */
+  readonly hostShim: string;
+  readonly diagnostics: readonly CompilerDiagnostic[];
+  readonly metadata: Readonly<Record<string, unknown>>;
+}
+
+function parseModuleCompileArtifact(value: unknown): ModuleCompileArtifact {
+  if (!isRecord(value)) {
+    throw new CompilerClientError("NS9005", "Compiler returned an invalid module artifact.");
+  }
+  const { key, path, cFilename, hFilename, cSource, hSource, scriptSources } = value;
+  if (
+    typeof key !== "string" ||
+    typeof path !== "string" ||
+    typeof cFilename !== "string" ||
+    typeof hFilename !== "string" ||
+    typeof cSource !== "string" ||
+    typeof hSource !== "string" ||
+    !Array.isArray(scriptSources)
+  ) {
+    throw new CompilerClientError("NS9005", "Compiler returned an invalid module artifact.");
+  }
+  return {
+    key,
+    path,
+    cFilename,
+    hFilename,
+    cSource,
+    hSource,
+    scriptSources: scriptSources.map((entry) => {
+      if (!Array.isArray(entry) || entry.length !== 2) {
+        throw new CompilerClientError("NS9005", "Compiler returned an invalid script source.");
+      }
+      return [String(entry[0]), String(entry[1])] as const;
+    }),
+  };
+}
+
+function parseProjectCompileResponse(value: unknown): ProjectCompileResponse {
+  if (!isRecord(value)) {
+    throw new CompilerClientError("NS9005", "Compiler returned an invalid project compile result.");
+  }
+  const { apiVersion, ok, modules, hostShim, diagnostics, metadata } = value;
+  if (
+    typeof apiVersion !== "string" ||
+    apiVersion !== COMPILER_API_VERSION ||
+    typeof ok !== "boolean" ||
+    !Array.isArray(modules) ||
+    typeof hostShim !== "string" ||
+    !Array.isArray(diagnostics)
+  ) {
+    throw new CompilerClientError(
+      "NS9005",
+      `Compiler returned an incompatible project compile result; expected API ${COMPILER_API_VERSION}.`,
+    );
+  }
+  return {
+    apiVersion,
+    ok,
+    modules: modules.map(parseModuleCompileArtifact),
+    hostShim,
+    diagnostics: diagnostics.map(parseDiagnostic),
+    metadata: isRecord(metadata) ? metadata : {},
+  };
+}
+
 function parseModuleCheckResult(value: unknown): ModuleCheckResult {
   if (!isRecord(value)) {
     throw new CompilerClientError("NS9005", "Compiler returned an invalid module result.");
   }
   const { key, path, ok } = value;
   const diagnosticsRaw = value["diagnostics"];
+  const irRaw = value["ir"];
   if (
     typeof key !== "string" ||
     typeof path !== "string" ||
@@ -644,6 +1002,7 @@ function parseModuleCheckResult(value: unknown): ModuleCheckResult {
     path,
     ok,
     diagnostics: diagnosticsRaw.map(parseDiagnostic),
+    ...(irRaw === undefined ? {} : { ir: parseModuleIr(irRaw) }),
   };
 }
 
@@ -704,6 +1063,9 @@ CompilerClient.prototype.checkProject = function (
       sources: request.sources,
       target: request.target ?? "js",
       ...(request.mode === undefined ? {} : { mode: request.mode }),
+      ...(request.integerPolicy === undefined
+        ? {}
+        : { integerPolicy: request.integerPolicy }),
     },
   });
 
@@ -769,4 +1131,94 @@ export interface CompilerClient {
    * imports it. The entry-point module should appear last.
    */
   checkProject(request: ProjectCheckRequest): ProjectCheckResponse;
+}
+
+// Extend CompilerClient with compileProject ───────────────────────────────────
+
+CompilerClient.prototype.compileProject = function (
+  this: CompilerClient,
+  request: ProjectCompileRequest,
+): ProjectCompileResponse {
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: "astra-compile-project",
+    method: "compile_project",
+    params: {
+      apiVersion: COMPILER_API_VERSION,
+      sources: request.sources,
+      target: request.target ?? "c",
+      ...(request.mode === undefined ? {} : { mode: request.mode }),
+      ...(request.integerPolicy === undefined
+        ? {}
+        : { integerPolicy: request.integerPolicy }),
+      ...(request.library === true ? { library: true } : {}),
+      ...(request.importMap === undefined || Object.keys(request.importMap).length === 0
+        ? {}
+        : { importMap: request.importMap }),
+    },
+  });
+
+  const result = spawnSync(this.binaryPath, [], {
+    input: payload,
+    cwd: (this as unknown as { cwd: string }).cwd,
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  });
+
+  if (result.error !== undefined) {
+    throw new CompilerClientError(
+      "NS9004",
+      `Unable to run compiler '${this.binaryPath}': ${result.error.message}`,
+      { cause: result.error },
+    );
+  }
+  if (result.status !== 0) {
+    const detail = result.stderr.trim();
+    throw new CompilerClientError(
+      "NS9004",
+      `Compiler exited with status ${result.status ?? "unknown"}${detail.length === 0 ? "" : `: ${detail}`}`,
+    );
+  }
+
+  const output = result.stdout.trim();
+  if (output.length === 0) {
+    throw new CompilerClientError("NS9005", "Compiler returned an empty response.");
+  }
+
+  let response: unknown;
+  try {
+    response = JSON.parse(output);
+  } catch (error) {
+    throw new CompilerClientError("NS9005", "Compiler returned invalid JSON.", { cause: error });
+  }
+
+  if (!isRecord(response) || response["jsonrpc"] !== "2.0") {
+    throw new CompilerClientError("NS9005", "Compiler returned an invalid JSON-RPC response.");
+  }
+
+  if (response["error"] !== undefined && response["error"] !== null) {
+    const rpcError = response["error"];
+    const code =
+      isRecord(rpcError) && typeof rpcError["code"] === "number" ? rpcError["code"] : -32603;
+    const message =
+      isRecord(rpcError) && typeof rpcError["message"] === "string"
+        ? rpcError["message"]
+        : "Unknown compiler error.";
+    throw new CompilerClientError("NS9006", `Compiler request failed (${code}): ${message}`);
+  }
+
+  return parseProjectCompileResponse(response["result"]);
+};
+
+/** Augment `CompilerClient` to include `compileProject`. */
+export interface CompilerClient {
+  /**
+   * Compiles a multi-module project to C through the Rust `compile_project`
+   * method, returning one translation unit + header per source module.
+   *
+   * `sources` must be in dependency order: each module before any module that
+   * imports it. The entry-point module should appear last.
+   */
+  compileProject(request: ProjectCompileRequest): ProjectCompileResponse;
 }
