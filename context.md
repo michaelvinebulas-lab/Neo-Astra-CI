@@ -2,10 +2,10 @@
 
 **Snapshot:** 2026-11-28
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** private `master` at the `1.1.2` bump (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized `1.1.2` merge at `76d2d7d`
-**Published release:** `1.1.1` (tag `v1.1.1` -> public `868007e`)
-**Pending release:** `1.1.2` - all six Phase 7 slices behind the edition-`0.2` boundary
-**Current state:** PR #10 is merged into public `master`; tagging is paused because npm authentication is unavailable (`E401`), so trusted publishers cannot be refreshed yet
+**Branch:** private `master` at the 1.1.2 docs refresh (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized docs merge at `5208181`
+**Published release:** `1.1.2` (tag `v1.1.2` -> public `76d2d7d`)
+**Next release:** no release queued; Phase 7 is complete
+**Current state:** `1.1.2` is published on GitHub and npm; public docs were refreshed by PR #11 and merged
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.
@@ -222,9 +222,9 @@ cases (`scopes.ns`, `turbofish.ns`) and the principal-owned release steps.
 - The npm token exposed during `1.0.0` has been revoked; the next principal
   action is to re-create trusted publishers before the `1.1.2` publish using
   `npx -y npm@latest trust github <pkg> --file release.yml --repository luminousvalentine-cell/Neo-Astra --allow-publish --yes`.
-  The lockstep bump to `1.1.2` is applied and sanitized PR #10 is merged into
-  public `master`; nothing is tagged or published because npm authentication is
-  currently unavailable (`E401`).
+  `1.1.2` is published: tag `v1.1.2` points at public `76d2d7d`, all four npm
+  packages report `1.1.2` with SLSA provenance, and the GitHub release has three
+  archives plus `.sha256` sidecars. Public docs were refreshed in PR #11.
 
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.
   npm has all four `1.0.1` packages with SLSA provenance. The old CI repo and
@@ -269,10 +269,10 @@ lead/user-owned leftover remains:
    deferred (see `Docs/Report/Phase7-lambdas.md`).
 6. The complete integer/float suffix table is done for edition `0.2`; edition
    `0.1` keeps `u8` only (see `Docs/Report/Phase7-suffixes.md`).
-7. Release prep: PR #10 is merged into public `master` at `76d2d7d`. Paused
-   before tagging: `npm whoami` returns `E401`, so the four npm trusted
-   publishers cannot be re-created from this machine. Next principal action:
-   authenticate npm, refresh trusted publishers, then tag `v1.1.2` and publish.
+7. `1.1.2` is published: PR #10 merged at `76d2d7d`, tag `v1.1.2` pushed,
+   release run `46114596390` green, four npm packages at `1.1.2` with
+   provenance, and docs PR #11 merged at `5208181`. npm auth was refreshed with
+   web/passkey login and a permanent runbook was added to the release checklist.
    Do not push the private tree to `origin`.
 8. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
