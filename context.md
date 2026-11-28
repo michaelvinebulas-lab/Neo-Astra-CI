@@ -1,11 +1,11 @@
 # Neo Astra context handoff
 
-**Snapshot:** 2026-11-27
+**Snapshot:** 2026-11-28
 **Working copy:** `C:\Projects\Neo Astra`
-**Branch:** private `master` at the `1.1.2` bump (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized `1.1.1` tree, with `source` pushed and PR #10 open
+**Branch:** private `master` at the `1.1.2` bump (pushed to `ci` = `michaelvinebulas-lab/Neo-Astra-CI`); public `master` is the sanitized `1.1.2` merge at `76d2d7d`
 **Published release:** `1.1.1` (tag `v1.1.1` -> public `868007e`)
 **Pending release:** `1.1.2` - all six Phase 7 slices behind the edition-`0.2` boundary
-**Current state:** all six slices implemented; `1.1.2` bump applied, sanitized `source` pushed, PR #10 open; tag/publish steps remain
+**Current state:** PR #10 is merged into public `master`; tagging is paused because npm authentication is unavailable (`E401`), so trusted publishers cannot be refreshed yet
 
 This file is a handoff snapshot, not a normative spec. Read the linked documents
 for detail. Update this file when the working state changes materially.
@@ -222,8 +222,9 @@ cases (`scopes.ns`, `turbofish.ns`) and the principal-owned release steps.
 - The npm token exposed during `1.0.0` has been revoked; the next principal
   action is to re-create trusted publishers before the `1.1.2` publish using
   `npx -y npm@latest trust github <pkg> --file release.yml --repository luminousvalentine-cell/Neo-Astra --allow-publish --yes`.
-  The lockstep bump to `1.1.2` is applied and sanitized `source` is pushed with
-  PR #10 open; nothing is tagged or published.
+  The lockstep bump to `1.1.2` is applied and sanitized PR #10 is merged into
+  public `master`; nothing is tagged or published because npm authentication is
+  currently unavailable (`E401`).
 
 - `v1.0.1` is tagged (`3093343`) and the GitHub release has verified archives.
   npm has all four `1.0.1` packages with SLSA provenance. The old CI repo and
@@ -268,10 +269,11 @@ lead/user-owned leftover remains:
    deferred (see `Docs/Report/Phase7-lambdas.md`).
 6. The complete integer/float suffix table is done for edition `0.2`; edition
    `0.1` keeps `u8` only (see `Docs/Report/Phase7-suffixes.md`).
-7. Release prep: the `1.1.2` bump is pushed to `ci`; the sanitized `source`
-   tree is pushed and PR #10 is open. Next: merge the PR, re-create npm trusted
-   publishers, then tag and cut the release. Do not push the private tree to
-   `origin`.
+7. Release prep: PR #10 is merged into public `master` at `76d2d7d`. Paused
+   before tagging: `npm whoami` returns `E401`, so the four npm trusted
+   publishers cannot be re-created from this machine. Next principal action:
+   authenticate npm, refresh trusted publishers, then tag `v1.1.2` and publish.
+   Do not push the private tree to `origin`.
 8. The V2 C++20 orchestrator rewrite is a later track; see
    `Docs/Report/Orchestrator-v2.md`. TypeScript remains the v1 oracle and
    isolated JS/TS bridge until C++ parity is proven.
